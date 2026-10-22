@@ -163,19 +163,17 @@ anything."
     (reflect/references-in-source 'inc \"(inc 1)\\n(let (inc 2) inc)\\n(inc 3)\")   → ([1 2] [3 2])"
   (%references-in-source name source))
 
-(defn parse-source (s)
+(defn parse-source (s:string -> (vector any))
   "Parse s into a lossless CST tree as nested vectors (mechanism for std/format.blsp).
 
     (reflect/parse-source \"(a)\")   → [:root [[:list [[:symbol \"a\"]]]]]"
   (%parse-source s))
-(sig parse-source (string -> (vector any)))
 
-(defn parse-source-positioned (s)
+(defn parse-source-positioned (s:string -> (map keyword any))
   "Parse s into a CST of maps, each `{:kind :start :end}` (leaves add :text, containers/wrappers add :kids) with half-open character offsets — for structural navigation (std/sexp).
 
     (get (reflect/parse-source-positioned \"(a b)\") :kind)   → :root"
   (%parse-source-positioned s))
-(sig parse-source-positioned (string -> (map keyword any)))
 
 (defn scan-form-start (s pos)
   "The greatest char offset <= pos of a top-level (bracket depth 0) open bracket in s lying OUTSIDE any string or ; comment, else 0 — depth-tracked, not the Emacs column-0 heuristic, so a mis-indented open bracket at column 0 inside an unclosed form is not a form start — the string/comment-aware beginning-of-defun behind highlight/safe-restart and tool/sexp narrowing. The required forward lexical pass (a backward scan cannot know string state) runs natively: O(pos) at native speed instead of interpreted per-char cost on every eldoc/fontify-restart in a large buffer.
@@ -205,7 +203,7 @@ anything."
     (reflect/scan-tokens \"(f 1)\")   → [[0 1 :open \"(\"] [1 2 :symbol \"f\"] [3 4 :number \"1\"] [4 5 :close \")\"]]"
   (%scan-tokens s))
 
-(defn resolves? (name)
+(defn resolves? (name:symbol -> bool)
   "Whether `name` — a symbol — names something that EXISTS, loading its module first if
 `name` is qualified and that module is not loaded yet.
 
@@ -233,7 +231,6 @@ cannot load is a citation that does not work."
             loaded (check-allow :discarded-catch
                      (try (do (require-one (symbol module)) true) (catch _ false))))
         (and loaded (bound? name))))))
-(sig resolves? (symbol -> bool))
 
 (defn call-if-bound (name fallback & args)
   "Call the function `name` — a symbol, resolved NOW — with `args`, or answer `fallback`
@@ -263,7 +260,7 @@ string arg; a `deftype` alias is a type, not a signature, and answers nil.
     (reflect/declared-signature 'inc)   → nil"
   (let (form (%declared-sig name)) (if (nil? form) nil (pr-str form))))
 
-(defn type-aliases (&optional module)
+(defn type-aliases (&optional module: (or nil string symbol) -> (or nil (list map)))
   "Every `(deftype name T)` alias the checker knows (ADR-327), as `{:name :type}` maps —
 the qualified name and the type-expression as written, rendered — sorted by name. With
 `module` (a symbol or string), only that module's: `(type-aliases 'editor/pane)`. A
@@ -274,7 +271,6 @@ a module's under a Types heading."
                   (fn (entry) (or (nil? prefix) (string/starts-with? (first entry) prefix)))))
     (sort-by (map entries (fn (entry) {:name (first entry) :type (pr-str (second entry))}))
       :name)))
-(sig type-aliases (&optional (or nil string symbol) -> (or nil (list map))))
 
 (defn type-signature (name)
   "The checker's type signature for global `name` (declared/curated/inferred) as an arrow string like \"(int -> int)\", or nil if it can't be pinned. Symbol or string arg: (type-signature 'map).

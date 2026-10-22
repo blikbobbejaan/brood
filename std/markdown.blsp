@@ -198,7 +198,7 @@ both as element text and inside a double-quoted attribute."
   (or (string/starts-with? line "\t") (>= (string/span line 0 " ") (get state :code-indent 4))))
 
 ;; Emit a buffered block when it ends; a no-op for `:none`.
-(defn- md-flush (state)
+(defn- md-flush (state:map -> map)
   (let (mode (get state :mode)
         buf (reverse (get state :buf))
         start (get state :start)
@@ -215,7 +215,6 @@ both as element text and inside a double-quoted attribute."
       (= mode :code) (md-close-code state)
       (= mode :indented) (md-close-indented state)
       else state)))
-(sig md-flush (map -> map))
 
 ;; The width of an ordered-list marker (`12. `) at the head of `t`, or 0 when there is none.
 (defn- md-ordered-marker (t)
@@ -240,7 +239,7 @@ both as element text and inside a double-quoted attribute."
   (let (buf (get state :buf))
     (assoc state :buf (cons (str (first buf) " " t) (rest buf)))))
 
-(defn- md-line (state line)
+(defn- md-line (state:map line:string -> map)
   (let (mode (get state :mode)
         t (string/trim line)
         end (string/length (string/trim line))
@@ -284,7 +283,6 @@ both as element text and inside a double-quoted attribute."
       else
         (let (s (if (= mode :para) state (md-flush state)))
           (assoc s :mode :para :buf (cons line (get s :buf)))))))
-(sig md-line (map string -> map))
 
 ;; Trusted, not verified: the state threads through `assoc`, which the checker types as a
 ;; bare map, so its `:out` reads as unknown; every writer of `:out` appends a string.

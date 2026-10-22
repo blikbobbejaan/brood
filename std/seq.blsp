@@ -80,7 +80,7 @@ running folds (`scan` `reduce-while`), pairwise combination (`zip-with`
 ;; the result is the "seen" set of keys, so membership is O(1)-ish rather than an O(n²)
 ;; scan; it stores only `true`, so one `%map-get` (default `false`) tells present from
 ;; absent without `contains?`'s two-sentinel probe.
-(defn distinct-by (coll f)
+(defn distinct-by (coll:seqable f:any -> any)
   "The items of `coll` with duplicates removed by key: keeps the first item for each distinct `(f item)`, order-preserving. `(distinct-by :id users)` keeps one user per id (≈ `Enum.uniq_by`).
 
     (seq/distinct-by [\"a\" \"b\" \"cc\"] count)   → (\"a\" \"cc\")"
@@ -92,7 +92,6 @@ running folds (`scan` `reduce-while`), pairwise combination (`zip-with`
                         state
                         [(%map-assoc (nth state 0) k true) (cons x (nth state 1))]))))
              1)))
-(sig distinct-by (seqable any -> any))
 
 (defn group-by (coll f)
   "A map from each `(f x)` to the list of items of `coll` that produced it, each list in original order.
@@ -137,7 +136,7 @@ running folds (`scan` `reduce-while`), pairwise combination (`zip-with`
 ;; which the CI gate turns into a hard failure. Argument types are precise because that is
 ;; what catches the swap; the RETURN stays `any` because a too-narrow return would
 ;; false-positive at call sites and is not what a reversed-args rename gets wrong.
-(defn chunk-every (coll n)
+(defn chunk-every (coll:seqable n:int -> any)
   "Split `coll` into consecutive `n`-item vectors; unlike `partition`, a
 trailing partial chunk is kept. `n` must be positive; zero or less is an error.
 
@@ -146,7 +145,6 @@ trailing partial chunk is kept. `n` must be positive; zero or less is an error.
   (if (> n 0)
     (chunk-every-acc n (seq coll) nil)
     (error "seq/chunk-every: chunk size must be positive, got " n)))
-(sig chunk-every (seqable int -> any))
 
 (defn- chunk-by-acc (f coll key curr acc)
   (if (empty? coll)
@@ -203,12 +201,11 @@ input. `(zip-with '(1 2) '(3 4) +)` → `(4 6)`.
   (if (empty? coll)
     (reverse acc)
     (enumerate-acc (inc i) (rest coll) (cons [i (first coll)] acc))))
-(defn enumerate (coll)
+(defn enumerate (coll:seqable -> (or nil (list (tuple int any))))
   "Pair each item with its 0-based index: ([0 x₀] [1 x₁] …).
 
     (seq/enumerate [:a :b])    → ([0 :a] [1 :b])"
   (enumerate-acc 0 (seq coll) nil))
-(sig enumerate (seqable -> (or nil (list (tuple int any)))))
 
 (defn- index-where-from (pred coll i)
   (cond
@@ -226,14 +223,13 @@ equality); recover the item itself with `find`.
 ;; `subvec` mirrors `string/substring`, the op it is the vector counterpart of. The `sig`
 ;; pins the shape, which is what KI-71 was about — a reversed pair that keeps its arity
 ;; and stays silent.
-(defn subvec (v start & more)
+(defn subvec (v:vector start:int & more:int -> vector)
   "A fresh vector of v's elements in [start, end); end defaults to the length.
 
     (seq/subvec [1 2 3 4] 1 3)   → [2 3]"
   (if (empty? more) (%subvec v start) (%subvec v start (first more))))
 ;; `& int`, not a fixed second int: `end` is optional (`& more`), and the fixed-arity form
 ;; armed a 2-parameter contract over a 2-3 argument function under BROOD_CONTRACTS=1.
-(sig subvec (vector int & int -> vector))
 
 ;; ---- early termination (ADR-376) ---------------------------------------------------
 ;; `(reduced acc)` ends a `transduce` at once with `acc` as its result. It is a NON-LOCAL
@@ -246,22 +242,20 @@ equality); recover the item itself with `find`.
 ;; transducer protocol, not a `fold` one.
 (defrecord %reduced (value))
 
-(defn reduced (acc)
+(defn reduced (acc:any -> never)
   "End the enclosing [[transduce]] at once with `acc` as its result — the early exit a
 stage reaches for when it knows the rest of the input cannot matter. Never returns:
 it throws a `%reduced` record that `transduce` catches and unwraps.
 
     (seq/transduce (range 100) (seq/xtake-while (fn (n) (< n 3))) conj [])   → [0 1 2]"
   (throw (%reduced acc)))
-(sig reduced (any -> never))
 
-(defn reduced? (x)
+(defn reduced? (x:any -> bool)
   "Is `x` the payload of a [[reduced]] exit — what `transduce` catches.
 
     (seq/reduced? (try (seq/reduced 1) (catch e e)))   → true
     (seq/reduced? [:reduced 1])                         → false"
   (and (record? x) (= (record-id x) :seq/%reduced)))
-(sig reduced? (any -> bool))
 
 (defn transduce (coll xform rf init)
   "Reduce `coll` with `rf`/`init` through the transducer `xform` — one pass, no
@@ -309,7 +303,7 @@ when the caller needs indexed access. The complement of [[filterv]].
     (seq/rejectv [1 2 3 4] math/even?)   → [1 3]"
   (into [] (seq/reject coll pred)))
 
-(defn find (coll pred)
+(defn find (coll:seqable pred: (any -> any) -> any)
   "The first item of `coll` for which `(pred x)` holds, or `nil`.
 
     (seq/find [1 2 3 4] (fn (n) (> n 2)))   → 3
@@ -324,7 +318,6 @@ when the caller needs indexed access. The complement of [[filterv]].
 ;; `[k v]` entries — and `(seqable T)` excludes maps by design (ADR-365), so declaring it
 ;; would false-positive on a find over a map. The element-precise result comes from the checker's by-name rule; the
 ;; bare `seqable` domain admits every collection the combinators walk.
-(sig find (seqable (any -> any) -> any))
 
 ;; distinct: `distinct-by`'s seen-map walk keyed on the item itself — its own step rather
 ;; than `(distinct-by coll identity)`, so the checker can verify the `(list any)` result
@@ -336,13 +329,12 @@ when the caller needs indexed access. The complement of [[filterv]].
     state
     [(%map-assoc (nth state 0) x true) (cons x (nth state 1))]))
 
-(defn distinct (coll)
+(defn distinct (coll:seqable -> (list any))
   "The items of `coll` with duplicates removed, keeping the first occurrence of each (order-preserving).
 
     (seq/distinct [1 1 2])     → (1 2)"
   (reverse (nth (fold coll [{} nil] distinct-step) 1)))
 ;; Bare `seqable`, not `(seqable ?A)`, for `find`'s reason: a map folds as its entries.
-(sig distinct (seqable -> (list any)))
 
 ;; flatten: splice nested lists into one flat list. Descends through `pair?`/`nil` (so
 ;; empty sub-lists and nils vanish); vectors and maps are leaf items. The outer walk is
@@ -363,53 +355,47 @@ when the caller needs indexed access. The complement of [[filterv]].
     (seq/flatten '(1 [2 3]))     → (1 [2 3])   ; a vector is a LEAF, not descended into"
   (reverse (flatten-acc coll nil)))
 
-(defn split-at (coll n)
+(defn split-at (coll:seqable n:int -> (tuple any any))
   "The vector `[front back]` splitting `coll` at index `n`: `front` is its first `n` items (a list), `back` the remainder. One pass, unlike a separate `take`/`drop`.
 
     (seq/split-at [1 2 3 4] 2) → [(1 2) (3 4)]"
   (%split-at-acc n coll nil))
-(sig split-at (seqable int -> (tuple any any)))
 
-(defn take-last (coll n)
+(defn take-last (coll:seqable n:int -> any)
   "The last `n` items of `coll`, as a list (the whole of `coll` if it is shorter, `()` if `n` <= 0).
 
     (seq/take-last [1 2 3] 2)  → (2 3)"
   (drop coll (- (count coll) n)))
-(sig take-last (seqable int -> any))
 
-(defn drop-last (coll n)
+(defn drop-last (coll:seqable n:int -> any)
   "`coll` without its last `n` items (`()` if `n` >= its length).
 
     (seq/drop-last [1 2 3] 1)  → (1 2)"
   (take coll (- (count coll) n)))
-(sig drop-last (seqable int -> any))
 
 (defn- iterate-times-acc (f x n acc)
   (if (< n 0) acc (iterate-times-acc f (f x) (dec n) (cons x acc))))
-(defn iterate-times (f x n)
+(defn iterate-times (f:any x:any n:int -> any)
   "The list `(x f(x) f²(x) … fⁿ(x))` — the `n`+1 successive states of applying `f`,
 starting from `x`. `times` returns only the last of these; this keeps the trajectory.
 
     (seq/iterate-times (fn (n) (* n 2)) 1 4)   → (1 2 4 8 16)
     (seq/iterate-times inc 0 0)                → (0)"
   (reverse (iterate-times-acc f x n nil)))
-(sig iterate-times (any any int -> any))
 
-(defn times (n f x)
+(defn times (n:int f:any x:any -> any)
   "Apply `f` to `x` `n` times — fⁿ(x). `(times 0 f x)` is `x`.
 
     (seq/times 3 inc 0)   → 3"
   (if (<= n 0) x (seq/times (dec n) f (f x))))
-(sig times (int any any -> any))
 
 (defn- repeatedly-acc (n f acc)
   (if (<= n 0) (reverse acc) (repeatedly-acc (dec n) f (cons (f) acc))))
-(defn repeatedly (n f)
+(defn repeatedly (n:int f:any -> any)
   "A list of `n` successive calls to the zero-argument function `f` (in call order).
 
     (seq/repeatedly 3 (fn () 7))   → (7 7 7)"
   (repeatedly-acc n f nil))
-(sig repeatedly (int any -> any))
 
 ;; ---- ADR-379: cycle, the walkers, pmap ---------------------------------------
 (defn- cycle-acc (items left n acc)
@@ -417,7 +403,7 @@ starting from `x`. `times` returns only the last of these; this keeps the trajec
     (<= n 0) (reverse acc)
     (empty? left) (cycle-acc items items n acc)
     else (cycle-acc items (rest left) (- n 1) (cons (first left) acc))))
-(defn cycle (coll n)
+(defn cycle (coll:seqable n:int -> (list any))
   "The first `n` items of `coll` repeated end to end: `(cycle [1 2] 5)` is `(1 2 1 2 1)`.
 Bounded by `n`, not infinite — Brood has no lazy cons (ADR-111); `nil` for an empty `coll`
 or an `n` of zero or less.
@@ -426,7 +412,6 @@ or an `n` of zero or less.
     (seq/cycle [:a] 3)     → (:a :a :a)
     (seq/cycle [] 3)       → nil"
   (let (items (seq coll)) (if (empty? items) nil (cycle-acc items items n nil))))
-(sig cycle (seqable int -> (list any)))
 
 ;; Walk a nested value — lists, vectors, sets, maps (as `[k v]` entries) — rebuilding each
 ;; container from its walked children; anything else is a leaf. `%walk-children` is the
@@ -461,7 +446,7 @@ walked inside; [[postwalk]] is the bottom-up twin.
     (seq/prewalk '(a (b)) (fn (x) (if (= x 'b) 'c x)))           → (a (c))"
     (%walk-children (f form) (fn (x) (prewalk x f)))))
 
-(defn pmap (coll f)
+(defn pmap (coll:seqable f:any -> (list any))
   "`map`, with `(f x)` for every item running in its own process at once; the results come
 back in `coll`'s order as a list. For work that is expensive per item and independent
 across items — a parse per file, a request per host. A worker that raises re-raises here,
@@ -478,7 +463,6 @@ travels as a handle; a view must be realised first).
     (doseq ([i x] (enumerate items))
       (spawn (send me [:pmap tag i (try [:ok (f x)] (catch e [:raised e]))])))
     (pmap-collect tag n 0 {})))
-(sig pmap (seqable any -> (list any)))
 
 (defn- pmap-collect (tag n got acc)
   ;; Gather `n` replies keyed by index, whatever order they arrive in, then read them out
@@ -489,7 +473,7 @@ travels as a handle; a view must be realised first).
     (receive
       ([:pmap ^tag i r] (pmap-collect tag n (+ got 1) (assoc acc i r))))))
 
-(defn sample (seed coll)
+(defn sample (seed:int coll:seqable -> (tuple any int))
   "Returns `[item next-seed]`: one uniformly random element of non-empty `coll` (list, vector, or a map read as its `[k v]` entries)."
   (let (items (into [] coll)
         n (count items))
@@ -497,7 +481,6 @@ travels as a handle; a view must be realised first).
       (error "sample: cannot sample from an empty collection")
       (let (s (%rand-step (%rand-seed seed)))
         [(nth items (math/rem s n)) s]))))
-(sig sample (int seqable -> (tuple any int)))
 
 ;; Fisher–Yates: O(n log n) overall. Rebuilding the remaining collection per step
 ;; (`take` + `drop` + `append`) would be O(n²) in time and allocation.
@@ -506,13 +489,12 @@ travels as a handle; a view must be realised first).
 ;; copies the whole vector (O(n) per swap, so Fisher–Yates over one is quadratic too), while
 ;; `assoc` on a CHAMP map shares structure and is O(log₃₂ n). Nothing mutates either
 ;; way; this is just the immutable structure with the right update cost.
-(defn- shuffle-swap (m i j)
+(defn- shuffle-swap (m:map i:int j:int -> map)
   (let (a (get m i)
         b (get m j))
     (assoc (assoc m i b) j a)))
-(sig shuffle-swap (map int int -> map))
 
-(defn- shuffle-at (m i state)
+(defn- shuffle-at (m:map i:int state:int -> vector)
   ;; Descending Fisher–Yates: draw j in 0..i, swap it into slot i, move left.
   (if (<= i 0)
     ; always advance, so a chained next-seed never stalls on a 0/1-element input
@@ -520,22 +502,20 @@ travels as a handle; a view must be realised first).
     (let (s (%rand-step state)
           j (math/rem s (+ i 1)))
       (shuffle-at (shuffle-swap m i j) (- i 1) s))))
-(sig shuffle-at (map int int -> vector))
 
 (defn- shuffle-drain (m i acc)
   ;; Read slots i…0 back out, building the result list front-to-back.
   (if (< i 0) acc (shuffle-drain m (- i 1) (cons (get m i) acc))))
 
-(defn shuffle (seed coll)
+(defn shuffle (seed:int coll:seqable -> (tuple any any))
   "Returns `[shuffled next-seed]`: the items of `coll` as a list in uniformly random order (Fisher–Yates)."
   (let (v (into [] coll)
         n (count v)
         slots (fold (range n) {} (fn (m i) (assoc m i (nth v i))))
         [out state] (shuffle-at slots (- n 1) (%rand-seed seed)))
     [(shuffle-drain out (- n 1) nil) state]))
-(sig shuffle (int seqable -> (tuple any any)))
 
-(defn remove-nth (coll i)
+(defn remove-nth (coll:seqable i:int -> any)
   "A fresh collection like `coll` with the element at index `i` removed. Returns
 a vector for a vector and a list for a list. `i` must be in `[0, count)`.
 
@@ -547,7 +527,6 @@ The collection comes FIRST, like every other function in this module
   (if (vector? coll)
     (into (seq/subvec coll 0 i) (seq/subvec coll (inc i)))
     (append (take coll i) (drop coll (inc i)))))
-(sig remove-nth (seqable int -> any))
 
 (%defseq filter
   (pred)
@@ -576,13 +555,12 @@ The collection comes FIRST, like every other function in this module
 ;; that runs them. The implementations are prelude `%x*` internals because the
 ;; `l*` combinators build on them and the prelude cannot `require` a module.
 
-(defn zip (a b)
+(defn zip (a:seqable b:seqable -> (or nil (list (tuple any any))))
   "A list of `[x y]` pairs from `a` and `b`, stopping at the shorter input.
 The pairwise sibling of `zip-with`, which combines instead of pairing.
 
     (seq/zip [1 2] [:a :b])   → ([1 :a] [2 :b])"
   (%zip a b))
-(sig zip (seqable seqable -> (or nil (list (tuple any any)))))
 
 (defn xmap (f)
   "The `map` stage as a transducer: `(f x)` for each input. Compose with `comp`, run

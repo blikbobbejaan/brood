@@ -49,7 +49,7 @@ are Rust.")
 ;; lives above these (the framed-read combinators below); these just name the
 ;; mechanism.
 
-(defn connect (host port)
+(defn connect (host:string port:int -> socket)
   "Connect to host:port; inbound data is delivered to the calling process as `[:tcp sock data]` / `[:tcp-closed sock]` messages. Returns a socket. Throws on failure. The resolve and handshake run off the scheduler, so a slow host parks only the caller."
   (let (sock (%tcp-connect host port))
     (receive
@@ -57,34 +57,28 @@ are Rust.")
       ([:tcp-error ^sock message] (throw {:kind :runtime
                                           :code "E0050"
                                           :message (str "tcp-connect " host ":" port ": " message)})))))
-(sig connect (string int -> socket))
 
-(defn listen (host port)
+(defn listen (host:string port:int -> socket)
   "Bind a listening socket on host:port (port 0 = OS-assigned); connections arrive as `[:tcp-accept lsock client]` messages to the calling process. Returns a socket."
   (%tcp-listen host port))
-(sig listen (string int -> socket))
 
-(defn send (sock data)
+(defn send (sock:socket data:any -> nil)
   "Write data to sock (blocking). data is any iolist — a string, a bytes value, a byte int 0–255, or an arbitrarily nested list/vector of those, flattened once at the write (ADR-139). A string leaf is always sent as its UTF-8 bytes, whatever the socket's mode (ADR-141); raw bytes go out as bytes values. Returns nil; throws on error."
   (%tcp-send sock data))
-(sig send (socket any -> nil))
 
-(defn close (sock)
+(defn close (sock:socket -> nil)
   "Close sock (a stream or listener), releasing its fd / stopping its accept loop. Once this returns, no new message for sock reaches any mailbox — no data, no [:tcp-closed], no [:tcp-accept]; messages already delivered stay. A stream's queued output still flushes to the peer (bounded by a 5 s linger), so send-then-close never truncates; bytes the peer sends meanwhile are discarded. Idempotent; returns nil."
   (%tcp-close sock))
-(sig close (socket -> nil))
 
-(defn controlling-process (sock pid)
+(defn controlling-process (sock:socket pid:pid -> nil)
   "Make pid the owner of sock's inbound data: starts reading a just-accepted (passive) socket, or retargets an active one. Returns nil."
   (%tcp-controlling-process sock pid))
-(sig controlling-process (socket pid -> nil))
 
-(defn local-port (sock)
+(defn local-port (sock:socket -> (or int nil))
   "The local port sock is bound to, or nil."
   (%tcp-local-port sock))
-(sig local-port (socket -> (or int nil)))
 
-(defn set-binary (sock on)
+(defn set-binary (sock:socket on:bool -> nil)
   "Switch sock's INBOUND decode between text mode (default) and binary mode; outbound `tcp/send` is unaffected (ADR-141). In binary mode inbound `[:tcp sock data]` delivers data as a byte-faithful `bytes` value (not a string) — for length-prefixed / control-byte protocols like WebSocket framing or a database wire protocol. Text mode delivers a UTF-8 string. Returns nil; throws if sock is gone.
 
 **On a SERVER, set this on the LISTENER, not on the accepted socket.** A listener's mode is what every socket it accepts starts in, and it is fixed before any connection exists. Setting it on an accepted stream is racy: that socket is already reading by the time `[:tcp-accept …]` reaches its owner, so a client that sends immediately can have its first chunk decoded as text before the call lands — and raw bytes then arrive mangled (KI-102: 256 bytes came back as 512, the UTF-8 re-encoding of 128 ASCII plus 128 U+FFFD). A stream may still switch mode afterwards; inheritance only decides where it starts.
@@ -93,12 +87,10 @@ are Rust.")
       (tcp/set-binary ls true)     ;; every accepted socket starts binary
       …)"
   (%tcp-set-binary sock on))
-(sig set-binary (socket bool -> nil))
 
-(defn set-idle-timeout (sock ms)
+(defn set-idle-timeout (sock:socket ms:int -> nil)
   "Arm (or, with ms 0, disarm) an idle timeout on an established stream: the reactor drops the connection if no bytes move in EITHER direction for ms milliseconds, delivering `[:tcp-closed]` (or `[:tcp-error]` for a one-shot TLS client). Off by default — arm it on a connection accepting untrusted input as slow-loris protection the reactor applies even if the app forgets to close; leave it off for a legitimately long-idle stream (SSE, long-poll). Returns nil; throws if sock is gone or a listener."
   (%tcp-set-idle-timeout sock ms))
-(sig set-idle-timeout (socket int -> nil))
 
 (defn socket? (x) "True if `x` is a TCP socket." (%eq (type-of x) :socket))
 

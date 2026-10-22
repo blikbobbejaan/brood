@@ -79,12 +79,11 @@ monitor is the whole guard.
       (receive ([:down ^m _ _] :ok) (after 0 :ok))
       res)))
 
-(defn close (s)
+(defn close (s: (or map pid) -> nil)
   "Signal stream `s` to clean up and exit. Returns nil immediately.
 
     (stream/close (stream/range 0 10))   → nil"
   (send s :stream-close))
-(sig close ((or map pid) -> nil))
 
 ;; ---- sources ----------------------------------------------------------------
 
@@ -357,14 +356,13 @@ Call immediately after accept or connect, before any data has been read."
     ([:next r] (send r [:stream-err m]))
     (:stream-close nil)))
 
-(defn chunk (s n)
+(defn chunk (s:any n:int -> pid)
   "A stream of vectors, each holding `n` consecutive elements of `s`.
 The last vector may be shorter if the source isn't a multiple of `n`.
 
     (stream/->list (stream/chunk (stream/range 0 5) 2))   → ([0 1] [2 3] [4])"
   (when (<= n 0) (error "chunk: n must be > 0"))
   (spawn (chunk-outer n s)))
-(sig chunk (any int -> pid))
 
 (defn- chunk-outer (n up)
   (receive

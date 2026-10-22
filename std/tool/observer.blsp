@@ -97,10 +97,9 @@ attach). Drive the standalone app from the shell with `nest observe`."
 (def-face :observer/confirm {:inherit :ui/error})
 ;; ---- pure formatting helpers ------------------------------------------------
 
-(defn- observe-fit (s w)
+(defn- observe-fit (s:string w:int -> string)
   "Truncate `s` to at most `w` characters so a rendered row never wraps."
   (if (> (string/length s) w) (string/substring s 0 (math/max 0 w)) s))
-(sig observe-fit (string int -> string))
 
 (defn- observe-opt (v f)
   "Render optional field `v` with `f`, or `\"-\"` when it's absent (nil)."
@@ -237,7 +236,9 @@ on screen (roughly centred), clamped so the window never runs past the end."
 right from column `col`. Tail-recursive."
   (observe-chunk-ops-acc chunks row col nil))
 
-(defn- observe-minibuffer (edit row cols)
+(defn- observe-minibuffer
+  (edit: (record &open :prompt string :text string :hscroll (or int nil) :point int)
+    row:int cols:int -> any)
   "Render the eval minibuffer at frame `row` (width `cols`): the prompt, then the
 input text with the **same** live syntax highlighting + bracket matching the REPL
 line editor uses (`highlight-chunks` / `lineedit/lineedit-overrides` over
@@ -258,8 +259,6 @@ completion already works via `lineedit/lineedit-handle`'s keymap in `observe-com
     (append [(text row 0 prompt (face :observer/minibuffer-prompt))]
       (observe-chunk-ops chunks row promptw)
       [(cursor row cursor-col)])))
-(sig observe-minibuffer
-  ((record &open :prompt string :text string :hscroll (or int nil) :point int) int int -> any))
 
 (defn- observe-confirm-line (c)
   "The footer prompt for a pending action confirmation `c` (a map `{:id :name …}`):
@@ -271,7 +270,8 @@ e.g. `  kill pid 7 (worker)? y/n`. The name is shown when the process has one."
 
 ;; ---- the pure render core (no IO — the testable heart) ----------------------
 
-(defn observe-frame (node procs sel cols rows paused sort link ui)
+(defn observe-frame
+  (node:any procs:any sel:int cols:int rows:int paused:any sort:any link:any ui:any -> any)
   "Pure: build a render frame (a vector of display ops) for a `cols`×`rows`
 terminal — a two-line node panel (from `node`, with the `link` status), a column
 header, the `procs` list (each a `proc/info` map) windowed to fit with row `sel`
@@ -343,7 +343,6 @@ the observer's testable core; `observe-loop` feeds it live data."
            (observe-fit (string/pad-right detail cols) cols)
            (face :observer/detail))]
         last-row))))
-(sig observe-frame (any any int int int any any any any -> any))
 
 ;; ---- live data --------------------------------------------------------------
 
@@ -389,7 +388,17 @@ anything else is `observe-sort` (id / mailbox / memory)."
     (= key :reds) :tree
     else :id))
 
-(defn- observe-reds-rate (prev-reds prev-at reds at)
+(defn- observe-reds-rate
+  (prev-reds:
+      (or int nil)
+    prev-at:
+      (or int nil)
+    reds:
+      (or int nil)
+    at:
+      (or int nil)
+      ->
+      (or int nil))
   "Reductions/second between two `proc/info` samples, or nil when it can't be
 computed — no prior sample for this id (`prev-reds`/`prev-at` nil), missing
 counters, or no time elapsed (`at <= prev-at`). `prev-at`/`at` are wall-clock ms.
@@ -399,7 +408,6 @@ Clamps a negative delta (a recycled id) to 0. Pure."
       (if (<= dt 0)
         nil
         (math/quot (* 1000 (math/max 0 (- reds prev-reds))) dt)))))
-(sig observe-reds-rate ((or int nil) (or int nil) (or int nil) (or int nil) -> (or int nil)))
 
 (defn- observe-rate-procs (prev-procs prev-at procs at)
   "Tag each map in `procs` with `:reds-rate` — its reductions/second since the
@@ -666,7 +674,7 @@ the nav + mouse commands (pure `(state key) → state`) can read them. Recompute
         sel (observe-sel-index procs (get model :sel-id)))
     (assoc model :procs procs :sel sel :n n)))
 
-(defn- observe-view (model cols rows)
+(defn- observe-view (model:map cols:int rows:int -> any)
   "The observer's `ui-run` **view**: model + terminal size → a render frame (pure).
 Builds `observe-frame` from the last snapshot, the sort key, the link status, and
 the minibuffer UI state. Paints to whatever frontend `ui-run` holds."
@@ -687,7 +695,6 @@ the minibuffer UI state. Paints to whatever frontend `ui-run` holds."
       sort
       (get model :link)
       ui)))
-(sig observe-view (map int int -> any))
 
 ;; The eval minibuffer (`:command` mode) is a modal overlay over the keymap — the same
 ;; shape the editor's minibuffer has — so it rides the shared `editor/ui/overlay-route`
@@ -703,7 +710,7 @@ the minibuffer UI state. Paints to whatever frontend `ui-run` holds."
 
 (def- observe-key-overlays (list (command-overlay)))
 
-(defn- observe-update (model input cols rows)
+(defn- observe-update (model:map input:any cols:int rows:int -> any)
   "The observer's `ui-run` **update**: fold one input into the next model. `:tick`
 (the refresh beat) fetches a fresh snapshot from the backend's `:source` unless
 paused, in the minibuffer, or awaiting a kill confirmation (so the list can't shift
@@ -732,7 +739,6 @@ honours). The backend rides in the model under `:backend`."
               (assoc (observe-derived m cols rows) :msg nil)
               k
               (fn (s _) s)))))))
-(sig observe-update (map any int int -> any))
 
 ;; ---- demo processes (so a fresh observer has something to show) -------------
 

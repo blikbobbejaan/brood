@@ -152,7 +152,7 @@ suggestions\", never to an error on the user's command line."
 ;; Scans for the literal `:tags` then takes what is between the following `[` and
 ;; `]`. A `:tags` inside a string or comment would be picked up — harmless, since
 ;; the worst case is one spurious suggestion.
-(defn- complete-tags-in (text acc from)
+(defn- complete-tags-in (text:string acc:any from:int -> any)
   (let (i (index-of-from text ":tags" from))
     (if (< i 0)
       acc
@@ -175,15 +175,13 @@ suggestions\", never to an error on the user's command line."
             (complete-tags-in text
               (append acc (complete-keywords (string/substring text (+ open 1) close)))
               (+ close 1)))))))
-(sig complete-tags-in (string any int -> any))
 
 ;; `index-of` has no start offset, so scan a suffix and re-base the result.
-(defn- index-of-from (text needle from)
+(defn- index-of-from (text:string needle:string from:int -> int)
   (if (>= from (string/length text))
     -1
     (let (i (index-of (string/substring text from (string/length text)) needle))
       (if (< i 0) -1 (+ from i)))))
-(sig index-of-from (string string int -> int))
 
 ;; Is index `i` inside a string literal? Checked within `i`'s own LINE, using native
 ;; string ops only (this runs per `:tags` occurrence, on a keypress budget).
@@ -194,13 +192,12 @@ suggestions\", never to an error on the user's command line."
 ;; multi-line string could fool the line-local check; that costs one wrong hint.
 (defn- complete-line-start (text i) (inc (string/last-index-of text "\n" i)))
 
-(defn- complete-in-string? (text i)
+(defn- complete-in-string? (text:string i:int -> bool)
   (let (prefix (string/substring text (complete-line-start text i) i)
         ;; An escaped \" neither opens nor closes, so drop those pairs first.
         cleaned (string/replace prefix "\\\"" ""))
     ;; Odd number of quotes before the position ⇒ still inside one.
     (= 1 (math/rem (- (count (string/split cleaned "\"")) 1) 2))))
-(sig complete-in-string? (string int -> bool))
 
 ;; The bare names of the `:keyword`s in a whitespace-separated fragment.
 (defn- complete-keywords (fragment)

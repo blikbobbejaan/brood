@@ -1946,7 +1946,9 @@ provably wrong call against it (both the argument and the result type flow):
 **Either side of the definition** — see "Placement" below. A `sig` is a declaration
 wherever it stands; enforcement (when armed) attaches to the binding, not to the form.
 
-**Typed parameters** (ADR-420) say the same thing where the parameters are:
+**Typed parameters** (ADR-420) say the same thing where the parameters are — the spelling
+std uses for a single-clause function, with `(sig …)` kept for what they cannot express (a
+multi-arity or pattern-dispatched function, an overload, a value, property keywords):
 
 ```clojure
 (defn area (w:number h:number -> number)

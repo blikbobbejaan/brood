@@ -50,7 +50,7 @@ testable without a terminal."
       (fallback state key)
       (try ((reflect/eval sym) state key) (catch e state)))))
 
-(defn keymap-resolve (keymap pending key)
+(defn keymap-resolve (keymap:map pending:any key:any -> vector)
   "One keystroke through a (possibly chorded) `keymap`, resolved to its BINDING and
 **not run**: `[binding pending']`. The chord walk on its own, with no opinion about
 what a binding means or how it is invoked.
@@ -85,7 +85,6 @@ Pure — no eval, no state, nothing to mock.
       (map? binding) [nil binding]
       (nil? binding) [nil nil]
       else [binding nil])))
-(sig keymap-resolve (map any any -> vector))
 
 (defn keymap-step (keymap pending state key fallback)
   "One keystroke through a (possibly chorded) `keymap`, returning `[state' pending']`

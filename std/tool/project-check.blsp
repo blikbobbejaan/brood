@@ -167,12 +167,11 @@ module included), built from the whole `files` universe — the KI-17 reachabili
 (sig *check-oversample* int)
 ;; The scheduler's worker-pool size (≈ nproc), clamped ≥1. `worker-threads` is 0
 ;; until the first spawn, so warm the pool and poll briefly for the threads to spin.
-(defn- project-await-pool (tries)
+(defn- project-await-pool (tries:int -> int)
   (let (n (dev/worker-threads))
     (if (or (> n 0) (<= tries 0))
       (math/max 1 n)
       (do (sleep 1) (project-await-pool (dec tries))))))
-(sig project-await-pool (int -> int))
 (defn- project-pool-size ()
   (spawn (fn () nil))
   (project-await-pool 50))
@@ -281,21 +280,19 @@ module included), built from the whole `files` universe — the KI-17 reachabili
 ;; An entry is a path, or `[path closure]` (what `project-with-closures` and the cached
 ;; path's re-check list hand the fold) — the size of anything else counts as zero, which
 ;; can only decline the pool, never engage it wrongly.
-(defn- project-entry-bytes (f)
+(defn- project-entry-bytes (f:any -> int)
   (let (p (if (string? f) f (first f)))
     (if (string? p) (or (file/size p) 0) 0)))
-(sig project-entry-bytes (any -> int))
 
 ;; `BROOD_CHECK_SEQUENTIAL=1` pins every check in-process whatever its size: the A/B lever
 ;; for what the pool is worth, the bisect switch if a worker is ever suspected of reading a
 ;; different heap than the driver, and the control arm of the differential that requires
 ;; both paths to report the same warnings (`crates/nest/tests/check_parallel.rs`).
-(defn- project-parallel-worth-it? (files)
+(defn- project-parallel-worth-it? (files:any -> bool)
   (and (nil? (os/env "BROOD_CHECK_SEQUENTIAL"))
     (or (>= (count files) *check-min-parallel*)
       (>= (fold files 0 (fn (acc f) (+ acc (project-entry-bytes f))))
         *check-min-parallel-bytes*))))
-(sig project-parallel-worth-it? (any -> bool))
 
 (defn- project-pfold-files-shared (files shared op combine on-death init)
   (let (n (count files))
@@ -546,7 +543,7 @@ module included), built from the whole `files` universe — the KI-17 reachabili
     ;; a vector, so "no warnings" (`[]`) stays distinct from the fresh path's "no lines" (nil)
     [n (vec lines)]))
 
-(defn- project-preload! (files closures)
+(defn- project-preload! (files:any closures:map -> nil)
   "Bring the heap to ONE state before any of `files` is checked: require every module in
 their closures (sorted, so the order is the same on every run), then materialise every
 module a loaded body names, to a fixpoint (`%check-materialise-referenced!`).
@@ -591,7 +588,6 @@ against the fully-loaded state is also what a live image would see. Returns nil.
       (%check-materialise-referenced!)
       (project-check-trace "preload-materialise" t2))
     nil))
-(sig project-preload! (any map -> nil))
 
 ;; `[tally lines]`: the gating tally, and the per-file warning lines in file order when the
 ;; cached path produced them (nil from the fresh path, whose workers print for themselves).
@@ -656,7 +652,7 @@ against the fully-loaded state is also what a live image would see. Returns nil.
 
 ;; `chunks` collects each file's diagnostic list, newest first; one `append` at the end
 ;; keeps the walk linear in the diagnostic count.
-(defn- project-check-fold (files closures total done chunks)
+(defn- project-check-fold (files: (or list nil) closures:map total:int done:int chunks:any -> any)
   (if (nil? files)
     (apply append chunks)
     (let (file (first files)
@@ -667,7 +663,6 @@ against the fully-loaded state is also what a live image would see. Returns nil.
       (when (bound? 'mcp/progress)
         (mcp/progress checked total (str "checked " (path/basename file))))
       (project-check-fold (rest files) closures total checked (cons diagnostics chunks)))))
-(sig project-check-fold ((or list nil) map int int any -> any))
 
 ;; --- duplicate-global detection (flat namespace, ADR-019) --------------------
 ;; The project shares one flat global table: exactly one binding per name across
@@ -968,7 +963,7 @@ Returns nil when there is nothing to report."
                   (check-allow :discarded-catch (try (file/rmdir p) (catch _ nil))))))))
         (catch _ nil)))))
 
-(defn project-cache-dir (root)
+(defn project-cache-dir (root:string -> (or string nil))
   "The per-project cache directory (`$XDG_CACHE_HOME/brood/<project>` or `~/.cache/…`) the
 check-result cache and the `--failed`/`--stale` records live in; created on demand."
   (let (base (%cache-dir))
@@ -978,7 +973,6 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
         (file/mkdir dir)
         (project-cache-prune checks dir)
         dir))))
-(sig project-cache-dir (string -> (or string nil)))
 
 ;; `name` selects which on-disk manifest under the project's cache dir — Phase 1's
 ;; parse extracts (`"extracts"`) and Phase 2's check results (`"checks"`) are

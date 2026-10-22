@@ -68,21 +68,19 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
     (or (= k :quote) (= k :quasi) (= k :unquote) (= k :splice) (= k :pin))))
 
 ;; ---- small utilities --------------------------------------------------------
-(defn vec->list (v)
+(defn vec->list (v:vector -> any)
   "The vector `v` as a list, preserving order."
   (vec->list-acc v (dec (count v)) nil))
-(sig vec->list (vector -> any))
 (defn- vec->list-acc (v i acc)
   (if (< i 0) acc (vec->list-acc v (dec i) (cons (nth v i) acc))))
 
-(defn count-newlines (s)
+(defn count-newlines (s:string -> int)
   "How many `\\n` characters appear in string `s`.
 
     (format/count-newlines \"a\nb\")   → 1"
   ;; Native O(n) split. A per-char `(string/substring s i (inc i))` loop is O(n^2) —
   ;; `substring` walks to char boundary `i` each call.
   (dec (count (string/split s "\n"))))
-(sig count-newlines (string -> int))
 
 ;; (Use the shared `string/repeat`; never redefine a repeat here — the runtime shares one
 ;; global table, so a local copy would clobber it for the whole image.)
@@ -167,7 +165,7 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
 ;; project or when no rules are declared. Entries here win over the built-ins.
 (defdyn *format-headers-extra* {})
 
-(defn use-headers (table)
+(defn use-headers (table: (map symbol int) -> nil)
   "Install `table` (symbol → header count) as the project/plugin rules `nest format`, the
   LSP and `nest mcp` format with, replacing any earlier project's. `project/setup` calls it;
   the `def` must happen here, where `*format-headers-extra*` is known to be dynamic — a
@@ -175,7 +173,6 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
   THAT module's that nothing reads."
   (def *format-headers-extra* table)
   nil)
-(sig use-headers ((map symbol int) -> nil))
 
 (defn head-header-count (head-node)
   "How many args after this head stay on the first line of a broken list. -1 means
@@ -205,11 +202,10 @@ project/plugin table (`*format-headers-extra*`) first, then the built-ins."
   (and (= (node-kind head-node) :symbol)
     (get *format-pair-bindings* (symbol (node-text head-node)) false)))
 
-(defn pair-body? (head-node)
+(defn pair-body? (head-node:vector -> bool)
   "True if `head-node` names a form whose body emits in pairs."
   (and (= (node-kind head-node) :symbol)
     (get *format-pair-body* (symbol (node-text head-node)) false)))
-(sig pair-body? (vector -> bool))
 
 ;; The `defn` family: forms whose second header arg is a PARAMS list — unless the
 ;; function is multi-arity/multi-pattern, in which case that slot holds the first ARM
@@ -419,7 +415,7 @@ keyword (`:next`) is not one."
       true
     else (had-author-newlines-scan kids (inc i) n)))
 
-(defn- render-break (kids indent open close)
+(defn- render-break (kids:vector indent:int open:string close:string -> string)
   ;; Multi-line list emit. The output is:
   ;;   open + head-line + body-lines + close
   ;; where head-line is "head [header-args]" on the first line, and body-lines
@@ -501,7 +497,6 @@ keyword (`:next`) is not one."
               body-text
               (if (last-nonws-comment? kids) (str "\n" (indent-of indent)) "")
               close))))))
-(sig render-break (vector int string string -> string))
 
 ;; The comments before the first structural form — `[;; why\n (fn () …)]` — each on its
 ;; own line right after the open bracket, the head starting on the next line at `column` —
@@ -580,7 +575,8 @@ if you are reintroducing hoisting, they are what you have to write back."
     (= remaining 1) (inc i)
     else (kids-index-after-form-at kids (dec remaining) (inc i) n)))
 
-(defn- render-head-line (head header-args pair-bind? indent-after-open)
+(defn- render-head-line
+  (head:any header-args: (or nil list) pair-bind?:bool indent-after-open:int -> string)
   ;; "head a b c" — the head and any header args, space-separated, each rendered
   ;; hanging at the column it starts on (so a long `if` predicate breaks inside
   ;; itself on the head line, the classic Lisp shape).
@@ -600,8 +596,8 @@ if you are reintroducing hoisting, they are what you have to write back."
       indent-after-open
       head-text
       (+ indent-after-open (last-line-length head-text)))))
-(sig render-head-line (any (or nil list) bool int -> string))
-(defn- render-head-line-build (items pair-bind-first? slot indent acc col)
+(defn- render-head-line-build
+  (items: (or nil list) pair-bind-first?:bool slot:keyword indent:int acc:string col:int -> string)
   ;; `col` is the column the head line currently ends at — tracked rather than
   ;; derived from `(string/length acc)`, because once an arg has dropped only the
   ;; LAST line of `acc` matters. `slot` walks a `defn`-family header: `:name`,
@@ -651,7 +647,6 @@ if you are reintroducing hoisting, they are what you have to write back."
                 indent
                 (str acc " " part)
                 (+ at (last-line-length part))))))))
-(sig render-head-line-build ((or nil list) bool keyword int string int -> string))
 
 (defn- last-line-length (s)
   ;; The length of `s` past its last newline (the whole string when it has none).
@@ -675,7 +670,7 @@ if you are reintroducing hoisting, they are what you have to write back."
 (defn- layout-items (kids start)
   (layout-items-at kids start (count kids) 0 []))
 
-(defn- layout-items-at (kids i n gap items)
+(defn- layout-items-at (kids:vector i:int n:int gap:int items:vector -> vector)
   (if (= i n)
     items
     (let (c (nth kids i))
@@ -694,7 +689,6 @@ if you are reintroducing hoisting, they are what you have to write back."
                 {:node c
                  :gap gap
                  :trailing (when tc (comment-strip-trailing-nl (node-text (nth kids tc))))})))))))
-(sig layout-items-at (vector int int int vector -> vector))
 
 ;; The break before an item: a blank line where the author left one.
 (defn- line-break (gap) (if (>= gap 2) "\n\n" "\n"))
@@ -727,7 +721,7 @@ if you are reintroducing hoisting, they are what you have to write back."
       (and one (<= (+ indent (string/length one)) (width))) one
       else (render-pair-break (node-children n) indent "(" ")"))))
 
-(defn- render-pair-break (kids indent open close)
+(defn- render-pair-break (kids:vector indent:int open:string close:string -> string)
   ;; The close delimiter drops to its own line when the last emitted item is a comment —
   ;; appended directly it would land INSIDE it (`b 2 ; the b)`), commenting out the
   ;; bindings list's `)` and leaving the file unparseable. This check was unnecessary
@@ -739,7 +733,6 @@ if you are reintroducing hoisting, they are what you have to write back."
       (render-pair-walk (layout-items kids 0) 0 pair-ind "")
       (if (last-nonws-comment? kids) (str "\n" (indent-of pair-ind)) "")
       close)))
-(sig render-pair-break (vector int string string -> string))
 
 ;; The separator before the next emitted item: nothing for the very first pair
 ;; (it sits right after the `(`), else a newline (blank line preserved when the
@@ -751,7 +744,7 @@ if you are reintroducing hoisting, they are what you have to write back."
     (>= nl 2) (str "\n\n" (indent-of pair-ind))
     else (str "\n" (indent-of pair-ind))))
 
-(defn- render-pair-walk (items k pair-ind acc)
+(defn- render-pair-walk (items:vector k:int pair-ind:int acc:string -> string)
   ;; Emit one name+value pair per line, with the pair's trailing comment after it, and
   ;; each comment in place. A name with no form to pair with — the end, a comment, or a
   ;; trailing comment of its own — goes alone, and its own trailing comment drops to the
@@ -789,7 +782,6 @@ if you are reintroducing hoisting, they are what you have to write back."
               (inc k)
               pair-ind
               (if text (str line (render-pair-sep line 0 pair-ind true) text) line)))))))
-(sig render-pair-walk (vector int int string -> string))
 
 ;; ---- pair body emit (cond / case clauses) -----------------------------------
 ;; Like render-body but consumes two structural forms per emission, joined by
@@ -803,7 +795,7 @@ if you are reintroducing hoisting, they are what you have to write back."
 (defn- render-body-pairs (kids start-idx body-ind)
   (render-body-pairs-at (layout-items kids start-idx) 0 body-ind "" false))
 
-(defn- render-body-pairs-at (items k body-ind acc pending?)
+(defn- render-body-pairs-at (items:vector k:int body-ind:int acc:string pending?:bool -> string)
   (if (= k (count items))
     acc
     (let (item (nth items k)
@@ -865,14 +857,13 @@ if you are reintroducing hoisting, they are what you have to write back."
             body-ind
             (str lead (indent-of body-ind) (render c body-ind) (trailing-text item))
             (< (inc k) (count items)))))))
-(sig render-body-pairs-at (vector int int string bool -> string))
 
 ;; "Trailing same-line comment" detection. After a structural form, peek through any
 ;; following whitespace. If that whitespace contains no newline AND the next
 ;; non-whitespace node is a comment, the comment was on the same line as the form in the
 ;; source; `layout-items` attaches it to the form, and the walkers keep it after the
 ;; form on its line. Returns the index of that comment, or nil if there is none.
-(defn- trailing-comment-at (kids i n)
+(defn- trailing-comment-at (kids:vector i:int n:int -> (or int nil))
   (cond
     (= i n) nil
     (whitespace? (nth kids i))
@@ -881,7 +872,6 @@ if you are reintroducing hoisting, they are what you have to write back."
         (trailing-comment-at kids (inc i) n))
     (comment? (nth kids i)) i
     else nil))
-(sig trailing-comment-at (vector int int -> (or int nil)))
 
 ;; True if any structural body arg (from start-idx) is itself a container — then
 ;; fill is the wrong layout (containers read best one per line, CL `:linear`).
@@ -910,7 +900,8 @@ if you are reintroducing hoisting, they are what you have to write back."
   ;; every other item two further in.
   (render-body-at (layout-items kids start-idx) 0 body-ind "" fill? nil labelled?))
 
-(defn- render-body-at (items k body-ind acc fill? col labelled?)
+(defn- render-body-at
+  (items:vector k:int body-ind:int acc:string fill?:any col: (or int nil) labelled?:bool -> string)
   (if (= k (count items))
     acc
     (let (item (nth items k)
@@ -985,7 +976,6 @@ if you are reintroducing hoisting, they are what you have to write back."
               fill?
               (if (or trailing (not single)) nil (+ body-ind w))
               labelled?)))))))
-(sig render-body-at (vector int int string any (or int nil) bool -> string))
 
 ;; ---- top-level walk ---------------------------------------------------------
 ;; `source src` parses src, renders the root, and ensures exactly one

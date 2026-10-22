@@ -23,12 +23,11 @@
 ;; Long spelling and `ls -h` spelling side by side, so the two can never drift.
 (def- humanize-byte-units [["B" ""] ["KB" "k"] ["MB" "m"] ["GB" "g"] ["TB" "t"] ["PB" "p"]])
 
-(defn- humanize-tenths (n div)
+(defn- humanize-tenths (n:int div:int -> int)
   "`n/div` in tenths, rounded to nearest — the whole calculation, in integers."
   (math/quot (+ (* n 10) (math/quot div 2)) div))
-(sig humanize-tenths (int int -> int))
 
-(defn- humanize-byte-unit (n div units)
+(defn- humanize-byte-unit (n:int div:int units:seqable -> vector)
   "The `[divisor [long short]]` that `n` bytes reads in: the largest 1024-power that
 still leaves a whole part, with no coarser unit left to climb to.
 
@@ -37,9 +36,8 @@ Comparing the ROUNDED value (`>= 10240` tenths, i.e. 1024 whole units) is what k
   (if (or (empty? (rest units)) (< (humanize-tenths n div) 10240))
     [div (first units)]
     (humanize-byte-unit n (* div 1024) (rest units))))
-(sig humanize-byte-unit (int int seqable -> vector))
 
-(defn byte-size (n)
+(defn byte-size (n:int -> string)
   "`n` bytes as a short human string: whole bytes below 1 KB, one decimal above it.
 
     (humanize/byte-size 512)       → \"512 B\"
@@ -52,7 +50,6 @@ Comparing the ROUNDED value (`>= 10240` tenths, i.e. 1024 whole units) is what k
       (str n " B")
       (let (tenths (humanize-tenths n div))
         (str (math/quot tenths 10) "." (math/rem tenths 10) " " (first unit))))))
-(sig byte-size (int -> string))
 
 (defn byte-size-short (n)
   "`n` bytes the way `ls -h` writes it: lowercase unit, no space, and no decimal at ten
@@ -77,7 +74,7 @@ units or more — the spelling for a column where every character costs.
 ;; again — a duration is a count of milliseconds, and `(/ ms 1000.0)` would print
 ;; `0.8999999999999999` for a number a person calls 0.9.
 
-(defn duration (ms)
+(defn duration (ms:int -> string)
   "`ms` milliseconds as a short human string: milliseconds below a second, one decimal of
 seconds below a minute, then `m` and `s` — the spelling a command uses to say how long it
 took. Negative input reads as `0ms` (a clock that went backwards is not a duration).
@@ -100,4 +97,3 @@ took. Negative input reads as `0ms` (a clock that went backwards is not a durati
     else
       (let (secs (math/quot (math/rem ms 60000) 1000))
         (str (math/quot ms 60000) "m " (if (< secs 10) "0" "") secs "s"))))
-(sig duration (int -> string))

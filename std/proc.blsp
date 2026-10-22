@@ -13,7 +13,7 @@
 (defmodule proc
   "The non-mainstream process surface: green-process introspection and control, plus OS subprocesses. The mainstream actor model (spawn/send/receive/self/link) stays in the bare core.")
 
-(defn info (pid)
+(defn info (pid:pid -> (or (map keyword any) nil))
   "A snapshot map of a live local process:
 {:id :pid :node :name :status :mailbox :monitored-by :parent :memory :collections
 :reductions :cpu-us} (:pid the process's pid value, for acting on it with exit/send/monitor;
@@ -26,7 +26,6 @@ wall-clock measurement it says whether a slow step did work or WAITED to run; 0 
 the platform has no per-thread CPU clock). nil for a remote/dead pid. The
 process-introspection snapshot the observer reads; see std/tool/observer.blsp."
   (%process-info pid))
-(sig info (pid -> (or (map keyword any) nil)))
 
 ;; `& more`, not `&optional value`: for this primitive an ABSENT value reads the flag
 ;; while an explicit `nil` CLEARS it, and `&optional` collapses the two (both arrive as
@@ -48,12 +47,11 @@ buffer process, a registry), where a parked process freezes whoever asked it som
 and nothing could resume it."
   (if (empty? more) (%process-flag flag) (%process-flag flag (first more))))
 
-(defn list ()
+(defn list (-> (list pid))
   "Every currently-live pid on this runtime (one per registered mailbox). Order is
 unspecified — sort if you need stability. For agents/tools enumerating spawned
 processes."
   (%list-processes))
-(sig list (-> (list pid)))
 
 (defn mailbox-size (pid)
   "How many messages are queued in pid's mailbox (its receive backlog), or nil if pid is

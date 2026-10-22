@@ -67,11 +67,10 @@
 ; 2^32 - 1
 (def- *rand-mask* 0xFFFFFFFF)
 (sig *rand-mask* int)
-(defn %rand-seed (n)
+(defn %rand-seed (n:int -> int)
   "Normalize integer `n` into a valid nonzero 32-bit PRNG seed (xorshift32 cannot start from 0)."
   (let (m (bit/and n *rand-mask*))
     (if (= m 0) 2463534242 m)))
-(sig %rand-seed (int -> int))
 
 (defn- %rand-step (state)
   ;; One xorshift32 transition over a nonzero 32-bit `state`.

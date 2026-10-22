@@ -203,7 +203,7 @@ even panes: the original (still selected) becomes child `a`, a new pane showing
        :a leaf
        :b {:pane true :payload new-payload :selected false}})))
 
-(defn pane-delete (tree)
+(defn pane-delete (tree:map -> map)
   "Delete the selected pane: its sibling subtree takes the split's place, and
 selection moves to that subtree's first pane (Emacs `C-x 0`). A lone pane is
 returned unchanged — you can't delete the only one.
@@ -216,7 +216,6 @@ returned unchanged — you can't delete the only one.
             sib (if (= (last p) :a) :b :a)
             pruned (pane-update tree parent (fn (split) (get split sib))))
         (pane-select-path pruned (first (pane-leaf-paths pruned)))))))
-(sig pane-delete (map -> map))
 
 (defn pane-delete-others (tree)
   "Collapse the layout to just the selected pane, filling the whole frame (Emacs
@@ -244,7 +243,7 @@ tree when the two paths are equal. Selection stays where it was.
           pb (pane-payload-at tree path-b))
       (pane-update-path (pane-update-path tree path-a (fn (_) pb)) path-b (fn (_) pa)))))
 
-(defn pane-rotate (tree &optional (n 1))
+(defn pane-rotate (tree:map &optional (n:int 1) -> map)
   "Rotate every pane's payload `n` steps forward through traversal order (each pane takes
 the payload of the pane `n` before it; the first takes the last's) — a negative `n` turns
 the other way. Selection stays put, so the reader ends up looking at a different buffer
@@ -258,7 +257,6 @@ in the same place (Emacs `rotate-frame`'s buffer half)."
         (let ([i path] pair
               from (nth payloads (math/mod (- i n) k)))
           (pane-update-path t path (fn (_) from)))))))
-(sig pane-rotate (map &optional int -> map))
 
 ;; check-allow: deliberately non-tail — depth = the pane tree's split nesting — single digits on any screen.
 (check-allow :non-tail-recursion
@@ -290,11 +288,10 @@ in the same place (Emacs `rotate-frame`'s buffer half)."
 
 ;; ---- neighbours: which pane lies in a direction (windmove) -------------------
 
-(defn- pane-rect-centre (rect)
+(defn- pane-rect-centre (rect:rect -> (tuple int int))
   (let ([x y w h] rect) [(+ y (math/quot h 2)) (+ x (math/quot w 2))]))
-(sig pane-rect-centre (rect -> (tuple int int)))
 
-(defn- pane-beside? (rect from dir)
+(defn- pane-beside? (rect:rect from:rect dir:keyword -> bool)
   "Whether `rect` lies wholly in direction `dir` of `from` and shares rows (for
 `:left`/`:right`) or columns (for `:up`/`:down`) with it."
   (let ([x y w h] rect [fx fy fw fh] from)
@@ -303,9 +300,8 @@ in the same place (Emacs `rotate-frame`'s buffer half)."
       (= dir :right) (and (>= x (+ fx fw)) (< y (+ fy fh)) (< fy (+ y h)))
       (= dir :up) (and (<= (+ y h) fy) (< x (+ fx fw)) (< fx (+ x w)))
       else (and (>= y (+ fy fh)) (< x (+ fx fw)) (< fx (+ x w))))))
-(sig pane-beside? (rect rect keyword -> bool))
 
-(defn- pane-gap (rect from dir)
+(defn- pane-gap (rect:rect from:rect dir:keyword -> int)
   "How far `rect` is from `from` in direction `dir` — the nearest candidate wins."
   (let ([x y w h] rect [fx fy fw fh] from)
     (cond
@@ -313,34 +309,30 @@ in the same place (Emacs `rotate-frame`'s buffer half)."
       (= dir :right) (- x (+ fx fw))
       (= dir :up) (- fy (+ y h))
       else (- y (+ fy fh)))))
-(sig pane-gap (rect rect keyword -> int))
 
-(defn- pane-nearest (cands from dir best)
+(defn- pane-nearest (cands:list from:rect dir:keyword best: (or nil pane) -> (or nil pane))
   (if (empty? cands)
     best
     (let (c (first cands)
           better? (or (nil? best)
                     (< (pane-gap (get c :rect) from dir) (pane-gap (get best :rect) from dir))))
       (pane-nearest (rest cands) from dir (if better? c best)))))
-(sig pane-nearest (list rect keyword (or nil pane) -> (or nil pane)))
 
-(defn- pane-across (rect dir)
+(defn- pane-across (rect:rect dir:keyword -> int)
   ;; a rect's centre coordinate ACROSS the direction of travel: its row for a sideways
   ;; move, its column for a vertical one — what breaks a tie between panes along an edge
   (let ([crow ccol] (pane-rect-centre rect))
     (if (or (= dir :left) (= dir :right)) crow ccol)))
-(sig pane-across (rect keyword -> int))
 
-(defn- pane-most-aligned (cands dir across best)
+(defn- pane-most-aligned (cands:list dir:keyword across:int best: (or nil pane) -> (or nil pane))
   (if (empty? cands)
     best
     (let (c (first cands)
           d (fn (p) (math/abs (- (pane-across (get p :rect) dir) across)))
           better? (or (nil? best) (< (d c) (d best))))
       (pane-most-aligned (rest cands) dir across (if better? c best)))))
-(sig pane-most-aligned (list keyword int (or nil pane) -> (or nil pane)))
 
-(defn pane-neighbor (layout path dir)
+(defn pane-neighbor (layout:layout path:list dir:keyword -> (or nil pane))
   "The pane (`{:path :payload :selected :rect}`) beside the pane at `path` in direction
 `dir` (`:left` `:right` `:up` `:down`) in the laid-out `layout`, or nil at the edge.
 Among the panes on that side that share rows/columns with it, the nearest; ties —
@@ -360,16 +352,14 @@ from the geometry `pane-layout` already computed.
           (let (gap (pane-gap (get nearest :rect) from dir)
                 tied (seq/filter beside (fn (p) (= (pane-gap (get p :rect) from dir) gap))))
             (pane-most-aligned tied dir (pane-across from dir) nil)))))))
-(sig pane-neighbor (layout list keyword -> (or nil pane)))
 
 ;; ---- layout (tree + rect -> pane rects + divider rects) ---------------------
 ;; A rect is `[x y w h]` in cells (x = column origin, y = row origin). A point (from
 ;; a `[:mouse … row col]` event) is `[row col]`.
 
-(defn- pane-clampi (v lo hi)
+(defn- pane-clampi (v:int lo:int hi:int -> int)
   "Clamp integer `v` into `[lo hi]`."
   (math/max lo (math/min hi v)))
-(sig pane-clampi (int int int -> int))
 
 ;; check-allow: deliberately non-tail — depth = the pane tree's split nesting — single digits on any screen.
 (check-allow :non-tail-recursion
@@ -414,30 +404,27 @@ into its rect and the dividers between them.
 
 ;; ---- hit-testing + resize (drag-to-resize over :drag mouse events) ----------
 
-(defn- pane-in-rect? (rect point)
+(defn- pane-in-rect? (rect:rect point: (tuple int int) -> bool)
   "Whether `point` (`[row col]`) falls inside `rect` (`[x y w h]`)."
   (let ([x y w h] rect [row col] point)
     (and (>= col x) (< col (+ x w)) (>= row y) (< row (+ y h)))))
-(sig pane-in-rect? (rect (tuple int int) -> bool))
 
 (defn- pane-find (items point)
   "The first `{:rect …}` in `items` whose rect contains `point`, or nil."
   (seq/find items (fn (item) (pane-in-rect? (get item :rect) point))))
 
-(defn pane-at (layout point)
+(defn pane-at (layout:layout point: (tuple int int) -> (or nil pane))
   "The pane (`{:path :payload :selected :rect}`) under `point`, or nil.
 
     (get (editor/pane/pane-at (editor/pane/pane-layout (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) [0 0 20 10]) [3 15]) :payload)   → :b"
   (pane-find (get layout :panes) point))
-(sig pane-at (layout (tuple int int) -> (or nil pane)))
 
-(defn divider-at (layout point)
+(defn divider-at (layout:layout point: (tuple int int) -> (or nil divider))
   "The divider (`{:path :dir :rect :split-rect}`) under `point`, or nil — what a
 frontend stashes on a left-press to begin a drag-resize.
 
     (get (editor/pane/divider-at (editor/pane/pane-layout (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) [0 0 20 10]) [3 10]) :dir)   → :col"
   (pane-find (get layout :dividers) point))
-(sig divider-at (layout (tuple int int) -> (or nil divider)))
 
 (defn pane-select-at (tree layout point)
   "Move selection to the pane under `point` (a click selects it); unchanged if the
@@ -447,7 +434,7 @@ point is off every pane.
   (let (pane (pane-at layout point))
     (if (nil? pane) tree (pane-select-path tree (get pane :path)))))
 
-(defn pane-ratio-for (divider point)
+(defn pane-ratio-for (divider:divider point: (tuple int int) -> number)
   "The ratio that places `divider` at `point`, within the divider's `:split-rect` —
 i.e. dragging the divider to the pointer. Feed the result to `pane-set-ratio`.
 
@@ -456,7 +443,6 @@ i.e. dragging the divider to the pointer. Feed the result to `pane-set-ratio`.
     (if (= (get divider :dir) :col)
       (/ (- col x) (math/max 1 (- w 1)))
       (/ (- row y) (math/max 1 (- h 1))))))
-(sig pane-ratio-for (divider (tuple int int) -> number))
 
 (defn pane-set-ratio (tree path ratio)
   "Set the `:ratio` of the split at `path` (clamped to `[0.1 0.9]` so neither pane

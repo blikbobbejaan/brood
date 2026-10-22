@@ -58,8 +58,8 @@ lookaround. Each pattern is parsed once and compiled once, then cached.")
 ;; :a atom}`. Atoms are tagged maps: {:t :lit :c c} {:t :any} {:t :bol} {:t :eol}
 ;; {:t :set :neg b :chars (…)} {:t :class :k :digit/:word/:space} {:t :group :alt …}.
 
-(defn- regex-peek (pcs i) (if (< i (count pcs)) (nth pcs i) nil))
-(sig regex-peek ((vector string) int -> (or nil string)))
+(defn- regex-peek (pcs: (vector string) i:int -> (or nil string))
+  (if (< i (count pcs)) (nth pcs i) nil))
 
 ; \. \* \\ … → that char, literal
 (defn- regex-escape (pcs i)
@@ -155,7 +155,7 @@ of) says what it looks like it says."
       (= c "\\") (regex-escape pcs (inc i))
       else [{:t :lit :c c} (inc i)])))
 
-(defn- regex-digits-at (pcs i acc)
+(defn- regex-digits-at (pcs: (vector string) i:int acc:string -> (tuple string int))
   "Consume digits at `i`; returns [text next] (text is \"\" when there are none)."
   (let (c (regex-peek pcs i))
     (if (and c (includes? "0123456789" c))
@@ -165,7 +165,6 @@ of) says what it looks like it says."
 ;; characters and `i` an index into it. `regex-seq`/`regex-alt` are top-level `defn-`s
 ;; (under a `check-allow`, which does not hide them from inference), so
 ;; the whole chain derives `int` from here and from `regex-parse`'s `0`.
-(sig regex-digits-at ((vector string) int string -> (tuple string int)))
 
 ;; The most a `{m,n}` may expand to. Repetition is expanded into copies of the atom
 ;; (there is no counting state in a Thompson NFA), so `a{1,100000}` would be 100k
@@ -261,7 +260,7 @@ does and nothing could have wanted."
           [(cons branch rest) i3])
         [(list branch) i2]))))
 
-(defn- regex-literal-strays (pcs i depth in-set acc)
+(defn- regex-literal-strays (pcs:vector i:int depth:int in-set:bool acc:vector -> vector)
   "`pcs` with every `)` that closes no group escaped, so the parser reads it as the
 character it is. Without this the parser's top level STOPPED at one: `a)x` was the
 pattern `a`, and everything after the paren was silently gone. Sets and escapes are
@@ -288,7 +287,6 @@ walked the parser's way — a `)` inside `[...]` or after a backslash is not a p
             (regex-literal-strays pcs (inc i) (dec depth) false (conj acc c))
             (regex-literal-strays pcs (inc i) depth false (conj (conj acc "\\") c)))
         :else (regex-literal-strays pcs (inc i) depth false (conj acc c))))))
-(sig regex-literal-strays (vector int int bool vector -> vector))
 
 (defn- regex-parse (pattern)
   "Parse `pattern` into its list of top-level branches."
@@ -308,11 +306,10 @@ walked the parser's way — a `)` inside `[...]` or after a backslash is not a p
 ;; list. Deliberately not "all punctuation": since regex 1.10 `\<` and `\>` are word
 ;; boundaries, so escaping `<` would change what it matches.
 
-(defn- regex-lit (c)
+(defn- regex-lit (c:string -> string)
   "The literal character `c` in the engine's syntax: escaped when it is one of the
 characters the engine reads as syntax, itself otherwise."
   (if (includes? regex-meta-chars c) (str "\\" c) c))
-(sig regex-lit (string -> string))
 
 (defn- regex-class-src (k)
   "A `\\d`/`\\w`/`\\s` class or its negation `\\D`/`\\W`/`\\S`, standing alone. `\\d` is
@@ -416,24 +413,22 @@ a literal, and the engine caches its compiled form under exactly this text."
 
 ;; ---- does it match? -------------------------------------------------------------
 
-(defn match? (pattern s)
+(defn match? (pattern:any s:string -> bool)
   "True if `pattern` matches anywhere in `s` (a search). `^`/`$` anchor to the
 start/end of the whole string, so e.g. `(match? \"\\\\.blsp$\" name)` tests a suffix.
 
     (regex/match? \"^a\" \"abc\")   → true"
   (%regex-match? (regex-search-src pattern) s))
-(sig match? (any string -> bool))
 
-(defn matches? (pattern s)
+(defn matches? (pattern:any s:string -> bool)
   "True if `pattern` matches the **entire** string `s` (anchored both ends).
 
     (regex/matches? \"[0-9]+\" \"a1b22\")   → false   ; the WHOLE string must match"
   (%regex-match? (regex-whole-src pattern) s))
-(sig matches? (any string -> bool))
 
 ;; ---- where, and with which groups -----------------------------------------------
 
-(defn find (pattern s)
+(defn find (pattern:any s:string -> (or nil (map keyword any)))
   "The leftmost match of `pattern` in `s`, or nil. The match is
 `{:start :end :text :groups [...]}` — half-open char offsets, the matched text, and
 one entry per `(...)` group in the pattern (each itself `{:start :end :text}`, or
@@ -448,9 +443,8 @@ opening parens; `(?:...)` groups are not numbered.
 Leftmost-first, like Perl and unlike POSIX: of two matches starting at the same
 place, the one the pattern's own alternation and greediness prefer wins."
   (%regex-find (regex-search-src pattern) s 0))
-(sig find (any string -> (or nil (map keyword any))))
 
-(defn find-all (pattern s)
+(defn find-all (pattern:any s:string -> (vector (map keyword any)))
   "Every non-overlapping match of `pattern` in `s`, left to right, as a vector of the
 maps `find` returns (empty when there are none). Scanning resumes at each match's
 end, and steps one character past an EMPTY match so a pattern that can match nothing
@@ -458,11 +452,10 @@ end, and steps one character past an EMPTY match so a pattern that can match not
 
     (map (regex/find-all \"\\\\d+\" \"a1b22c333\") (fn (m) (get m :text)))   → (\"1\" \"22\" \"333\")"
   (%regex-find-all (regex-search-src pattern) s))
-(sig find-all (any string -> (vector (map keyword any))))
 
 ;; ---- lexing: a rule table, and a line rule ----------------------------------------
 
-(defn tokenizer (rules)
+(defn tokenizer (rules:vector -> map)
   "The scanner value for `rules` (a vector of `[pattern tag]`) — what `tokens` takes in
 place of the table itself: `{:patterns :tags}`, each pattern already translated, so a
 lexer that holds one in a `def` translates its table once rather than per line.
@@ -470,9 +463,8 @@ lexer that holds one in a `def` translates its table once rather than per line.
     (regex/tokens (regex/tokenizer [[\"\\\\d+\" :n]]) \"a1\")   → [{:start 1 :end 2 :text \"1\" :tag :n}]"
   {:patterns (into [] (map rules (fn (rule) (regex-search-src (first rule)))))
    :tags (into [] (map rules second))})
-(sig tokenizer (vector -> map))
 
-(defn tokens (rules s)
+(defn tokens (rules:any s:string -> vector)
   "Scan `s` with `rules` — a vector of `[pattern tag]`, or a `tokenizer` of one — into a
 vector of the tokens `{:start :end :text :tag}` (half-open char offsets, ascending,
 non-overlapping). At the earliest position any rule matches, the FIRST rule in table order
@@ -483,9 +475,8 @@ end. A position no rule matches is skipped, and a rule's empty match never makes
     (map (regex/tokens [[\"#.*\" :comment] [\"[a-z]+\" :word]] \"ab # c\") (fn (t) [(get t :tag) (get t :text)]))   → ([:word \"ab\"] [:comment \"# c\"])"
   (let (tz (if (map? rules) rules (tokenizer rules)))
     (%regex-tokens (:patterns tz) (:tags tz) s)))
-(sig tokens (any string -> vector))
 
-(defn paint (prefix pattern suffix s)
+(defn paint (prefix:string pattern:string suffix:string s:string -> any)
   "At the start of `s`: the `[start end]` of the text `pattern` matches between a `prefix`
 matched at position 0 and a `suffix` matched after it — the group a `^prefix(pattern)suffix`
 regex would paint — or nil when the line does not match. The prefix's longest match first,
@@ -499,11 +490,10 @@ empty pattern `\"\"` is an absent prefix or suffix.
     (regex-search-src suffix)
     (or (includes? pattern "*?") (includes? pattern "+?") (includes? pattern "??"))
     s))
-(sig paint (string string string string -> any))
 
 ;; ---- replace / split, both written on find-all ------------------------------
 
-(defn- regex-expand-loop (template m i acc)
+(defn- regex-expand-loop (template:string m:any i:int acc:string -> string)
   "Expand `$0`..`$9` (and `$$` for a literal dollar) in a replacement template."
   (if (>= i (string/length template))
     acc
@@ -516,7 +506,6 @@ empty pattern `\"\"` is an absent prefix or suffix.
                 g (if (= k 0) m (nth (get m :groups) (dec k) nil)))
             (regex-expand-loop template m (+ i 2) (str acc (if g (get g :text) ""))))
         else (regex-expand-loop template m (inc i) (str acc c))))))
-(sig regex-expand-loop (string any int string -> string))
 
 (defn- regex-replace-loop (s matches j at acc replacement)
   (if (>= j (count matches))
@@ -554,7 +543,7 @@ A group that did not participate expands to the empty string."
         (get m :end)
         (into acc [(string/substring s at (get m :start))])))))
 
-(defn split (pattern s)
+(defn split (pattern:any s:string -> any)
   "Split `s` on every non-overlapping match of `pattern`, returning the pieces between
 them — the regex counterpart of `string/split`, which separates on a literal.
 
@@ -563,4 +552,3 @@ them — the regex counterpart of `string/split`, which separates on a literal.
 Separators are dropped, and an empty piece between two adjacent separators is kept, so
 the result always has one more element than there were matches."
   (regex-split-loop s (find-all pattern s) 0 0 []))
-(sig split (any string -> any))

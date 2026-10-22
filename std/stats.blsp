@@ -57,7 +57,7 @@ a 1-element sequence has population variance 0.0.
 
 ;; ---- order statistics --------------------------------------------------------
 
-(defn median (xs)
+(defn median (xs: (seqable number) -> number)
   "The median of `xs`. Raises on an empty sequence.
 For an even-length sequence, returns the mean of the two middle values.
 
@@ -77,9 +77,8 @@ For an even-length sequence, returns the mean of the two middle values.
 ;; through `Heap::seq_items` and raises on a string, a map or bytes, so `seqable` here
 ;; promised a domain the body cannot honour. The fold-only functions above keep the
 ;; wider declaration — they never sort.
-(sig median ((seqable number) -> number))
 
-(defn percentile (xs p)
+(defn percentile (xs: (seqable number) p:number -> number)
   "The `p`-th percentile (0–100) of `xs` using the nearest-rank method.
   `p` = 0 returns the minimum; `p` = 100 returns the maximum.
 
@@ -92,7 +91,6 @@ For an even-length sequence, returns the mean of the two middle values.
           rank (math/max 1 (ceil (* (/ p 100.0) n)))
           idx (math/min (- n 1) (- rank 1)))
       (or (nth sorted idx) (error "stats/percentile: index " idx " outside " n)))))
-(sig percentile ((seqable number) number -> number))
 
 (defn quantile (xs q)
   "The `q`-th quantile (0.0–1.0) of `xs` using the nearest-rank method.
@@ -102,21 +100,19 @@ For an even-length sequence, returns the mean of the two middle values.
 
 ;; ---- range and spread --------------------------------------------------------
 
-(defn min (xs)
+(defn min (xs: (seqable number) -> number)
   "The smallest value in `xs`. Raises on an empty sequence.
 
     (stats/min [3 1 2])      → 1"
   (when (empty? xs) (error "stats/min: empty sequence"))
   (reduce xs math/min))
-(sig min ((seqable number) -> number))
 
-(defn max (xs)
+(defn max (xs: (seqable number) -> number)
   "The largest value in `xs`. Raises on an empty sequence.
 
     (stats/max [3 1 2])      → 3"
   (when (empty? xs) (error "stats/max: empty sequence"))
   (reduce xs math/max))
-(sig max ((seqable number) -> number))
 
 (defn range-of (xs)
   "The range (max − min) of `xs`. Raises on an empty sequence.

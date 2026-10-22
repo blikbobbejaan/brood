@@ -104,10 +104,9 @@ doubled. Rows are separated by `\\n`.
         v (get m k))
     (if (nil? v) "" v)))
 
-(defn encode-maps (maps headers)
+(defn encode-maps (maps:seqable headers:any -> string)
   "Serialize a list of maps to CSV, with the given `headers` list determining
 column order. The header row is written first. Missing keys produce empty fields.
 
     (csv/encode-maps (list {:a 1 :b \"x\"} {:a 2}) [\"a\" \"b\"])   → \"a,b\\n1,x\\n2,\""
   (encode (cons headers (map maps (fn (m) (map headers (fn (h) (cell m h))))))))
-(sig encode-maps (seqable any -> string))

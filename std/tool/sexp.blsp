@@ -62,7 +62,7 @@ interpreted and the bottleneck in structural navigation.)
 
 ;; ---- structure queries ------------------------------------------------------
 
-(defn enclosing (anode point)
+(defn enclosing (anode:map point:number -> map)
   "The deepest container node strictly containing `point` (descending into
 list/vector/map children); the root if none. Reader-macro wrappers are navigated
 as a unit — descending through them is a deferred refinement.
@@ -74,7 +74,6 @@ as a unit — descending through them is a deferred refinement.
                   (< (get k :start) point)
                   (< point (get k :end))))))
     (if (nil? hit) anode (enclosing hit point))))
-(sig enclosing (map number -> map))
 
 ;; A tree node — a positioned CST node `{:kind :start :end …}` with half-open character
 ;; offsets; its `:kids` are nodes too. Stated once here, so the offset accessors and the
@@ -89,7 +88,7 @@ as a unit — descending through them is a deferred refinement.
     (seq/filter (or (get anode :kids) (list)) form?)))
 (sig forms-of (map -> (list sexp-node)))
 
-(defn top-level-forms (text)
+(defn top-level-forms (text:string -> seqable)
   "The top-level forms of `text`, in order, each a positioned node `{:kind :start
 :end …}` with half-open character offsets. Error-tolerant (the reader's CST
 recovers), so it answers over source someone is mid-typing — which form contains
@@ -100,7 +99,6 @@ fine for position queries, but don't feed the returned spans to `reflect/eval` u
 
     (count (sexp/top-level-forms \"(a)\n(b)\n\"))   → 2"
   (forms-of (tree text)))
-(sig top-level-forms (string -> seqable))
 
 ;; ---- narrowing: bound structural queries to the forms around point ----------
 ;; `parse-source-positioned` plus the CST walk below are O(buffer): at the bottom of a
@@ -117,7 +115,7 @@ fine for position queries, but don't feed the returned spans to `reflect/eval` u
 ;; over the ~3-form window, skipping strings/comments and tracking bracket depth — is
 ;; likewise native (`scan-form-end`), since it runs on every keystroke-driven motion.
 
-(defn narrow (text point)
+(defn narrow (text:string point:int -> (tuple int string))
   "`[base sub]` — `text` sliced to the top-level forms around `point` (the previous,
 enclosing, and next form), with `base` the slice's offset in `text`. Structural motion
 from `point` stays inside this window, so running the CST queries on `sub` (with `point`
@@ -134,7 +132,6 @@ cost of ~three forms, not the whole buffer.
         ;; tracked) in one native byte pass.
         end (reflect/scan-form-end text base 3))
     [base (string/substring text base end)]))
-(sig narrow (string int -> (tuple int string)))
 
 ;; ---- pure navigation: (text point) -> point ---------------------------------
 
@@ -152,7 +149,7 @@ cost of ~three forms, not the whole buffer.
 ;; place. A motion is a SELECTION over one value: the enclosing container, its forms, and
 ;; where the point sits among them.
 
-(defn- sexp-site (text point)
+(defn- sexp-site (text:string point:int -> (record &open :base int :rp int))
   "`{:base :rp :enc}` for `point` in `text`: the narrowed window's offset, the point
 relative to it, and the deepest container node holding it (the window's root at top
 level). Positions the motions read off `:enc`'s forms are window-relative — [[sexp-abs]]
@@ -160,18 +157,15 @@ puts one back."
   (let ([base sub] (narrow text point)
         rp (- point base))
     {:base base :rp rp :enc (enclosing (tree sub) rp)}))
-(sig sexp-site (string int -> (record &open :base int :rp int)))
 
-(defn- sexp-abs (site p)
+(defn- sexp-abs (site: (record &open :base int) p:int -> int)
   "A window-relative position of `site` back in the text."
   (+ (:base site) p))
-(sig sexp-abs ((record &open :base int) int -> int))
 
-(defn- sexp-top-level? (site)
+(defn- sexp-top-level? (site:map -> bool)
   (= (get (:enc site) :kind) :root))
-(sig sexp-top-level? (map -> bool))
 
-(defn- sexp-atom-around (enc rp keep?)
+(defn- sexp-atom-around (enc:map rp:int keep?:fn -> (or nil map))
   "The non-container form of `enc` that STRADDLES `rp` (start < rp < end) and satisfies
 `keep?`, or nil. A point inside a symbol or a string is inside an atom, not between two
 siblings: the sibling walks see only forms starting after / ending before it, so from
@@ -185,7 +179,6 @@ Emacs and paredit move to the atom's own edge; so does this."
         (< (sexp-start f) rp)
         (< rp (sexp-end f))
         (keep? f)))))
-(sig sexp-atom-around (map int fn -> (or nil map)))
 
 (defn- sexp-sibling-forward (text point keep?)
   "End of the next sibling form satisfying `keep?` starting at or after `point`, within the
@@ -285,7 +278,7 @@ none.
         lst (seq/find (forms-of (:enc site)) (fn (f) (and (sexp-list? f) (>= (sexp-start f) rp)))))
     (if (nil? lst) point (sexp-abs site (inc (sexp-start lst))))))
 
-(defn- sexp-defun-edge (text point edge)
+(defn- sexp-defun-edge (text:string point:int edge:keyword -> int)
   "The `edge` (`:start` / `:end`) of the top-level form containing `point`; `point` when
 `point` isn't within one. The shared body of `point-defun-start` / `point-defun-end`."
   (let ([base sub] (narrow text point)
@@ -295,7 +288,6 @@ none.
     (if (nil? top)
       point
       (+ base (if (= edge :start) (sexp-start top) (sexp-end top))))))
-(sig sexp-defun-edge (string int keyword -> int))
 
 (defn point-defun-start (text point)
   "Start of the top-level form containing `point` (Emacs `beginning-of-defun`);
@@ -323,10 +315,8 @@ unchanged if `point` isn't within one.
 
 ;; Typed offset accessors over a tree node (`sexp-node`, above) — a node's `:start`/`:end`
 ;; are int offsets, which a bare `get` cannot say; the shape says it, and the accessors verify.
-(defn- sexp-start (anode) (get anode :start))
-(sig sexp-start (sexp-node -> int))
-(defn- sexp-end (anode) (get anode :end))
-(sig sexp-end (sexp-node -> int))
+(defn- sexp-start (anode:sexp-node -> int) (get anode :start))
+(defn- sexp-end (anode:sexp-node -> int) (get anode :end))
 
 (defn- sexp-enc-of (text point)
   "The deepest container enclosing `point`, or nil when that's the root (no list to
@@ -465,7 +455,7 @@ form's siblings (paredit `raise-sexp`).
           (math/max es
             (dec point))]))))
 
-(defn point-wrap (text point open close)
+(defn point-wrap (text:string point:int open:string close:string -> (or nil (tuple string int)))
   "Wrap the form at or after `point` in a fresh `open … close`, point landing just inside
 the new open — paredit's `wrap-round` for any delimiter pair (`wrap-square`, `wrap-curly`).
 
@@ -482,7 +472,6 @@ the new open — paredit's `wrap-round` for any delimiter pair (`wrap-square`, `
            close
            (string/substring text ne))
           (+ ns (string/length open))]))))
-(sig point-wrap (string int string string -> (or nil (tuple string int))))
 
 (defn point-wrap-round (text point)
   "Wrap the form at or after `point` in a fresh `( … )`, point landing just inside the
@@ -491,7 +480,7 @@ new open (paredit `wrap-round`).
     (sexp/point-wrap-round \"a b\" 0)     → [\"(a) b\" 1]"
   (point-wrap text point "(" ")"))
 
-(defn span-wrap (text lo hi open close)
+(defn span-wrap (text:string lo:int hi:int open:string close:string -> (tuple string int))
   "Wrap the span `[lo, hi)` of `text` in `open … close`, point landing just inside the new
 open — what an opening bracket typed over an ACTIVE REGION does (paredit's `wrap-round`
 on a selection, Emacs's `electric-pair-mode` with a region). No structure is consulted:
@@ -504,9 +493,8 @@ the selection IS the form the user means.
      close
      (string/substring text hi))
     (+ lo (string/length open))])
-(sig span-wrap (string int int string string -> (tuple string int)))
 
-(defn point-transpose (text point)
+(defn point-transpose (text:string point:any -> (or nil (vector any)))
   "Interchange the sexp before `point` with the one after it, point landing just past both
 (Emacs `transpose-sexps`, C-M-t); nil when there isn't a form on each side within the same
 enclosing list. When `point` sits *inside* a form, that form is the one \"after\" — so the
@@ -534,14 +522,12 @@ at `next.end` (the whitespace between the two forms is preserved in place).
            (string/substring text previous-start pe) ; … then the earlier form
            (string/substring text ne))
           ne]))))
-(sig point-transpose (string any -> (or nil (vector any))))
 
 ;; ---- structure-aware kill bound ---------------------------------------------
 
-(defn- sexp-line-end (text i n)
+(defn- sexp-line-end (text:string i:int n:int -> int)
   "Offset of the next newline at or after `i`, or `n` (end of text)."
   (cond (>= i n) n (= (string/char-at text i) "\n") i else (sexp-line-end text (inc i) n)))
-(sig sexp-line-end (string int int -> int))
 
 ; list spans lines → kill to end of line
 (defn point-kill-end (text point)
@@ -681,14 +667,13 @@ command, no-op when there's no following form.
 
     (editor/buffer/buffer-text (sexp/wrap-round (editor/buffer/make-buffer \"a b\") nil))   → \"(a) b\""
   (sexp-apply-edit buf (point-wrap-round (buffer-text buf) (get buf :point))))
-(defn wrap (buf open close)
+(defn wrap (buf:buffer open:string close:string -> buffer)
   "Wrap the form at or after point in a fresh `open … close` (`point-wrap`); buffer
 command, no-op when there's no following form.
 
     (editor/buffer/buffer-text (sexp/wrap (editor/buffer/make-buffer \"a b\") \"[\" \"]\"))   → \"[a] b\""
   (sexp-apply-edit buf (point-wrap (buffer-text buf) (get buf :point) open close)))
-(sig wrap (buffer string string -> buffer))
-(defn wrap-region (buf open close)
+(defn wrap-region (buf:buffer open:string close:string -> buffer)
   "Wrap the buffer's active region in `open … close` (`span-wrap`), point landing just
 inside the new open and the region deactivated — what an opening bracket typed over a
 selection does. `buf` unchanged when no region is active.
@@ -699,7 +684,6 @@ selection does. `buf` unchanged when no region is active.
       buf
       (let ([lo hi] bounds)
         (clear-mark (sexp-apply-edit buf (span-wrap (buffer-text buf) lo hi open close)))))))
-(sig wrap-region (buffer string string -> buffer))
 (defn transpose (buf key)
   "Swap the sexps before and after point (Emacs `transpose-sexps`); buffer command,
 no-op without a form on each side.

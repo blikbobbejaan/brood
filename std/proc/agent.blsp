@@ -106,12 +106,11 @@ anything but a 2-vector), the error is re-raised here and the agent keeps its pr
 state."
   (agent-result (gen/call pid [:get-and-update f])))
 
-(defn cast (pid f)
+(defn cast (pid: (or map pid) f:any -> nil)
   "Fire-and-forget update: apply `(f state)` asynchronously, no reply waited. There is no
 caller to report to, so an `f` that raises crashes the agent (let it crash) — use
 `update` when the error should come back to you."
   (send pid [:$cast f]))
-(sig cast ((or map pid) any -> nil))
 
 (defn stop (pid)
   "Ask the agent to exit its loop cleanly. Blocks until it acknowledges (up to

@@ -36,14 +36,13 @@ Error codes the spec reserves are in `*error-codes*`.")
    :invalid-params -32602
    :internal-error -32603})
 
-(defn frame (body)
+(defn frame (body:string -> string)
   "`body` (a JSON string) behind its `Content-Length` header. The length is the body's
 UTF-8 BYTE count, which is what the header means — not its character count, which differs
 as soon as the body carries a character outside ASCII.
 
     (jsonrpc/frame \"{}\")   → \"Content-Length: 2\\r\\n\\r\\n{}\""
   (str "Content-Length: " (bytes/length (string/->bytes body)) "\r\n\r\n" body))
-(sig frame (string -> string))
 
 (defn request (id method params)
   "A framed request: `{\"jsonrpc\": \"2.0\", \"id\", \"method\", \"params\"}`. The peer answers
@@ -74,7 +73,7 @@ the honest answer to a request the receiver does not implement.
     (get-in (first (first (jsonrpc/decode (jsonrpc/error-response 3 -32601 \"no\")))) [:error :code])   → -32601"
   (frame (json/encode {:jsonrpc "2.0" :id id :error {:code code :message message}})))
 
-(defn- content-length (header)
+(defn- content-length (header:string -> (or nil int))
   "The `Content-Length` value in a frame's `header` block (the text before the blank
 line), or nil when it is absent or not a number."
   (let (i (index-of header "Content-Length:"))
@@ -85,7 +84,6 @@ line), or nil when it is absent or not a number."
             token (string/trim (if (< eol 0) after (string/substring after 0 eol)))
             n (string/->number token))
         (if (int? n) n nil)))))
-(sig content-length (string -> (or nil int)))
 
 (defn- decode-acc (buf acc)
   (let (separator (index-of buf "\r\n\r\n"))
@@ -110,7 +108,7 @@ line), or nil when it is absent or not a number."
                                 nil)))
                 (decode-acc remaining (if (nil? message) acc (cons message acc)))))))))))
 
-(defn decode (buf)
+(defn decode (buf:string -> (tuple list string))
   "`[messages remaining]`: every complete frame at the front of `buf`, decoded (a map per
 message), and what is left — the start of a frame whose header or body has not all arrived,
 kept for the next chunk. A frame whose body is not JSON is dropped with a warning rather
@@ -119,4 +117,3 @@ next frame starts cannot be known.
 
     (second (jsonrpc/decode (str (jsonrpc/notification \"exit\" nil) \"Content-Len\")))   → \"Content-Len\""
   (decode-acc buf '()))
-(sig decode (string -> (tuple list string)))

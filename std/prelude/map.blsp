@@ -159,7 +159,7 @@ A multi-key result prints in the map's internal order, not the order given."
 ;; [k v] vectors, in one O(n) pass. `keys`/`vals`/`contains?`/`reduce-kv` are all
 ;; Brood over it — no per-key `get`, so no O(n²).
 ;; `seq` (not `%map-pairs`) so a record's keys/vals are its fields — no internal `:__id__`.
-(defn keys (m)
+(defn keys (m: (or nil map) -> any)
   "The keys of map `m` (a record's are its fields, id-free). A record that stores its
 contents elsewhere answers for itself through the `Lookup` ability — a multimap gives its
 DISTINCT keys, not one per value.
@@ -172,7 +172,6 @@ stable one."
   ;; so the impl check sits up front rather than behind a miss.
   (let (ks (%keys-via-lookup m))
     (if (nil? ks) (map (seq m) first) ks)))
-(sig keys ((or nil map) -> any))
 
 (defn- %keys-via-lookup (m)
   "This map's own `lookup-keys`, or nil when it has no `Lookup` impl. Raw prims and a `bound?`
@@ -187,14 +186,13 @@ with bare `get`."
           nil))
       nil)
     nil))
-(defn vals (m)
+(defn vals (m: (or nil map) -> any)
   "The values of map `m` (a record's are its fields, id-free).
 
     (vals {:a 1})  → (1)
 
 Order matches [[keys]] — the map's internal order, not insertion order."
   (map (seq m) second))
-(sig vals ((or nil map) -> any))
 (defn contains? (m k)
   "True if map `m` has key `k` (distinguishes a stored `nil`/`false` from
 absence). O(1) via the CHAMP hash path (`%map-get`), not an O(n) key scan: probe
@@ -223,14 +221,13 @@ can.)
 ;; an implementation detail of *constructing* a fresh immutable map (no `Value` is
 ;; ever mutable, no path-copy per entry), so the merge family rides it for speed
 ;; while staying fully immutable.
-(defn merge (& maps)
+(defn merge (& maps: (or nil map) -> any)
   "A single map combining the given maps left to right; on a duplicate key the rightmost map wins. `nil` maps are skipped, so `(merge)` is `{}`.
 
     (merge {:a 1} {:a 9})        → {:a 9}    ; rightmost wins
     (merge {:a 1} nil)           → {:a 1}    ; nil maps are skipped
     (merge)                      → {}"
   (reduce maps {} (fn (acc m) (if (nil? m) acc (into acc m)))))
-(sig merge (& (or nil map) -> any))
 
 (defn update (coll k f & args)
   "A collection like `coll` with the value at key/index `k` replaced by

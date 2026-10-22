@@ -53,7 +53,7 @@ spans in the `highlight-spans` shape — what an editor's `:fontify` service is.
    :special :syntax/special
    :function :syntax/function})
 
-(defn lexer-grammar (spec)
+(defn lexer-grammar (spec:map -> map)
   "Compile `spec` into a grammar: `:structured` — a vector of `[pattern role]` rules,
 scanned as one table by `regex/tokens` (at the earliest position any rule matches, the
 first rule in table order wins with its longest match; a `\\b` may sit only at a rule's
@@ -72,7 +72,6 @@ here, not once per line."
     {:scanner (if (empty? rules) nil (regex/tokenizer rules))
      :classes (or (:classes spec) {})
      :line (or (:line spec) [])}))
-(sig lexer-grammar (map -> map))
 
 (defn- lexer-faces ()
   "Every role's face, resolved once per pass."
@@ -136,7 +135,7 @@ dropped, so the result stays non-overlapping."
     acc
     (cons span acc)))
 
-(defn lexer-line-spans (grammar line base faces)
+(defn lexer-line-spans (grammar:map line:string base:int faces:map -> any)
   "The spans for one `line` at offset `base`, ascending and non-overlapping: the
 tokens (structured and classified words, one scan) and the line rules, merged.
 
@@ -145,7 +144,6 @@ tokens (structured and classified words, one scan) and the line rules, merged.
         rules (lexer-line-rules grammar line faces)
         merged (reverse (lexer-merge tokens rules '())))
     (map merged (fn ([s e f]) [(+ base s) (+ base e) f]))))
-(sig lexer-line-spans (map string int map -> any))
 
 ;; ---- the walk ---------------------------------------------------------------------
 
@@ -157,7 +155,7 @@ tokens (structured and classified words, one scan) and the line rules, merged.
           spans (line-spans (string/substring src i e) i))
       (lexer-walk src (inc e) n line-spans (fold spans acc (fn (a s) (cons s a)))))))
 
-(defn lexer-walk-lines (src line-spans)
+(defn lexer-walk-lines (src:string line-spans: (string int -> any) -> list)
   "Concatenate `(line-spans line base)` over each line of `src` — `line` without its
 newline, `base` its character offset in `src`. The walk every line-oriented mode shares:
 `line-spans` returns that line's `[start end face]` spans already offset by `base`, and
@@ -165,9 +163,8 @@ the result is the whole source's spans in order.
 
     (editor/lexer/lexer-walk-lines \"ab\\ncd\" (fn (line base) (list [base (+ base 1) :x])))   → ([0 1 :x] [3 4 :x])"
   (lexer-walk src 0 (string/length src) line-spans '()))
-(sig lexer-walk-lines (string (string int -> any) -> list))
 
-(defn lexer-spans (grammar src)
+(defn lexer-spans (grammar:map src:string -> any)
   "Lexically tokenize `src` with `grammar` (from `lexer-grammar`) into `[start end face]`
 colour spans — character offsets, end-exclusive, ascending, non-overlapping — the
 `highlight-spans` shape an editor's `:fontify` service returns.
@@ -175,4 +172,3 @@ colour spans — character offsets, end-exclusive, ascending, non-overlapping �
     (map (editor/lexer/lexer-spans (editor/lexer/lexer-grammar {:structured [[\"#.*\" :comment]]}) \"x # y\") (fn ([s e _]) [s e]))   → ([2 5])"
   (let (faces (lexer-faces))
     (lexer-walk-lines src (fn (line base) (lexer-line-spans grammar line base faces)))))
-(sig lexer-spans (map string -> any))

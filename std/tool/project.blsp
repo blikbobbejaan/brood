@@ -36,7 +36,7 @@ identity and may override those paths. The rest of the tool is its siblings:
 ;; app. Purely identity: no name-rooting/prefixing (that stays the deferred ADR-070 upgrade).
 (defdyn *ns-package* {})
 
-(defn ns-package (ns-or-name)
+(defn ns-package (ns-or-name: (or symbol string nil) -> any)
   "The owning package of a namespace or a qualified `mod/fn` name (ADR-172 package identity).
   Resolves the MODULE either way — a module namespace (`widget`, `editor/display`) directly,
   or the module of a qualified name (`widget/w` → `widget`, `editor/display/draw` →
@@ -53,14 +53,12 @@ identity and may override those paths. The rest of the tool is its siblings:
           (if (> (count parts) 1)
             (get *ns-package* (symbol (string/join (take parts (- (count parts) 1)) "/")))
             nil))))))
-(sig ns-package ((or symbol string nil) -> any))
 
-(defn trace-with-packages (trace)
+(defn trace-with-packages (trace:seqable -> (or nil (list any)))
   "Annotate each stack-trace frame (`{:fn :file :line :col}`) with `:package` — the owning
   package of its function (ADR-172). `trace` is the `:trace` on a caught kernel-error map.
   Frames whose function is root/std/unrecorded get `:package nil`."
   (map trace (fn (frame) (assoc frame :package (ns-package (get frame :fn))))))
-(sig trace-with-packages (seqable -> (or nil (list any))))
 ;; Only ever set inside `setup` (from the manifest) and read by
 ;; `package` when it publishes — so they must be declared ambient here, like the
 ;; slots above: ambient is a `defdyn` declaration now, not an earmuff spelling.
@@ -488,13 +486,12 @@ manifest is read, naming the key, not later inside whoever consumes the map."
 ;; --- finding the project + discovering tests ---------------------------------
 ;; Walk up from `dir` toward the filesystem root, looking for project.blsp.
 ;; parent-directory is its own fixed point at "/" and ".", which terminates the walk.
-(defn find-root (dir)
+(defn find-root (dir:string -> (or string nil))
   "Walk up from `dir` toward the filesystem root, returning the first directory that contains a `project.blsp`, or nil if none is found."
   (cond
     (file/exists? (path/join dir "project.blsp")) dir
     (= dir (path/dirname dir)) nil
     else (find-root (path/dirname dir))))
-(sig find-root (string -> (or string nil)))
 
 (defn require-root (who &optional from)
   "The project root `find-root` finds walking up from `from` (default the cwd), or raise
@@ -502,10 +499,9 @@ manifest is read, naming the key, not later inside whoever consumes the map."
   (let (dir (or from (file/cwd)))
     (or (find-root dir) (error who ": not in a Brood project (no project.blsp found from " dir ")"))))
 
-(defn abs-paths (root rels)
+(defn abs-paths (root:string rels: (seqable string) -> (list string))
   "Resolve each relative path in `rels` against `root`, returning the list of absolute paths."
   (map rels (fn (r) (path/join root r))))
-(sig abs-paths (string (seqable string) -> (list string)))
 
 (defn- files-ending-in (dir suffix)
   "Every regular file under `dir` (recursively, never entering a symlinked directory) whose
@@ -746,12 +742,11 @@ empty `:enhances` (an ordinary library) satisfies-all vacuously, so it must not 
                  (and (get enhances app-symbol)
                    (version/satisfies-all? host enhances)))))))))
 
-(defn installed-enhancers (root app app-version)
+(defn installed-enhancers (root:string app:any app-version:any -> (vector string))
   "The names of packages installed under `root/_deps` that enhance `app` at a satisfied
 `app-version` — `enhancers-in` over a project's dependency dir. The runtime sibling of the
 registry's `?enhances=` query (`nest search --enhances`)."
   (enhancers-in (path/join root "_deps") app app-version))
-(sig installed-enhancers (string any any -> (vector string)))
 
 (defn- project-plugin-format-headers (root plugin-name)
   "The `:format-headers` a `:format-plugins` entry contributes — read from that
@@ -830,7 +825,7 @@ rules merged in declaration order, then this project's own `:format-headers` on 
         (system/brood-version)
         " — upgrade brood, or relax the :brood constraint in project.blsp"))))
 
-(defn setup (root)
+(defn setup (root:string -> string)
   "Initialise the project rooted at `root`: reset the path conventions, apply its `project.blsp` manifest, refuse an incompatible runtime, put its sources and dependencies on the load path, and enable package rooting; returns `root`."
   (def *project-root* root)
   ;; Restore the path conventions BEFORE applying the manifest. `apply`
@@ -875,7 +870,6 @@ rules merged in declaration order, then this project's own `:format-headers` on 
   ;; own setter: a `def` here bound `project/*format-headers-extra*`, which nothing reads.
   (format/use-headers (project-effective-format-headers root))
   root)
-(sig setup (string -> string))
 
 ;; Register the project's OWN modules as package-rooted under its `:name`, and set the
 ;; ambient package context so every source loaded from here on roots (ADR-070). A no-op

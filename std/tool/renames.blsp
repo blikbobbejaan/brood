@@ -15,12 +15,10 @@
 `(renames/renamed-to name)` answers the entry for one name, or nil. The runtime
 `unbound symbol` error and `nest check`'s unbound warning read the same table.")
 
-(defn ledger ()
+(defn ledger (-> (map string map))
   "The whole ledger: a map of old public name (string) to `{:to new-name :adr adr}`."
   (%renames))
-(sig ledger (-> (map string map)))
 
-(defn renamed-to (name)
+(defn renamed-to (name: (or string symbol) -> (or map nil))
   "The ledger entry `{:to new-name :adr adr}` for the old name `name` (a string or symbol), or nil when the name was never ledgered."
   (get (%renames) (->string name)))
-(sig renamed-to ((or string symbol) -> (or map nil)))

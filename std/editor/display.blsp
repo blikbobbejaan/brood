@@ -230,7 +230,7 @@ no `:cursor` contribute nothing."
 ;; selection pill live here, so every overlay elevates identically — surfaces + hairlines,
 ;; no shadow (dark-UI chrome; see the editor's docs/ui-chrome.md).
 
-(defn- clamp-cell (v hi)
+(defn- clamp-cell (v:number hi:number -> number)
   "`v` clamped to `0..hi` — a screen cell coordinate, so an integer in and an integer out.
 
 `math/max`/`math/min` would say this more briefly, and did. They are polymorphic over
@@ -241,8 +241,6 @@ non-number where a number belongs. Written as comparisons the type follows the v
     (< v 0) 0
     (> v hi) hi
     else v))
-
-(sig clamp-cell (number number -> number))
 
 (defn card-rect (row col w h cols rows)
   "The clamped top-left `[mr mc]` of a `w`×`h`-cell card anchored at `(row, col)`: shifted

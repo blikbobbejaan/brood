@@ -75,7 +75,7 @@ no edit is sent."
   (let ([lo hi repl] splice)
     (str (string/substring text 0 lo) repl (string/substring text hi (string/length text)))))
 
-(defn text-apply-action (text action)
+(defn text-apply-action (text:string action:any -> string)
   "`text` with the CONTENT half of a `link-fold` action applied — `[:splice s]` by
 `text-apply-splice`, `[:text t]` by replacement, anything else (`:noop`, `:stale`,
 `:resync`) leaving it as it is. The whole of what a plain-string holder does with a push;
@@ -87,7 +87,6 @@ a `:resync` is the caller's to act on (it needs the process).
     ([:splice splice] (text-apply-splice text splice))
     ([:text replacement] (if (string? replacement) replacement text))
     (_ text)))
-(sig text-apply-action (string any -> string))
 
 ;; ---- the wire-view normalizer -------------------------------------------------
 
@@ -145,7 +144,7 @@ falls back to diffing the two texts, which is always correct in content."
       (link-propagate link (buffer-text before) (buffer-text after))
       (fold splices link link-send-splice))))
 
-(defn link-fold (link version view origin)
+(defn link-fold (link:map version:int view:any origin:any -> (tuple map any))
   "Fold one `[:buffer-updated proc version view origin]` push into `link`: returns
 `[link' action]` — the advanced link and what the caller should do with its LOCAL
 copy of the document (see the module doc for the action vocabulary).
@@ -211,4 +210,3 @@ cursor-only delta is `:noop`."
         ;; (atomic snapshot; includes our sends by FIFO order), pendings reset
         (not (empty? pending)) [(assoc nlink :pending ()) :resync]
         else [nlink [:text text]]))))
-(sig link-fold (map int any any -> (tuple map any)))

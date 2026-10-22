@@ -34,7 +34,7 @@ primitives. The kernel also provides the always-available file primitives
         (string/split (string/substring text 0 (dec (string/length text))) "\n")
       else (string/split text "\n"))))
 
-(defn write-lines (path lines)
+(defn write-lines (path:string lines:seqable -> nil)
   "Write `lines` (a sequence of strings) to `path`, one per line, each terminated by a newline."
   ;; One `join` pass (native `%string-join` — walks `lines` once into one buffer) plus the
   ;; final newline. This was a `(fold (fn (acc l) (str acc l "\n")) "" lines)`, which recopies
@@ -46,7 +46,6 @@ primitives. The kernel also provides the always-available file primitives
 ;; `lines` is `seqable`, not `(list string)` — `fold` accepts a list, vector, set or range,
 ;; so the broader domain checks the argument (a non-seqable is flagged) without false-flagging
 ;; a vector caller the way `(list string)` would.
-(sig write-lines (string seqable -> nil))
 
 ;; --- predicates -------------------------------------------------------------
 

@@ -29,10 +29,9 @@ Pure Brood policy over connect/monitor-node/nodes. Pair with
   "The watcher's registered name for `spec` — one watcher per spec."
   (keyword (str "reconnect:" spec)))
 
-(defn- reconnect-opt (opts k default)
+(defn- reconnect-opt (opts: (map keyword int) k:keyword default:int -> int)
   "A backoff bound from `opts` — `:min-ms`/`:max-ms` are milliseconds, ints."
   (get opts k default))
-(sig reconnect-opt ((map keyword int) keyword int -> int))
 
 (defn- reconnect-notify (subs event)
   (dolist (p subs) (send p event)))
@@ -54,7 +53,7 @@ Pure Brood policy over connect/monitor-node/nodes. Pair with
     ;; messages can reach it; without this they'd pile up in the mailbox forever
     (_ (reconnect-up spec peer opts subs))))
 
-(defn- reconnect-down (spec peer opts subs delay)
+(defn- reconnect-down (spec:string peer: (or keyword nil) opts:map subs:list delay:int -> any)
   "Disconnected state: retry `(node/connect spec)` on an exponential-backoff timer,
 still answering control messages between attempts."
   ;; check-allow :discarded-catch — a failed connect IS the down state this loop exists to retry
@@ -65,13 +64,12 @@ still answering control messages between attempts."
         (reconnect-notify subs [:nodeup up])
         (reconnect-up spec up opts subs))
       (reconnect-wait spec peer opts subs delay (+ (os/now) delay)))))
-(sig reconnect-down (string (or keyword nil) map list int -> any))
 
-(defn- reconnect-next-delay (delay opts)
+(defn- reconnect-next-delay (delay:int opts:map -> int)
   (math/min (* delay 2) (reconnect-opt opts :max-ms 30000)))
-(sig reconnect-next-delay (int map -> int))
 
-(defn- reconnect-wait (spec peer opts subs delay deadline)
+(defn- reconnect-wait
+  (spec:string peer: (or keyword nil) opts:map subs:list delay:int deadline:int -> any)
   "Wait out one backoff interval between connect attempts, still answering control
 messages — against a fixed `deadline`, not a fresh `(after delay …)` per message.
 `receive` tries its clauses in order, so the old catch-all matched *first* and
@@ -91,7 +89,6 @@ unrelated message cost nothing."
         (_ (reconnect-wait spec peer opts subs delay deadline))
         (after left
           (reconnect-down spec peer opts subs (reconnect-next-delay delay opts)))))))
-(sig reconnect-wait (string (or keyword nil) map list int int -> any))
 
 (defn watch (spec &optional opts)
   "Keep the link to the node at `spec` (a `connect` spec — `\"name\"` local or

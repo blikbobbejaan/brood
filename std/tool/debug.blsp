@@ -422,38 +422,33 @@ A name nobody holds is left alone — an untraced name, or one already restored 
   (spawn (span label thunk)))
 
 ;; ---- inspection / control (round-trip queries to the debugger) --------------
-(defn dbg-state (dbg)
+(defn dbg-state (dbg: (or map pid) -> any)
   "The debugger's full state snapshot: `{:events :paused :seq}`."
   (let (me (self)) (send dbg [:query me]) (receive ([:state s] s))))
-(sig dbg-state ((or map pid) -> any))
 (defn paused (dbg)
   "The map of currently parked processes: `pid -> snapshot`."
   (get (dbg-state dbg) :paused))
 (defn dbg-events (dbg)
   "The ordered event log the debugger has collected."
   (get (dbg-state dbg) :events))
-(defn resume (dbg pid)
+(defn resume (dbg: (or map pid) pid:any -> nil)
   "Release one parked process."
   (send dbg [:resume pid])
   nil)
-(sig resume ((or map pid) any -> nil))
-(defn resume-all (dbg)
+(defn resume-all (dbg: (or map pid) -> any)
   "Release every parked process; returns how many were waiting."
   (let (me (self)) (send dbg [:resume-all me]) (receive ([:resumed n] n))))
-(sig resume-all ((or map pid) -> any))
-(defn dbg-stop (dbg)
+(defn dbg-stop (dbg: (or map pid) -> :ok)
   "Stop the debugger process."
   (let (me (self)) (send dbg [:stop me]) (receive ([:stopped] :ok))))
-(sig dbg-stop ((or map pid) -> :ok))
 
 ;; ---- aggregate / statistical querying (debug the population, not one hit) ----
 ;; When thousands of processes hit the same trace point you don't want thousands of
 ;; dumps (Elixir's failure mode) — you want the DISTRIBUTION and the OUTLIERS. Because
 ;; traces are data, not text, these are plain folds over the debugger's event log.
-(defn trace-entries (dbg)
+(defn trace-entries (dbg: (or map pid) -> seqable)
   "The raw `:trace` events the debugger collected (each `{:pid :entry :seq …}`)."
   (seq/filter (dbg-events dbg) (fn (e) (= (get e :kind) :trace))))
-(sig trace-entries ((or map pid) -> seqable))
 
 (defn observations (dbg)
   "Every `spy` node observation, flattened to `{:pid :form :value}`."
@@ -489,7 +484,7 @@ A name nobody holds is left alone — an untraced name, or one already restored 
       (fn (o) (and (= (pr-str (get o :form)) form-string) (not (= (get o :value) modal)))))))
 
 ;; ---- causal tree reconstruction ---------------------------------------------
-(defn causal-tree (dbg)
+(defn causal-tree (dbg: (or map pid) -> seqable)
   "Reconstruct the cross-process causal tree from the debugger's span events: a
 list of root nodes, each `{:span :label :pid :value :children [...]}`. A span still
 running shows `:value :running`."
@@ -508,7 +503,6 @@ running shows `:value :running`."
                       :value (value-of (get e :span))
                       :children (map (children-of (get e :span)) build)}))
       (map (seq/filter enters (fn (e) (nil? (get e :parent)))) build))))
-(sig causal-tree ((or map pid) -> seqable))
 
 (defn- causal-lines (nodes depth)
   "The causal tree as a flat list of indented, pid-tagged strings (one per span)."
@@ -714,7 +708,7 @@ re-implementation; it registers the `,resume`/`,step` commands via the REPL regi
   (if (and (int? n) (>= n 1) (<= n (count entries)))
     (do (resume dbg (first (nth entries (dec n)))) (str "resumed [" n "]"))
     (str "no parked process [" n "]")))
-(defn repl-session (dbg)
+(defn repl-session (dbg: (or map pid) -> any)
   "An interactive debugger prompt — a REPL for `dbg`. Prints the numbered paused queue
 and the causal tree, then reads a line: `r` resume all, `r N` resume the Nth parked,
 Enter refresh, `q` quit, or any Brood expression to evaluate. Cooked mode, so it needs
@@ -749,4 +743,3 @@ no raw-terminal setup and works when piped."
                   (io/puts (str "=> " (pr-str-bounded (reflect/eval-string line))))
                   (catch e (io/puts (str "! " (pr-str-bounded e)))))
                 (repl-session dbg))))))))
-(sig repl-session ((or map pid) -> any))

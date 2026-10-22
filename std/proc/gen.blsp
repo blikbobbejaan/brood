@@ -53,11 +53,10 @@ a module like any other — `(def call …)` in your own code is yours.")
 
 ;; ---- client side ------------------------------------------------------------
 
-(defn cast (pid payload)
+(defn cast (pid: (or map pid) payload:any -> nil)
   "Send `payload` to a server process as a cast — fire-and-forget, the asynchronous
 counterpart to `call` (no reply, the caller never blocks)."
   (send pid [:$cast payload]))
-(sig cast ((or map pid) any -> nil))
 
 (defn call (pid payload)
   "Send `payload` as a synchronous call and block up to 5 s for the reply (OTP's
@@ -131,15 +130,14 @@ answer is dropped at delivery rather than left unmatchable in the mailbox. Reply
 twice to one token is likewise harmless — the second is dropped."
   (send (nth token 0) [:reply (nth token 1) value]))
 
-(defn stop (pid)
+(defn stop (pid: (or map pid) -> nil)
   "Tell a server process to exit its receive loop cleanly (running its
 `terminate` clause first, if it has one). Returns nil immediately — there is no
 acknowledgement (the process is gone by the time the caller could check). Safe to
 send to a pid that has already exited."
   (send pid [:$stop]))
-(sig stop ((or map pid) -> nil))
 
-(defn code-change (pid)
+(defn code-change (pid: (or map pid) -> nil)
   "Ask a running server to migrate its state to the current code shape — its
 `defserver` `code-change` clause runs, transforming the old-shaped state into the
 new one. This is the hand-off a long-lived server needs after a hot reload: the
@@ -150,7 +148,6 @@ like `stop`, there is no acknowledgement; follow with a `call`/`query` if you
 need to observe the migrated state. A supervisor (or an `on-reload` hook) is the
 usual caller, once per affected child after a reload."
   (send pid [:$code-change]))
-(sig code-change ((or map pid) -> nil))
 
 (defn start (f state)
   "Spawn a `defserver` server `f` with its initial `state`; return its pid."

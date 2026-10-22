@@ -27,7 +27,7 @@ via `instantiate`), `call` its exports, or `use-native` to bind every
 export as a named Brood function. Calls are fuel-metered and sandboxed; long
 calls go through the dirty-offload pool (`call-blocking`).")
 
-(defn load (path)
+(defn load (path:string -> int)
   "Instantiate the compiled WASM component at `path` (a `.wasm` file). Returns
 an instance handle for `call`/`use-native`. An instance is a **manual
 resource** — its store, code, and linear memory live until you `close` it or
@@ -38,17 +38,15 @@ runtime keeps the last few components it compiled, keyed by a hash of the
 bytes), so closing and reloading to give back linear memory or to recover
 from a trap costs a fresh instance, not a recompile."
   (%wasm-load (file/slurp-bytes path)))
-(sig load (string -> int))
 
 (defn instantiate (source)
   "Instantiate a WASM component from in-memory `source`: a `bytes` value (a
 compiled component) or a string of WAT text — the REPL/testing path."
   (%wasm-load source))
 
-(defn exports (inst)
+(defn exports (inst:int -> any)
   "The instance's exported functions, as a vector of `[name arity]` pairs."
   (%wasm-exports inst))
-(sig exports (int -> any))
 
 (defn call (inst name & args)
   "Call export `name` (a string) of `inst` with `args`, marshalled by the
@@ -61,10 +59,9 @@ A trap (including out-of-fuel) raises a catchable error."
 process waits, never a scheduler worker. For long-running guest calls."
   (offload %wasm-call inst name (into [] args)))
 
-(defn close (inst)
+(defn close (inst:int -> nil)
   "Drop `inst`: the sandbox and everything the guest owns is freed. Idempotent."
   (%wasm-close inst))
-(sig close (int -> nil))
 
 (defn use-native (inst)
   "Bind every export of `inst` as a global Brood function of the same name —

@@ -41,7 +41,7 @@ spellings of one instant.")
 ;; Howard Hinnant's civil_from_days / days_from_civil algorithms.
 ;; Reference: https://howardhinnant.github.io/date_algorithms.html
 
-(defn- dt-days->ymd (z)
+(defn- dt-days->ymd (z:int -> map)
   ;; Days since 1970-01-01 → {:year :month :day}
   (let (z (+ z 719468)
         era (dt-fdiv z 146097)
@@ -55,9 +55,8 @@ spellings of one instant.")
         m (if (< mp 10) (+ mp 3) (- mp 9))
         y (if (<= m 2) (+ y 1) y))
     {:year y :month m :day d}))
-(sig dt-days->ymd (int -> map))
 
-(defn- dt-ymd->days (year month day)
+(defn- dt-ymd->days (year:int month:int day:int -> int)
   ;; Date → days since 1970-01-01
   (let (y (if (<= month 2) (- year 1) year)
         era (dt-fdiv y 400)
@@ -68,7 +67,6 @@ spellings of one instant.")
               (- (dt-fdiv yoe 4) (dt-fdiv yoe 100))
               doy))
     (- (+ (* era 146097) doe) 719468)))
-(sig dt-ymd->days (int int int -> int))
 
 ;; ---- the three temporal types ------------------------------------------------
 ;;
@@ -105,7 +103,7 @@ spellings of one instant.")
         ymd (dt-days->ymd days))
     (datetime (get ymd :year) (get ymd :month) (get ymd :day) hour minute second ms-part)))
 
-(defn ->epoch-ms (dt)
+(defn ->epoch-ms (dt: (or datetime date) -> int)
   "Convert a UTC datetime (or date — its time is taken as midnight) to Unix epoch
 milliseconds.
 
@@ -118,7 +116,6 @@ milliseconds.
         time-s (+ (* (hour dt) 3600) (* (minute dt) 60) (second dt))
         ms-val (ms dt))
     (+ (* (+ (* days 86400) time-s) 1000) ms-val)))
-(sig ->epoch-ms ((or datetime date) -> int))
 
 ;; ---- current time -----------------------------------------------------------
 
@@ -132,24 +129,21 @@ milliseconds.
 
 ;; ---- accessors --------------------------------------------------------------
 
-(defn year (dt)
+(defn year (dt: (or datetime date) -> int)
   "The :year field.
 
     (datetime/year (datetime/parse-date \"2026-08-27\"))   → 2026"
   (get dt :year))
-(sig year ((or datetime date) -> int))
-(defn month (dt)
+(defn month (dt: (or datetime date) -> int)
   "The :month field (1–12).
 
     (datetime/month (datetime/parse-date \"2026-08-27\"))   → 8"
   (get dt :month))
-(sig month ((or datetime date) -> int))
-(defn day (dt)
+(defn day (dt: (or datetime date) -> int)
   "The :day field (1–31).
 
     (datetime/day (datetime/parse-date \"2026-08-27\"))   → 27"
   (get dt :day))
-(sig day ((or datetime date) -> int))
 ;; The time accessors take a `date` too — its time is midnight, so each reads 0. Trusted,
 ;; not verified (strict): a record NAME is an open shape, so `:hour` on a `date` — a key it
 ;; does not declare — reads as unknown to the checker; the default is the whole answer.
@@ -245,7 +239,7 @@ milliseconds.
     (= code "%") "%"
     else (str "%" code)))
 
-(defn- dt-fmt-loop (dt fmt i n acc)
+(defn- dt-fmt-loop (dt:any fmt:string i:int n:int acc:string -> string)
   (if (>= i n)
     acc
     (let (c (string/char-at fmt i))
@@ -256,24 +250,21 @@ milliseconds.
           n
           (str acc (dt-fmt-code dt (string/char-at fmt (+ i 1)))))
         (dt-fmt-loop dt fmt (+ i 1) n (str acc c))))))
-(sig dt-fmt-loop (any string int int string -> string))
 
-(defn format (dt fmt)
+(defn format (dt:any fmt:string -> any)
   "Format `dt` with %-codes: %Y year, %m month (01-12), %d day (01-31),
 %H hour (00-23), %M minute (00-59), %S second (00-59), %f ms (000-999), %% literal %.
 
     (datetime/format (datetime/parse-date \"2026-08-27\") \"%Y/%m/%d\")   → \"2026/08/27\""
   (dt-fmt-loop dt fmt 0 (string/length fmt) ""))
-(sig format (any string -> any))
 
 ;; ---- parsing ----------------------------------------------------------------
 
-(defn- dt-parse-int (s)
+(defn- dt-parse-int (s: (or string nil) -> (or int nil))
   ;; A missing component (`(nth parts i)` past the end) parses as nothing, like a bad one.
   (when s
     (let (n (string/->number s))
       (if (int? n) n nil))))
-(sig dt-parse-int ((or string nil) -> (or int nil)))
 
 (defn- dt-frac->ms (frac)
   ;; Right-pad the fractional-second digits to 3 and parse as milliseconds.
@@ -405,25 +396,22 @@ produces is UTC.
 
 ;; ---- duration helpers -------------------------------------------------------
 
-(defn seconds (n)
+(defn seconds (n:int -> int)
   "Milliseconds in `n` seconds.
 
     (datetime/seconds 2)   → 2000"
   (* n 1000))
-(sig seconds (int -> int))
-(defn minutes (n)
+(defn minutes (n:int -> int)
   "Milliseconds in `n` minutes.
 
     (datetime/minutes 1)   → 60000"
   (* n 60000))
-(sig minutes (int -> int))
-(defn hours (n)
+(defn hours (n:int -> int)
   "Milliseconds in `n` hours.
 
     (datetime/hours 1)     → 3600000"
   (* n 3600000))
-(sig hours (int -> int))
-(defn days (n)
+(defn days (n:int -> int)
   "Milliseconds in `n` days.
 
     (datetime/days 1)      → 86400000"
@@ -431,13 +419,11 @@ produces is UTC.
 
 ;; ---- arithmetic -------------------------------------------------------------
 
-(sig days (int -> int))
-(defn add (dt ms)
+(defn add (dt: (or datetime date) ms:int -> datetime)
   "Add `ms` milliseconds to `dt`, returning a new datetime.
 
     (datetime/format (datetime/add (datetime/parse-iso8601 \"2026-08-27T00:00:00Z\") (datetime/days 1)) \"%Y-%m-%d\")   → \"2026-08-28\""
   (epoch-ms-> (+ (->epoch-ms dt) ms)))
-(sig add ((or datetime date) int -> datetime))
 
 (defn diff (dt1 dt2)
   "Milliseconds from `dt2` to `dt1` (positive when `dt1` is later).

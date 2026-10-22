@@ -129,7 +129,7 @@ where a decoded query stops being decodable is the query, not one field."
                 (url-qdecode-str (string/substring part (+ eq 1) (string/length part)))))
         (url-parse-query-pairs (rest parts) (assoc acc k v))))))
 
-(defn query-decode (s)
+(defn query-decode (s:string -> (or map failure))
   "Parse a query string `key=value&key=value` into a string→string map,
 decoding + as space and %XX sequences — or a `failure` if any component carries an
 invalid %XX sequence (the failure propagates rather than landing in the map).
@@ -138,7 +138,6 @@ invalid %XX sequence (the failure propagates rather than landing in the map).
   (if (= s "")
     {}
     (url-parse-query-pairs (string/split s "&") {})))
-(sig query-decode (string -> (or map failure)))
 
 ;; ---- URL parsing ------------------------------------------------------------
 ;;

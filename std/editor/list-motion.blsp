@@ -33,7 +33,7 @@ when it is not one.
     (editor/list-motion/motion-of \"x\")     → nil"
   (get motion-keys key))
 
-(defn motion-index (index size motion)
+(defn motion-index (index:int size:int motion:any -> int)
   "The row `motion` moves a selection at `index` to, in a list of `size` rows: `:next` and
 `:previous` wrap around, `:first` and `:last` are the ends. An empty list has only row 0.
 
@@ -49,4 +49,3 @@ when it is not one.
       :first 0
       :last (dec size)
       index)))
-(sig motion-index (int int any -> int))

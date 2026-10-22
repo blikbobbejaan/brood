@@ -3229,3 +3229,10 @@ shares and registers the `(sig …)` they spell, with `_` for an open position; 
 keeps inferring an open result (and found two loops on the way: the same-file fixpoint never
 saw an open name settle, and the body was checked against its own in-progress return). The
 in-language test file was run once locally, by mistake, before the suite reached CI.
+
+2026-10-22 (night): std migrated to typed parameters — 635 `defn` + `(sig …)` pairs in 82 files,
+by a structural rewrite that pairs each top-level sig with its definition and refuses anything
+that does not line up position for position (18 kept their `sig`: overloads, a compound type on
+an `&optional` slot, arity mismatches). Every std module was loaded under the pre- and
+post-migration binaries and every declared signature dumped: none of the 705 differs or is
+missing.

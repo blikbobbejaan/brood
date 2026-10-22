@@ -1209,7 +1209,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; `pending` counts workers that have not yet EXITED — a worker's `:down`, not its
 ;; `:unit-result`, is what retires it, so the runner's own workers are gone by
 ;; construction before the file-boundary quiesce (`test-quiesce-file`) looks for leaks.
-(defn- collect-loop (pending workers reported acc deadline)
+(defn- collect-loop (pending:int workers:any reported:any acc:any deadline:int -> any)
   (if (= pending 0)
     acc
     ;; `(m m)` takes the next message; `(after …)` fires when the budget is spent.
@@ -1249,7 +1249,6 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 
         ;; Anything else in the runner's mailbox isn't ours — skip it.
         else (collect-loop pending workers reported acc deadline)))))
-(sig collect-loop (int any any any int -> any))
 
 ;; Run a whole unit with each test under `%isolate` (global-def rollback). This
 ;; is what an isolated unit's *own* worker process evaluates.
@@ -1414,7 +1413,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; after it exhausts its restart intensity — or is simply dead — no new child appears and the
 ;; set goes empty. Bounded so a genuinely wedged process cannot hang the run; if the bound is
 ;; hit we warn and restore anyway, because a hang is worse than proceeding.
-(defn- test-quiesce-rounds (before rounds)
+(defn- test-quiesce-rounds (before:seqable rounds:int -> any)
   (let (stragglers (seq/filter (proc/list) (fn (p) (not (includes? before p)))))
     (cond
       (empty? stragglers) nil
@@ -1437,18 +1436,16 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
           ;; Re-scan: a supervisor we just killed may have spawned a replacement before it
           ;; died, and that replacement is a NEW straggler this round did not see.
           (test-quiesce-rounds before (- rounds 1))))))
-(sig test-quiesce-rounds (seqable int -> any))
 
 ;; Poll until none of `pids` is alive, or `tries` × 50 ms have passed (a hard kill lands
 ;; at the victim's next safepoint, so this is µs in practice — the bound is for a
 ;; process wedged in a native call, which is not made worse by proceeding).
-(defn- test-await-dead (pids tries)
+(defn- test-await-dead (pids:seqable tries:int -> (or list nil))
   (let (live (seq/filter pids proc/alive?))
     (cond
       (empty? live) nil
       (= tries 0) live
       else (do (sleep 50) (test-await-dead live (- tries 1))))))
-(sig test-await-dead (seqable int -> (or list nil)))
 
 (defn- drain-files-scoped (loaders)
   ;; Each file's result list is `cons`ed onto a reverse-order list of lists and flattened
@@ -1586,9 +1583,8 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
                    " ms"))))))
 
 ;; "1.3s" from milliseconds — one decimal, rounded to nearest 0.1s.
-(defn- secs-str (ms)
+(defn- secs-str (ms:int -> string)
   (let (tenths (math/quot (+ ms 50) 100)) (str (math/quot tenths 10) "." (math/rem tenths 10) "s")))
-(sig secs-str (int -> string))
 
 ;; Always-on slow-test surfacing: list every test slower than `over` ms (slowest
 ;; first), so a slow test is never hidden behind the one-line summary. Unlike
@@ -1606,16 +1602,14 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
         (fn (_ p)
           (io/puts (str "  " (string/pad-right (str (first p)) 40) " " (secs-str (second p)))))))))
 
-(defn count-failed (results)
+(defn count-failed (results:seqable -> int)
   "Count the results in `results` that have at least one failed assertion (a failing test, not the total number of failed assertions)."
   ; tests with at least one failed assertion
   (fold results 0 (fn (acc r) (if (r-failed? r) (+ acc 1) acc))))
-(sig count-failed (seqable -> int))
-(defn count-skipped (results)
+(defn count-skipped (results:seqable -> int)
   "Count the results in `results` that were skipped — registered with `:skip` but never run."
   ; tests that registered but were never run (`:skip`)
   (fold results 0 (fn (acc r) (if (r-skipped? r) (+ acc 1) acc))))
-(sig count-skipped (seqable -> int))
 (defn- count-failures (results)
   ; total failed assertions across tests
   (fold results 0 (fn (acc r) (+ acc (count (r-fails r))))))

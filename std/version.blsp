@@ -30,7 +30,7 @@ them at that core (npm/Cargo rule). `+build` metadata never affects order or mat
 
 ;; ---- parsing ------------------------------------------------------------------
 
-(defn core (v)
+(defn core (v:string -> (or nil (list (or nil number))))
   "The `[major minor patch]` integers of version string `v`, ignoring any
 `-prerelease` / `+build` suffix. A missing or non-numeric segment reads as 0, so
 `\"1.2\"` is `(1 2)` and `\"1.x\"` is `(1 0)` — lenient, because this is used to
@@ -44,7 +44,6 @@ compare what a human typed in a manifest, not to validate it (that is
     ;; failure is truthy, so `(or … 0)` would hand the failure back instead.
     (map (string/split core ".")
       (fn (p) (let (n (string/->number p)) (if (failure? n) 0 n))))))
-(sig core (string -> (or nil (list (or nil number)))))
 
 (defn- digit-run? (s)
   (let (cps (string/->codepoints s))
@@ -79,7 +78,7 @@ more identifiers outrank a prefix). `+build` metadata never affects order.
       (compare-prerelease (prerelease a) (prerelease b))
       c)))
 
-(defn prerelease (v)
+(defn prerelease (v:string -> list)
   "The pre-release identifiers of version string `v` (`\"1.0.0-rc.1\"` → `(\"rc\" \"1\")`), or
 nil when there is none. Everything after the first `-` (and before any `+build`), split on
 `.`. A `+build` suffix is dropped first — build metadata is not part of precedence.
@@ -90,7 +89,6 @@ nil when there is none. Everything after the first `-` (and before any `+build`)
     (if (nil? dash)
       nil
       (string/split (string/substring no-build (+ dash 1) (string/length no-build)) "."))))
-(sig prerelease (string -> list))
 
 (defn- index-of-str (s sub)
   (let (i (index-of s sub)) (if (< i 0) nil i)))

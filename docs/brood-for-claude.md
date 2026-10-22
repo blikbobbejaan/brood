@@ -1204,7 +1204,7 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
 - **Bare symbols in patterns *bind*.** Match a literal symbol with `'foo`;
   match a runtime value by pinning it with `^expr` (never `~expr`).
 - **A `sig` is a runtime contract under `nest run` / `nest test`** (ADR-381/383). Both arm
-  contracts by default, so `(sig twice (int -> int))` makes `(lib/twice "4")` raise
+  contracts by default, so `(defn twice (n:int -> int) …)` makes `(lib/twice "4")` raise
   `{:kind :contract :blame :caller :function lib/twice :argument 1 :expected int :got "4"}`
   — an argument failing its type blames the caller, a result failing blames the callee,
   and an ability op's `:->` is checked the same way. A module's calls to its **own**
@@ -1214,7 +1214,10 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
   `sig` that says *less* than the code does (`bool` where `nil` arrives, `(list T)` where
   a vector is passed, a record alias whose required key a caller omits) now fails tests,
   where it used to be a silent misstatement.
-- **Typed parameters are the inline `sig`** (ADR-420): `(defn area (w:number h:number ->
+- **Typed parameters are how a single-clause `defn` declares its types** (ADR-420) — std
+  spells them this way; `(sig …)` is for what they cannot say (a multi-arity or
+  pattern-dispatched function, an overload `(and …)`, a value, `:pure`/`:total`). Types stay
+  optional: an unannotated `(defn f (x) x)` is as valid as ever. `(defn area (w:number h:number ->
   number) …)` registers `(sig area (number number -> number))`. `name:` types a parameter
   with the FORM after it (`xs: (list int)`); an untyped parameter or a missing `-> R` is `_`
   — unconstrained, and the result stays INFERRED, so typing one parameter costs nothing.

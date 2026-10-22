@@ -448,15 +448,14 @@ Linux so a gnu + musl matrix cannot collide.
              :else nil))
     (if os (str os "-" arch) triple)))
 
-(defn release-windows-triple? (triple)
+(defn release-windows-triple? (triple:string -> bool)
   "Is `triple` a Windows target — i.e. does its artifact need a `.exe` suffix?
 
     (project-release/release-windows-triple? \"x86_64-pc-windows-msvc\") → true
     (project-release/release-windows-triple? \"x86_64-unknown-linux-gnu\") → false"
   (includes? triple "windows"))
-(sig release-windows-triple? (string -> bool))
 
-(defn release-plain-filename? (s)
+(defn release-plain-filename? (s:string -> bool)
   "Is `s` a bare filename, safe to use as a DEFAULTED output path?
 
 A defaulted name is manifest data, not an argument: `:name` is read out of a
@@ -474,7 +473,6 @@ warning. An explicit `-o PATH` is the user's own choice and stays unrestricted.
     (not (includes? s "/"))
     (not (includes? s "\\"))
     (not (includes? s (string/codepoints-> [0])))))
-(sig release-plain-filename? (string -> bool))
 
 (defn release-plan (name output targets pinned-runtime?)
   "Decide which binaries a `nest release` writes, as a flat list of strings the

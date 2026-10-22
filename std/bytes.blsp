@@ -2,79 +2,70 @@
 (defmodule bytes
   "Immutable byte strings: construct, index, slice, concatenate, and read fixed-width big- or little-endian integers out of a buffer.")
 
-(defn at (b i)
+(defn at (b:bytes i:int -> int)
   "The byte at index i of b as an int 0–255; errors if i is out of range.
 
     (bytes/at #b\"hi\" 0)        → 104"
   (%byte-at b i))
-(sig at (bytes int -> int))
 
-(defn length (b)
+(defn length (b:bytes -> int)
   "The number of bytes in b. O(1).
 
     (bytes/length #b\"hi\")      → 2"
   (%byte-length b))
 ;; Inferred verbatim; the pre-flight's cost, not a fact (KI-150, see `encoding`).
-(sig length (bytes -> int))
 
-(defn slice (b start & more)
+(defn slice (b:bytes start:int & more:int -> bytes)
   "The byte slice [start, end) of b as a fresh bytes value (end defaults to the length). Errors if the range is out of bounds.
 
     (bytes/slice #b\"abcd\" 1 3)  → #b\"bc\""
   (if (empty? more) (%subbytes b start) (%subbytes b start (first more))))
-(sig slice (bytes int & int -> bytes))
 
-(defn concat (& more)
+(defn concat (& more:any -> bytes)
   "One bytes value joining all arguments, each an iolist (ADR-139): a string (UTF-8), a bytes value, a byte int 0–255, or an arbitrarily nested list/vector of those. The in-memory materialiser of the iolist model.
 
     (bytes/concat #b\"a\" #b\"b\") → #b\"ab\""
   (apply %bytes-concat more))
-(sig concat (& any -> bytes))
 
-(defn index-of (haystack needle & more)
+(defn index-of (haystack:bytes needle:bytes & more:int -> int)
   "The first index of the needle bytes within haystack at or after from (default 0), or -1 if absent. The byte-protocol workhorse (locate a \\r\\n\\r\\n, a frame delimiter, …).
 
     (bytes/index-of #b\"abc\" #b\"b\")   → 1"
   (if (empty? more)
     (%bytes-index-of haystack needle)
     (%bytes-index-of haystack needle (first more))))
-(sig index-of (bytes bytes & int -> int))
 
 ; `bytes/append` lived here and took a PATH: it appended an iolist to a FILE, which is not a
 ; bytes operation at all — it is `file/spit-bytes`'s append counterpart, and the name also
 ; read as the bytes analogue of the bare `append`. It is `file/spit-bytes-append`.
 
-(defn int (bs off n)
+(defn int (bs:bytes off:int n:int -> int)
   "Read `n` bytes (1–8) of `bs` at `off` as a big-endian signed (two's-complement) integer.
 
     (bytes/int (bytes/int-> 258 2) 0 2)   → 258"
   (bytes-width-check "bytes-int" n)
   (let (b0 (bytes/at bs off))
     (bytes-acc-be bs (+ off 1) (+ off n) (if (>= b0 128) (- b0 256) b0))))
-(sig int (bytes int int -> int))
 
-(defn int-le (bs off n)
+(defn int-le (bs:bytes off:int n:int -> int)
   "Read `n` bytes (1–8) of `bs` at `off` as a little-endian signed (two's-complement) integer.
 
     (bytes/int-le #b\"\\xff\\xff\" 0 2)   → -1"
   (bytes-width-check "bytes-int-le" n)
   (let (bt (bytes/at bs (+ off (- n 1))))
     (bytes-acc-le bs off (+ off (- n 2)) (if (>= bt 128) (- bt 256) bt))))
-(sig int-le (bytes int int -> int))
 
-(defn uint (bs off n)
+(defn uint (bs:bytes off:int n:int -> int)
   "Read `n` bytes (1–8) of `bs` at `off` as a big-endian unsigned integer.
 
     (bytes/uint (bytes/int-> 258 2) 0 2)   → 258"
   (bytes-acc-be bs off (+ off (bytes-width-check "bytes-uint" n)) 0))
-(sig uint (bytes int int -> int))
 
-(defn uint-le (bs off n)
+(defn uint-le (bs:bytes off:int n:int -> int)
   "Read `n` bytes (1–8) of `bs` at `off` as a little-endian unsigned integer.
 
     (bytes/uint-le #b\"\\xff\\xff\" 0 2)   → 65535"
   (bytes-acc-le bs off (+ off (- (bytes-width-check "bytes-uint-le" n) 1)) 0))
-(sig uint-le (bytes int int -> int))
 
 (defn int-> (v n)
   "Encode integer `v` as `n` bytes (1–8), big-endian two's complement. Bits

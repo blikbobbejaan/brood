@@ -23,7 +23,7 @@
 
 (defn- boundary? (text pos) (not (ident-at? text pos)))
 
-(defn- tr-loop (text old new olen from parts)
+(defn- tr-loop (text:string old:any new:any olen:int from:int parts:any -> any)
   (let (i (index-of text old from))
     (if (< i 0)
       (cons (string/substring text from (string/length text)) parts)
@@ -40,12 +40,10 @@
           olen
           (inc i)
           (cons (string/substring text from (inc i)) parts))))))
-(sig tr-loop (string any any int int any -> any))
 
-(defn token-replace (text old new)
+(defn token-replace (text:any old:string new:any -> string)
   "`text` with every whole-token `old` replaced by `new` (substrings left alone)."
   (apply str (reverse (tr-loop text old new (string/length old) 0 nil))))
-(sig token-replace (any string any -> string))
 
 (defn- apply-pairs (text pairs)
   (fold pairs text (fn (t p) (token-replace t (first p) (second p)))))

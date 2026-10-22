@@ -46,13 +46,12 @@ absolute paths). Best-effort on disk: a read-only tree costs a parse, never a wr
 ;; for the tests that gate "a warm run parses nothing".
 (def- *last-scan* {:files 0 :hits 0 :parsed 0})
 
-(defn index-path (root)
+(defn index-path (root: (or string nil) -> (or string nil))
   "Where the module index of the project at `root` lives; nil for a nil root (no persistence).
 
     (module-index/index-path \"/proj\")   → \"/proj/.brood/module-index\"
     (module-index/index-path nil)   → nil"
   (when root (path/join root *index-file*)))
-(sig index-path ((or string nil) -> (or string nil)))
 
 ;; One parse of a file, as the entry's tail `[modules own requires refs mentions]`: every
 ;; `(defmodule NAME …)` it declares in source order (symbols), its own module name (a string, as
@@ -144,7 +143,13 @@ absolute paths). Best-effort on disk: a read-only tree costs a parse, never a wr
       (def *indexes* (assoc *indexes* root e))
       e)))
 
-(defn index-entries (root files)
+(defn index-entries
+  (root:
+      (or string nil)
+    files:
+      (or (list string) (vector string) nil)
+      ->
+      (map string (or vector nil)))
   "The index entry of each of `files` — a map `file -> [modules own requires refs mentions]`:
 every module symbol the file declares (nil for none), its own module name as a string (nil
 for none), the module names it directly requires, the module prefixes its qualified
@@ -193,10 +198,14 @@ writes nothing. A file that no longer exists maps to nil and is neither counted 
       (def *indexes* (assoc *indexes* root entries))
       (write-index! root entries))
     result))
-(sig index-entries
-  ((or string nil) (or (list string) (vector string) nil) -> (map string (or vector nil))))
 
-(defn index-files (root files)
+(defn index-files
+  (root:
+      (or string nil)
+    files:
+      (or (list string) (vector string) nil)
+      ->
+      (map string (or (list symbol) nil)))
   "The modules each of `files` declares — a map `file -> (list of module symbols)`, every key
 present (a file with no `defmodule` maps to nil) — through `index-entries`.
 
@@ -204,10 +213,9 @@ present (a file with no `defmodule` maps to nil) — through `index-entries`.
   (fold (%map-pairs (index-entries root files))
     {}
     (fn (m entry) (let ([f e] entry) (assoc m f (if e (get e 0) nil))))))
-(sig index-files
-  ((or string nil) (or (list string) (vector string) nil) -> (map string (or (list symbol) nil))))
 
-(defn infos-of (root files)
+(defn infos-of
+  (root: (or string nil) files: (or (list string) (vector string) nil) -> (map string map))
   "The checker's view of each of `files` — a map `file -> {:module own :requires [dep …]
 :refs [prefix …]}` (the shape `%module-direct-requires` answers, for the whole list, from the
 index), every key present; a file that cannot be read reads `{:module nil :requires [] :refs
@@ -221,9 +229,14 @@ no source file opened for an unchanged one.
       (let ([f e] entry)
         (assoc m
           f {:module (if e (get e 1) nil) :requires (if e (get e 2) []) :refs (if e (get e 3) [])})))))
-(sig infos-of ((or string nil) (or (list string) (vector string) nil) -> (map string map)))
 
-(defn mentions-of (root files)
+(defn mentions-of
+  (root:
+      (or string nil)
+    files:
+      (or (list string) (vector string) nil)
+      ->
+      (map string (or vector nil)))
   "The prefix of every qualified token in each of `files` — a map `file -> [prefix …]`, every
 key present (nil for a file that cannot be read). Read lexically, so quoted data, keywords,
 comments and the insides of strings count: the project image's dependency evidence for a
@@ -234,17 +247,14 @@ module.
   (fold (%map-pairs (index-entries root files))
     {}
     (fn (m entry) (let ([f e] entry) (assoc m f (if e (get e 4) nil))))))
-(sig mentions-of
-  ((or string nil) (or (list string) (vector string) nil) -> (map string (or vector nil))))
 
-(defn modules-of (root file)
+(defn modules-of (root: (or string nil) file:string -> (or (list symbol) nil))
   "Every `(defmodule NAME …)` the source file declares, in source order, as symbols — from
 `root`'s module index when current, parsed and recorded otherwise. nil for a file that
 declares none or cannot be read.
 
     (module-index/modules-of nil \"/no/such/file.blsp\")   → nil"
   (get (index-files root (list file)) file))
-(sig modules-of ((or string nil) string -> (or (list symbol) nil)))
 
 (defn last-scan ()
   "What the most recent `index-files` did: `{:files n :hits h :parsed p}` — `:hits` answered

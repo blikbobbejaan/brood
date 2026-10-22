@@ -241,7 +241,7 @@ and a set its elements, as everywhere else `seq` applies.
 ;; is fold's (`acc` first), which is why this exists at all rather than callers
 ;; using `%reverse-onto` directly — it is that function with the arguments flipped.
 (defn- %append-onto (acc lst) (%reverse-onto lst acc))
-(defn append (& lists)
+(defn append (& lists:seqable -> any)
   "Concatenate any number of lists into one, left to right.
 
     (append '(1 2) '(3) '(4 5))   → (1 2 3 4 5)
@@ -267,7 +267,6 @@ front of an accumulated remainder wants; a vector last is converted."
                  last
                  (%reverse-onto (reverse last) nil)))
       (fold (rest rl) tail (fn (acc l) (%reverse-onto (reverse l) acc))))))
-(sig append (& seqable -> any))
 
 (defn- %count-acc (coll n) (if (empty? coll) n (%count-acc (rest coll) (%add n 1))))
 (defn count (coll)

@@ -13,25 +13,22 @@
 ;; symbol→string `name` for the rest of the module, so code that needs the kernel
 ;; one reaches it as `/name`.
 
-(defn name ()
+(defn name (-> (or symbol keyword))
   "This runtime's node name (:nonode until node/start)."
   (%node-name))
-(sig name (-> (or symbol keyword)))
 
-(defn list ()
+(defn list (-> (list (or symbol keyword)))
   "A list of currently connected peer node names."
   (%nodes))
-(sig list (-> (list (or symbol keyword))))
 
 (defn disconnect (nm)
   "Tear down the link to peer node `nm` now, without exiting this process — fires [:nodedown nm] on both sides and prunes `nm` from (node/list). Returns true if a link existed, false otherwise. Use it to leave a node/cluster cleanly while staying alive."
   (%disconnect nm))
 
-(defn monitor (nm)
+(defn monitor (nm: (or symbol keyword) -> keyword)
   "Get [:nodedown nm] when the link to node `nm` goes down (heartbeat timeout or close).
   Returns the node's name, as a keyword."
   (%monitor-node nm))
-(sig monitor ((or symbol keyword) -> keyword))
 
 (defn demonitor (nm)
   "Cancel this process's node monitor for node `nm` (undo node/monitor); a no-op if none is registered. Returns nil."
@@ -213,7 +210,7 @@ runtime isn't a node yet."
 
 ;; ---- guest links: a credential that is not the machine's (ADR-415) --------------------
 
-(defn grant-guest (cookie &optional (opts {}))
+(defn grant-guest (cookie:string &optional (opts:map {}) -> string)
   "Accept peers that authenticate with `cookie` as GUESTS: their link reaches only the
 registered names in `(:names opts)` and the pids this node has sent them, and cannot carry
 code — a message holding a function is dropped. `(:as opts)` names who the guest is, read
@@ -223,20 +220,17 @@ choose). The guest's side is an ordinary node started with `cookie`. Returns `co
     (node/grant-guest \"a-long-random-session-cookie\" {:names [:docs]})   → \"a-long-random-session-cookie\""
   (%node-grant-guest cookie (vec (or (:names opts) [])) (:as opts))
   cookie)
-(sig grant-guest (string &optional map -> string))
 
-(defn revoke-guest (cookie)
+(defn revoke-guest (cookie:string -> bool)
   "Stop accepting `cookie` from new guests; true when it was granted. A guest already
 connected under it stays connected until `disconnect`.
 
     (node/revoke-guest \"never-granted\")   → false"
   (%node-revoke-guest cookie))
-(sig revoke-guest (string -> bool))
 
-(defn peer-grant (peer)
+(defn peer-grant (peer:any -> (or nil map))
   "The grant a connected peer authenticated with — `{:names [...] :as ...}` — or nil for
 a full peer (or none). `peer` is a node name or a pid on that node.
 
     (node/peer-grant :nobody@nowhere)   → nil"
   (%node-peer-grant peer))
-(sig peer-grant (any -> (or nil map)))

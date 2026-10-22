@@ -91,7 +91,7 @@ Works on any collection `take` does — vectors and strings included."
     (empty? coll) -1
     (and (>= i from) (= (first coll) x)) i
     else (%index-of-seq-from (rest coll) x (inc i) from)))
-(defn index-of (coll x &optional from)
+(defn index-of (coll: (or nil string seqable) x:any &optional from: (or nil int) -> int)
   "The 0-based index of `x` in `coll` at or after `from` (default 0), or -1 if absent.
 For a string, `x` is a substring (multi-char ok; the empty string matches at `from`);
 for a list or vector, `x` is an element compared structurally. The `from` offset is
@@ -126,7 +126,6 @@ and the reader is not."
 ;; `first`/`rest` walk — every seqable, a bytes value included — or nil (-1). An int or a
 ;; keyword raises inside `%index-of-seq-from`; declaring `any` here would infer every
 ;; caller's parameter handed to `index-of` as `any`.
-(sig index-of ((or nil string seqable) any &optional (or nil int) -> int))
 (defn includes? (coll x)
   "True if `coll` contains `x`. Works on lists, vectors, strings (string/substring), sets, and maps (membership among values — use `contains?` for keys).
 
@@ -255,7 +254,7 @@ Always true for `n` <= 0.
 ;; onto the reversed accumulator, then reverse once — so we never materialise the
 ;; intermediate list-of-sublists nor spread it through `apply append`.
 
-(defn into (to from)
+(defn into (to:seqable from:seqable -> any)
   "Pour each item of `from` into `to`. For a map, items are `[k v]` pairs (assoc'd, map result); for a **set**, items are added and duplicates collapse (set result); for a vector, items are appended (vector result); otherwise items are appended (list result). Maps in `from` are read as their entries, so `(into [] some-map)` and `(into {} other-map)` both work.
 
     (into [] '(1 2 3))        → [1 2 3]
@@ -293,7 +292,6 @@ Always true for `n` <= 0.
           (%vector-concat to from)
         else (apply vector (append to from)))
     else (append to from)))
-(sig into (seqable seqable -> any))
 
 ;; conj's per-element step: each collection kind has a natural insertion point.
 (defn- %conj-one (coll x)
@@ -322,7 +320,7 @@ Always true for `n` <= 0.
     (%impl-exact? '[Conjable conj-onto] (%identity-of coll)) (conj-onto coll x)
     else (error "conj: not a collection: " (pr-str coll))))
 
-(defn conj (coll & xs)
+(defn conj (coll: (or list vector set map) & xs:any -> any)
   "Add element(s) to `coll` at its natural insertion point (Clojure-style):
 APPEND to a vector, PREPEND to a list (`nil` counts as an empty list), ADD to a
 set (a duplicate is a no-op), and `assoc` a `[k v]` pair — or merge a map — into
@@ -337,7 +335,6 @@ a map. Returns a fresh collection; `coll` is untouched.
 `disj` is the inverse and lives beside it — both stay core rather than in `std/set`
 so a set works with the collection protocol without an import."
   (fold xs coll %conj-one))
-(sig conj ((or list vector set map) & any -> any))
 
 (defn disj (s & xs)
   "A fresh set like `s` with each of `xs` removed (removing an absent element is a
@@ -943,7 +940,7 @@ indexed access or a vector literal shape (`(into [] (map coll f))`, named).
     (map [1 2 3] inc)    → (2 3 4)   ; the list-returning sibling"
   (into [] (map coll f)))
 
-(defn partition (coll n)
+(defn partition (coll:seqable n:number -> any)
   "Split `coll` into consecutive `n`-sized chunks; a trailing partial chunk is dropped.
 `n` must be positive — a size of zero or less is an error, never an endless run of
 empty chunks.
@@ -956,7 +953,6 @@ empty chunks.
   (if (> n 0)
     (%partition-acc n coll nil)
     (error "partition: chunk size must be positive, got " n)))
-(sig partition (seqable number -> any))
 
 (defn sort-by (coll key-fn)
   "Sort `coll` (stable, ascending) by comparing `(key-fn x)` of each item with the

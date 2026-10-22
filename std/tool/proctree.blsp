@@ -34,7 +34,7 @@ bounded rather than overflowing the stack."
       (cons (assoc p :depth depth)
         (mapcat kids (fn (k) (tree-walk k procs (inc depth) limit)))))))
 
-(defn tree-order (procs)
+(defn tree-order (procs:seqable -> any)
   "Order `procs` as a parent→child forest: roots first (a proc whose `:parent` is nil
 or not in the set — an orphan whose spawner already died is a root), each followed by
 its descendants (DFS by id), every map `:depth`-tagged. Children appear under their
@@ -44,4 +44,3 @@ parent."
         root? (fn (p) (let (pa (get p :parent)) (or (nil? pa) (< (index-of ids pa) 0))))
         roots (by-id (seq/filter procs root?)))
     (mapcat roots (fn (r) (tree-walk r procs 0 limit)))))
-(sig tree-order (seqable -> any))

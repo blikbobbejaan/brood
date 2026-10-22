@@ -22,9 +22,8 @@
 ;; table is a vector of (m+1) vectors, each of length (n+1).
 ;; table[i][j] = LCS length of a[0..i-1] and b[0..j-1].
 
-(defn- diff-zero-row (n)
+(defn- diff-zero-row (n:int -> vector)
   (into [] (map (range (+ n 1)) (fn (_) 0))))
-(sig diff-zero-row (int -> vector))
 
 (defn- diff-build-table (a b m n)
   "Build the full LCS DP table; returns a vector of (m+1) rows."
@@ -91,17 +90,16 @@
         (let (table (diff-build-table av bv m n))
           (diff-backtrack table av bv m n nil)))))
 
-(defn lines (a b)
+(defn lines (a:string b:string -> any)
   "Diff two strings line-by-line. `a` and `b` are split on `\\n` first.
 Returns a list of `[:keep line]`, `[:delete line]`, `[:insert line]` ops.
 
     (count (diff/lines \"a\nb\" \"a\nc\"))   → 3"
   (seq (string/split a "\n") (string/split b "\n")))
-(sig lines (string string -> any))
 
 ;; ---- utilities --------------------------------------------------------------
 
-(defn summary (ops)
+(defn summary (ops:seqable -> (or map vector))
   "Count `[:keep]`, `[:delete]`, and `[:insert]` operations in a diff result.
 Returns `{:keeps n :deletes n :inserts n}`.
 
@@ -114,7 +112,6 @@ Returns `{:keeps n :deletes n :inserts n}`.
           (= tag :keep) (assoc acc :keeps (+ (get acc :keeps) 1))
           (= tag :delete) (assoc acc :deletes (+ (get acc :deletes) 1))
           else (assoc acc :inserts (+ (get acc :inserts) 1)))))))
-(sig summary (seqable -> (or map vector)))
 
 (defn patch (a ops)
   "Apply diff `ops` to sequence `a`, producing sequence `b`. `a` is provided
@@ -149,10 +146,9 @@ each prefixed with ` ` (keep), `-` (delete), or `+` (insert)."
 ;; header: `--- a/x` is a legal REMOVED line (the text `-- a/x` deleted), and only the
 ;; counts can tell the two apart.
 
-(defn- header-int (x default)
+(defn- header-int (x:any default:int -> int)
   "`x` as an int — a string is read, an int passes — or `default` when it is neither."
   (let (n (if (string? x) (string/->number x) x)) (if (int? n) n default)))
-(sig header-int (any int -> int))
 
 (defn- header-range (s)
   "`[start count]` from a hunk header range like `-12,5` or `+3` (count 1 when absent)."
@@ -161,7 +157,7 @@ each prefixed with ` ` (keep), `-` (delete), or `+` (insert)."
     [(header-int (first parts) 0)
       (if (> (count parts) 1) (header-int (second parts) 0) 1)]))
 
-(defn hunk-header (line)
+(defn hunk-header (line:string -> any)
   "The numbers of a hunk header line: `{:old-start :old-count :new-start :new-count
 :context}` (the text after the closing `@@`, usually the enclosing function), or nil when
 `line` is not a two-way hunk header.
@@ -180,7 +176,6 @@ each prefixed with ` ` (keep), `-` (delete), or `+` (insert)."
            :new-start ns
            :new-count nc
            :context (string/trim (string/substring line (+ close 4) (string/length line)))})))))
-(sig hunk-header (string -> any))
 
 (defn- strip-prefix-path (s)
   "A path from a `--- a/x` / `+++ b/x` line: the `a/` or `b/` dropped, nil for /dev/null."
@@ -276,7 +271,7 @@ become a header line and corrupt every patch built from that file."
   (assoc file
     :hunks (into [] (map (:hunks file) (fn (h) (assoc h :lines (into [] (reverse (:lines h)))))))))
 
-(defn parse-unified (text)
+(defn parse-unified (text:any -> vector)
   "Parse unified-diff `text` — git's, one file or many, or `diff -u`'s — into a vector of
 files `{:old-path :new-path :headers :hunks}`. `:headers` are the lines before the first
 hunk (`diff --git`, `index`, `---`, `+++`, mode and rename lines); each hunk is
@@ -291,18 +286,16 @@ or deleted file.
                {:files '() :file nil :old-left 0 :new-left 0}
                parse-line))
       (into [] (map (reverse (:files (close-file st))) finish-hunks)))))
-(sig parse-unified (any -> vector))
 
 ;; ---- writing one back -----------------------------------------------------------
 
-(defn hunk-patch (file hunk)
+(defn hunk-patch (file:map hunk:map -> string)
   "A patch of `hunk` alone: `file`'s header lines, the hunk's header and its lines,
 newline-terminated — `git apply` calls a patch whose last line has no newline corrupt.
 Hand it to `git apply --cached` to stage the hunk, add `--reverse` to unstage it.
 
     (diff/hunk-patch {:headers [\"--- a/f\" \"+++ b/f\"]} {:header \"@@ -1 +1 @@\" :lines [\"-a\" \"+b\"]})   → \"--- a/f\\n+++ b/f\\n@@ -1 +1 @@\\n-a\\n+b\\n\""
   (str (string/join (append (:headers file) [(:header hunk)] (:lines hunk)) "\n") "\n"))
-(sig hunk-patch (map map -> string))
 
 (defn- header-line (os oc ns nc context)
   "A hunk header from its four numbers and trailing context."
@@ -315,7 +308,7 @@ Hand it to `git apply --cached` to stage the hunk, add `--reverse` to unstage it
     " @@"
     (if (or (nil? context) (= context "")) "" (str " " context))))
 
-(defn hunk-select (hunk from to &optional (reverse? false))
+(defn hunk-select (hunk:map from:int to:int &optional (reverse?:any false) -> any)
   "`hunk` cut down to the changes in its body lines `[from, to)` — Magit's line-level
 staging. Every change outside the range is neutralised so the patch still applies:
 applied FORWARD (staging), an unselected `+` is dropped and an unselected `-` becomes
@@ -361,7 +354,6 @@ counts are recomputed; nil when the range holds no change at all.
         :old-count old-n
         :new-count new-n
         :header (header-line (:old-start hunk) old-n (:new-start hunk) new-n (:context hunk))))))
-(sig hunk-select (map int int &optional any -> any))
 
 (defn- side-line (hunk i start-key skip-tag)
   "The line number on one side of body line `i`: that side's start plus the lines before
@@ -370,17 +362,15 @@ counts are recomputed; nil when the range holds no change at all.
     (count (seq/filter (take (:lines hunk) i)
              (fn (l) (not (or (string/starts-with? l skip-tag) (string/starts-with? l "\\"))))))))
 
-(defn hunk-new-line (hunk i)
+(defn hunk-new-line (hunk:map i:int -> int)
   "The line of the NEW file that body line `i` of `hunk` is, or sits at — for a removed
 line, the line after which it was removed. What a jump from a diff to its file lands on.
 
     (diff/hunk-new-line {:new-start 10 :lines [\" a\" \"-b\" \"+c\"]} 2)   → 11"
   (side-line hunk i :new-start "-"))
-(sig hunk-new-line (map int -> int))
 
-(defn hunk-old-line (hunk i)
+(defn hunk-old-line (hunk:map i:int -> int)
   "The line of the OLD file that body line `i` of `hunk` is, or sits at.
 
     (diff/hunk-old-line {:old-start 10 :lines [\" a\" \"-b\" \"+c\"]} 1)   → 11"
   (side-line hunk i :old-start "+"))
-(sig hunk-old-line (map int -> int))

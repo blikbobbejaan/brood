@@ -356,7 +356,7 @@ after `env` (`#!/usr/bin/env bash` and `#!/bin/bash` are both `\"bash\"`) — to
 The Emacs `interpreter-mode-alist`: a script with no extension is typed by its shebang."
   (%registry-update! 'editor/layers/*auto-type-by-interpreter* :assoc [name] type))
 
-(defn shebang-interpreter (line)
+(defn shebang-interpreter (line:string -> (or nil string))
   "The interpreter a `#!` `line` names — `\"bash\"` for `#!/usr/bin/env bash` and for
 `#!/bin/bash -e`, `\"python3\"` for `#!/usr/bin/python3` — or nil for a line that is not a
 shebang. The version suffix is kept (`python3`), a trailing newline and arguments are not."
@@ -377,7 +377,6 @@ shebang. The version suffix is kept (`python3`), a trailing newline and argument
                  (seq/find (rest words) (fn (w) (not (string/starts-with? w "-"))))
                  prog))
       (if (or (nil? name) (= name "")) nil name))))
-(sig shebang-interpreter (string -> (or nil string)))
 
 (defn- layers-match-interpreter (buf)
   "The type `*auto-type-by-interpreter*` gives `buf`'s shebang line, or nil."
@@ -463,7 +462,7 @@ layer\". A shadow test done per leaf would report that `C-x k` still works. It d
   (let (above (seq/find (take layers i) (fn (l) (contains? (or (:keymap l) {}) k))))
     (if (nil? above) nil (:name above))))
 
-(defn scope-bindings (ctxs)
+(defn scope-bindings (ctxs:seqable -> vector)
   "Every binding the scopes `ctxs` make (first scope = highest precedence), each WITH the
 layer it came from and what shadows it: a vector of
 `{:sequence :command :layer :shadowed-by}` in precedence order, `:shadowed-by` nil for the
@@ -492,7 +491,6 @@ help is worse than none, because it is believed.
                    :command command
                    :layer (:name layer)
                    :shadowed-by (scope-shadow-of layers i (first sequence))})))))))))
-(sig scope-bindings (seqable -> vector))
 
 (defn scope-dispatch (ctxs state pending key fallback)
   "Dispatch `key` through the merged keymap of `ctxs` (precedence by order), running

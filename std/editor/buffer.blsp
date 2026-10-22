@@ -44,17 +44,15 @@ never the buffer itself. Drive it with `buffer-edit` / `buffer-query`."
 
 ;; ---- helpers ----------------------------------------------------------------
 
-(defn- buffer-clamp (lo hi x)
+(defn- buffer-clamp (lo:int hi:int x:int -> int)
   "Clamp `x` into the inclusive range [lo, hi]."
   (math/max lo (math/min hi x)))
-(sig buffer-clamp (int int int -> int))
 
-(defn- buffer-line-end-col (buf line)
+(defn- buffer-line-end-col (buf:any line:int -> int)
   "The column at the end of `line` — its length excluding any trailing newline.
 Where `end-of-line` lands and the rightmost column point can hold on that line."
   (let (lt (text/line (get buf :rope) line))
     (if (string/ends-with? lt "\n") (dec (string/length lt)) (string/length lt))))
-(sig buffer-line-end-col (any int -> int))
 
 ;; ---- construction -----------------------------------------------------------
 ;;
@@ -216,32 +214,29 @@ not identities — an app that can switch buffers between the two states checks 
     (editor/buffer/buffer-current-line (editor/buffer/goto-char (editor/buffer/make-buffer \"ab\\ncd\") 4))   → 1"
   (text/char->line (get buf :rope) (get buf :point)))
 
-(defn buffer-column (buf)
+(defn buffer-column (buf:buffer -> int)
   "The 0-based column of point — characters from the start of its line.
 
     (editor/buffer/buffer-column (editor/buffer/goto-char (editor/buffer/make-buffer \"ab\\ncd\") 4))   → 1"
   (let (rope (get buf :rope))
     (- (get buf :point) (text/line->char rope (text/char->line rope (get buf :point))))))
-(sig buffer-column (buffer -> int))
 
-(defn buffer-char-after (buf)
+(defn buffer-char-after (buf:buffer -> (or string nil))
   "The single-character string just after point, or nil at end of buffer.
 
     (editor/buffer/buffer-char-after (editor/buffer/goto-char (editor/buffer/make-buffer \"abc\") 1))     → \"b\"
     (editor/buffer/buffer-char-after (editor/buffer/end-of-buffer (editor/buffer/make-buffer \"abc\")))   → nil"
   (let (p (get buf :point))
     (if (< p (buffer-length buf)) (text/slice (get buf :rope) p (inc p)) nil)))
-(sig buffer-char-after (buffer -> (or string nil)))
 
-(defn buffer-char-before (buf)
+(defn buffer-char-before (buf:buffer -> (or string nil))
   "The single-character string just before point, or nil at start of buffer.
 
     (editor/buffer/buffer-char-before (editor/buffer/goto-char (editor/buffer/make-buffer \"abc\") 1))   → \"a\""
   (let (p (get buf :point))
     (if (> p 0) (text/slice (get buf :rope) (dec p) p) nil)))
-(sig buffer-char-before (buffer -> (or string nil)))
 
-(defn buffer-region-bounds (buf)
+(defn buffer-region-bounds (buf:buffer -> (or nil (tuple int int)))
   "The region's char bounds as `[lo hi]` (lo ≤ hi, point and mark in either order),
 or nil if no mark is set. The half-open span `[lo, hi)` the view highlights and
 `delete-region`/`buffer-region` act on.
@@ -249,7 +244,6 @@ or nil if no mark is set. The half-open span `[lo, hi)` the view highlights and
     (editor/buffer/buffer-region-bounds (editor/buffer/goto-char (editor/buffer/set-mark (editor/buffer/goto-char (editor/buffer/make-buffer \"abcdef\") 4)) 1))   → [1 4]"
   (let (m (get buf :mark))
     (if (nil? m) nil (let (p (get buf :point)) [(math/min p m) (math/max p m)]))))
-(sig buffer-region-bounds (buffer -> (or nil (tuple int int))))
 
 (defn buffer-region (buf)
   "The text between point and mark (in either order), or nil if no mark is set.
@@ -263,22 +257,19 @@ or nil if no mark is set. The half-open span `[lo, hi)` the view highlights and
 
 ;; ---- movement (returns a fresh buffer with point moved) ---------------------
 
-(defn goto-char (buf n)
+(defn goto-char (buf:buffer n:int -> buffer)
   "Point moved to char index `n`, clamped to [0, length].
 
     (editor/buffer/buffer-point (editor/buffer/goto-char (editor/buffer/make-buffer \"abc\") 99))   → 3"
   (assoc buf :point (buffer-clamp 0 (buffer-length buf) n)))
-(sig goto-char (buffer int -> buffer))
 
-(defn forward-char (buf &optional (n 1))
+(defn forward-char (buf:buffer &optional (n:int 1) -> buffer)
   "Point moved `n` characters forward (clamped)."
   (goto-char buf (+ (get buf :point) n)))
-(sig forward-char (buffer &optional int -> buffer))
 
-(defn backward-char (buf &optional (n 1))
+(defn backward-char (buf:buffer &optional (n:int 1) -> buffer)
   "Point moved `n` characters backward (clamped)."
   (goto-char buf (- (get buf :point) n)))
-(sig backward-char (buffer &optional int -> buffer))
 
 (defn beginning-of-line (buf)
   "Point moved to the first character of its current line.
@@ -295,7 +286,7 @@ or nil if no mark is set. The half-open span `[lo, hi)` the view highlights and
         line (text/char->line rope (get buf :point)))
     (goto-char buf (+ (text/line->char rope line) (buffer-line-end-col buf line)))))
 
-(defn forward-line (buf &optional (n 1))
+(defn forward-line (buf:buffer &optional (n:int 1) -> buffer)
   "Point moved `n` lines forward (negative = backward), keeping the column where
 the target line is long enough. Clamps to the buffer's line range."
   (let (rope (get buf :rope)
@@ -305,12 +296,10 @@ the target line is long enough. Clamps to the buffer's line range."
                  (+ (text/char->line rope (get buf :point)) n))
         line-start (text/line->char rope target))
     (goto-char buf (+ line-start (math/min col (buffer-line-end-col buf target))))))
-(sig forward-line (buffer &optional int -> buffer))
 
-(defn backward-line (buf &optional (n 1))
+(defn backward-line (buf:buffer &optional (n:int 1) -> buffer)
   "Point moved `n` lines backward (see `forward-line`)."
   (forward-line buf (- n)))
-(sig backward-line (buffer &optional int -> buffer))
 
 (defn beginning-of-buffer (buf)
   "Point moved to the start of the buffer.
@@ -329,10 +318,9 @@ the target line is long enough. Clamps to the buffer's line range."
 ;; backward is the mirror. Both scan the ROPE from point (`text/skip-forward`), reading
 ;; only the characters they cross.
 
-(defn- buffer-scan-fwd (text i n pred)
+(defn- buffer-scan-fwd (text:string i:int n:int pred:fn -> int)
   "Smallest index ≥ `i` (up to `n`) whose char fails `pred` — advance while `pred`."
   (if (or (>= i n) (not (pred (string/char-at text i)))) i (buffer-scan-fwd text (inc i) n pred)))
-(sig buffer-scan-fwd (string int int fn -> int))
 
 (def- *word-delimiters*
   ;; what is NOT part of a word: whitespace and the delimiters. `/` is one — a qualified
@@ -387,13 +375,12 @@ the line is blank or all whitespace.
   "True if buffer `line` is empty or whitespace-only (a paragraph separator)."
   (string/blank? (buffer-line-at buf line)))
 
-(defn- buffer-scan-lines (buf line n step want-blank?)
+(defn- buffer-scan-lines (buf:any line:int n:int step:int want-blank?:bool -> int)
   "First line index walking from `line` by `step` (±1, within `[0, n)`) whose
 blankness differs from `want-blank?`; stops at the buffer edge."
   (if (or (< line 0) (>= line n) (not (= (buffer-line-blank? buf line) want-blank?)))
     line
     (buffer-scan-lines buf (+ line step) n step want-blank?)))
-(sig buffer-scan-lines (any int int int bool -> int))
 
 (defn forward-paragraph (buf)
   "Point moved to the start of the next blank line after the current paragraph (end of
@@ -433,22 +420,20 @@ buffer if none) — Emacs `forward-paragraph` (M-}).
 
 (defn- buffer-sentence-space? (c) (or (= c " ") (= c "\t") (= c "\n")))
 
-(defn- buffer-sentence-closers-end (text i n)
+(defn- buffer-sentence-closers-end (text:string i:int n:int -> int)
   "Index past the run of closing quotes/brackets at `i` — what may sit between a
 sentence's terminator and the whitespace after it (`he said \"stop.\"`)."
   (if (or (>= i n) (not (includes? buffer-sentence-closers (string/char-at text i))))
     i
     (buffer-sentence-closers-end text (inc i) n)))
-(sig buffer-sentence-closers-end (string int int -> int))
 
-(defn- buffer-sentence-end-at (text i n)
+(defn- buffer-sentence-end-at (text:string i:int n:int -> (or int nil))
   "Index just past a sentence ending AT `i` — a terminator, its closing quotes/brackets,
 then whitespace or `n` — or nil when `i` doesn't end a sentence."
   (if (not (includes? buffer-sentence-enders (string/char-at text i)))
     nil
     (let (j (buffer-sentence-closers-end text (inc i) n))
       (if (or (>= j n) (buffer-sentence-space? (string/char-at text j))) j nil))))
-(sig buffer-sentence-end-at (string int int -> (or int nil)))
 
 (defn- buffer-scan-sentence-fwd (text i limit)
   "Index just past the first sentence end at or after `i`, capped at `limit` (the
@@ -458,7 +443,7 @@ paragraph's end); `limit` when the paragraph holds no further sentence end."
     (let (e (buffer-sentence-end-at text i limit))
       (if (nil? e) (buffer-scan-sentence-fwd text (inc i) limit) (math/min e limit)))))
 
-(defn- buffer-sentence-start-before (text i limit best)
+(defn- buffer-sentence-start-before (text:string i:int limit:int best:int -> int)
   "The greatest sentence start `< limit`, scanning forward from `i` and carrying `best`
 (seeded with the paragraph start). A sentence start is the paragraph start, or the index
 just past a sentence end with the whitespace after it skipped."
@@ -469,9 +454,8 @@ just past a sentence end with the whitespace after it skipped."
       else
         (let (s (buffer-scan-fwd text e limit buffer-sentence-space?))
           (if (>= s limit) best (buffer-sentence-start-before text s limit s))))))
-(sig buffer-sentence-start-before (string int int int -> int))
 
-(defn forward-sentence (buf)
+(defn forward-sentence (buf:buffer -> buffer)
   "Point moved just past the end of the current sentence — the paragraph's end when it
 holds no further sentence terminator (Emacs `forward-sentence`, M-e).
 
@@ -482,9 +466,8 @@ holds no further sentence terminator (Emacs `forward-sentence`, M-e).
     (goto-char buf
       (+ point
         (buffer-scan-sentence-fwd (text/slice (get buf :rope) point limit) 0 (- limit point))))))
-(sig forward-sentence (buffer -> buffer))
 
-(defn backward-sentence (buf)
+(defn backward-sentence (buf:buffer -> buffer)
   "Point moved to the start of the current sentence — the previous sentence's start when
 point already sits at one, the paragraph's start when there is no earlier sentence
 (Emacs `backward-sentence`, M-a).
@@ -495,11 +478,10 @@ point already sits at one, the paragraph's start when there is no earlier senten
     (goto-char buf
       (+ floor
         (buffer-sentence-start-before (text/slice (get buf :rope) floor point) 0 (- point floor) 0)))))
-(sig backward-sentence (buffer -> buffer))
 
 ;; ---- mark -------------------------------------------------------------------
 
-(defn set-mark (buf)
+(defn set-mark (buf:buffer -> buffer)
   "Set the mark at point (with point, this delimits the region).
 
     (editor/buffer/buffer-mark (editor/buffer/set-mark (editor/buffer/goto-char (editor/buffer/make-buffer \"abc\") 2)))   → 2"
@@ -507,8 +489,7 @@ point already sits at one, the paragraph's start when there is no earlier senten
 ;; `assoc` on a record answers `vector | map` — a record's type does not survive an
 ;; update — so every buffer transformer has to re-declare what it hands back, or its
 ;; callers report the width instead.
-(sig set-mark (buffer -> buffer))
-(defn clear-mark (buf)
+(defn clear-mark (buf:buffer -> buffer)
   "Clear the mark.
 
     (editor/buffer/buffer-mark (editor/buffer/clear-mark (editor/buffer/set-mark (editor/buffer/make-buffer \"abc\"))))   → nil"
@@ -517,7 +498,6 @@ point already sits at one, the paragraph's start when there is no earlier senten
 ;; ---- mark ring (a history of marks; the substrate for C-u C-SPC) ------------
 
 ; like Emacs `mark-ring-max`
-(sig clear-mark (buffer -> buffer))
 (def *mark-ring-max* 16)
 (defn push-mark (buf)
   "Set the mark at point **and** push point onto the buffer's `:mark-ring` (bounded
@@ -608,7 +588,7 @@ facilities."
         base (if m (assoc base :markers m) base))
     (if s (assoc base :editable s) base)))
 
-(defn amalgamate-undo (buf)
+(defn amalgamate-undo (buf:buffer -> buffer)
   "Make the **next** editing op amalgamate into the current undo group rather than start
 a new one: its pre-edit snapshot is dropped, so undo treats the run as a single step.
 A one-shot flag (cleared by the next edit). By default every op is its own undo step; the
@@ -618,8 +598,7 @@ command) into one undo, the Emacs way — keeping this primitive's default simpl
     (count (get (editor/buffer/insert (editor/buffer/amalgamate-undo (editor/buffer/insert (editor/buffer/make-buffer \"\") \"a\")) \"b\") :undo))   → 1"
   (assoc buf :undo-amalgamate true))
 
-(sig amalgamate-undo (buffer -> buffer))
-(defn- buffer-record-change (buf)
+(defn- buffer-record-change (buf:buffer -> buffer)
   "Record that `buf`'s text is about to change — called by EVERY editing op, and only by
 one that really changes the text. Two facts follow from a change, and this is the one place
 both are kept, so no op can record one and forget the other:
@@ -642,9 +621,8 @@ restarts it whenever the previous command wasn't an undo.)"
         (assoc buf
           :undo (cons (buffer-snapshot buf) (or (get buf :undo) ()))
           :undo-amalgamate false))))
-(sig buffer-record-change (buffer -> buffer))
 
-(defn undo-group (buf f)
+(defn undo-group (buf:buffer f: (buffer -> buffer) -> buffer)
   "Apply `f` (`buffer -> buffer`) to `buf` as ONE undo step, however many edits it makes:
 a single `undo` restores `buf` exactly as it was, point included. The way to write a
 command that is several edits — a replace that is a delete then an insert, a
@@ -665,7 +643,6 @@ history is never walked. An armed `amalgamate-undo` still applies to the group a
       (and (get buf :undo-amalgamate) (not (empty? history)))
         (assoc after :undo history :undo-amalgamate false)
       else (assoc after :undo (cons (buffer-snapshot buf) history) :undo-amalgamate false))))
-(sig undo-group (buffer (buffer -> buffer) -> buffer))
 
 ;; ---- modified: does the text differ from the file? ---------------------------
 ;; The buffer owns this, because only the buffer sees every change: an editor that kept the
@@ -678,29 +655,26 @@ history is never walked. An armed `amalgamate-undo` still applies to the group a
 ;; (Emacs does the same). That comparison is by content (O(n) worst case), which is why it
 ;; runs per undo step and never per keystroke or per frame.
 
-(defn buffer-modified? (buf)
+(defn buffer-modified? (buf:buffer -> bool)
   "True when `buf`'s text has changed since it was read, created or last saved.
 
     (editor/buffer/buffer-modified? (editor/buffer/make-buffer \"a\"))   → false
     (editor/buffer/buffer-modified? (editor/buffer/insert (editor/buffer/make-buffer \"a\") \"b\"))   → true"
   (= true (get buf :modified)))
-(sig buffer-modified? (buffer -> bool))
 
-(defn mark-buffer-saved (buf)
+(defn mark-buffer-saved (buf:buffer -> buffer)
   "`buf` with its current text as the saved baseline — unmodified. `save-buffer` and
 `buffer-from-file` do this; call it after writing the text out some other way.
 
     (editor/buffer/buffer-modified? (editor/buffer/mark-buffer-saved (editor/buffer/insert (editor/buffer/make-buffer \"a\") \"b\")))   → false"
   (assoc buf :modified false :saved-rope (get buf :rope)))
-(sig mark-buffer-saved (buffer -> buffer))
 
-(defn mark-buffer-modified (buf)
+(defn mark-buffer-modified (buf:buffer -> buffer)
   "`buf` flagged as differing from its file even though no edit made it so — a buffer
 whose file vanished, or whose text came from somewhere other than its file.
 
     (editor/buffer/buffer-modified? (editor/buffer/mark-buffer-modified (editor/buffer/make-buffer \"a\")))   → true"
   (assoc buf :modified true))
-(sig mark-buffer-modified (buffer -> buffer))
 
 (defn disable-undo (buf)
   "Turn off undo recording for `buf` and drop any existing history. For a log / output
@@ -727,16 +701,15 @@ positions; a snapshot without them drops the key so that state stays as it was."
       (get b :editable) (dissoc b :editable)
       else b)))
 
-(defn undo-start (buf)
+(defn undo-start (buf:buffer -> buffer)
   "Begin a fresh undo run: point `:pending-undo` at the whole `:undo` history. Because
 each `undo-next` records the state it leaves onto `:undo`, a run started after some undos
 walks the *reverse* direction — i.e. it redoes.
 
     (count (get (editor/buffer/undo-start (editor/buffer/insert (editor/buffer/make-buffer \"a\") \"b\")) :pending-undo))   → 1"
   (assoc buf :pending-undo (get buf :undo)))
-(sig undo-start (buffer -> buffer))
 
-(defn undo-next (buf)
+(defn undo-next (buf:buffer -> buffer)
   "One step of the current undo run: restore the next snapshot in `:pending-undo`,
 recording the current state onto `:undo` (so this very step is itself reversible) and
 advancing `:pending-undo`. A no-op (returns `buf`) when the run is exhausted. The
@@ -752,7 +725,6 @@ leaves the buffer unmodified.
           :undo (cons (buffer-snapshot buf) (or (get buf :undo) ()))
           :pending-undo (rest p)
           :modified (not (= (get restored :rope) (get buf :saved-rope))))))))
-(sig undo-next (buffer -> buffer))
 
 ;; ---- undo in a region: undo only the lines you selected ----------------------
 ;; Emacs's `undo-in-region`, and it costs almost nothing here — because of what
@@ -772,16 +744,15 @@ leaves the buffer unmodified.
 ;; Granularity is the LINE (that is the unit a line diff — and the user's "these
 ;; lines" — speaks in); a whole-buffer region reproduces a plain undo exactly.
 
-(defn- undo-common-prefix (a b i)
+(defn- undo-common-prefix (a:string b:string i:int -> int)
   ;; how many leading chars `a` and `b` share — bounds the char diff to what changed
   (if (or (>= i (string/length a))
         (>= i (string/length b))
         (not (= (string/char-at a i) (string/char-at b i))))
     i
     (undo-common-prefix a b (inc i))))
-(sig undo-common-prefix (string string int -> int))
 
-(defn- undo-common-suffix (a b lo k)
+(defn- undo-common-suffix (a:string b:string lo:int k:int -> int)
   ;; how many trailing chars they share, never eating into the shared prefix `lo`
   (let (la (string/length a) lb (string/length b))
     (if (or (>= k (- la lo))
@@ -789,7 +760,6 @@ leaves the buffer unmodified.
           (not (= (string/char-at a (- la k 1)) (string/char-at b (- lb k 1)))))
       k
       (undo-common-suffix a b lo (inc k)))))
-(sig undo-common-suffix (string string int int -> int))
 
 (def *undo-region-char-budget* 4000)
 ;; The largest changed SPAN (in chars) a region undo will diff character-by-character.
@@ -818,7 +788,7 @@ leaves the buffer unmodified.
         emit (if overlap dels adds))
     [(+ n na) (cons emit out)]))
 
-(defn- undo-region-restore (old new lo hi)
+(defn- undo-region-restore (old:string new:string lo:int hi:int -> string)
   "The text you get by undoing, in `new`, only the changes (vs `old`) that OVERLAP the
 character range `[lo, hi]` — everything else keeps `new`'s version. Character-precise,
 like Emacs's `undo-in-region`: half of a line, or one of two edits on the same line, is
@@ -855,7 +825,6 @@ the diff only ever runs over the span that actually changed."
               [n out hunk] r
               [_ out2] (undo-flush-chunk hunk n lo hi out))
           (str head (apply str (reverse out2)) tail)))))
-(sig undo-region-restore (string string int int -> string))
 
 (defn- undo-region-candidate (buf lo hi snaps depth)
   ;; The nearest snapshot whose changes actually touch the region: `[undone-text tail]`,
@@ -1015,7 +984,7 @@ and must not silently get a fully editable buffer.
   (let (r (get buf :editable))
     (when r (region-normalize r (buffer-length buf)))))
 
-(defn narrow-to (buf regions)
+(defn narrow-to (buf:buffer regions:any -> buffer)
   "Narrow `buf` so that only `regions` (a list of `[lo hi]` pairs) may be edited; everything
 outside them is read-only. Replaces any previous narrowing. `()` narrows to nothing, which
 is the whole-buffer read-only case.
@@ -1026,14 +995,12 @@ type at k`, which has no complement spelling — that is why this takes the edit
 
     (editor/buffer/buffer-text (editor/buffer/insert (editor/buffer/goto-char (editor/buffer/narrow-to (editor/buffer/make-buffer \"abcdef\") [[0 3]]) 1) \"!\"))   → \"a!bcdef\""
   (assoc buf :editable (into [] regions)))
-(sig narrow-to (buffer any -> buffer))
 
-(defn widen (buf)
+(defn widen (buf:buffer -> buffer)
   "Undo any narrowing: the whole of `buf` is editable again.
 
     (editor/buffer/narrowed? (editor/buffer/widen (editor/buffer/narrow-to (editor/buffer/make-buffer \"abcdef\") [[0 3]])))   → false"
   (dissoc buf :editable))
-(sig widen (buffer -> buffer))
 
 (defn read-only? (buf)
   "True if `buf` refuses every change — its mutators (`insert`, `delete-char`,
@@ -1101,7 +1068,7 @@ first, so the contract lives in the model and no consumer has to remember it. Re
     buf
     (buffer-read-only-error "text is read-only")))
 
-(defn- buffer-adjust-editable (buf kind a b)
+(defn- buffer-adjust-editable (buf:buffer kind:keyword a:int b:int -> buffer)
   "Return `buf` with its editable regions shifted for an edit — `:insert` (a=pos, b=len) or
 `:delete` (a=lo, b=hi) — or `buf` unchanged when it is not narrowed.
 
@@ -1124,7 +1091,6 @@ width."
                 (fn (r)
                   (let ([lo hi] r)
                     [(if (>= lo b) (- lo d) lo) (if (>= hi b) (- hi d) hi)])))))))))
-(sig buffer-adjust-editable (buffer keyword int int -> buffer))
 
 ;; ---- the complement view (compatibility) ------------------------------------
 ;; `read-only-spans` reads fine as a QUERY — "which ranges
@@ -1194,7 +1160,7 @@ inside the range collapses to `lo`, one at/after `hi` moves left by the deleted 
   (let (d (- hi lo))
     (update-vals markers (fn (pos) (cond (<= pos lo) pos (< pos hi) lo else (- pos d))))))
 
-(defn- buffer-adjust-markers (buf kind a b)
+(defn- buffer-adjust-markers (buf:buffer kind:keyword a:int b:int -> buffer)
   "Return `buf` with its markers shifted for an edit — `:insert` (a=pos, b=len) or `:delete`
 (a=lo, b=hi) — or `buf` unchanged when it has no markers, so marker-less buffers are untouched."
   (let (m (get buf :markers))
@@ -1205,7 +1171,6 @@ inside the range collapses to `lo`, one at/after `hi` moves left by the deleted 
           (if (= kind :insert)
             (buffer-markers-insert m a b)
             (buffer-markers-delete m a b))))))
-(sig buffer-adjust-markers (buffer keyword int int -> buffer))
 
 ;; ---- the splice log: what an edit DID, not a guess from the text -------------------
 ;; A holder that mirrors this buffer somewhere else — a buffer process, a collaborator —
@@ -1221,7 +1186,7 @@ inside the range collapses to `lo`, one at/after `hi` moves left by the deleted 
 ;; handful — a longer run (a macro, a rectangle over many lines) falls back to the diff,
 ;; which is correct, merely approximate in placement.
 
-(defn- buffer-apply-edit (before after kind a b repl)
+(defn- buffer-apply-edit (before:buffer after:buffer kind:keyword a:int b:int repl:string -> buffer)
   "`after` — `before` with `[lo, hi)` replaced by `repl` in its rope, where `kind`/`a`/`b`
 describe the edit as `buffer-adjust-markers` reads it — with its markers and editable regions
 shifted and the splice logged. The one tail every editing primitive shares."
@@ -1233,9 +1198,8 @@ shifted and the splice logged. The one tail every editing primitive shares."
                            (or (get before :splices) ()))
                      *splice-log-max*)))
     (buffer-adjust-editable (buffer-adjust-markers logged kind a b) kind a b)))
-(sig buffer-apply-edit (buffer buffer keyword int int string -> buffer))
 
-(defn buffer-splices-since (before after)
+(defn buffer-splices-since (before:buffer after:buffer -> (or nil list))
   "The splices `[lo hi repl]`, oldest first, that the editing primitives made to turn
 `before`'s text into `after`'s — each positioned against the text the one before it left.
 `()` when the two hold the same text; nil when the log cannot account for the change (an
@@ -1255,8 +1219,7 @@ this can. Costs no text: the walk compares rope handles."
                             (walk rope-before (rest log) (cons [lo hi repl] acc))
                             nil)))))
       (walk (get after :rope) (or (get after :splices) ()) ()))))
-(sig buffer-splices-since (buffer buffer -> (or nil list)))
-(defn insert (buf s)
+(defn insert (buf:buffer s:string -> buffer)
   "Insert string `s` at point; point advances past it. Recorded for undo. Markers after the
 insertion point shift with the text. Throws if `buf` is read-only.
 
@@ -1272,9 +1235,8 @@ insertion point shift with the text. Throws if `buf` is read-only.
         :insert p
         (string/length s)
         s))))
-(sig insert (buffer string -> buffer))
 
-(defn delete-char (buf &optional (n 1))
+(defn delete-char (buf:buffer &optional (n:int 1) -> buffer)
   "Delete `n` characters *after* point; point stays put. Recorded for undo (a
 no-op at end-of-buffer is not recorded). Throws if `buf` is read-only."
   (buffer-barf-if-read-only buf)
@@ -1289,9 +1251,8 @@ no-op at end-of-buffer is not recorded). Throws if `buf` is read-only."
           :delete p
           end
           "")))))
-(sig delete-char (buffer &optional int -> buffer))
 
-(defn delete-backward-char (buf &optional (n 1))
+(defn delete-backward-char (buf:buffer &optional (n:int 1) -> buffer)
   "Delete `n` characters *before* point (backspace); point moves back with it.
 Recorded for undo (a no-op at point 0 is not recorded). Throws if `buf` is read-only."
   (buffer-barf-if-read-only buf)
@@ -1306,17 +1267,15 @@ Recorded for undo (a no-op at point 0 is not recorded). Throws if `buf` is read-
           :delete start
           p
           "")))))
-(sig delete-backward-char (buffer &optional int -> buffer))
 
-(defn insert-pair (buf open close)
+(defn insert-pair (buf:buffer open:string close:string -> buffer)
   "Insert `open` and `close` at point with point between them — the electric half of a
 bracket key: `(` types `()` and leaves you inside. One undo unit.
 
     (let (b (editor/buffer/insert-pair (editor/buffer/make-buffer \"\") \"(\" \")\")) [(editor/buffer/buffer-text b) (editor/buffer/buffer-point b)])   → [\"()\" 1]"
   (backward-char (insert buf (str open close)) (string/length close)))
-(sig insert-pair (buffer string string -> buffer))
 
-(defn delete-empty-pair (buf open close)
+(defn delete-empty-pair (buf:buffer open:string close:string -> buffer)
   "When point sits between `open` and `close` with nothing in between — `(|)` — delete
 both, else `buf` unchanged. The backspace half of an electric bracket key: what typing
 `(` put there, one backspace takes away, so a pair is never left half-deleted. Callers
@@ -1327,7 +1286,6 @@ fall through to `delete-backward-char` on the unchanged buffer.
     (undo-group buf
       (fn (b) (delete-char (delete-backward-char b (string/length open)) (string/length close))))
     buf))
-(sig delete-empty-pair (buffer string string -> buffer))
 
 (defn delete-region (buf)
   "Delete the text between point and mark; point moves to the region start and
@@ -1351,7 +1309,7 @@ region is empty. Recorded for undo (restoring it brings back the mark too). Thro
               hi
               "")))))))
 
-(defn replace-region (buf start end s)
+(defn replace-region (buf:buffer start:int end:int s:string -> buffer)
   "Replace the characters in `[start, end)` with string `s`, leaving point just after
 the inserted text. The splice primitive: completion-at-point, comment toggling,
 query-replace, re-indentation, and transpose are all this. Composes `delete-char` +
@@ -1361,7 +1319,6 @@ range deleted and nothing inserted.
 
     (editor/buffer/buffer-text (editor/buffer/replace-region (editor/buffer/make-buffer \"hello world\") 0 5 \"goodbye\"))   → \"goodbye world\""
   (undo-group buf (fn (b) (insert (delete-char (goto-char b start) (- end start)) s))))
-(sig replace-region (buffer int int string -> buffer))
 
 ;; ---- rectangles: column-block ops (Emacs C-x r r/k/d/o/c/t/y) ---------------
 ;; A RECTANGLE is the character grid between two corners — point and mark taken as
@@ -1376,7 +1333,7 @@ range deleted and nothing inserted.
 ;; rectangle kill is a LIST of rows, not a flat string — that is what makes a rectangle
 ;; yank rebuild the block).
 
-(defn rectangle-bounds (buf)
+(defn rectangle-bounds (buf:buffer -> (or nil (tuple int int int int)))
   "`[top bottom left right]` — the rectangle point↔mark spans as line/column corners
 (`top <= bottom`, `left <= right`), or nil when no mark is set. `left`/`right` are columns
 (0-based char offsets within a line); the block on each line is `[left, right)`.
@@ -1392,13 +1349,11 @@ range deleted and nothing inserted.
             pc (- point (text/line->char rope pl))
             mc (- mark (text/line->char rope ml)))
         [(math/min pl ml) (math/max pl ml) (math/min pc mc) (math/max pc mc)]))))
-(sig rectangle-bounds (buffer -> (or nil (tuple int int int int))))
 
-(defn- rect-line-content (rope line)
+(defn- rect-line-content (rope:any line:int -> int)
   ;; the line's length excluding any trailing newline
   (let (lt (text/line rope line))
     (if (string/ends-with? lt "\n") (dec (string/length lt)) (string/length lt))))
-(sig rect-line-content (any int -> int))
 
 (defn- rect-spans (buf)
   ;; per line top..bottom, `[start l r]`: absolute line-start char, and the block's
@@ -1414,7 +1369,7 @@ range deleted and nothing inserted.
                   content (rect-line-content rope line))
               [start (math/min left content) (math/min right content)])))))))
 
-(defn extract-rectangle (buf)
+(defn extract-rectangle (buf:buffer -> list)
   "The rectangle's rows as a list of strings, one per line top..bottom, each right-padded
 with spaces to the rectangle's full width — so a kill round-trips through
 [[insert-rectangle]]. `()` when no mark is set.
@@ -1434,17 +1389,21 @@ with spaces to the rectangle's full width — so a kill round-trips through
                   r (math/min right content)
                   piece (text/slice rope (+ start l) (+ start r)))
               (str piece (string/repeat " " (- width (string/length piece)))))))))))
-(sig extract-rectangle (buffer -> list))
 
-(defn- rect-fold-lines (buf spans f)
+(defn- rect-fold-lines
+  (buf:buffer
+    spans:
+      (len (list (tuple int int int)) 1 _)
+    f:
+      (buffer int int int -> buffer)
+      ->
+      buffer)
   ;; apply `(f buf start l r)` to each span, BOTTOM-TO-TOP so offsets above the edit stay
   ;; valid, then park point at the rectangle's top-left. `spans` is `rect-spans`' output.
   (let (edited (fold (reverse spans) buf (fn (b sp) (let ([start l r] sp) (f b start l r)))))
     (goto-char edited (+ (first (first spans)) (second (first spans))))))
 ;; A NON-EMPTY list of spans: `(first spans)` is what point parks at, so an empty
 ;; rectangle is the caller's to refuse (`rect-spans` never yields one).
-(sig rect-fold-lines
-  (buffer (len (list (tuple int int int)) 1 _) (buffer int int int -> buffer) -> buffer))
 
 (defn delete-rectangle (buf)
   "Delete `[left, right)` of every line the rectangle spans, closing the gap; point lands
@@ -1487,7 +1446,7 @@ lines are padded to the left column first. A no-op when no mark is set; throws i
             (let (pad (- left l))
               (replace-region b (+ start l) (+ start l) (string/repeat " " (+ pad width))))))))))
 
-(defn string-rectangle (buf s)
+(defn string-rectangle (buf:buffer s:string -> buffer)
   "Replace `[left, right)` of every line the rectangle spans with the string `s` (the same
 `s` on each line) — Emacs `string-rectangle`. Short lines are padded to the left column
 first. A no-op when no mark is set; throws if read-only.
@@ -1503,9 +1462,8 @@ first. A no-op when no mark is set; throws if read-only.
           (fn (b start l r)
             (let (pad (- left l))
               (replace-region b (+ start l) (+ start r) (str (string/repeat " " pad) s)))))))))
-(sig string-rectangle (buffer string -> buffer))
 
-(defn insert-rectangle (buf rows)
+(defn insert-rectangle (buf:buffer rows:list -> buffer)
   "Insert `rows` (a list of strings — an [[extract-rectangle]] result) as a column block at
 point: the first row at point, each later row on the next line at point's column, padding a
 short line (or a missing one at end of buffer) with spaces so the block stays aligned. Point
@@ -1536,11 +1494,10 @@ returns to where it started. `rows` empty leaves `buf` unchanged. Throws if read
                       pad (math/max 0 (- col content)))
                   (insert (goto-char b at) (str (string/repeat " " pad) row)))))))
         start-point))))
-(sig insert-rectangle (buffer list -> buffer))
 
 ;; ---- public marker API ------------------------------------------------------
 
-(defn buffer-marker-set (buf id pos)
+(defn buffer-marker-set (buf:buffer id:any pos:int -> buffer)
   "Set marker `id` (any value — a keyword, a participant pid) to char position `pos`
 (clamped into the buffer). The marker then survives edits: text inserted or deleted before
 it shifts it, so it tracks the same logical spot. The basis for overlays, diagnostics, and
@@ -1550,22 +1507,19 @@ remote participants' cursors on a shared buffer.
   (assoc buf
     :markers (assoc (or (get buf :markers) {}) id (buffer-clamp 0 (buffer-length buf) pos))))
 
-(sig buffer-marker-set (buffer any int -> buffer))
-(defn buffer-marker (buf id)
+(defn buffer-marker (buf:buffer id:any -> (or nil int))
   "The char position of marker `id` (clamped to the current length), or nil if unset.
 
     (editor/buffer/buffer-marker (editor/buffer/make-buffer \"abc\") :m)   → nil"
   (let (p (get (or (get buf :markers) {}) id))
     (if (nil? p) nil (buffer-clamp 0 (buffer-length buf) p))))
 
-(defn buffer-marker-delete (buf id)
+(defn buffer-marker-delete (buf:buffer id:any -> buffer)
   "Remove marker `id`. A no-op if it (or any marker) isn't set.
 
     (editor/buffer/buffer-markers (editor/buffer/buffer-marker-delete (editor/buffer/buffer-marker-set (editor/buffer/make-buffer \"abc\") :m 2) :m))   → {}"
   (let (m (get buf :markers))
     (if (nil? m) buf (assoc buf :markers (dissoc m id)))))
-(sig buffer-marker-delete (buffer any -> buffer))
-(sig buffer-marker (buffer any -> (or nil int)))
 
 (defn buffer-markers (buf)
   "The marker map `{id -> pos}` (positions clamped to the current length), or `{}` if none.
@@ -1646,7 +1600,7 @@ line's start does **not** pull that trailing line in (Emacs's line-wise conventi
             hicol (- hi (text/line->char (buffer-rope buf) elraw)))
         [sl (if (and (> elraw sl) (= hicol 0)) (dec elraw) elraw)]))))
 
-(defn whitespace-run-at (buf)
+(defn whitespace-run-at (buf:buffer -> (tuple int int))
   "The span of spaces/tabs SURROUNDING point, as `[lo hi]` (`hi` exclusive; `[p p]` when
 point is not in or beside one). Scans both directions but never across a newline, so it
 is the gap you are standing in — line structure is somebody else's business.
@@ -1661,7 +1615,6 @@ the original text out of it before touching anything.
         p (buffer-point buf))
     [(text/skip-backward rope p *horizontal-space* true)
       (text/skip-forward rope p *horizontal-space* true)]))
-(sig whitespace-run-at (buffer -> (tuple int int)))
 
 (defn collapse-whitespace (buf keep)
   "The run of spaces/tabs SURROUNDING point replaced by `keep` — `\" \"` for Emacs's
@@ -1719,14 +1672,13 @@ wrapped paragraph together from the bottom.
       buf
       (fixup-whitespace (delete-char (goto-char at-bol (dec bol)) 1)))))
 
-(defn map-region-lines (buf f)
+(defn map-region-lines (buf:any f: (any any -> any) -> any)
   "Fold `(f buf line)` over each line in `buf`'s `region-line-range`, threading the
 buffer through — the scaffold for line-wise commands (comment, indent-region, …).
 `f` must not add or remove lines (line numbers stay valid across the fold). Returns
 the resulting buffer."
   (let ([sl el] (region-line-range buf))
     (fold (range sl (inc el)) buf f)))
-(sig map-region-lines (any (any any -> any) -> any))
 
 ;; ---- the actor shell (buffer-as-process) ------------------------------------
 ;;
@@ -1998,10 +1950,9 @@ to delete no longer exists as written)."
       (>= alo hi) splice
       else (let (p (+ alo alen)) [p p repl]))))
 
-(defn splice-transform-all (splice applieds)
+(defn splice-transform-all (splice:any applieds:seqable -> any)
   "`splice` transformed over each of `applieds` in order (oldest first)."
   (fold applieds splice (fn (sp a) (splice-transform sp a))))
-(sig splice-transform-all (any seqable -> any))
 
 (defn buffer-splice (bp lo hi repl &optional origin base)
   "Replace `[lo, hi)` with `repl` inside buffer process `bp` — the structured-edit
@@ -2023,16 +1974,15 @@ land exactly where they meant to, no CRDT. Asynchronous — returns nil."
 Asynchronous — returns nil."
   (send bp [:marker-set id pos origin]))
 
-(defn buffer-query (bp f)
+(defn buffer-query (bp: (or map pid) f:any -> any)
   "Synchronously read a derived view from buffer process `bp` via pure fn `f` (a
 `buffer -> view`). `f` must return a non-rope value — e.g. `buffer-text`,
 `buffer-point`, `(fn (b) (buffer-line-at b 0))`. Blocks for the reply."
   (let (r (ref))
     (send bp [:get f (self) r])
     (receive ([:reply ^r v] v))))
-(sig buffer-query ((or map pid) any -> any))
 
-(defn subscribe-buffer (bp proj)
+(defn subscribe-buffer (bp: (or map pid) proj:any -> nil)
   "Subscribe the calling process to buffer process `bp`. It immediately receives — and then
 gets on every edit — `[:buffer-updated bp version view]`, where `view` is `(proj buffer)`, a
 derived non-rope value (a viewport projection, the text, a marker set), or nil when `proj` is
@@ -2040,12 +1990,10 @@ nil (a bare change notification). The push side of buffers-as-processes: a pane 
 with its viewport projection and re-renders from each pushed frame instead of polling. Many
 processes may subscribe to one buffer — that is what lets several sessions see each edit."
   (send bp [:subscribe (self) proj]))
-(sig subscribe-buffer ((or map pid) any -> nil))
 
-(defn unsubscribe-buffer (bp)
+(defn unsubscribe-buffer (bp: (or map pid) -> nil)
   "Stop the calling process receiving `[:buffer-updated …]` pushes from buffer process `bp`."
   (send bp [:unsubscribe (self)]))
-(sig unsubscribe-buffer ((or map pid) -> nil))
 
 (defn buffer-sync (bp proj &optional (timeout 2000))
   "An ATOMIC `[version view]` snapshot of buffer process `bp` through projection
@@ -2058,7 +2006,7 @@ the caller's monitor will deal with it)."
     (send bp [:sync proj (self) r])
     (receive ([:reply ^r v] v) (after timeout :no-reply))))
 
-(defn stop-buffer (bp)
+(defn stop-buffer (bp: (or map pid) -> any)
   "Stop buffer process `bp` (it leaves its loop). Synchronous; returns :stopped —
 or :no-reply after 2s (an already-dead process: sending [:stop] to a corpse would
 otherwise park the caller forever, e.g. killing a buffer whose process just
@@ -2066,7 +2014,6 @@ crashed, before the [:down] has been folded)."
   (let (r (ref))
     (send bp [:stop (self) r])
     (receive ([:reply ^r v] v) (after 2000 :no-reply))))
-(sig stop-buffer ((or map pid) -> any))
 
 ;; ---- create / delete (the buffer-process lifecycle) -------------------------
 

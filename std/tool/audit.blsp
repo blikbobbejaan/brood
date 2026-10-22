@@ -64,7 +64,7 @@ otherwise, so it does not depend on an author's choice of spelling.")
         (= (type-of (reflect/eval name)) :native))
       (contains? builtin-module-names (string/substring text 0 slash)))))
 
-(defn load-everything ()
+(defn load-everything (-> int)
   "`require` every module the binary bakes in, so the audit sees the WHOLE surface.
 Without it the audit judges only what happens to be loaded — a qualified call loads
 its module on demand, so `table/*` and every other un-required namespace were simply
@@ -78,9 +78,8 @@ are known.
   (each (reflect/builtin-modules)
     (fn (m) (check-allow :discarded-catch (try (require-one m) (catch e nil)))))
   (count (reflect/builtin-modules)))
-(sig load-everything (-> int))
 
-(defn public-names ()
+(defn public-names (-> seqable)
   "Every public, callable global of the language core and standard library — the
 surface this module audits. Excludes `%internal` names, anything `defn-` made
 private, and anything defined outside `std/`.
@@ -93,7 +92,6 @@ private, and anything defined outside `std/`.
               (bound? name)
               (callable? name)
               (stdlib? name))))))
-(sig public-names (-> seqable))
 
 (defn- docstring-of (name)
   (let (text (doc (reflect/eval name))) (if (string? text) text "")))
@@ -113,16 +111,14 @@ the shape `doctest` executes.
     (audit/exemplified? 'audit/documented?)   → true"
   (includes? (docstring-of name) "→"))
 
-(defn undocumented ()
+(defn undocumented (-> seqable)
   "The public names carrying no docstring at all."
   (seq/filterv (public-names) (fn (name) (not (documented? name)))))
-(sig undocumented (-> seqable))
 
-(defn exampleless ()
+(defn exampleless (-> seqable)
   "The public names that are documented but show no `form → result` example."
   (seq/filterv (public-names)
     (fn (name) (and (documented? name) (not (exemplified? name))))))
-(sig exampleless (-> seqable))
 
 ;; ---- 3: data-first argument order ------------------------------------------
 ;; Judged by parameter SPELLING. A name in `collection-params` ought to precede
@@ -205,7 +201,7 @@ A name with no recognisable pair is vacuously true.
           (split-top text depth (+ acc 1) "" (cons (string/trim current) out))
         else (split-top text depth (+ acc 1) (str current ch) out)))))
 
-(defn sig-params (name)
+(defn sig-params (name:any -> any)
   "The declared parameter TYPES of `name` as a list of strings, or nil when it declares
 no signature. Split at top level, so a callback's own `(any, any) -> any` stays one.
 
@@ -219,7 +215,6 @@ no signature. Split at top level, so a callback's own `(any, any) -> any` stays 
         (when (> close 1)
           (let (inner (string/substring sig 1 close))
             (if (= (string/trim inner) "") nil (split-top inner 0 0 "" nil))))))))
-(sig sig-params (any -> any))
 
 ;; `&optional seqable` IS a `seqable` for the purpose of finding the collection, and
 ;; without stripping the marker it matched nothing — so every function whose collection
@@ -270,17 +265,15 @@ exempt too: their arity is a range no fixed list can contradict.
       (any? (map params ->string) (fn (p) (string/starts-with? p "&"))) true
       else (= (count params) (count declared)))))
 
-(defn sig-arity-mismatches ()
+(defn sig-arity-mismatches (-> seqable)
   "Public names whose declared signature and actual parameter list disagree on COUNT —
 a signature that cannot be right, whatever the types say."
   (seq/filterv (public-names) (fn (name) (not (sig-arity-ok? name)))))
-(sig sig-arity-mismatches (-> seqable))
 
-(defn reversed-args ()
+(defn reversed-args (-> seqable)
   "The public names whose parameters put a callback or index ahead of the
 collection — ADR-308 suspects, by parameter name."
   (seq/filterv (public-names) (fn (name) (not (data-first? name)))))
-(sig reversed-args (-> seqable))
 
 ;; ---- the report -------------------------------------------------------------
 
@@ -289,7 +282,7 @@ collection — ADR-308 suspects, by parameter name."
   (when (seq names)
     (io/puts (str "    " (string/join (map names ->string) " ")))))
 
-(defn report ()
+(defn report (-> map)
   "Print the surface audit — counts and names for each of the three checks —
 and return `{:total :undocumented :exampleless :reversed-args}`.
 
@@ -310,4 +303,3 @@ and return `{:total :undocumented :exampleless :reversed-args}`.
      :exampleless (count no-example)
      :reversed-args (count reversed)
      :sig-arity-mismatches (count bad-arity)}))
-(sig report (-> map))

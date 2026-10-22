@@ -18,43 +18,38 @@ dispatch to a set, so plain collection code needs no import. This module adds th
 constructor from a collection (`set`) and the set algebra (`union` /
 `intersection` / `difference` / `subset?`).")
 
-(defn set (coll)
+(defn set (coll:any -> set)
   "The set of the distinct elements of `coll` (any seqable — list, vector, another
 set). Duplicates collapse: `(set [1 1 2]) ⇒ #{1 2}`.
 
     (count (set/set [1 2 2 3]))   → 3"
   (fold coll #{} (fn (s x) (%set-add s x))))
-(sig set (any -> set))
 
 ;; `conj`/`disj` deliberately do NOT live here: they are prelude functions that
 ;; dispatch on the collection kind (a set is one), so they need no import — and a
 ;; module-local copy would SHADOW the polymorphic prelude ones under `(:use set)`,
 ;; breaking `(conj [1 2] 3)` for the rest of that file.
 
-(defn union (a b)
+(defn union (a:set b:set -> set)
   "Every element in either `a` or `b`.
 
     (sort (seq (set/union (set/set [1 2]) (set/set [2 3]))))   → (1 2 3)"
   (fold b a (fn (s x) (%set-add s x))))
-(sig union (set set -> set))
 
-(defn intersection (a b)
+(defn intersection (a:set b:set -> set)
   "Every element in both `a` and `b`.
 
     (sort (seq (set/intersection (set/set [1 2]) (set/set [2 3]))))   → (2)"
   (fold a #{} (fn (s x) (if (contains? b x) (%set-add s x) s))))
-(sig intersection (set set -> set))
 
-(defn difference (a b)
+(defn difference (a:set b:set -> set)
   "Every element of `a` that is not in `b`.
 
     (sort (seq (set/difference (set/set [1 2]) (set/set [2 3]))))   → (1)"
   (fold b a (fn (s x) (%set-remove s x))))
-(sig difference (set set -> set))
 
-(defn subset? (a b)
+(defn subset? (a:set b:set -> bool)
   "True when every element of `a` is also in `b`.
 
     (set/subset? (set/set [1]) (set/set [1 2]))   → true"
   (fold a true (fn (ok x) (if ok (contains? b x) false))))
-(sig subset? (set set -> bool))

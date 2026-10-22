@@ -58,12 +58,11 @@ Per-language face tables + keymaps are policy in the editor. `(require
    ;;   :comment-syntax   the line-comment prefix, for comment/uncomment
    :optional [:fontify-restart :comment-syntax]})
 
-(defn missing-services (layer)
+(defn missing-services (layer:any -> list)
   "The `language-contract` services `layer` fails to provide — `()` when it is complete.
 What a registration checks before accepting a language, so an incomplete mode fails at
 load with the list rather than at the keypress that needed it."
   (seq/filter (get language-contract :required) (fn (k) (nil? (get layer k)))))
-(sig missing-services (any -> list))
 
 ;; ---- is this text finished? -------------------------------------------------
 ;; The question a LIVE evaluator asks before it sends anything, and the one thing a
@@ -93,7 +92,7 @@ needs from that is the one token that opened, and that token is at the front."
       (let (word (regex/find "^[A-Za-z_][A-Za-z_0-9]*" t))
         (if word (get word :text) (string/substring t 0 1))))))
 
-(defn parse-state (text lang)
+(defn parse-state (text:string lang:keyword -> parse-state)
   "Is `text` blank, mid-form, broken, or ready to evaluate? — `:blank`, `[:incomplete
 reason]`, `[:err msg]` or `:ok`, for any language with a tree-sitter grammar.
 
@@ -139,16 +138,14 @@ grammar; `\"1 +* 2\"` in Elixir is `[:err \"unexpected `*`\"]`, and the suite's 
               (get (first errs) :missing?)
                 [:incomplete (str "missing `" (->string (get (first errs) :kind)) "`")]
               else [:incomplete (str "unclosed `" (error-token (get (first errs) :text)) "`")]))))))
-(sig parse-state (string keyword -> parse-state))
 
-(defn parse-tag (state)
+(defn parse-tag (state:parse-state -> keyword)
   "The classification alone — `:blank`, `:ok`, `:incomplete` or `:err` — for a caller that
 does not need the reason. The full state is a `match` subject; this is the `first` of it
 that a keyword state has no `first` of.
 
     (editor/treesit/parse-tag [:incomplete \"missing `end`\"])   → :incomplete"
   (if (vector? state) (first state) state))
-(sig parse-tag (parse-state -> keyword))
 
 ;; ---- fontify ----------------------------------------------------------------
 
@@ -252,7 +249,7 @@ node→face function itself."
   (let (nl (string/last-index-of src "\n" at))
     (if (< nl 0) 0 (if (ts-col0? src (inc nl)) (inc nl) (ts-back-to-col0 src nl)))))
 
-(defn- ts-count-upto (src needle upto acc from)
+(defn- ts-count-upto (src:string needle:string upto:int acc:int from:int -> int)
   (let (i (index-of src needle from))
     (if (or (< i 0) (>= i upto))
       acc
@@ -261,7 +258,6 @@ node→face function itself."
 ;; specialize those (it would type an accumulator loop from its first base case). Undeclared,
 ;; the count read `number`, and `column0-restart`'s `(math/rem opened 2)` — which wants an
 ;; int — was a strict-gate warning. A counter is an int; saying so is one line.
-(sig ts-count-upto (string string int int int -> int))
 
 (defn column0-before (src pos)
   "The offset of the nearest line at or before `pos` that begins in column 0 with something
@@ -318,7 +314,7 @@ restart is never wrong where the lead-in is right, and is right everywhere the l
 ;; is the one case no tree can answer — text that does not parse yet, which is the ordinary
 ;; state of a line being typed — and there the lexical fallback carries the previous line.
 
-(defn- ts-prev-nonblank (text bol)
+(defn- ts-prev-nonblank (text:string bol:int -> (or nil (tuple int string)))
   ;; `[indent last-token]` of the nearest non-blank line before `bol`, or nil when there is
   ;; none — what the indenter carries when no tree can answer.
   (if (<= bol 0)
@@ -333,7 +329,6 @@ restart is never wrong where the lead-in is right, and is right everywhere the l
         else
           [(- (string/length l) (string/length (string/triml l)))
             (or (last (string/split (string/trim l) " ")) "")]))))
-(sig ts-prev-nonblank (string int -> (or nil (tuple int string))))
 
 (defn- ts-chain (node p acc)
   ;; the kinds of every node containing offset `p`, outermost first
@@ -408,7 +403,7 @@ its `body_statement` while `ensure` is inside one — so it comes from the table
   "The offset of the start of the line containing `at`."
   (inc (string/last-index-of text "\n" at)))
 
-(defn- ts-aligns? (text open)
+(defn- ts-aligns? (text:string open:int -> bool)
   "Does the bracket at offset `open` have CONTENT after it on its own line?
 
 That is the whole distinction every formatter draws. A bracket that ends its line opens a
@@ -429,7 +424,6 @@ Ruby's are aligned this way."
   (let (after (inc open)
         eol (let (i (index-of text "\n" after)) (if (< i 0) (string/length text) i)))
     (and (< after eol) (not (= (string/trim (string/substring text after eol)) "")))))
-(sig ts-aligns? (string int -> bool))
 
 (defn- ts-align-column (text bol chain brackets)
   "The column a continuation line aligns to, or nil when it is not one.
@@ -629,39 +623,33 @@ steps through, comments excluded (see [[*comment-kinds*]])."
 ;; the strict gate. The node's shape states the invariant once, and the two accessors are
 ;; verified against it rather than trusted.
 (deftype ts-node (record &open :kind keyword :start int :end int))
-(defn- ts-start (node) (get node :start))
-(sig ts-start (ts-node -> int))
-(defn- ts-end (node) (get node :end))
-(sig ts-end (ts-node -> int))
+(defn- ts-start (node:ts-node -> int) (get node :start))
+(defn- ts-end (node:ts-node -> int) (get node :end))
 
-(defn point-forward (text lang point)
+(defn point-forward (text:string lang:keyword point:any -> any)
   "End of the next named node at or after `point` within the enclosing node;
 unchanged if none (the Emacs `forward-sexp`, over a tree-sitter tree)."
   (let (nxt (seq/find (ts-siblings text lang point) (fn (f) (>= (get f :start) point))))
     (if (nil? nxt) point (get nxt :end))))
-(sig point-forward (string keyword any -> any))
 
-(defn point-backward (text lang point)
+(defn point-backward (text:string lang:keyword point:any -> any)
   "Start of the previous named node ending at or before `point` (`backward-sexp`)."
   (let (prev (last (seq/filter (ts-siblings text lang point) (fn (f) (<= (get f :end) point)))))
     (if (nil? prev) point (get prev :start))))
-(sig point-backward (string keyword any -> any))
 
-(defn point-list-forward (text lang point)
+(defn point-list-forward (text:string lang:keyword point:any -> any)
   "End of the next child CONTAINER at or after `point` — leaf nodes are stepped over, not
 stopped at (Emacs `forward-list`); unchanged if none."
   (let (nxt (seq/find (ts-siblings text lang point)
               (fn (f) (and (get f :container) (>= (get f :start) point)))))
     (if (nil? nxt) point (get nxt :end))))
-(sig point-list-forward (string keyword any -> any))
 
-(defn point-list-backward (text lang point)
+(defn point-list-backward (text:string lang:keyword point:any -> any)
   "Start of the previous child CONTAINER ending at or before `point` — leaves stepped over
 (Emacs `backward-list`); unchanged if none."
   (let (prev (last (seq/filter (ts-siblings text lang point)
                      (fn (f) (and (get f :container) (<= (get f :end) point))))))
     (if (nil? prev) point (get prev :start))))
-(sig point-list-backward (string keyword any -> any))
 
 (defn- ts-enclosing-node (text lang point)
   "The deepest node STRICTLY containing `point`, or nil at the top level — the last
@@ -669,20 +657,18 @@ container on the chain that neither begins nor ends at `point` itself."
   (last (seq/filter (%tree-sitter-chain text lang point)
           (fn (n) (and (get n :container) (< (get n :start) point) (< point (get n :end)))))))
 
-(defn point-up (text lang point)
+(defn point-up (text:string lang:keyword point:any -> any)
   "Start of the enclosing node (`backward-up-list`); unchanged at top level."
   (let (enc (ts-enclosing-node text lang point))
     (if (nil? enc) point (get enc :start))))
-(sig point-up (string keyword any -> any))
 
-(defn point-up-forward (text lang point)
+(defn point-up-forward (text:string lang:keyword point:any -> any)
   "End of the enclosing node — the forward counterpart of `point-up` (Emacs `up-list`);
 unchanged at top level."
   (let (enc (ts-enclosing-node text lang point))
     (if (nil? enc) point (get enc :end))))
-(sig point-up-forward (string keyword any -> any))
 
-(defn point-down (text lang point)
+(defn point-down (text:string lang:keyword point:any -> any)
   "INSIDE the next child container at or after `point` (`down-list`); unchanged if none.
 
 Emacs' `down-list` moves *into* one level (`|(a b)` → `(|a b)`). A tree has no delimiter
@@ -700,7 +686,6 @@ offset), and a motion that cannot move is worse than one that overshoots."
           inner (get inner :start)
           (> (get lst :start) point) (get lst :start)
           else point)))))
-(sig point-down (string keyword any -> any))
 
 ;; ---- what a definition is, per language ----------------------------------------
 ;; Which nodes are DEFINITIONS is the one thing `beginning-of-defun` cannot read off a tree,
@@ -712,7 +697,7 @@ offset), and a motion that cannot move is worse than one that overshoots."
 ;; its own, beside the rest of its mode, and an undeclared one falls back to the top-level
 ;; form — the honest answer when nothing says what a definition is.
 
-(defn register-definitions (lang definitions)
+(defn register-definitions (lang:keyword definitions:map -> map)
   "Declare what a definition is in tree-sitter language `lang`, for `point-defun-start` /
 `point-defun-end`: `{:kinds #{node-kind …} :calls #{callee …}}`. `:kinds` names the node
 kinds that are themselves definitions; `:calls` the callees whose `call` node defines
@@ -721,15 +706,13 @@ declaration for `lang`; returns `definitions`.
 
     (editor/treesit/register-definitions :doc-lang {:kinds #{:fn_item}})   → {:kinds #{:fn_item}}"
   (registry/put! :treesit/definitions lang definitions))
-(sig register-definitions (keyword map -> map))
 
-(defn definitions (lang)
+(defn definitions (lang:keyword -> map)
   "What `lang` declared a definition to be (`register-definitions`), or `{}`.
 
     (contains? (get (editor/treesit/definitions :ruby) :kinds) :method)   → true"
   (let (declared (registry/lookup :treesit/definitions lang))
     (if (map? declared) declared {})))
-(sig definitions (keyword -> map))
 
 ;; The two grammars this runtime can be built with. A grammar loaded at runtime declares
 ;; its own, from the editor's language definition.
@@ -758,7 +741,7 @@ whose callee is a defining one (Elixir, where `def`/`defmodule`/… are calls)."
     (or (contains? (get definitions :kinds #{}) k)
       (and (= k :call) (contains? (get definitions :calls #{}) (ts-head-word text node))))))
 
-(defn- ts-defun-edge (text lang point edge)
+(defn- ts-defun-edge (text:string lang:keyword point:any edge:any -> any)
   "The `edge` (`:start` / `:end`) of the enclosing **definition**: the deepest `def` /
 `class` / `module` / … containing `point`, falling back to the top-level form, then `point`.
 The shared body of `point-defun-start` / `point-defun-end`."
@@ -770,7 +753,6 @@ The shared body of `point-defun-start` / `point-defun-end`."
       (not (empty? defuns)) (get (last defuns) edge)
       (not (empty? chain)) (get (first chain) edge)
       else point)))
-(sig ts-defun-edge (string keyword any any -> any))
 
 (defn point-defun-start (text lang point)
   "Start of the enclosing **definition** (`beginning-of-defun`): the deepest `def` / `class`
@@ -790,14 +772,13 @@ not the whole enclosing module. Falls back to the top-level form, then `point`."
 ;; expects — are the same for every grammar, so they are here as a recipe a mode can run
 ;; from a declaration of WHERE the grammar is, rather than a README the user follows.
 
-(defn languages ()
+(defn languages (-> vector)
   "The languages this runtime can parse right now — grammars loaded at runtime and built
 in — as a sorted vector of keywords. What to ask before offering to fetch a grammar, or
 telling someone a file's mode has none.
 
     (vector? (editor/treesit/languages))   → true"
   (%tree-sitter-languages))
-(sig languages (-> vector))
 
 (defn grammar-library-name (lang)
   "The file name a grammar for `lang` is loaded from: `libtree-sitter-<lang>.so`.
@@ -812,7 +793,7 @@ telling someone a file's mode has none.
     (file/exists? (path/join src-dir "scanner.cc")) [(path/join src-dir "scanner.cc") true]
     else nil))
 
-(defn grammar-fetch (source dest)
+(defn grammar-fetch (source:string dest:string -> map)
   "Bring the grammar at `source` to the directory `dest`: a git URL is cloned (shallow,
 so a language costs seconds, not a history) unless `dest` already holds a checkout,
 which is used as it is, like a local directory. Returns `{:ok dir}` — the checkout — or
@@ -829,7 +810,6 @@ which is used as it is, like a local directory. Returns `{:ok dir}` — the chec
             {:ok dest}
             {:error (str "git clone " source ": " (string/trim (get r :stderr "")))})))
     else {:error (str "no grammar at " source " (a git URL or a directory)")}))
-(sig grammar-fetch (string string -> map))
 
 (defn grammar-build (checkout lang out-dir &optional (subdir nil))
   "Compile the grammar in `checkout` (its `src/parser.c`, plus `src/scanner.c` /

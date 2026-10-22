@@ -77,7 +77,7 @@
 ;; Every read below is bounds-checked against the reply, so a truncated or lying reply
 ;; decodes to nothing rather than raising: malformed input is an ordinary answer here.
 
-(defn- skip-name (msg off)
+(defn- skip-name (msg:bytes off:int -> (or int nil))
   "The offset just past the name at `off`, or nil when the name runs off the end of `msg`.
 
   A name ends at a zero length byte, or at a two-byte COMPRESSION POINTER (top bits set) that
@@ -90,19 +90,16 @@
         (= b 0) (+ off 1)
         (>= b 192) (+ off 2)
         else (skip-name msg (+ off 1 b))))))
-(sig skip-name (bytes int -> (or int nil)))
 
-(defn- ipv4 (msg off)
+(defn- ipv4 (msg:bytes off:int -> string)
   (string/join (map (range 0 4) (fn (i) (->string (bytes/at msg (+ off i))))) "."))
-(sig ipv4 (bytes int -> string))
 
-(defn- ipv6 (msg off)
+(defn- ipv6 (msg:bytes off:int -> string)
   "The full eight-group form, each group lowercase hex without leading zeros. Not the
   `::`-compressed one: this is fed to a connect string, where being unambiguous matters more
   than being short."
   (string/join (map (range 0 8) (fn (i) (string/number-> (bytes/uint msg (+ off (* i 2)) 2) 16)))
     ":"))
-(sig ipv6 (bytes int -> string))
 
 (defn- read-answers (msg off n qtype acc)
   "Walk `n` answer records from `off`, collecting the ones matching `qtype` — nil if a record

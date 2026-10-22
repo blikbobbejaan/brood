@@ -325,11 +325,10 @@ with the default crash reporter, an MCP snapshot, or a second `watch-runtime`."
     (if opts (proc/system-monitor watcher opts) (proc/system-monitor watcher))
     watcher))
 
-(defn stop-watch-runtime (watcher)
+(defn stop-watch-runtime (watcher: (or map pid) -> nil)
   "Stop a `watch-runtime` watcher and disarm the kernel stream. Returns nil."
   (send watcher :stop)
   nil)
-(sig stop-watch-runtime ((or map pid) -> nil))
 
 ;; ---- distribution liveness (node up/down) → the telemetry stream ------------
 ;; The kernel has no `[:nodeup]` event — `monitor-node` fires only `[:nodedown]`,
@@ -368,11 +367,10 @@ at start are the baseline (no spurious `:nodeup` for them)."
   (let (interval (or interval-ms 1000))
     (spawn (telemetry-nodes-loop (or (node/list) (list)) interval))))
 
-(defn stop-watch-nodes (watcher)
+(defn stop-watch-nodes (watcher: (or map pid) -> nil)
   "Stop a `watch-nodes` watcher. Returns nil."
   (send watcher :stop)
   nil)
-(sig stop-watch-nodes ((or map pid) -> nil))
 
 ;; ---- unified runtime vitals (the snapshot builtins, behind one stream) -------
 ;; The kernel exposes its runtime state through several point-in-time snapshot builtins —
@@ -432,11 +430,10 @@ folding the kernel snapshot builtins behind the same attach seam as `watch-runti
   (let (interval (or interval-ms 1000))
     (spawn (telemetry-vitals-loop interval))))
 
-(defn stop-watch-vitals (watcher)
+(defn stop-watch-vitals (watcher: (or map pid) -> nil)
   "Stop a `watch-vitals` watcher. Returns nil."
   (send watcher :stop)
   nil)
-(sig stop-watch-vitals ((or map pid) -> nil))
 
 ;; ---- remote tier: subscribe to a peer node's telemetry stream (ADR-053) ------
 ;; Location-transparency for the attach seam: a runtime opts in with `serve`
@@ -476,11 +473,10 @@ pid; `stop-serve` (or killing it) tears down every remote subscription."
       (proc/register :telemetry-remote agent)
       agent)))
 
-(defn stop-serve (agent)
+(defn stop-serve (agent: (or map pid) -> nil)
   "Stop a `serve` agent and detach every remote-subscription forwarder. Returns nil."
   (send agent :stop)
   nil)
-(sig stop-serve ((or map pid) -> nil))
 
 (defn- telemetry-remote-loop (target event ref local-event)
   "The subscriber-side loop: re-emit each `[:remote-telemetry ref …]` from the target into
@@ -513,11 +509,10 @@ unsubscribes and exits."
     event
     (or local-event [:remote event])))
 
-(defn stop-subscribe-remote (watcher)
+(defn stop-subscribe-remote (watcher: (or map pid) -> nil)
   "Stop a `subscribe-remote` watcher: unsubscribe from the peer and exit. Returns nil."
   (send watcher :stop)
   nil)
-(sig stop-subscribe-remote ((or map pid) -> nil))
 
 ;; ---- span -------------------------------------------------------------------
 

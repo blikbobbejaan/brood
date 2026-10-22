@@ -17,13 +17,12 @@
   (let (s (%rand-step (%rand-seed seed)))
     [s s]))
 
-(defn int (seed n)
+(defn int (seed:any n:int -> (tuple int int))
   "Returns `[i next-seed]` with `i` a pseudo-random integer in `[0, n)`. `n` must be positive."
   (if (<= n 0)
     (error "rand/int: bound must be positive: " n)
     (let (s (%rand-step (%rand-seed seed)))
       [(math/rem s n) s])))
-(sig int (any int -> (tuple int int)))
 
 (defn float (seed)
   "Returns `[f next-seed]` with `f` a pseudo-random float in `[0.0, 1.0)`."
@@ -31,9 +30,8 @@
     [(/ s 4294967296.0) s]))
 
 ;; Not part of the deterministic seeded PRNG above — a one-shot draw from the OS CSPRNG.
-(defn token (n)
+(defn token (n:int -> string)
   "`n` cryptographically-strong random bytes from the OS RNG, hex-encoded as a 2·n-char string.
 
     (count (rand/token 8))   → 16   ; hex, two chars per byte"
   (encoding/hex-encode-bytes (%random-bytes n)))
-(sig token (int -> string))

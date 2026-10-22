@@ -79,20 +79,18 @@ and the constants `pi`/`e`. `(:use math)` for bare access, or call qualified.")
   ((a b) (%min a b))
   ((& xs) (apply %min xs)))
 (sig min (& ?A -> ?A))
-(defn rem (a b)
+(defn rem (a:int b:int -> int)
   "The remainder of `a / b`, taking the sign of the DIVIDEND (truncated division), the
 partner of `quot`. `mod` is the one whose sign follows the divisor.
 
     (math/rem 7 2)    → 1
     (math/rem -7 2)   → -1"
   (%rem a b))
-(sig rem (int int -> int))
-(defn ->fixed (x n)
+(defn ->fixed (x:number n:int -> string)
   "Render number `x` as a string with exactly `n` digits after the decimal point (rounded).
 
     (math/->fixed 1.5 2)   → \"1.50\""
   (%->fixed x n))
-(sig ->fixed (number int -> string))
 
 (defn rational (n d)
   "The exact rational `n`/`d` — reduced, with a positive denominator (a denominator
@@ -100,13 +98,12 @@ of 1 gives an integer). Same as `(/ n d)` for integers; errors when `d` is 0.
 
     (math/rational 1 2)   → 1/2"
   (/ n d))
-(defn quot (a b)
+(defn quot (a:int b:int -> int)
   "Truncated integer division of `a` by `b` (toward zero); the quotient partner to `rem`.
 
     (math/quot 7 2)    → 3"
   (%quot a b))
-(sig quot (int int -> int))
-(defn mod (a b)
+(defn mod (a:int b:int -> int)
   "Euclidean modulo: the result is always non-negative and lies in [0, |b|).
 
     (math/mod 7 2)     → 1
@@ -118,7 +115,6 @@ of 1 gives an integer). Same as `(/ n d)` for integers; errors when `d` is 0.
   (if (and (int? a) (int? b))
     (let (r (math/rem a b)) (if (< r 0) (+ r (if (< b 0) (- b) b)) r))
     (error "mod: expected two integers, got " a " and " b)))
-(sig mod (int int -> int))
 
 (defability Numeric
   "Float-domain questions every numeric type can answer.
@@ -150,21 +146,19 @@ tower, not just the int `0`. A type with no impl RAISES rather than answering.
 (impl Zero :decimal (zero? [n] (%eq n 0M)))
 (impl Zero :ratio (zero? [n] false))
 
-(defn positive? (n)
+(defn positive? (n:number -> bool)
   "True if `n` is greater than zero.
 
     (math/positive? 1)    → true"
   (> n 0))
-(sig positive? (number -> bool))
 
-(defn negative? (n)
+(defn negative? (n:number -> bool)
   "True if `n` is less than zero.
 
     (math/negative? -1)   → true"
   (< n 0))
-(sig negative? (number -> bool))
 
-(defn abs (n)
+(defn abs (n:number -> number)
   "The absolute value of `n`.
 
     (math/abs -3)    → 3
@@ -173,9 +167,8 @@ tower, not just the int `0`. A type with no impl RAISES rather than answering.
 
     (math/abs -3)          → 3"
   (if (< n 0) (- n) n))
-(sig abs (number -> number))
 
-(defn even? (n)
+(defn even? (n:int -> bool)
   "True if integer `n` is even.
 
     (math/even? 4)   → true
@@ -184,16 +177,14 @@ tower, not just the int `0`. A type with no impl RAISES rather than answering.
 
     (math/even? 4)         → true"
   (= (math/rem n 2) 0))
-(sig even? (int -> bool))
-(defn odd? (n)
+(defn odd? (n:int -> bool)
   "True if integer `n` is odd.
 
     (math/odd? 3)         → true"
   (not (even? n)))
-(sig odd? (int -> bool))
 
 ;; ---- aggregation ------------------------------------------------------------
-(defn sum (xs)
+(defn sum (xs:seqable -> number)
   "The sum of the numbers in `xs`.
 
     (math/sum [1 2 3])  → 6
@@ -201,13 +192,11 @@ tower, not just the int `0`. A type with no impl RAISES rather than answering.
 
     (math/sum [1 2 3])     → 6"
   (fold xs 0 %add))
-(sig sum (seqable -> number))
-(defn product (xs)
+(defn product (xs:seqable -> number)
   "The product of the numbers in `xs`.
 
     (math/product [2 3 4])   → 24"
   (fold xs 1 %mul))
-(sig product (seqable -> number))
 
 ;; Rounding & roots, all Brood over the one Float->Int primitive `floor` (toward
 ;; -inf) plus `rem`/`/`/`*`. `floor` of an int is itself, so these pass ints
@@ -325,7 +314,7 @@ value (an infinity or NaN) is an error naming `math/round`; a magnitude past 2^6
 ;; number (for a fixed-width *string*, e.g. "3.10", use the `->fixed` primitive).
 ;; Subject to the usual binary-float caveat: a "halfway" decimal like 1.255 isn't
 ;; exactly representable, so it may round the way its nearest f64 actually lies.
-(defn round-to (x places)
+(defn round-to (x:number places:int -> number)
   "Round `x` to `places` decimal places (halves away from zero); returns a number —
 a float for a float `x` unless the rounded value is an integer, exact for an exact `x`.
 
@@ -340,18 +329,16 @@ a float for a float `x` unless the rounded value is an integer, exact for an exa
   (let (scale (pow 10 places)
         r (/ (round (* x scale)) scale))
     (if (and (float? x) (ratio? r)) (->float r) r)))
-(sig round-to (number int -> number))
 
 ;; (sqrt n) — delegates to `%f64-sqrt` (f64::sqrt) for IEEE 754 correctness on all
 ;; inputs including subnormals. Always returns a Float; a negative argument raises.
-(defn sqrt (n)
+(defn sqrt (n:number -> float)
   "The square root of `n` (IEEE 754; always a float). Negative `n` raises.
 
     (math/sqrt 9)          → 3.0"
   (cond (< n 0) (error "sqrt: negative argument " n) (<= n 0) 0.0 else (%f64-sqrt n)))
-(sig sqrt (number -> float))
 
-(defn clamp (x lo hi)
+(defn clamp (x:?A lo:?A hi:?A -> ?A)
   "Constrain `x` to the closed range [`lo`, `hi`]: `lo` if `x` is below it, `hi` if above, else `x`.
 
     (math/clamp 5 0 10)   → 5
@@ -361,7 +348,6 @@ a float for a float `x` unless the rounded value is an integer, exact for an exa
     (math/clamp 12 0 10)   → 10
     (math/clamp -1 0 10)   → 0"
   (math/max lo (math/min hi x)))
-(sig clamp (?A ?A ?A -> ?A))
 
 ;; ---- transcendental functions -----------------------------------------------
 ;; Thin policy over the `%`-prefixed f64 primitives (mechanism), so they live in the

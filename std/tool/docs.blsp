@@ -341,7 +341,8 @@ bare-surface (prelude) name, whose references are bare already."
   (let (prefix (str modname "/"))
     (seq/filter (reflect/global-names) (fn (s) (string/starts-with? (->string s) prefix)))))
 
-(defn model-file (path)
+(defn model-file
+  (path:string -> (record :defs any :doc any :module any :types vector :qualified? true))
   "The doc-model module entry for the file at `path`: load it, then collect its module's
   own public definitions (by namespace, not a load-order-sensitive delta), each a
   `{:name :sig :doc :macro :type :source}` record. The globals a project module binds are
@@ -364,7 +365,6 @@ bare-surface (prelude) name, whose references are bare already."
       (docs-module-model (docs-basename path)
         (docs-leading-doc src)
         (docs-added before (reflect/global-names))))))
-(sig model-file (string -> (record :defs any :doc any :module any :types vector :qualified? true)))
 
 (defn model-project ()
   "The whole-project doc model — `{:name :version :modules […]}` — found from the cwd,

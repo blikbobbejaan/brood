@@ -42,16 +42,15 @@ another type live here too, module-rooted: `string/->number`, `string/->symbol`.
 
 ;; ---- case -------------------------------------------------------------------
 
-(defn capitalize (s)
+(defn capitalize (s:string -> string)
   "Return `s` with the first character upper-cased and the rest lower-cased.
 
     (string/capitalize \"hi there\")   → \"Hi there\""
   (if (= (string/length s) 0)
     s
     (str (string/upper (string/substring s 0 1)) (string/lower (string/substring s 1)))))
-(sig capitalize (string -> string))
 
-(defn fold-case (s)
+(defn fold-case (s:string -> string)
   "`s` case-folded for comparison, **one character per character** — so an index into the
 result is an index into `s`.
 
@@ -71,9 +70,8 @@ of a per-character interpreted loop.)
 
     (string/fold-case \"AbÇ\")   → \"abç\""
   (%fold-case s))
-(sig fold-case (string -> string))
 
-(defn has-upper? (s)
+(defn has-upper? (s:string -> bool)
   "Does `s` contain a character that case-folds to something else — i.e. did someone type
 an upper-case letter?
 
@@ -84,18 +82,16 @@ type a capital you meant it. Asked by FOLDING rather than by comparing against
 
     (string/has-upper? \"foo\")   → false"
   (not (= s (fold-case s))))
-(sig has-upper? (string -> bool))
 
 ;; ---- char access & content conversions --------------------------------------
 
-(defn char-at (s i)
+(defn char-at (s:string i:int -> string)
   "The character (a 1-char string) at char index `i` of `s`.
 
     (string/char-at \"abc\" 1)   → \"b\""
   (string/substring s i (inc i)))
-(sig char-at (string int -> string))
 
-(defn ->list (s)
+(defn ->list (s:string -> (list string))
   "The characters of `s` as a list of 1-char strings.
 
     (string/->list \"ab\")   → (\"a\" \"b\")"
@@ -105,7 +101,6 @@ type a capital you meant it. Asked by FOLDING rather than by comparing against
   ;; code-point vector O(n^2) to build (it defeated the json/base64 char-indexing
   ;; rewrites; see docs/devlog.md).
   (string/split s ""))
-(sig ->list (string -> (list string)))
 
 (defn list-> (cs)
   "Concatenate a list of strings (e.g. from `string/->list`) into one string.
@@ -113,7 +108,7 @@ type a capital you meant it. Asked by FOLDING rather than by comparing against
     (string/list-> [\"a\" \"b\"])   → \"ab\""
   (apply str cs))
 
-(defn codepoints-> (cs)
+(defn codepoints-> (cs:seqable -> string)
   "Build a string from a list (or vector) of Unicode codepoint integers — the
 inverse of the `string/->codepoints` primitive.
 
@@ -123,16 +118,14 @@ inverse of the `string/->codepoints` primitive.
   ;; concatenated N of those variadically — for a shape every text parser in std/ uses to
   ;; get back from the code vector `string/->codepoints` handed it.
   (%codepoints->string cs))
-(sig codepoints-> (seqable -> string))
 
-(defn ->bytes (s)
+(defn ->bytes (s:string -> bytes)
   "Encode string `s` as a bytes value — its UTF-8 bytes. Inverse of `string/bytes->`.
 
     (string/->bytes \"hi\")  → #b\"hi\""
   (%string->utf8-bytes s))
-(sig ->bytes (string -> bytes))
 
-(defn bytes-> (b &optional mode)
+(defn bytes-> (b: (or nil bytes (list int) (vector int)) &optional mode:keyword -> string)
   "Decode UTF-8 bytes back to a string — a bytes value, or a list or vector of byte ints
 (nil is the empty case). Inverse of `string/->bytes`. Invalid UTF-8 raises; pass
 `:lossy` to read each invalid sequence as U+FFFD instead — text off the wire (a mail
@@ -141,7 +134,6 @@ part, a legacy file) is not always what it claims to be.
     (string/bytes-> #b\"hi\")   → \"hi\"
     (string/->codepoints (string/bytes-> [104 255 105] :lossy))   → [104 65533 105]"
   (%utf8-bytes->string b (= mode :lossy)))
-(sig bytes-> ((or nil bytes (list int) (vector int)) &optional keyword -> string))
 
 (def- number->digits "0123456789abcdefghijklmnopqrstuvwxyz")
 
@@ -151,7 +143,7 @@ part, a legacy file) is not always what it claims to be.
         acc (str d acc))
     (if (< n radix) acc (number->loop (math/quot n radix) radix acc))))
 
-(defn number-> (n &optional (radix 10))
+(defn number-> (n:int &optional (radix:int 10) -> string)
   "Render integer `n` in `radix` (2..36, 10 by default), lowercase digits, a leading `-`
 for a negative — the inverse of `string/->number` with the same radix contract, so
 `(string/->number (string/number-> n 16) 16)` is `n`. The hex/octal/binary rendering
@@ -163,7 +155,6 @@ for a negative — the inverse of `string/->number` with the same radix contract
     (or (< radix 2) (> radix 36)) (error "string/number->: radix must be 2..36, got " radix)
     (< n 0) (str "-" (number->loop (- n) radix ""))
     else (number->loop n radix "")))
-(sig number-> (int &optional int -> string))
 
 ;; ---- join -------------------------------------------------------------------
 
@@ -175,7 +166,7 @@ for a negative — the inverse of `string/->number` with the same radix contract
 ;; duplication buys that; noted here and there so neither looks like an oversight.
 (defn- join-parts (sep coll acc)
   (if (empty? coll) acc (join-parts sep (rest coll) (cons (first coll) (cons sep acc)))))
-(defn join (coll sep)
+(defn join (coll:any sep:any -> string)
   "Concatenate the strings in `coll` with `sep` between adjacent elements.
 
     (string/join [\"a\" \"b\" \"c\"] \", \")   → \"a, b, c\"
@@ -196,11 +187,10 @@ for a negative — the inverse of `string/->number` with the same radix contract
       (if (empty? coll)
         ""
         (apply str (cons (first coll) (reverse (join-parts sep (rest coll) nil))))))))
-(sig join (any any -> string))
 
 ;; ---- search & replace -------------------------------------------------------
 
-(defn replace (s old new)
+(defn replace (s:string old:string new:any -> string)
   "Return `s` with every occurrence of `old` replaced by `new`. An empty `old`
 leaves `s` unchanged.
 
@@ -208,11 +198,10 @@ leaves `s` unchanged.
     (string/replace \"aaa\" \"aa\" \"b\")    → \"ba\"    ; left to right, no rescan
     (string/replace \"abc\" \"zz\" \"!\")    → \"abc\""
   (if (= old "") s (join (string/split s old) new)))
-(sig replace (string string any -> string))
 
 ;; String-only, so it lives here (ADR-230); its forward partner `index-of` stays bare
 ;; because that one is polymorphic over strings, lists and vectors.
-(defn last-index-of (s needle &optional before)
+(defn last-index-of (s:any needle:any &optional before:any -> int)
   "The 0-based char index of the **last** occurrence of `needle` in string `s` whose
 start is strictly **before** `before` (default `(string/length s)`), or -1 if there is
 none. The backward counterpart of `(index-of s needle from)` — what reverse
@@ -225,9 +214,8 @@ incremental search rides on.
   ;; One native pass: a forward walk over `index-of` is O(matches × length), and this is
   ;; an editor hot path (reverse search, finding a line's start per keystroke).
   (%str-last-index-of s needle (or before (string/length s))))
-(sig last-index-of (any any &optional any -> int))
 
-(defn starts-with? (s prefix)
+(defn starts-with? (s:string prefix:string -> bool)
   "Does string `s` begin with `prefix`?
 
     (string/starts-with? \"hello\" \"he\")   → true
@@ -235,16 +223,14 @@ incremental search rides on.
     (string/starts-with? \"hello\" \"\")     → true"
   (let (n (string/length prefix))
     (and (>= (string/length s) n) (= (string/substring s 0 n) prefix))))
-(sig starts-with? (string string -> bool))
 
-(defn ends-with? (s suffix)
+(defn ends-with? (s:string suffix:string -> bool)
   "Does string `s` end with `suffix`?
 
     (string/ends-with? \"hello\" \"lo\")   → true
     (string/ends-with? \"hello\" \"he\")   → false"
   (let (sl (string/length s) ql (string/length suffix))
     (and (>= sl ql) (= (string/substring s (- sl ql) sl) suffix))))
-(sig ends-with? (string string -> bool))
 
 (defn drop-prefix (s prefix)
   "`s` without its leading `prefix`, or `s` unchanged when it does not start with it.
@@ -265,60 +251,53 @@ incremental search rides on.
 
 (defn- whitespace? (c) (or (= c " ") (= c "\t") (= c "\n") (= c "\r")))
 
-(defn blank? (s)
+(defn blank? (s:string -> bool)
   "Is `s` empty or made up only of whitespace?
 
     (string/blank? \"  \")   → true
     (string/blank? \" a \")  → false"
   (= (triml s) ""))
-(sig blank? (string -> bool))
 
 (defn- triml-from (s i n)
   (if (and (< i n) (whitespace? (char-at s i))) (triml-from s (inc i) n) (string/substring s i n)))
-(defn triml (s)
+(defn triml (s:string -> string)
   "Remove leading whitespace from `s`.
 
     (string/triml \"  a\")   → \"a\""
   (triml-from s 0 (string/length s)))
-(sig triml (string -> string))
 
-(defn- trimr-to (s n)
+(defn- trimr-to (s:string n:int -> string)
   (if (and (> n 0) (whitespace? (char-at s (dec n))))
     (trimr-to s (dec n))
     (string/substring s 0 n)))
-(sig trimr-to (string int -> string))
 
-(defn trimr (s)
+(defn trimr (s:string -> string)
   "Remove trailing whitespace from `s`.
 
     (string/trimr \"a  \")   → \"a\""
   (trimr-to s (string/length s)))
-(sig trimr (string -> string))
 
-(defn trim (s)
+(defn trim (s:string -> string)
   "Remove leading and trailing whitespace from `s`.
 
     (string/trim \"  a \")   → \"a\""
   (triml (trimr s)))
-(sig trim (string -> string))
 
 ;; ---- padding & repetition ---------------------------------------------------
 ;; Column formatting for tabular/console output. `pad-*` left unchanged when the
 ;; string already meets the width (they never truncate).
 
-(defn pad-left (s w &optional (pad " "))
+(defn pad-left (s:string w:int &optional (pad:string " ") -> string)
   "Right-justify `s` in a field of width `w`, padding with `pad` (a single-character string, a space by default) on the left; `s` is returned unchanged if it is already at least `w` wide.
 
     (string/pad-left \"7\" 3)    → \"  7\""
   (let (n (string/length s)) (if (>= n w) s (str (repeat (or pad " ") (- w n)) s))))
-(sig pad-left (string int &optional string -> string))
 
-(defn pad-right (s w &optional (pad " "))
+(defn pad-right (s:string w:int &optional (pad:string " ") -> string)
   "Left-justify `s` in a field of width `w`, padding with `pad` (a single-character string, a space by default) on the right; `s` is returned unchanged if it is already at least `w` wide.
 
     (string/pad-right \"7\" 3)   → \"7  \""
   (let (n (string/length s)) (if (>= n w) s (str s (repeat (or pad " ") (- w n))))))
-(sig pad-right (string int &optional string -> string))
 
 ;; ---- fitting text to SCREEN CELLS --------------------------------------------
 ;; `pad-*` and `length` count characters, and a character is not a column: an emoji or a
@@ -343,7 +322,7 @@ to be cut ends with it, the ellipsis's own cells counted inside `w`.
         (str (string/substring s 0 (string/width->index s room)) ellipsis))))
 (sig clip-cells (string int &optional (or string nil) -> string))
 
-(defn pad-right-cells (s w)
+(defn pad-right-cells (s:string w:int -> string)
   "`s` padded with spaces to exactly `w` display cells — or clipped to them (`clip-cells`)
 when it is wider, so a bar always spans its field.
 
@@ -352,7 +331,6 @@ when it is wider, so a bar always spans its field.
   (let (fitted (clip-cells s w)
         n (string/display-width fitted))
     (if (>= n w) fitted (str fitted (repeat " " (- w n))))))
-(sig pad-right-cells (string int -> string))
 
 ;; ---- fill: greedy word-wrap -------------------------------------------------
 
@@ -367,7 +345,7 @@ Prepending to `done` is O(1) (the caller reverses once), so a whole fill is O(wo
       (<= (+ (string/length cur) 1 (string/length word)) width) [(str cur " " word) done]
       else [word (cons cur done)])))
 
-(defn fields (s &optional (sep " "))
+(defn fields (s:string &optional (sep:string " ") -> (or nil (list string)))
   "The non-empty, whitespace-trimmed pieces of `s` split on `sep` (default a single
 space) — the tokens, where `split` is the exact partition. Stray and doubled separators
 therefore vanish instead of producing empty pieces, and the result MAY be empty (nil),
@@ -378,9 +356,8 @@ returns at least one piece, and the checker leans on that.
     (string/fields \"a , b,,\" \",\")   → (\"a\" \"b\")
     (string/fields \"   \")   → nil"
   (seq/reject (map (split s sep) trim) empty?))
-(sig fields (string &optional string -> (or nil (list string))))
 
-(defn fill (s width &optional (prefix ""))
+(defn fill (s:string width:any &optional (prefix:string "") -> string)
   "Greedily wrap `s` to `width` columns: collapse every run of whitespace (newlines, tabs,
 spaces) to a single space, then re-break on word boundaries so each line is as full as it
 can be without exceeding `width`. A single word longer than `width` keeps its own
@@ -407,9 +384,8 @@ bb`). [[fill-prefix]] finds the one a paragraph uses.
         room (math/max 1 (- width (length prefix)))
         [cur done] (fold words ["" ()] (fn (acc w) (fill-pack acc w room))))
     (join (map (reverse (if (= cur "") done (cons cur done))) (fn (line) (str prefix line))) "\n")))
-(sig fill (string any &optional string -> string))
 
-(defn fill-prefix (s)
+(defn fill-prefix (s:string -> string)
   "The fill prefix of paragraph `s`: its first line's indentation, plus a comment or quote
 marker (`;;`, `#`, `//`, `--`, `>`, `*`) and the space after it — what [[fill]] should keep at
 the start of every line. Emacs's adaptive fill, for the common cases.
@@ -420,9 +396,8 @@ the start of every line. Emacs's adaptive fill, for the common cases.
   (let (m (regex/find "^\\s*(;+|#+|//+|--|>+|\\*)?\\s*" (first (split s "\n")))
         text (if m (get m :text) nil))
     (if (string? text) text "")))
-(sig fill-prefix (string -> string))
 
-(defn repeat (s n)
+(defn repeat (s:string n:int -> string)
   "The string `s` concatenated `n` times (the empty string if `n` <= 0).
 
     (string/repeat \"ab\" 3)   → \"ababab\""
@@ -440,7 +415,6 @@ the start of every line. Emacs's adaptive fill, for the common cases.
       (%repeat-doubling (if (= (math/rem k 2) 1) (str acc piece) acc)
         (str piece piece)
         (math/quot k 2))))
-(sig repeat (string int -> string))
 
 ;; ---- interpolation and printf ------------------------------------------------
 ;; `string/interp` is a MACRO, so nothing in the prelude's own expansion may use it.
@@ -503,7 +477,7 @@ the start of every line. Emacs's adaptive fill, for the common cases.
 ;; Octal isn't built in — `string/number->` covers it explicitly. Errors on an
 ;; unknown spec or a format string that ends inside one; a missing arg renders
 ;; as `nil` (debuggable), extra args are ignored.
-(defn string/format (template & args)
+(defn string/format (template:string & args:any -> string)
   "Render `template`, replacing each %-specifier with the next of `args`. Supports `%s` `%d` `%f` `%.Nf` `%x` `%X` `%%`; a width before any of them right-aligns in a field (`%8d`, `%10s`, `%8.2f`), zero-filled with the `0` flag (`%02x`), and the `-` flag left-aligns (`%-10s`).
 
     (string/format \"%-6s|%6.2f|%03d\" \"ab\" 3.14159 7)   → \"ab    |  3.14|007\"
@@ -520,7 +494,6 @@ things in the same image is a name worth spending to fix.
 
     (string/format \"%s has %d items (%.1f%%)\" \"cart\" 3 42.26)   → \"cart has 3 items (42.3%)\""
   (format-loop template 0 (string/length template) args ""))
-(sig string/format (string & any -> string))
 
 (defn- format-loop (template i n args acc)
   (cond

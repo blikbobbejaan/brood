@@ -1153,7 +1153,7 @@ which leaves the warning pending for the next one that can carry it."
       (assoc-in reply [:result :content] (conj content {:type "text" :text warning}))
       nil)))
 
-(defn- notice-rebuild (session)
+(defn- notice-rebuild (session:map -> map)
   "`session`, with a staleness warning pending (and said once on stderr) the first time its
 binary is seen rebuilt."
   (if (and (not (get session :warned)) (rebuilt-since? (get session :exe) (get session :started)))
@@ -1161,7 +1161,6 @@ binary is seen rebuilt."
       (io/puts warning :to *err*)
       (assoc (assoc session :warned true) :pending-warning warning))
     session))
-(sig notice-rebuild (map -> map))
 
 ;; ---- the loop -------------------------------------------------------------------
 

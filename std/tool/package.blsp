@@ -91,7 +91,7 @@ transitively-closed lock file and puts each dep's source on *load-path*."
 ;; so the registry sub-graph is closed under the registry and the resolver's provider
 ;; can walk all of it from the API — the phase-1 walk never descends into a registry dep.
 
-(defn resolve-deps (root deps lock)
+(defn resolve-deps (root:any deps:seqable lock:any -> any)
   "Resolve `deps` (dep records from the manifest) and everything they transitively pull in, into a flat list of resolved entries — each its dep record with `:resolved-path`/`:sha256`/`:deps` (and `:commit`/`:version`) assoc'd on, so it keeps the dep's identity and dispatches through the same `Dependency` impls. `lock` is the prior project.lock.blsp :dependencies (or nil). `:path`/`:git`/`:tarball` deps resolve to their exact source (a matching lock entry reuses the pinned commit/sha, network-free); `:registry` deps carry a version RANGE resolved to a concrete version by the backtracking resolver (ADR-209) — a fully-covering lock reuses the prior solution network-free, so pass nil (or drop names via `nest update`) to force a re-solve."
   (let (lock-index (package-lock-index lock)
         ;; Direct git/path/tarball pins override a same-named *transitive* registry
@@ -114,7 +114,6 @@ transitively-closed lock file and puts each dep's source on *load-path*."
         registry-reqs (second walked)
         registry-entries (package-resolve-registry-closure root registry-reqs lock-index lock))
     (append non-registry registry-entries)))
-(sig resolve-deps (any seqable any -> any))
 
 ;; Returns `[non-registry-entries registry-reqs]`: the resolved path/git/tarball entries
 ;; in resolution order, and the (unresolved) registry dep records to hand to the solver.
@@ -611,7 +610,7 @@ transitively-closed lock file and puts each dep's source on *load-path*."
 ;; assoc'd on: reuse the lock's pinned tag when its resolved version still
 ;; satisfies the range (network-free — keeps a plain `nest run` offline); else
 ;; `%git-list-tags` and pick the newest match (or error, naming the range + tags).
-(defn- package-git-concrete-ref (dep locked)
+(defn- package-git-concrete-ref (dep:map locked:any -> map)
   (let (range (get dep :version))
     (if (nil? range)
       dep
@@ -634,7 +633,6 @@ transitively-closed lock file and puts each dep's source on *load-path*."
                 (if (empty? tags) "none" (string/join tags ", "))
                 ")")
               (assoc dep :ref (first chosen) :resolved-version (second chosen)))))))))
-(sig package-git-concrete-ref (map any -> map))
 
 (defn- package-resolve-git (root raw-dep raw-locked)
   (let (locked raw-locked
@@ -986,7 +984,8 @@ TOFU-pinned signing key, nil for an unsigned package)."
 ;; release's key IF its signature verified (never pin a key that hasn't proven control by
 ;; producing a valid signature). `:status` is one of `:verified`, `:bad-signature`,
 ;; `:key-changed`, `:signature-dropped`, `:unsigned`.
-(defn signature-verdict (name version checksum signature pubkey pinned-pubkey)
+(defn signature-verdict
+  (name:any version:any checksum:any signature:any pubkey:any pinned-pubkey:any -> map)
   "The ADR-212 verdict on a release: whether its signature verifies, against the key
 pinned on first use. `{:status :pin :warning}` — `:pin` the key to keep, `:warning` a sentence
 for the user or nil. Never raises: every input here comes from a registry or a file.
@@ -1031,7 +1030,6 @@ for the user or nil. Never raises: every input here comes from a registry or a f
                     " is unsigned, but a previous release was signed (a dropped signature).")}
       ;; unsigned, never pinned — the common case in a mostly-unsigned ecosystem; stay quiet.
       else {:status :unsigned :pin nil :warning nil})))
-(sig signature-verdict (any any any any any any -> map))
 
 (defn- package-verify-signature (name version checksum signature pubkey locked-pubkey)
   ;; the lock path: print the verdict's warning, return the key to pin in the lock
@@ -1100,7 +1098,7 @@ runtime side of `nest search --enhances`: an app lists its own installable plugi
           (pr-str (assoc pins name pubkey))
           "\n")))))
 
-(defn registry-install (name dest-dir)
+(defn registry-install (name: (or keyword string symbol) dest-dir:any -> any)
   "Download, sha-VERIFY, and extract the newest release of package `name` into `dest-dir/<name>/`
 at runtime — the user-package install path, independent of any project `_deps`/manifest. Returns
 `{:name :version :path :checksum :signature :warning}`. Errors on an unknown package, a download
@@ -1162,7 +1160,6 @@ say). Advisory, like every signing check: a bad or changed signature is reported
                :checksum checksum
                :signature (:status verdict)
                :warning (:warning verdict)})))))))
-(sig registry-install ((or keyword string symbol) any -> any))
 
 ;; Two resolutions of the same name must agree on their source. Different kinds can
 ;; never agree (checked here, since it is the one rule that is *about* the pair rather
@@ -1265,7 +1262,8 @@ say). Advisory, like every signing check: a bad or changed signature is reported
 ;; first name a second provider also declares.
 (defn- package-check-namespace-collisions (sources)
   (package-collision-loop sources {}))
-(defn- package-collision-loop (sources seen)
+(defn- package-collision-loop
+  (sources: (or nil (list (tuple string string))) seen:map -> (or nil map))
   (if (empty? sources)
     nil
     (let (label (first (first sources))
@@ -1284,7 +1282,6 @@ say). Advisory, like every signing check: a bad or changed signature is reported
                 "); rename one module (a `(defmodule …)` name must be"
                 " unique within a package)")
               (assoc m mod label))))))))
-(sig package-collision-loop ((or nil (list (tuple string string))) map -> (or nil map)))
 
 ;; A dependency may not be NAMED after a standard-library module (ADR-070/166): its
 ;; name becomes a load-time package prefix, so a dep called `net` would provide `tcp`

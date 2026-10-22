@@ -328,7 +328,7 @@ this by implementing the `Display` ability, which takes over this name below.
 ;; whole library. Coerce a map to its pairs once via `seq`, as `fold` did.
 (defn- %reverse-acc (coll acc)
   (if (empty? coll) acc (%reverse-acc (rest coll) (cons (first coll) acc))))
-(defn reverse (coll)
+(defn reverse (coll:seqable -> any)
   "The items of `coll` in reverse order, as a list.
 
     (reverse [1 2 3])  → (3 2 1)
@@ -838,7 +838,6 @@ no-op; the marker is read only by the type checker (`nest check`).
 ;; the implementation: both reject a string (`(reverse "ab")` raises — reverse its
 ;; `string/->list`) and every scalar, and both accept a record, which is a `map` to
 ;; the type system and IS indexable through its Seqable view.
-(sig reverse (seqable -> any))
 
 ;; ---- `type-matches?` — the runtime meaning of a type-expression -------------------------
 ;; Defined HERE, at the end of core.blsp, and not in contracts.blsp with the rest of the

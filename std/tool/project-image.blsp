@@ -221,7 +221,7 @@ come from `*module-files*`).
 ;; live in `*module-files*`, ADR-070). Its registrations belong to whoever loads it.
 (defn- image-foreign-owner? (m) (not (contains? *module-files* m)))
 
-(defn- image-preexisting-reg-keys (before-regs)
+(defn- image-preexisting-reg-keys (before-regs:map -> set)
   "The `[registry key]` pairs already registered BEFORE this project's sources loaded, as a
 set. Everything in it belongs to the prelude (or the binary), not to any module this load
 brought in — so no module load will ever replay it, and pruning it loses it for good."
@@ -229,9 +229,8 @@ brought in — so no module load will ever replay it, and pruning it loses it fo
     #{}
     (fn (acc m)
       (fold (get before-regs m) acc (fn (acc2 t) (conj acc2 [(get t 0) (get t 1)]))))))
-(sig image-preexisting-reg-keys (map -> set))
 
-(defn image-prune-foreign-registrations (before-regs)
+(defn image-prune-foreign-registrations (before-regs:map -> int)
   "Remove from the live registries every registration OWNED by a module this project's
 image does not carry — a std module (or anything else outside `*module-files*`) that
 happened to be loaded in the session that built the image. Returns how many were removed.
@@ -293,9 +292,8 @@ permanent rather than transient."
                           (%registry-update! '*impl-from* :dissoc [[aname op key]] nil)
                           (+ n2 1)))))))
     (+ n-regs n-impls)))
-(sig image-prune-foreign-registrations (map -> int))
 
-(defn write-image (root before before-regs &optional reloaded)
+(defn write-image (root:string before:any before-regs:map &optional reloaded:any -> any)
   "Snapshot the bindings this project load produced into `root`'s image, grouped into
 per-module sections. `before` is the `(reflect/global-names)` list captured *before* the sources
 were loaded. Returns the entry count. Written from a scope in which registrations owned by
@@ -316,7 +314,6 @@ every module was. Beside the image goes the record the next partial rebuild read
                         (%image-write (image-path root) (project-image-sections before) fp))))
       (write-modules-record! root fp reloaded previous)
       n)))
-(sig write-image (string any map &optional any -> any))
 
 ;; The registrations each project or dependency module's load wrote, as `module -> [[registry
 ;; key-path] …]` — what a partial rebuild removes before that module loads again, so an entry

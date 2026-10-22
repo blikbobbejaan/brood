@@ -36,7 +36,7 @@
 
 ;; ---- components -------------------------------------------------------------
 
-(defn basename (p)
+(defn basename (p:string -> string)
   "The last path component — everything after the final /. A trailing slash is
 ignored so `(basename \"/usr/bin/\")` returns `\"bin\"`. `(basename \"/\")` returns `\"/\"`.
 
@@ -49,9 +49,8 @@ ignored so `(basename \"/usr/bin/\")` returns `\"bin\"`. `(basename \"/\")` retu
       (= e 1) "/"
       ;; path is exactly "/"
       else (string/substring p (+ i 1) e))))
-(sig basename (string -> string))
 
-(defn dirname (p)
+(defn dirname (p:string -> string)
   "The directory part of `p` — everything up to but not including the final /.
 Returns `\".\"` for a bare name, `\"/\"` for the root.
 
@@ -63,9 +62,8 @@ Returns `\".\"` for a bare name, `\"/\"` for the root.
       (< i 0) "."
       (= i 0) "/"
       else (string/substring p 0 i))))
-(sig dirname (string -> string))
 
-(defn extension (p)
+(defn extension (p:string -> string)
   "The extension of `p`'s basename including the dot (e.g. `\".txt\"`), or `\"\"`.
 
     (path/extension \"/a/b/c.txt\")  → \".txt\""
@@ -73,7 +71,6 @@ Returns `\".\"` for a bare name, `\"/\"` for the root.
         n (string/length b)
         i (string/last-index-of b "."))
     (if (<= i 0) "" (string/substring b i n))))
-(sig extension (string -> string))
 
 (defn stem (p)
   "The basename of `p` without its extension (`\"foo.tar.gz\"` → `\"foo.tar\"`).
@@ -83,7 +80,7 @@ Returns `\".\"` for a bare name, `\"/\"` for the root.
         i (string/last-index-of b "."))
     (if (<= i 0) b (string/substring b 0 i))))
 
-(defn with-extension (p ext)
+(defn with-extension (p:string ext:string -> string)
   "Return `p` with its extension replaced by `ext` (which should include the dot,
 or be `\"\"` to remove the extension entirely).
 
@@ -91,7 +88,6 @@ or be `\"\"` to remove the extension entirely).
     (path/with-extension \"a/b.txt\" \"\")      → \"a/b\""
   (let (d (dirname p) base (str (stem p) ext))
     (if (= d ".") base (str d "/" base))))
-(sig with-extension (string string -> string))
 
 ;; ---- join -------------------------------------------------------------------
 
@@ -213,7 +209,7 @@ divergent pair still yields a valid relative path (`/x/y` from `/a/b` → `../..
         home (%user-home (string/substring path 1 end)))
     (when home (str home (string/substring path end (string/length path))))))
 
-(defn absolute (path &optional base)
+(defn absolute (path:string &optional base:string -> string)
   "Resolve `path` to an absolute path: a `/`-rooted path is returned unchanged, a
 `~`/`~/…` path is expanded against `$HOME` and a `~name`/`~name/…` path against that
 user's home (as a shell does), and any other (relative) path — a `~name` that is no user
@@ -230,9 +226,8 @@ string is returned as is. Makes a path absolute, not canonical — it does not c
       (str (or (%getenv "HOME") "~") (string/substring path 1 (string/length path)))
     (string/starts-with? path "~") (or (expand-user path) (path/join (or base (file/cwd)) path))
     else (path/join (or base (file/cwd)) path)))
-(sig absolute (string &optional string -> string))
 
-(defn abbreviate (path)
+(defn abbreviate (path:string -> string)
   "`path` with a leading `$HOME` shortened to `~` — the inverse of [[absolute]]'s `~`
 expansion, the way a shell prompt shows a directory. A path outside the home, or one
 that merely starts with the home's text (`/home/me2` under `/home/me`), is unchanged.
@@ -245,9 +240,8 @@ that merely starts with the home's text (`/home/me2` under `/home/me`), is uncha
       (string/starts-with? path (str home "/"))
         (str "~" (string/substring path (string/length home) (string/length path)))
       else path)))
-(sig abbreviate (string -> string))
 
-(defn temp (prefix)
+(defn temp (prefix:string -> string)
   "A fresh, unpredictable path under `/tmp`: `<prefix><32 hex chars>`, NOT created —
 `file/spit` a file there or `file/mkdir` a directory. The name comes from the OS CSPRNG, so
 it is unique across processes and across runs, and cannot be guessed ahead of time.
@@ -258,4 +252,3 @@ copies of the program fight over one file, and anyone on the machine can create 
 path first — as a symlink to something you own — so the `file/spit` overwrites their choice
 of file with your privileges. Neither is possible with a name they cannot predict."
   (path/join "/tmp" (str prefix (encoding/hex-encode-bytes (%random-bytes 16)))))
-(sig temp (string -> string))
