@@ -507,13 +507,22 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
 - [x] **Stateful transducer stages** — DONE 2026-10-22 (ADR-421): each `transduce` run owns
       one table, a stateful stage takes a slot in it (`seq/stage-slot`), and the run drops it
       on every exit; `seq/xtake` is built on it. No completion arity.
-- [ ] **Rope-level grapheme cursor** — cache segmentation for large buffers; size it against a
-      real editor workload.
+- [x] **Rope-level grapheme cursor** — DONE 2026-10-22 (ADR-422): sized against the editor, it
+      turned out to be a correctness fix first — `std/editor`'s motions and deletions (and the
+      line editor's) stepped by CODE POINT, splitting clusters. They step by cluster now, through
+      `text/next-grapheme`/`prev-grapheme` (~0.3 µs a step on a 389k-char rope, no cached
+      segmentation needed) and the string pair.
 - [x] **A plain `assert`** — DONE 2026-10-16: a prelude macro, `(assert test message…)`, raises
       naming the form and returns the test's value (`docs/language.md` § Errors).
 - [x] **Concurrency teaching note** — DONE 2026-10-16: `docs/brood-for-claude.md` "Parallelising
       a step-by-step simulation" (tiling + halo exchange, not a fan-out per generation), with
       `examples/life_bands.blsp` as the worked version, checked against the serial step.
+- [ ] **A module function named like a root macro is silently shadowed by the macro**
+      (found 2026-10-22). `(defmodule m) (defn- spy (x) …)` is accepted — the reserved-name
+      hint even promises "inside a defmodule … it is yours" — but every bare `(spy …)` in `m`
+      expands the prelude's `spy` macro. std leans on the current rule (`fuzzy` defines `match`
+      and uses the root `match` macro bare; `os`/`node` define `spawn`). A design call: warn at
+      such a definition, or let the module's own definition win and rename std's three.
 - [ ] **Perf levers parked in `docs/compute-frontier.md`** — unboxed arrays (`matmul`), and a
       fast frame for the VM `dispatch` computed-head branch (`pipeline`).
 
@@ -935,7 +944,7 @@ What that review consciously left OPEN, with the reasoning:
 - ✅ **Transducer early termination** (`reduced`) — shipped as ADR-376. Stateful stages
   (`xtake`) followed with ADR-421: the run owns a table and drops it on every exit.
   **[Brood]**
-- ⬜ **A rope-level grapheme cursor.** ADR-159's three accessors unblock correctness
+- ✅ **A rope-level grapheme cursor** (ADR-422, 2026-10-22). ADR-159's three accessors unblock correctness
   everywhere; a large buffer still wants a cursor that caches the segmentation.
   Size it against a real editor workload. **[kernel]**
 - ⬜ **`contains?` on a vector/list, `first`/`map` on a string** — the two remaining

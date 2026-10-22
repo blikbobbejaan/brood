@@ -188,12 +188,13 @@ line's own `C-y` (`lineedit-yank`) inserts only what `C-k`/`C-w` cut from the li
 
 (defn- lineedit-del-back (state: (record &open :text string :point int) -> map)
   "State with the char before point deleted (backspace)."
-  (let (text (get state :text) p (get state :point))
+  ;; a whole grapheme cluster, never one code point of it (ADR-422)
+  (let (text (get state :text) p (get state :point) start (string/prev-grapheme text p))
     (if (= p 0)
       state
       (assoc state
-        :text (str (string/substring text 0 (dec p)) (string/substring text p (string/length text)))
-        :point (dec p)
+        :text (str (string/substring text 0 start) (string/substring text p (string/length text)))
+        :point start
         :hist-idx -1))))
 
 (defn- lineedit-del-fwd (state: (record &open :text string :point int) -> map)
@@ -202,7 +203,8 @@ line's own `C-y` (`lineedit-yank`) inserts only what `C-k`/`C-w` cut from the li
     (if (>= p n)
       state
       (assoc state
-        :text (str (string/substring text 0 p) (string/substring text (inc p) n))
+        :text
+          (str (string/substring text 0 p) (string/substring text (string/next-grapheme text p) n))
         :hist-idx -1))))
 
 (defn- lineedit-kill-end (state: (record &open :text string :point int) -> map)
@@ -483,15 +485,15 @@ globals by default; a project can rebind it to complete its own vocabulary)."
     (get (editor/lineedit/lineedit-end-of-line (editor/lineedit/lineedit-beginning-of-line (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil) :point)   → 7"
   (lineedit-move state (lineedit-line-end (get state :text) (get state :point))))
 (defn lineedit-forward-char (state _)
-  "Move point one character right (C-f).
+  "Move point one user-perceived character right (C-f) — a whole grapheme cluster.
 
     (get (editor/lineedit/lineedit-forward-char (editor/lineedit/lineedit-beginning-of-line (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil) :point)   → 1"
-  (lineedit-move state (inc (get state :point))))
+  (lineedit-move state (string/next-grapheme (get state :text) (get state :point))))
 (defn lineedit-backward-char (state _)
-  "Move point one character left (C-b).
+  "Move point one user-perceived character left (C-b) — a whole grapheme cluster.
 
     (get (editor/lineedit/lineedit-backward-char (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :point)   → 6"
-  (lineedit-move state (dec (get state :point))))
+  (lineedit-move state (string/prev-grapheme (get state :text) (get state :point))))
 (defn lineedit-forward-word (state _)
   "Move point to the end of the next word (M-f) — by path component in `:path` mode.
 

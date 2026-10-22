@@ -264,12 +264,23 @@ or nil if no mark is set. The half-open span `[lo, hi)` the view highlights and
   (assoc buf :point (buffer-clamp 0 (buffer-length buf) n)))
 
 (defn forward-char (buf:buffer &optional (n:int 1) -> buffer)
-  "Point moved `n` characters forward (clamped)."
-  (goto-char buf (+ (get buf :point) n)))
+  "Point moved `n` user-perceived characters forward (clamped) — whole grapheme clusters, so
+point never lands inside `e` + a combining accent or an emoji sequence (ADR-422). A negative
+`n` moves backward.
+
+    (editor/buffer/buffer-point (editor/buffer/forward-char (editor/buffer/make-buffer \"e\u{301}x\")))   → 2"
+  (if (< n 0)
+    (backward-char buf (- 0 n))
+    (assoc buf :point (text/forward-graphemes (get buf :rope) (get buf :point) n))))
 
 (defn backward-char (buf:buffer &optional (n:int 1) -> buffer)
-  "Point moved `n` characters backward (clamped)."
-  (goto-char buf (- (get buf :point) n)))
+  "Point moved `n` user-perceived characters backward (clamped) — whole grapheme clusters
+(ADR-422). A negative `n` moves forward.
+
+    (editor/buffer/buffer-point (editor/buffer/backward-char (editor/buffer/goto-char (editor/buffer/make-buffer \"xe\u{301}\") 3)))   → 1"
+  (if (< n 0)
+    (forward-char buf (- 0 n))
+    (assoc buf :point (text/backward-graphemes (get buf :rope) (get buf :point) n))))
 
 (defn beginning-of-line (buf)
   "Point moved to the first character of its current line.
@@ -1237,11 +1248,12 @@ insertion point shift with the text. Throws if `buf` is read-only.
         s))))
 
 (defn delete-char (buf:buffer &optional (n:int 1) -> buffer)
-  "Delete `n` characters *after* point; point stays put. Recorded for undo (a
-no-op at end-of-buffer is not recorded). Throws if `buf` is read-only."
+  "Delete `n` user-perceived characters *after* point — whole grapheme clusters (ADR-422);
+point stays put. Recorded for undo (a no-op at end-of-buffer is not recorded). Throws if
+`buf` is read-only."
   (buffer-barf-if-read-only buf)
   (let (p (get buf :point)
-        end (buffer-clamp p (buffer-length buf) (+ p n)))
+        end (text/forward-graphemes (get buf :rope) p (math/max n 0)))
     (if (= p end)
       buf
       (let (_ (buffer-barf-if-protected-delete buf p end)
@@ -1253,11 +1265,12 @@ no-op at end-of-buffer is not recorded). Throws if `buf` is read-only."
           "")))))
 
 (defn delete-backward-char (buf:buffer &optional (n:int 1) -> buffer)
-  "Delete `n` characters *before* point (backspace); point moves back with it.
-Recorded for undo (a no-op at point 0 is not recorded). Throws if `buf` is read-only."
+  "Delete `n` user-perceived characters *before* point (backspace) — whole grapheme clusters
+(ADR-422); point moves back with it. Recorded for undo (a no-op at point 0 is not recorded).
+Throws if `buf` is read-only."
   (buffer-barf-if-read-only buf)
   (let (p (get buf :point)
-        start (buffer-clamp 0 p (- p n)))
+        start (text/backward-graphemes (get buf :rope) p (math/max n 0)))
     (if (= p start)
       buf
       (let (_ (buffer-barf-if-protected-delete buf start p)

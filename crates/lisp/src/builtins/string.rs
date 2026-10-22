@@ -124,6 +124,20 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "How many extended grapheme clusters s has — the length a human means, and the exclusive upper bound for grapheme-at. One O(n) pass, no allocation.\n\n    (string/grapheme-count \"Hi there\")   → 8",
         grapheme_count);
     primitives.def(
+        "string/next-grapheme",
+        Arity::exact(2),
+        Sig::new(vec![string, int], int),
+        &["s", "i"],
+        "The character index one user-perceived character after character index i in s — the next grapheme-cluster boundary, clamped to the ends. A cursor steps by this, never by 1: `e` + a combining accent is one character of two code points (ADR-422).\n\n    (string/next-grapheme \"ab\" 0)   → 1",
+        string_next_grapheme);
+    primitives.def(
+        "string/prev-grapheme",
+        Arity::exact(2),
+        Sig::new(vec![string, int], int),
+        &["s", "i"],
+        "The character index one user-perceived character before character index i in s — the previous grapheme-cluster boundary, clamped to the ends (ADR-422).\n\n    (string/prev-grapheme \"ab\" 2)   → 1",
+        string_prev_grapheme);
+    primitives.def(
         "string/grapheme-at",
         Arity::range(2, 3),
         // `default` is the OPTIONAL third argument the arity allows — declared here so
@@ -873,6 +887,46 @@ pub(super) fn grapheme_count(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
 /// one character — and it builds a vector of every cluster in the string on **every
 /// keystroke**. This walks to `i` and stops, allocating one string. The editor's
 /// hottest path stops being O(n) in the buffer line's length.
+/// The byte offset of character index `ci` in `s` (its length at `ci == chars`), and the
+/// character count — `ci` clamped to `[0, chars]`.
+fn char_byte(s: &str, ci: i64) -> usize {
+    if ci <= 0 {
+        return 0;
+    }
+    s.char_indices()
+        .nth(ci as usize)
+        .map(|(b, _)| b)
+        .unwrap_or(s.len())
+}
+
+/// `(string/next-grapheme s i)` — see the registration (ADR-422).
+pub(super) fn string_next_grapheme(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    use unicode_segmentation::GraphemeCursor;
+    let i = expect_int(heap, "string/next-grapheme", arg(args, 1))?;
+    let s = expect_string_ref(heap, "string/next-grapheme", arg(args, 0))?;
+    let at = char_byte(s, i);
+    let next = GraphemeCursor::new(at, s.len(), true)
+        .next_boundary(s, 0)
+        .ok()
+        .flatten()
+        .unwrap_or(s.len());
+    Ok(Value::int(s[..next].chars().count() as i64))
+}
+
+/// `(string/prev-grapheme s i)` — see the registration (ADR-422).
+pub(super) fn string_prev_grapheme(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    use unicode_segmentation::GraphemeCursor;
+    let i = expect_int(heap, "string/prev-grapheme", arg(args, 1))?;
+    let s = expect_string_ref(heap, "string/prev-grapheme", arg(args, 0))?;
+    let at = char_byte(s, i);
+    let prev = GraphemeCursor::new(at, s.len(), true)
+        .prev_boundary(s, 0)
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+    Ok(Value::int(s[..prev].chars().count() as i64))
+}
+
 pub(super) fn grapheme_at(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     use unicode_segmentation::UnicodeSegmentation;
     let i = expect_int(heap, "string/grapheme-at", arg(args, 1))?;

@@ -64,6 +64,33 @@
     (text/->string (text/from-string \"hi\"))   → \"hi\""
   (%string->rope s))
 
+(defn next-grapheme (r:rope idx:int -> int)
+  "The character index one user-perceived character after `idx` — the next grapheme-cluster
+boundary, or the rope's length at the end. A cursor steps by this, never by 1: `e` followed
+by a combining accent, or an emoji sequence, is one character of several code points.
+
+    (text/next-grapheme (text/from-string \"e\u{301}x\") 0)   → 2"
+  (%rope-next-grapheme r idx))
+
+(defn prev-grapheme (r:rope idx:int -> int)
+  "The character index one user-perceived character before `idx` — the previous
+grapheme-cluster boundary, or 0 at the start.
+
+    (text/prev-grapheme (text/from-string \"xe\u{301}\") 3)   → 1"
+  (%rope-prev-grapheme r idx))
+
+(defn forward-graphemes (r:rope idx:int n:int -> int)
+  "The character index `n` user-perceived characters after `idx`, stopping at the end.
+
+    (text/forward-graphemes (text/from-string \"ae\u{301}b\") 0 2)   → 3"
+  (if (<= n 0) idx (forward-graphemes r (%rope-next-grapheme r idx) (- n 1))))
+
+(defn backward-graphemes (r:rope idx:int n:int -> int)
+  "The character index `n` user-perceived characters before `idx`, stopping at the start.
+
+    (text/backward-graphemes (text/from-string \"ae\u{301}b\") 4 2)   → 1"
+  (if (<= n 0) idx (backward-graphemes r (%rope-prev-grapheme r idx) (- n 1))))
+
 (defn skip-forward (r at chars inside?)
   "The first index at or after `at` that ends a run of characters from `chars` (with
 `inside?`) or of characters NOT from it (without) — how far a word, a run of blanks, or

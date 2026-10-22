@@ -98,6 +98,22 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "The character index where line n (0-based) begins.",
         rope_line_to_char,
     );
+    primitives.def(
+        "%rope-next-grapheme",
+        Arity::exact(2),
+        Sig::new(vec![rope, int], int),
+        &["r", "idx"],
+        "The character index of the next grapheme-cluster boundary after character idx (the rope's length at the end) — one user-perceived character forward.",
+        rope_next_grapheme,
+    );
+    primitives.def(
+        "%rope-prev-grapheme",
+        Arity::exact(2),
+        Sig::new(vec![rope, int], int),
+        &["r", "idx"],
+        "The character index of the grapheme-cluster boundary before character idx (0 at the start) — one user-perceived character back.",
+        rope_prev_grapheme,
+    );
 }
 
 // ---------- rope (editor buffer text — ADR-045) ----------
@@ -216,4 +232,121 @@ pub(super) fn rope_line_to_char(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
         return Err(rope_oob("%rope-line->char", "line", n, lines));
     }
     Ok(Value::int(r.line_to_char(n as usize) as i64))
+}
+
+// ---------- grapheme clusters over a rope (ADR-422) ----------
+//
+// A cursor steps by grapheme cluster, never by code point: `e` + U+0301 or an emoji ZWJ
+// sequence is ONE user-perceived character, and stepping into it splits it. The boundary is
+// found with `unicode-segmentation`'s `GraphemeCursor` walking the rope's own chunks, so a
+// step costs the cluster it crosses — no segmentation of the line or the buffer is built or
+// cached. The chunk-walking loops are ropey's documented recipe.
+
+fn rope_next_boundary(r: &ropey::Rope, byte_idx: usize) -> usize {
+    use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
+    let (mut chunk, mut chunk_start, _, _) = r.chunk_at_byte(byte_idx);
+    let mut cursor = GraphemeCursor::new(byte_idx, r.len_bytes(), true);
+    loop {
+        match cursor.next_boundary(chunk, chunk_start) {
+            Ok(None) => return r.len_bytes(),
+            Ok(Some(n)) => return n,
+            Err(GraphemeIncomplete::NextChunk) => {
+                chunk_start += chunk.len();
+                chunk = r.chunk_at_byte(chunk_start).0;
+            }
+            Err(GraphemeIncomplete::PreContext(n)) => {
+                let context = r.chunk_at_byte(n - 1).0;
+                cursor.provide_context(context, n - context.len());
+            }
+            Err(_) => return r.len_bytes(),
+        }
+    }
+}
+
+fn rope_prev_boundary(r: &ropey::Rope, byte_idx: usize) -> usize {
+    use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
+    let (mut chunk, mut chunk_start, _, _) = r.chunk_at_byte(byte_idx);
+    let mut cursor = GraphemeCursor::new(byte_idx, r.len_bytes(), true);
+    loop {
+        match cursor.prev_boundary(chunk, chunk_start) {
+            Ok(None) => return 0,
+            Ok(Some(n)) => return n,
+            Err(GraphemeIncomplete::PrevChunk) => {
+                chunk = r.chunk_at_byte(chunk_start - 1).0;
+                chunk_start -= chunk.len();
+            }
+            Err(GraphemeIncomplete::PreContext(n)) => {
+                let context = r.chunk_at_byte(n - 1).0;
+                cursor.provide_context(context, n - context.len());
+            }
+            Err(_) => return 0,
+        }
+    }
+}
+
+/// `(%rope-next-grapheme r idx)` — see the registration.
+pub(super) fn rope_next_grapheme(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let r = expect_rope_ref(heap, "%rope-next-grapheme", arg(args, 0))?;
+    let idx = expect_int(heap, "%rope-next-grapheme", arg(args, 1))?;
+    let len = r.len_chars();
+    if idx < 0 || idx as usize > len {
+        return Err(rope_oob("%rope-next-grapheme", "index", idx, len));
+    }
+    if idx as usize == len {
+        return Ok(Value::int(len as i64));
+    }
+    let byte = rope_next_boundary(r, r.char_to_byte(idx as usize));
+    Ok(Value::int(r.byte_to_char(byte) as i64))
+}
+
+/// `(%rope-prev-grapheme r idx)` — see the registration.
+pub(super) fn rope_prev_grapheme(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let r = expect_rope_ref(heap, "%rope-prev-grapheme", arg(args, 0))?;
+    let idx = expect_int(heap, "%rope-prev-grapheme", arg(args, 1))?;
+    let len = r.len_chars();
+    if idx < 0 || idx as usize > len {
+        return Err(rope_oob("%rope-prev-grapheme", "index", idx, len));
+    }
+    if idx == 0 {
+        return Ok(Value::int(0));
+    }
+    let byte = rope_prev_boundary(r, r.char_to_byte(idx as usize));
+    Ok(Value::int(r.byte_to_char(byte) as i64))
+}
+
+#[cfg(test)]
+mod grapheme_tests {
+    use super::{rope_next_boundary, rope_prev_boundary};
+
+    /// Cluster steps over a DECOMPOSED `e` + U+0301 and a ZWJ family — where code points and
+    /// clusters genuinely differ (a precomposed é would prove nothing) — and across a chunk
+    /// boundary: the text is long enough that ropey splits it into several chunks.
+    #[test]
+    fn a_step_crosses_one_whole_cluster() {
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        let unit = format!("ae\u{301}{family}z");
+        let text = unit.repeat(400);
+        let rope = ropey::Rope::from_str(&text);
+        assert!(
+            rope.chunks().count() > 1,
+            "the test must cross a chunk boundary"
+        );
+        let expected: Vec<usize> = {
+            use unicode_segmentation::UnicodeSegmentation;
+            text.grapheme_indices(true)
+                .map(|(i, _)| i)
+                .skip(1)
+                .chain([text.len()])
+                .collect()
+        };
+        let mut at = 0;
+        for &want in &expected {
+            at = rope_next_boundary(&rope, at);
+            assert_eq!(at, want);
+        }
+        for &want in expected.iter().rev().skip(1) {
+            at = rope_prev_boundary(&rope, at);
+            assert_eq!(at, want);
+        }
+    }
 }

@@ -3123,6 +3123,14 @@ another type, so they are **not** string-library ops:
   tab-width])` is the string with each tab replaced by the spaces that reach its stop —
   what a view hands a frontend, since a raw tab in a render op has no column to measure
   from (ADR-342).
+- **Cursor steps** (ADR-422): `(string/next-grapheme s i)` / `(string/prev-grapheme s i)` and,
+  on a rope, `text/next-grapheme` / `text/prev-grapheme` (plus `text/forward-graphemes` /
+  `text/backward-graphemes` for `n` steps) take and return *code-point* indices — the
+  positions `string/substring` and the editor use — but always land on a grapheme-cluster
+  boundary, so a cursor never stops inside `e` + a combining accent or an emoji sequence.
+  The editor's `forward-char`/`backward-char`/`delete-char`/`delete-backward-char` and the
+  line editor step by them. A rope step costs ~0.3 µs at any buffer size: the boundary is
+  found over the rope's own chunks, with no segmentation built or cached.
 - **The cluster-indexed accessors** are `string/grapheme-count`, `(string/grapheme-at s i
   [default])`, and `(string/substring-graphemes s start [end])` — the grapheme-indexed
   counterparts of `string/length`, `string/char-at`, and `string/substring`, which are all

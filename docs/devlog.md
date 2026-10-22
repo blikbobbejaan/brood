@@ -3250,3 +3250,10 @@ raises, so a `count` that walked the view would fail it.
 per-run table that `transduce` owns and drops on every exit, with `seq/stage-slot` for a stage
 of your own. The completing arity ADR-376 sketched was rejected: it reaches the caller's own
 reducing function, and `(- acc)` negates. +0.45 µs per `transduce` call.
+
+2026-10-22 (night, last): the "rope-level grapheme cursor" was sized against the editor and
+turned out to be a correctness bug first — `std/editor` and the line editor moved and deleted by
+code point, splitting clusters. Boundary primitives for ropes (`GraphemeCursor` over the rope's
+chunks, ~0.3 µs a step at 389k chars, no cache) and strings; the buffer and line editor step by
+them (ADR-422). Found on the way: a module function named like a root macro (`spy`) is accepted
+but every bare call expands the macro — recorded as an open design question.
