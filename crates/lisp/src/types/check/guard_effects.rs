@@ -189,7 +189,12 @@ fn binding_targets(heap: &Heap, bindings: Value) -> Vec<Value> {
 fn collect_symbols(heap: &Heap, form: Value, out: &mut HashSet<String>) {
     crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || match form {
         Value::Sym(symbol) => {
-            out.insert(value::symbol_name(symbol));
+            // A typed parameter `x:int` binds `x` (ADR-420).
+            let text = value::symbol_name_ref(symbol);
+            match crate::syntax::typed::split(text) {
+                Some(typed) => out.insert(typed.name().to_string()),
+                None => out.insert(text.to_string()),
+            };
         }
         Value::Pair(_) => {
             for part in list_items(heap, form).unwrap_or_default() {

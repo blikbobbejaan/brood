@@ -45,6 +45,15 @@ decided when the name's **binding** comes to exist, whichever side the form is o
 took the module's whole load with it — KI-81, KI-113, and a tree-wide placement gate that
 existed only to police that. The gate is gone; the rule it enforced has no failure left.)
 
+**Typed parameters** (ADR-420) are the inline spelling: `(defn area (w:number h:number ->
+number) …)` registers `(sig area (number number -> number))`. A position left untyped is
+`_` — an unconstrained parameter, or (with no `-> TYPE`) a result the checker goes on
+inferring: `(defn pair (x:int y) …)` declares `(int _ -> _)`, and `pair`'s callers read the
+inferred return exactly as before the parameter was typed. The types are taken out of the
+parameter list in the compile pass (`eval/macros/typed.rs`), so every engine binds the plain
+names; the readers of raw source (scope analysis, the std signature index, the checker's
+raw-form passes) split `name:type` with the same rule (`syntax/typed.rs`).
+
 ### Type-expression grammar (slice 1)
 
 ```

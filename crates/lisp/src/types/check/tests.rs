@@ -36,6 +36,7 @@ mod review_lints;
 mod robustness;
 mod scope_and_guards;
 mod signatures;
+mod typed_params;
 
 /// A full `Interp` — primitives + the loaded prelude. We need the prelude
 /// in the global env so the new unbound-symbol diagnostic doesn't false-

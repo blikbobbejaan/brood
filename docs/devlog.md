@@ -3217,3 +3217,15 @@ materialised, so the image writer left it out of the root section. The record no
 section's registry names and the partial rebuild re-declares them (the prelude's
 `*require-edges*` trick). A second defect beside it: a materialised module's ownership record was
 replaced by its live attribution, which is only its doc entry.
+
+## 2026-10-22 (evening) — typed parameters (ADR-420)
+
+`(defn area (w:number h:number -> number) …)`. The planned `((x int) -> int)` was impossible —
+list patterns and `&optional` defaults already own that shape — and a first macro-only `defn`
+rewrite was reviewed and dropped before landing: it left `fn`, the CST tools and the checker's
+raw passes binding `x:int`, and declared `any` for untyped positions, so typing one parameter
+erased the inferred return. What landed strips the types in the compile pass every engine
+shares and registers the `(sig …)` they spell, with `_` for an open position; the checker
+keeps inferring an open result (and found two loops on the way: the same-file fixpoint never
+saw an open name settle, and the body was checked against its own in-progress return). The
+in-language test file was run once locally, by mistake, before the suite reached CI.

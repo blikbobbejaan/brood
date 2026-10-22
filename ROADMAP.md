@@ -496,9 +496,10 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
       an edit reloads only the edited modules and their dependents (ADR-419: 13.2 → 2.7 s on
       the 302 × 3k rig). Left: a COLD build still loads on one thread, and a partial rebuild
       still materialises every unchanged module and rewrites the whole image (O(project)).
-- [ ] **Inline `sig` signatures** — `(defn f ((x int) -> int) …)`; an ADR-082 revision (defn,
-      `sig_of`, defrecord's sigs, `sig!`). Detail under "Syntax review" below
-      (from the archived `docs/archive/roadmap-for-v1.md`).
+- [x] **Inline `sig` signatures** — DONE 2026-10-22 (ADR-420) as typed parameters,
+      `(defn area (w:number h:number -> number) …)`: the planned `((x int) -> int)` collided
+      with list patterns and `&optional` defaults. `_` marks an open position, and a missing
+      `-> R` keeps the inferred return.
 - [ ] **Seq protocol on abilities — the Prim1 half** — `first`/`rest`/`empty?`/`nth` don't route
       through `Seqable`; plus an optional `Counted`. The read/build halves shipped.
 - [ ] **Stateful transducer stages** — `xtake` needs a completion arity; `reduced` itself shipped

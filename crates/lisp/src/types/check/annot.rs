@@ -632,6 +632,12 @@ pub fn parse_type(heap: &Heap, form: Value) -> Option<Ty> {
             if name.starts_with('?') {
                 return Some(Ty::ANY);
             }
+            // `_` — a position the declaration leaves open (ADR-420): an untyped parameter
+            // in `(defn f (x:int y) …)` is `any`; an open RESULT is read off the form by
+            // [`arrow_ret_is_open`], so the checker keeps inferring it.
+            if name == "_" {
+                return Some(Ty::ANY);
+            }
             // The name bound by an enclosing `(rec X …)` is the self-reference (ADR-349).
             if REC_BOUND.with(|b| b.borrow().contains(&s)) {
                 return Some(Ty::rec_ref());
@@ -1324,6 +1330,17 @@ pub(super) fn parse_sig_decl_with_vars(heap: &Heap, form: Value) -> Option<(Symb
 /// `(sig f (int -> int) :pure :total)`, or `(sig f :pure)` with no type at all. `None` for
 /// anything that is not a `sig` form of that shape (a property must be a keyword, and
 /// only the FIRST item after the name may be a type-form).
+/// Does the arrow type-form `form` — `(T… -> _)` — leave its result open (ADR-420)? A typed
+/// parameter list with no `-> TYPE` declares exactly that: the parameters it names, and a
+/// result the checker goes on inferring rather than reading as `any`.
+pub(super) fn arrow_ret_is_open(heap: &Heap, form: Value) -> bool {
+    let Some(items) = list_items(heap, form) else {
+        return false;
+    };
+    matches!(items.as_slice(), [.., Value::Sym(arrow), Value::Sym(ret)]
+        if value::symbol_is(*arrow, "->") && value::symbol_is(*ret, "_"))
+}
+
 pub(super) fn sig_decl_head(
     heap: &Heap,
     form: Value,

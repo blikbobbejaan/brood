@@ -1042,6 +1042,8 @@ cyclic alias (`(deftype a b)` `(deftype b a)`) stops instead of looping."
     ; likewise for bool and string (ADR-120)
     (string? t) (= t v)
     (%eq t 'any) true
+    ;; `_` — a position a typed parameter list leaves open (ADR-420): never checked.
+    (%eq t '_) true
     (%eq t 'number) (number? v)
     (%eq t 'int) (int? v)
     (%eq t 'float) (float? v)

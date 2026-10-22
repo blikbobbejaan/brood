@@ -434,8 +434,17 @@ pub(super) fn check_def(
         // heap-wide fallback `gradual_of`'s reference branch already has
         // (ADR-124): `declared_heap_sig` reads the qualified store
         // `%register-sig` populates, so it matches regardless of namespace.
+        // An OPEN result (ADR-420) is the inferred one written into the declaration: there is
+        // nothing to check the body's return against, so the body is checked against the
+        // declared parameters and an `any` result.
         let declared = ctx
             .declared_sig(name)
+            .map(|mut sig| {
+                if ctx.is_open_ret(name) {
+                    sig.ret = Ty::ANY;
+                }
+                sig
+            })
             .or_else(|| declared_heap_sig(heap, name));
         if let Some(sig) = declared
             && let Some(fn_items) = fn_form_items(heap, value_form)

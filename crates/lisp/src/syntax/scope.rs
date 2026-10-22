@@ -461,16 +461,47 @@ fn param_names(node: &Node, src: &str, idx: usize) -> Vec<Binding> {
     if !matches!(params.kind, NodeKind::List | NodeKind::Vector) {
         return out;
     }
+    // A typed parameter (ADR-420) binds the name before its colon, and its span is the
+    // name's alone, so a rename keeps the type; `xs:` is typed by the form after it, and
+    // `-> R` ends the binders.
+    let binder = |n: &Node| {
+        let t = n.text(src);
+        match super::typed::split(t) {
+            Some(typed) => {
+                let name = typed.name();
+                Binding {
+                    name: name.to_string(),
+                    def: crate::error::Span::new(
+                        n.span.start as usize,
+                        n.span.start as usize + name.len(),
+                    ),
+                    kind: BindingKind::Local,
+                }
+            }
+            None => Binding {
+                name: t.to_string(),
+                def: n.span,
+                kind: BindingKind::Local,
+            },
+        }
+    };
+    let mut skip_type_form = false;
     for item in params.forms() {
+        if std::mem::take(&mut skip_type_form) {
+            continue;
+        }
         match item.kind {
             NodeKind::Symbol => {
                 let t = item.text(src);
+                if t == super::typed::ARROW {
+                    break;
+                }
                 if t != kw::AMP_OPTIONAL && t != kw::AMP {
-                    out.push(Binding {
-                        name: t.to_string(),
-                        def: item.span,
-                        kind: BindingKind::Local,
-                    });
+                    skip_type_form = matches!(
+                        super::typed::split(t),
+                        Some(super::typed::TypedName::Next(_))
+                    );
+                    out.push(binder(item));
                 }
             }
             // An `&optional` group `(name default)` — the binder is the head.
@@ -478,11 +509,7 @@ fn param_names(node: &Node, src: &str, idx: usize) -> Vec<Binding> {
                 if let Some(n) = item.forms().next()
                     && n.kind == NodeKind::Symbol
                 {
-                    out.push(Binding {
-                        name: n.text(src).to_string(),
-                        def: n.span,
-                        kind: BindingKind::Local,
-                    });
+                    out.push(binder(n));
                 }
             }
             _ => {} // a vector/other pattern target — deferred
@@ -550,6 +577,32 @@ mod tests {
             }
         ));
         assert_eq!(tree.resolve_at(&root, src, outside), Resolution::Free);
+    }
+
+    /// Typed parameters (ADR-420): `w:number` binds `w`, `xs:` is typed by the form after it,
+    /// `-> R` ends the binders — and the binder's span is the NAME, so a rename keeps the type.
+    #[test]
+    fn typed_params_bind_their_names() {
+        let src =
+            "(defn f (w:number xs: (list int) &optional (g:string \"hi\") -> int) (list w xs g))";
+        let root = cst::parse(src);
+        let tree = analyze(&root, src);
+        let body = src.rfind("(list").unwrap();
+        for name in ["w", "xs", "g"] {
+            let at = (body + src[body..].find(&format!(" {name}")).unwrap() + 1) as u32;
+            match tree.resolve_at(&root, src, at) {
+                Resolution::Defined {
+                    kind: BindingKind::Local,
+                    def,
+                    ..
+                } => assert_eq!(
+                    &src[def.start as usize..def.end as usize],
+                    name,
+                    "{name}'s binder span is the name alone"
+                ),
+                other => panic!("{name} should be a local param, got {other:?}"),
+            }
+        }
     }
 
     #[test]

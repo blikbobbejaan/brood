@@ -482,6 +482,10 @@ struct FileFacts {
     /// provable error. Populated by `check_file`'s same-file inference.
     inferred_overload: HashMap<Symbol, Vec<Sig>>,
     declared: HashMap<Symbol, Sig>,
+    /// Declared names whose RESULT the declaration leaves open — `(T… -> _)`, what a typed
+    /// parameter list without `-> TYPE` declares (ADR-420). They stay inference candidates,
+    /// and the inferred result is written into the declaration.
+    open_ret: HashSet<Symbol>,
     /// The property keywords a `(sig name … :pure :total)` declared in THIS file
     /// (ADR-351), keyed like `declared`; a loaded module's are read off the heap store.
     declared_props: HashMap<Symbol, Vec<Symbol>>,
@@ -1252,6 +1256,14 @@ impl Ctx {
     pub(super) fn add_declared_sig(&mut self, sym: Symbol, sig: Sig) {
         self.file_mut().declared.insert(sym, sig);
     }
+    /// Mark `sym`'s declared result as open (ADR-420): see [`Self::is_open_ret`].
+    pub(super) fn mark_open_ret(&mut self, sym: Symbol) {
+        self.file_mut().open_ret.insert(sym);
+    }
+    /// Does `sym`'s declaration leave its result to inference?
+    pub(super) fn is_open_ret(&self, sym: Symbol) -> bool {
+        self.file.open_ret.contains(&sym)
+    }
     /// The declared **value** type for `sym` from a non-arrow `(sig x T)`, if any.
     pub(super) fn declared_value_ty(&self, sym: Symbol) -> Option<Ty> {
         self.file.declared_value_ty.get(&sym).cloned()
@@ -1284,6 +1296,16 @@ impl Ctx {
     /// declared for `sym` — a declaration wins.
     pub(super) fn add_inferred_fn_sig(&mut self, sym: Symbol, sig: Sig) {
         if !self.file.declared.contains_key(&sym) {
+            self.file_mut().inferred_fn_sig.insert(sym, sig);
+        } else if self.file.open_ret.contains(&sym) {
+            // An open result (ADR-420): the declaration keeps its parameters and takes
+            // the inferred result, so typing one parameter never costs the return. The
+            // inferred sig is recorded too — the same-file fixpoint reads it to see whether
+            // the return has settled; every caller reads the declaration first.
+            let ret = sig.ret.clone();
+            if let Some(declared) = self.file_mut().declared.get_mut(&sym) {
+                declared.ret = ret;
+            }
             self.file_mut().inferred_fn_sig.insert(sym, sig);
         }
     }

@@ -1267,6 +1267,18 @@ pub(super) fn declared_heap_sig(heap: &Heap, sym: Symbol) -> Option<Sig> {
         .cloned()
 }
 
+/// A loaded declaration whose result is open — `(T… -> _)`, a typed parameter list with no
+/// `-> TYPE` (ADR-420) — takes its result from inference, so typing a parameter never costs a
+/// cross-module caller the return it read before.
+fn with_open_ret_inferred(heap: &Heap, sym: Symbol, mut sig: Sig) -> Sig {
+    let open = super::deps::obs_declared_sig_value(heap, sym)
+        .is_some_and(|form| annot::arrow_ret_is_open(heap, form));
+    if open && let Some(inferred) = infer_sig(heap, sym) {
+        sig.ret = inferred.ret;
+    }
+    sig
+}
+
 /// The **overload** counterpart of [`declared_heap_sig`] (ADR-116) — the
 /// cross-module/intra-module path for an `(and (int -> int) (bool -> bool))`
 /// declaration. Reads the same heap-recorded raw type-expression
@@ -1322,7 +1334,7 @@ pub(super) fn declared_heap_value_ty(heap: &Heap, sym: Symbol) -> Option<Ty> {
 /// and inferred signatures live on `Ctx` and are read by the walk ahead of all of these.)
 pub(super) fn sig_of(heap: &Heap, sym: Symbol) -> Option<Sig> {
     operator_sig(heap, sym)
-        .or_else(|| declared_heap_sig(heap, sym))
+        .or_else(|| declared_heap_sig(heap, sym).map(|sig| with_open_ret_inferred(heap, sym, sig)))
         .or_else(|| primitive_sig(heap, sym))
         .or_else(|| image_heap_sig(heap, sym))
         .or_else(|| curated_sig(sym))

@@ -1946,6 +1946,29 @@ provably wrong call against it (both the argument and the result type flow):
 **Either side of the definition** — see "Placement" below. A `sig` is a declaration
 wherever it stands; enforcement (when armed) attaches to the binding, not to the form.
 
+**Typed parameters** (ADR-420) say the same thing where the parameters are:
+
+```clojure
+(defn area (w:number h:number -> number)
+  "The area of a w×h rectangle."
+  (* w h))
+
+(defn greet (name:string &optional (greeting:string "hello") -> string) …)
+(defn total (xs: (list int) -> int) …)    ; `name:` then a type FORM
+(defn pair (x:int y) [x y])               ; untyped `y`, no `->`
+```
+
+A parameter `name:type` binds `name` and types it; `name:` types it with the form that
+follows; `-> TYPE` ends the list with the result type. The definition registers exactly the
+`(sig …)` its parameters spell — `(sig area (number number -> number))` — so the checker and
+the contracts treat the two spellings as one. A position left untyped is the placeholder
+`_`: an untyped parameter is unconstrained, and with no `-> TYPE` the result keeps the type
+the checker **infers** from the body, so typing one parameter never costs the return
+(`pair` above declares `(int _ -> _)`). `_` may be written in a `sig` too. Typed parameters
+work on `defn`, `defn-`, `fn` and `defmacro`; a multi-clause `fn`, a destructuring pattern and
+a `let` binding refuse a type with an error — declare those with `(sig f (and …))` or on the
+enclosing function.
+
 The type grammar: base names — `int float number decimal string symbol keyword
 bool nil pair vector list map set bytes fn rope pid ref table socket subprocess`,
 plus `any` (everything) and `never` (nothing); the spellings match what `type-of`

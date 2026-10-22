@@ -469,6 +469,12 @@ fn register_declared_sig(heap: &Heap, ctx: &mut Ctx, file_ns: Option<&str>, form
     if let Some((name, sig)) = annot::parse_sig_decl(heap, form) {
         let qn = qualify_decl_name(heap, ctx, file_ns, name);
         ctx.add_declared_sig(qn, sig);
+        // `(T… -> _)` — the result is left to inference (ADR-420).
+        if let Some((_, Some(type_form), _)) = annot::sig_decl_head(heap, form)
+            && annot::arrow_ret_is_open(heap, type_form)
+        {
+            ctx.mark_open_ret(qn);
+        }
     }
     if let Some((name, sv)) = annot::parse_sig_decl_with_vars(heap, form) {
         let qn = qualify_decl_name(heap, ctx, file_ns, name);
@@ -2403,7 +2409,7 @@ fn inference_candidates(heap: &Heap, expanded: &[Value], ctx: &Ctx) -> Vec<(Symb
                 && !ctx.is_file_macro(name)
                 && !heap.is_dynamic(name)
                 && !value::is_gensym(name)
-                && ctx.declared_sig(name).is_none())
+                && (ctx.declared_sig(name).is_none() || ctx.is_open_ret(name)))
             .then_some((name, rhs))
         })
         .collect()
@@ -3007,10 +3013,30 @@ fn collect_top_level_def(heap: &Heap, form: Value, out: &mut Vec<Value>) {
         }
         return;
     }
-    match walk::do_body(heap, form).filter(|body| marks_private(heap, body)) {
-        Some(body) => out.extend(body),
+    // A `defn-` (`(do (def …) (%mark-private …))`) or a definition with typed parameters
+    // (`(do (def …) (%register-sig …))`, ADR-420) is the definition beside its marks, not a
+    // block that hides it: unwrap it, recursively — a typed `defn-` nests one in the other.
+    match walk::do_body(heap, form)
+        .filter(|body| marks_private(heap, body) || registers_sig(heap, body))
+    {
+        Some(body) => {
+            for inner in body {
+                collect_top_level_def(heap, inner, out);
+            }
+        }
         None => out.push(form),
     }
+}
+
+/// Does this `do` body carry a `(%register-sig …)` call beside a `def` — the expansion of a
+/// definition with typed parameters (ADR-420)?
+fn registers_sig(heap: &Heap, body: &[Value]) -> bool {
+    let head_is = |form: Value, name: &str| {
+        list_items(heap, form)
+            .and_then(|items| items.first().copied())
+            .is_some_and(|head| matches!(head, Value::Sym(s) if value::symbol_is(s, name)))
+    };
+    body.iter().any(|&f| head_is(f, "%register-sig")) && body.iter().any(|&f| head_is(f, "def"))
 }
 
 /// The forms a `(%lint-allow :category (do FORM…))` wraps, for every category but

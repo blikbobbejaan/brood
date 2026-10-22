@@ -1,0 +1,73 @@
+;; Typed parameters (ADR-420): `(defn area (w:number h:number -> number) …)` — the signature
+;; written where the parameters are. The binding must be exactly the untyped one's: the
+;; types come out in the compile pass every engine shares, so nothing binds a variable
+;; literally named `w:number`, and what they declare is the `(sig …)` the definition registers.
+
+(defmodule typed-params-test (:use test))
+
+(defn tp-area (w:number h:number -> number)
+  "The area of a w×h rectangle."
+  (* w h))
+
+(defn tp-greet (name:string &optional (greeting:string "hello") -> string)
+  (str greeting ", " name))
+
+(defn tp-pair (x:int y) [x y])
+
+(defn- tp-total (xs: (list int) -> int) (fold xs 0 +))
+
+(defn tp-rest (head:int & more) (cons head more))
+
+;; An identity: only a contract can tell a wrong argument from a right one here.
+(defn tp-id (x:int -> int) x)
+
+(describe "typed parameters bind as plain ones"
+  (test "a fully typed definition runs and keeps its docstring"
+    (assert= 6 (tp-area 2 3))
+    (assert= "The area of a w×h rectangle." (doc tp-area))
+    (assert= '(w h) (arglist tp-area)))
+  (test "an optional with a type keeps its default"
+    (assert= "hello, Ada" (tp-greet "Ada"))
+    (assert= "yo, Ada" (tp-greet "Ada" "yo")))
+  (test "an untyped parameter beside a typed one, a form type and a rest parameter"
+    (assert= [1 :any] (tp-pair 1 :any))
+    (assert= 6 (tp-total '(1 2 3)))
+    (assert= '(1 2 3) (tp-rest 1 2 3)))
+  (test "an anonymous fn takes them too"
+    (assert= 42 ((fn (a:int b:int -> int) (* a b)) 6 7))))
+
+(describe "what the types declare"
+  (test "the definition registers the signature its parameters spell"
+    (assert= "(number number -> number)" (reflect/declared-signature 'typed-params-test/tp-area)))
+  (test "an untyped position and a missing result are the open placeholder `_`"
+    (assert= "(int _ -> _)" (reflect/declared-signature 'typed-params-test/tp-pair)))
+  (test "an armed contract rejects a typed parameter's wrong argument; unarmed, it runs"
+    ;; check-allow :type-mismatch — the wrong argument is the point
+    (check-allow :type-mismatch
+      (if (%contracts-armed?)
+        (assert-error (tp-id "s"))
+        (assert= "s" (tp-id "s"))))))
+
+(describe "what typed parameters refuse, loudly"
+  (test "a typed let binding"
+    (assert-error (reflect/eval-string "(let (x:int 1) x)")))
+  (test "a type inside a destructuring pattern"
+    (assert-error (reflect/eval-string "(fn ([a:int b]) a)")))
+  (test "types on a multi-clause fn"
+    (assert-error (reflect/eval-string "(fn ((x:int) x) ((x y) y))")))
+  (test "a result type that does not end the list"
+    (assert-error (reflect/eval-string "(fn (x -> int y) x)"))))
+
+(describe "typed definitions across processes"
+  :isolated (test "workers call a typed definition and send the results back"
+    (let (me (self)
+          n 8)
+      (doseq (i (range n))
+        (spawn (fn () (send me [i (tp-area i 2) (tp-greet (str i))]))))
+      (let (got (fold (range n)
+                  {}
+                  (fn (acc _)
+                    (receive ([i a g] (assoc acc i [a g]))))))
+        (assert= n (count got))
+        (doseq (i (range n))
+          (assert= [(* i 2) (str "hello, " i)] (get got i)))))))

@@ -22,12 +22,15 @@ mod linmap;
 mod patterns;
 mod pipeline;
 mod resolve;
+mod typed;
 
 use hygiene::*;
 use linmap::*;
 pub(crate) use patterns::*;
 use pipeline::*;
 pub use resolve::*;
+pub(crate) use typed::typed_param_sig;
+use typed::*;
 
 use crate::core::heap::Heap;
 use crate::core::keywords as kw;
@@ -594,10 +597,27 @@ fn macroexpand_all_depth_step_inner(
                 }
                 // (`fn` is the only spelling — no `lambda` alias, ADR-162.)
                 let s = head;
+                // Typed parameters (ADR-420): `(def NAME (fn (x:int -> int) …))` — what
+                // `defn` expands to — becomes the plain definition plus its declaration,
+                // before anything below sees the parameter list.
+                if value::symbol_is(s, kw::DEF)
+                    && let Some(rewritten) = typed_def(heap, &items)?
+                {
+                    return macroexpand_all_depth(heap, rewritten, env, depth + 1);
+                }
                 // Desugar pattern binders into the Brood `match*` engine so they
                 // expand once here (fast) rather than per call. eval's `let`/`fn`
                 // then only ever see plain symbol binds.
                 if value::symbol_is(s, kw::LET) || value::symbol_is(s, kw::LETREC) {
+                    refuse_typed_let(
+                        heap,
+                        if value::symbol_is(s, kw::LET) {
+                            "let"
+                        } else {
+                            "letrec"
+                        },
+                        &items,
+                    )?;
                     // A **vector** bindings container — `(let [a 1] …)`, and with it
                     // the Clojure `(let [[a 1] [b 2]] …)` shape, which would otherwise
                     // destructure `[a 1]` against `[b 2]` and report a bewildering
@@ -637,6 +657,9 @@ fn macroexpand_all_depth_step_inner(
                     // pattern targets in eval, so there's no `lower_let` branch.
                     return expand_let(heap, original, &items, env, depth + 1);
                 } else if value::symbol_is(s, kw::FN) {
+                    if let Some(plain) = strip_fn(heap, &items)? {
+                        return macroexpand_all_depth(heap, plain, env, depth + 1);
+                    }
                     if let Some(lowered) = lower_fn(heap, &items)? {
                         return macroexpand_all_depth(heap, lowered, env, depth + 1);
                     }
@@ -651,6 +674,9 @@ fn macroexpand_all_depth_step_inner(
                     }
                     return expand_tail(heap, original, &items, 2, env, depth + 1);
                 } else if value::symbol_is(s, kw::DEFMACRO) {
+                    if let Some(plain) = strip_defmacro(heap, &items)? {
+                        return macroexpand_all_depth(heap, plain, env, depth + 1);
+                    }
                     // (defmacro name params body...) — name/params aren't calls.
                     return expand_tail(heap, original, &items, 3, env, depth + 1);
                 }

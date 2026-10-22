@@ -1214,6 +1214,12 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
   `sig` that says *less* than the code does (`bool` where `nil` arrives, `(list T)` where
   a vector is passed, a record alias whose required key a caller omits) now fails tests,
   where it used to be a silent misstatement.
+- **Typed parameters are the inline `sig`** (ADR-420): `(defn area (w:number h:number ->
+  number) …)` registers `(sig area (number number -> number))`. `name:` types a parameter
+  with the FORM after it (`xs: (list int)`); an untyped parameter or a missing `-> R` is `_`
+  — unconstrained, and the result stays INFERRED, so typing one parameter costs nothing.
+  Not on a multi-clause `fn`, inside a destructuring pattern, or on a `let` binding (each is
+  an error) — use `(sig …)` there.
 - **Declare low, derive high.** The checker infers most signatures from the body — std
   deleted 323 `sig`s it inferred verbatim. Write one where a *leaf* knows a fact nothing
   above it can prove (a kernel boundary, a callback's contract, a constant's type:

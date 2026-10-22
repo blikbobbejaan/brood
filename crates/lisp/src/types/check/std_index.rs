@@ -67,8 +67,18 @@ pub(crate) fn module_signature_index(heap: &mut Heap, key: &str, source: &str) -
     };
     let mut fns: Vec<(String, (u32, u32), bool)> = Vec::new();
     let mut sigs: HashMap<String, Value> = HashMap::new();
+    let mut typed: Vec<(String, Value)> = Vec::new();
     for form in forms {
-        collect(heap, key, form, &mut fns, &mut sigs);
+        collect(heap, key, form, &mut fns, &mut sigs, &mut typed);
+    }
+    // A typed parameter list declares its signature where the parameters are (ADR-420); an
+    // explicit `(sig …)` for the same name still wins.
+    for (name, params) in typed {
+        if !sigs.contains_key(&name)
+            && let Some(sig) = crate::eval::macros::typed_param_sig(heap, params)
+        {
+            sigs.insert(name, sig);
+        }
     }
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::with_capacity(fns.len());
@@ -156,6 +166,7 @@ fn collect(
     form: Value,
     fns: &mut Vec<(String, (u32, u32), bool)>,
     sigs: &mut HashMap<String, Value>,
+    typed: &mut Vec<(String, Value)>,
 ) {
     let Some(items) = list_items(heap, form) else {
         return;
@@ -178,12 +189,12 @@ fn collect(
     match head.as_str() {
         "defmodule" | "check-allow" => {
             for &inner in items.iter().skip(2) {
-                collect(heap, key, inner, fns, sigs);
+                collect(heap, key, inner, fns, sigs, typed);
             }
         }
         "do" => {
             for &inner in items.iter().skip(1) {
-                collect(heap, key, inner, fns, sigs);
+                collect(heap, key, inner, fns, sigs, typed);
             }
         }
         "defn" | "defn-" => {
@@ -191,7 +202,10 @@ fn collect(
                 return;
             };
             if let Some(arity) = fn_arity(heap, &items[2..]) {
-                fns.push((name, arity, head == "defn-"));
+                fns.push((name.clone(), arity, head == "defn-"));
+            }
+            if let Some(&params) = items.get(2) {
+                typed.push((name, params));
             }
         }
         // `(%defseq name (params…) docstring step)` expands to `(defn name (coll params…) …)`
@@ -282,8 +296,21 @@ fn count_params(params: &[Value]) -> (u32, u32) {
     let mut required = 0u32;
     let mut optional = 0u32;
     let mut in_optional = false;
+    // A typed parameter list (ADR-420): `-> R` ends the parameters, and `xs:` is followed
+    // by its type form, which is not a parameter.
+    let mut skip_type_form = false;
     for &p in params {
+        if std::mem::take(&mut skip_type_form) {
+            continue;
+        }
         if let Value::Sym(s) = p {
+            if value::symbol_is(s, crate::syntax::typed::ARROW) {
+                break;
+            }
+            skip_type_form = matches!(
+                crate::syntax::typed::split(value::symbol_name_ref(s)),
+                Some(crate::syntax::typed::TypedName::Next(_))
+            );
             if value::symbol_is(s, kw::AMP_OPTIONAL) {
                 in_optional = true;
                 continue;
@@ -299,4 +326,30 @@ fn count_params(params: &[Value]) -> (u32, u32) {
         }
     }
     (required, required + optional)
+}
+
+#[cfg(test)]
+mod tests {
+    /// A typed `defn` in std (ADR-420): the index counts its parameters, not the `->` and the
+    /// result type after them, and carries the signature its parameters spell.
+    #[test]
+    fn a_typed_definition_is_indexed_with_its_arity_and_signature() {
+        let interp = crate::Interp::new();
+        let mut heap = crate::core::heap::Heap::with_regions(
+            interp.heap.prelude_arc(),
+            interp.heap.runtime_arc(),
+        );
+        heap.set_global(crate::core::value::EnvId::GLOBAL);
+        let entries = super::module_signature_index(
+            &mut heap,
+            "geo",
+            "(defn area (w:number h:number &optional k: (list int) -> number) (* w h))",
+        );
+        let area = entries
+            .iter()
+            .find(|e| e.name == "geo/area")
+            .expect("indexed");
+        assert_eq!((area.min, area.max), (2, 3), "w, h and one optional");
+        assert_eq!(area.text, "(number number &optional (list int) -> number)");
+    }
 }

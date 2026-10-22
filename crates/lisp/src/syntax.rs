@@ -12,3 +12,4 @@ pub mod printer;
 pub mod reader;
 pub mod scanner;
 pub mod scope;
+pub mod typed;

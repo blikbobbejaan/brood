@@ -402,9 +402,16 @@ pub(in crate::types::check) fn fn_param_defaults(heap: &Heap, form: Value) -> Ve
 }
 
 pub(in crate::types::check) fn fn_params(heap: &Heap, form: Value) -> Vec<Symbol> {
+    use crate::syntax::typed::{self as typed, TypedName};
     let items = heap.list_or_vector_items(form).unwrap_or_default();
     let mut out = Vec::new();
+    // A raw `defn` parameter list may carry types (ADR-420): `x:int` binds `x`, `xs:` binds
+    // `xs` and the form after it is its type, and `-> R` ends the binders.
+    let mut skip_type_form = false;
     for item in items {
+        if std::mem::take(&mut skip_type_form) {
+            continue;
+        }
         match item {
             Value::Sym(s) => {
                 // Lock-free `symbol_is` to filter the parameter-list markers
@@ -415,7 +422,17 @@ pub(in crate::types::check) fn fn_params(heap: &Heap, form: Value) -> Vec<Symbol
                 {
                     continue;
                 }
-                out.push(s);
+                if value::symbol_is(s, typed::ARROW) {
+                    break;
+                }
+                match typed::split(value::symbol_name_ref(s)) {
+                    Some(TypedName::Inline(name, _)) => out.push(value::intern(name)),
+                    Some(TypedName::Next(name)) => {
+                        out.push(value::intern(name));
+                        skip_type_form = true;
+                    }
+                    None => out.push(s),
+                }
             }
             // `&optional` defaults: `(name default)` — the binder is at [0].
             Value::Pair(_) | Value::Vector(_) => {
@@ -424,7 +441,10 @@ pub(in crate::types::check) fn fn_params(heap: &Heap, form: Value) -> Vec<Symbol
                     _ => list_items(heap, item).unwrap_or_default(),
                 };
                 if let Some(&Value::Sym(s)) = inner.first() {
-                    out.push(s);
+                    match typed::split(value::symbol_name_ref(s)) {
+                        Some(t) => out.push(value::intern(t.name())),
+                        None => out.push(s),
+                    }
                 }
             }
             _ => {}
