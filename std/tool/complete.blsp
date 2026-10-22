@@ -118,7 +118,9 @@ suggestions\", never to an error on the user's command line."
 
 ;; --- files --------------------------------------------------------------------
 (defn test-files ()
-  "Project-relative paths of every `*_test.blsp` under the project's test paths. Empty outside a project."
+  "Project-relative paths of every `*_test.blsp` under the project's test paths. Empty outside a project.
+
+    (complete/test-files)   ;=> (\"tests/app_test.blsp\" …)"
   (let (root (complete-root))
     (if (nil? root)
       nil
@@ -130,7 +132,9 @@ suggestions\", never to an error on the user's command line."
         nil))))
 
 (defn blsp-files ()
-  "Project-relative paths of every `.blsp` under the project's source AND test paths — the candidates for `nest check` / `nest run` / `nest format`."
+  "Project-relative paths of every `.blsp` under the project's source AND test paths — the candidates for `nest check` / `nest run` / `nest format`.
+
+    (complete/blsp-files)   ;=> (\"src/app.blsp\" \"src/app/util.blsp\" \"tests/app_test.blsp\" …)"
   (let (root (complete-root))
     (if (nil? root)
       nil
@@ -222,7 +226,9 @@ suggestions\", never to an error on the user's command line."
       (fn (ok ch) (and ok (not (includes? *complete-tag-reject* ch)))))))
 
 (defn tags ()
-  "Every tag name declared with `:tags [...]` anywhere in the project's test files, de-duplicated and sorted. Textual scan — see the file header on why."
+  "Every tag name declared with `:tags [...]` anywhere in the project's test files, de-duplicated and sorted. Textual scan — see the file header on why.
+
+    (complete/tags)   ;=> (\"net\" \"slow\" …)"
   (let (files (test-files)
         root (complete-root))
     ;; Two nested guards, not one `(or …)`: the checker narrows a single-variable
@@ -245,12 +251,16 @@ suggestions\", never to an error on the user's command line."
 
 ;; --- selectors ----------------------------------------------------------------
 (defn selectors ()
-  "Candidates for `--only` / `--exclude` / `--include`: every declared tag, plus the `test:` and `describe:` pseudo-selector prefixes."
+  "Candidates for `--only` / `--exclude` / `--include`: every declared tag, plus the `test:` and `describe:` pseudo-selector prefixes.
+
+    (complete/selectors)   ;=> (\"slow\" \"net\" … \"test:\" \"describe:\")"
   (append (tags) (list "test:" "describe:")))
 
 ;; --- dependencies -------------------------------------------------------------
 (defn dep-names ()
-  "The names of the dependencies this project declares — the candidates for `nest remove` and `nest update`. Read straight from the manifest as data, so it works even when the deps are not fetched."
+  "The names of the dependencies this project declares — the candidates for `nest remove` and `nest update`. Read straight from the manifest as data, so it works even when the deps are not fetched.
+
+    (complete/dep-names)   ;=> (\"json\" \"hatch\" …) — the manifest's declared deps"
   (let (root (complete-root))
     (if (nil? root)
       nil
@@ -278,7 +288,9 @@ suggestions\", never to an error on the user's command line."
 
 ;; --- modules ------------------------------------------------------------------
 (defn modules ()
-  "Candidates for `nest doc MODULE`: every baked-in std module plus this project's own source modules (by file basename, which is how `require` names them)."
+  "Candidates for `nest doc MODULE`: every baked-in std module plus this project's own source modules (by file basename, which is how `require` names them).
+
+    (complete/modules)   ;=> (\"json\" \"string\" … \"app\" …) — std modules plus the project's own"
   (let (root (complete-root))
     (sort (keys (fold (append (or (complete-safely (fn () (reflect/builtin-modules))) nil)
                         (if (nil? root)
@@ -297,7 +309,9 @@ suggestions\", never to an error on the user's command line."
                   (fn (seen m) (assoc seen m true)))))))
 
 (defn project-modules ()
-  "Just THIS project's own source modules (by file basename, which is how `require` names them) — the candidates for `nest run --main`, where a std module would never be a valid entry point."
+  "Just THIS project's own source modules (by file basename, which is how `require` names them) — the candidates for `nest run --main`, where a std module would never be a valid entry point.
+
+    (complete/project-modules)   ;=> (\"app\" \"util\" …)"
   (let (root (complete-root))
     (if (nil? root)
       nil
@@ -351,7 +365,9 @@ suggestions\", never to an error on the user's command line."
     else nil))
 
 (defn print-candidates (kind prefix)
-  "Print one candidate per line for `kind`, keeping only those starting with `prefix` — the form `nest complete` consumes. Prints nothing (and never raises) when there is nothing to suggest, so the shell falls back to filename completion."
+  "Print one candidate per line for `kind`, keeping only those starting with `prefix` — the form `nest complete` consumes. Prints nothing (and never raises) when there is nothing to suggest, so the shell falls back to filename completion.
+
+    (complete/print-candidates \"no-such-kind\" \"\")   → :ok"
   (fold (seq/filter (or (complete-safely (fn () (for-kind kind))) nil)
           (fn (c) (or (= prefix "") (string/starts-with? c prefix))))
     nil

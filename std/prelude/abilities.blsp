@@ -716,7 +716,9 @@ error is a `:blame :callee` contract error, like a function's own result mismatc
   The multimethod counterpart of `%op-declared-ret`, which reads an ability op's declared
   return out of its `defability` specs. The Rust checker does not call this — it reads the
   `*multi-ret*` registry from the heap directly (`types/check/protocol.rs`) — so this is the
-  in-language accessor: introspection, and the way a test asserts what a `:->` recorded."
+  in-language accessor: introspection, and the way a test asserts what a `:->` recorded.
+
+      (multi-return-type 'compare-to)   → int"
   (get *multi-ret* mname))
 
 (defn %multi-resolve (mname key)
@@ -970,7 +972,9 @@ An optional leading docstring is carried onto the generated function.
 (defability Counted
   "The number of elements a collection record holds — what `count` answers for it and
 what `empty?` compares with zero, instead of walking its `Seqable` view. An ordinary
-record has no impl and counts its fields; see `std/queue.blsp`."
+record has no impl and counts its fields; see `std/queue.blsp`.
+
+    (->count (queue/list-> [1 2 3]))   → 3"
   (->count [self] :-> int))
 
 ;; Lookup — keyed access: the seam `get` consults for a RECORD that stores its contents
@@ -1022,7 +1026,9 @@ field lookup, so these are called only for a custom-collection record — see
 ;; every `(compare-to a b)` call site and makes each method body checkable.
 (defmulti compare-to
   "Three-way comparison: negative when `a` sorts before `b`, zero when they tie,
-positive when `a` sorts after. The seam `compare`/`<`/`sort` consult for a record."
+positive when `a` sorts after. The seam `compare`/`<`/`sort` consult for a record.
+
+    (compare-to (datetime/parse-date \"2026-01-01\") (datetime/parse-date \"2026-08-27\"))   → -1"
   :antisymmetric :-> int)
 
 ;; Record-aware compare: a record uses its `compare-to` (a type with no such method is a loud
@@ -1045,15 +1051,23 @@ with no `compare-to` method is a loud `%no-method` error — never a silent orde
 ;; `:commutative` (author `[usd :int]` and `[:int usd]` is derived); `-`/`/` are not. There is
 ;; NO `:default` — a pair with no method gets the loud `%no-method` error.
 (defmulti num/add
-  "Addition for a type `+` does not know natively — the seam `+` consults for a record."
+  "Addition for a type `+` does not know natively — the seam `+` consults for a record.
+
+    (num/add (usd 300) (usd 400))   ;=> …whatever the `[usd usd]` method registered for it returns…"
   :commutative)
 (defmulti num/sub
-  "Subtraction for a type `-` does not know natively — the seam `-` consults for a record.")
+  "Subtraction for a type `-` does not know natively — the seam `-` consults for a record.
+
+    (num/sub (usd 700) (usd 300))   ;=> …whatever the `[usd usd]` method registered for it returns…")
 (defmulti num/mul
-  "Multiplication for a type `*` does not know natively — the seam `*` consults for a record."
+  "Multiplication for a type `*` does not know natively — the seam `*` consults for a record.
+
+    (num/mul (usd 300) 2)   ;=> …whatever the `[usd :int]` method registered for it returns…"
   :commutative)
 (defmulti num/div
-  "Division for a type `/` does not know natively — the seam `/` consults for a record.")
+  "Division for a type `/` does not know natively — the seam `/` consults for a record.
+
+    (num/div (usd 700) 2)   ;=> …whatever the `[usd :int]` method registered for it returns…")
 
 ;; The per-print-argument hook the prelude installs into `*show*` at the end of boot
 ;; (Display is core, ADR-172 §8 — no activation step). Only a RECORD is routed through

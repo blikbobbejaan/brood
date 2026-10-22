@@ -302,7 +302,9 @@ its **bottom** anchored just above cell `(anchor-row, anchor-col)`: the mature-G
 a hint hovering over the thing it describes, clamped on-screen via `card-rect`. Sized to the
 widest line plus one cell of padding each side; `face` fills the surface, `fg` styles the
 text, and `opts` forwards `:border`/`:radius` to `card-surface`. GUI rounds the card; the
-terminal draws a flat panel."
+terminal draws a flat panel.
+
+    (editor/display/tooltip 5 10 [\"hi\"] :popup :fg 80 24)   → ([:rect 4 10 4 1 :popup] [:text 4 10 \" hi \" :fg])"
   (let (n (count lines)
         w (+ 2 (fold lines 0 (fn (m s) (math/max m (string/length s)))))
         [mr mc] (card-rect (- anchor-row n) anchor-col w n cols rows))

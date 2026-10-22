@@ -16,7 +16,9 @@
 `unbound symbol` error and `nest check`'s unbound warning read the same table.")
 
 (defn ledger (-> (map string map))
-  "The whole ledger: a map of old public name (string) to `{:to new-name :adr adr}`."
+  "The whole ledger: a map of old public name (string) to `{:to new-name :adr adr}`.
+
+    (renames/ledger)   ;=> {\"gui/bg!\" {:to \"gui/bg\" :adr \"ADR-302\"} …}"
   (%renames))
 
 (defn renamed-to (name: (or string symbol) -> (or map nil))

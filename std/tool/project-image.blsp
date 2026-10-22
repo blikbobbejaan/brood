@@ -50,7 +50,9 @@ takes; everything else is the mechanism behind it.")
     '*module-files* '*package-modules-of*])
 
 (defn image-path (root)
-  "Where `root`'s startup image lives."
+  "Where `root`'s startup image lives.
+
+    (project-image/image-path \"/app\")   → \"/app/.brood/image.bin\""
   (path/join root *project-image-file*))
 
 ;; The staleness key: every source file's path + size + mtime, plus the running
@@ -266,7 +268,9 @@ Skip those, prune the rest.
 `write-image` calls this inside an `%isolate`, so the pruning is rolled back the moment
 the image is written and the running session keeps every registration it had — but the
 image on disk keeps whatever the prune left, which is why pruning too much is silent and
-permanent rather than transient."
+permanent rather than transient.
+
+    (project-image/image-prune-foreign-registrations (stdimage/registrations-by-module))   ;=> 7 — foreign registrations removed"
   (let (regs (stdimage/registrations-by-module)
         impls (stdimage/%std-impls-by-module)
         keep (image-preexisting-reg-keys before-regs)
@@ -301,7 +305,9 @@ modules the image does not carry are pruned (`image-prune-foreign-registrations`
 `%isolate` puts them back once the file is on disk.
 
 `reloaded` is the set of modules a partial rebuild loaded from source (ADR-419); nil means
-every module was. Beside the image goes the record the next partial rebuild reads."
+every module was. Beside the image goes the record the next partial rebuild reads.
+
+    (project-image/write-image \"/path/to/proj\" before (stdimage/registrations-by-module))   ;=> 5310 — entries written to /path/to/proj/.brood/image.bin"
   (let (dir (path/dirname (image-path root)))
     (when (not (file/dir? dir)) (file/mkdir dir))
     ;; Before the fingerprint below, which reads this list back.
@@ -591,7 +597,9 @@ every module was. Beside the image goes the record the next partial rebuild read
 (defn materialize-all ()
   "Materialise every module the installed image holds — for tools that genuinely need the
 whole project in the heap (`nest test`, `nest check`, the LSP). `nest run` deliberately does
-NOT call this: it requires its entry point and lets the rest stay on disk."
+NOT call this: it requires its entry point and lets the rest stay on disk.
+
+    (project-image/materialize-all)   ;=> 120 — the number of image sections materialised"
   (let (ks (keys *image-sections*))
     (fold ks nil (fn (_ k) (require-one k)))
     (count ks)))
@@ -603,7 +611,9 @@ NOT call this: it requires its entry point and lets the rest stay on disk."
 ;; empty. An instrumented run therefore always loads from source. Silent wrong output
 ;; is exactly the failure mode worth a special case.
 (defn image-usable? ()
-  "Whether a cached startup image may be used — false under `BROOD_COVERAGE`, whose instrumentation an image cannot represent."
+  "Whether a cached startup image may be used — false under `BROOD_COVERAGE`, whose instrumentation an image cannot represent.
+
+    (project-image/image-usable?)   ;=> true — false under BROOD_COVERAGE"
   (nil? (os/env "BROOD_COVERAGE")))
 
 ;; Milliseconds as "12.3s" / "845ms" — build output should read at a glance.
@@ -618,7 +628,9 @@ one in on first use (ADR-218). Returns the section count, or nil when there is n
 image — in which case the caller must fall back to a source load.
 
 This is what makes `nest run` pay only for the modules its entry point actually reaches: on
-a 16 300-module project an entry touching twenty of them materialises twenty, not 16 300."
+a 16 300-module project an entry touching twenty of them materialises twenty, not 16 300.
+
+    (project-image/setup-lazy-image \"/path/to/proj\")   ;=> 120 — the section count, or nil with no current image"
   (cond
     (not (image-usable?)) nil
     else (project-install-image root (project-image-fingerprint root))))
@@ -640,7 +652,9 @@ best-effort: a read-only or full disk costs speed, never correctness.
 Reports the build on stderr when it actually builds, and says nothing on an image
 hit — a cold load of a large project takes tens of seconds, and silence there is
 indistinguishable from a hang. stderr, not stdout, so `nest run`'s output stays the
-program's and the LSP's protocol channel stays clean."
+program's and the LSP's protocol channel stays clean.
+
+    (project-image/load-sources-cached \"/path/to/proj\")   ;=> the project loaded, from its image when current, else from source (writing a new image)"
   (let (t-a (os/now-ns)
         files (sorted-source-files root)
         t-b (os/now-ns)

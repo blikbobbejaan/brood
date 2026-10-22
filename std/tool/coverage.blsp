@@ -97,7 +97,9 @@ suite, then reports which functions were never entered. Backs `nest test --cover
                         (apply original args)))))))
 
 (defn begin (source-dirs)
-  "Instrument every function this project defines under `source-dirs` and return the hit table. Call once, AFTER the project's sources are loaded and before the suite runs. Sets `*coverage-hits*` / `*coverage-targets*` for the reporter."
+  "Instrument every function this project defines under `source-dirs` and return the hit table. Call once, AFTER the project's sources are loaded and before the suite runs. Sets `*coverage-hits*` / `*coverage-targets*` for the reporter.
+
+    (coverage/begin [\"/path/to/proj/src\"])   ;=> the hit table — every project function now counts its calls"
   ;; Release a previous run's table before replacing the handle. A table lives in
   ;; a runtime-wide registry, not the process heap, so dropping the reference is
   ;; NOT enough to free it — a long-lived image (`nest mcp`) instrumenting more
@@ -116,7 +118,9 @@ suite, then reports which functions were never entered. Backs `nest test --cover
 ;; Reads the table ONCE via `table/snapshot` (atomic, O(n)) rather than probing
 ;; per function, so the report can't tear across a still-running process.
 (defn results ()
-  "The current run's coverage as a list of `{:name :file :line :hits}`, hits being the number of times the function was entered (0 = never). nil when no run was instrumented."
+  "The current run's coverage as a list of `{:name :file :line :hits}`, hits being the number of times the function was entered (0 = never). nil when no run was instrumented.
+
+    (coverage/results)   ;=> ({:name app/parse :file \"/path/to/proj/src/app.blsp\" :line 12 :hits 40} …) — nil when nothing was instrumented"
   (if (nil? *coverage-hits*)
     nil
     (let (snapshot (table/snapshot *coverage-hits*))
@@ -154,7 +158,9 @@ suite, then reports which functions were never entered. Backs `nest test --cover
     path))
 
 (defn report (root)
-  "Print the coverage report: a per-file table, then the uncovered function names, then a total line. Returns the total percentage (an int 0–100)."
+  "Print the coverage report: a per-file table, then the uncovered function names, then a total line. Returns the total percentage (an int 0–100).
+
+    (coverage/report \"/path/to/proj\")   ;=> 78 — the total percentage, the per-file table printed"
   (let (results (results))
     (if (nil? results)
       (do
@@ -253,7 +259,9 @@ suite, then reports which functions were never entered. Backs `nest test --cover
     (fn (index entry) (assoc index (nth entry 0) (nth entry 1)))))
 
 (defn line-begin (source-dirs)
-  "Force every project function under `source-dirs` to compile, so the lines of a function the suite never calls still count as measurable. Call once, after the sources are loaded and BEFORE the suite runs. Returns how many bodies compiled."
+  "Force every project function under `source-dirs` to compile, so the lines of a function the suite never calls still count as measurable. Call once, after the sources are loaded and BEFORE the suite runs. Returns how many bodies compiled.
+
+    (coverage/line-begin [\"/path/to/proj/src\"])   ;=> 214 — function bodies compiled"
   ;; Arms compile on first CALL, so without this pass an uncalled function is missing
   ;; from the denominator as well as the numerator and the ratio flatters itself: the
   ;; fixture with one deliberately-dead function reported 100%.
@@ -265,7 +273,9 @@ suite, then reports which functions were never entered. Backs `nest test --cover
         compiled))))
 
 (defn line-results (source-dirs)
-  "Per-file line coverage as a list of `{:file :total :covered :missing}`, `missing` being the instrumented lines that never ran. Only files under `source-dirs` are measured, so std and the prelude — which the recorder also sees — can't dilute the number; files with nothing instrumented are omitted rather than counted as 0%."
+  "Per-file line coverage as a list of `{:file :total :covered :missing}`, `missing` being the instrumented lines that never ran. Only files under `source-dirs` are measured, so std and the prelude — which the recorder also sees — can't dilute the number; files with nothing instrumented are omitted rather than counted as 0%.
+
+    (coverage/line-results [\"/path/to/proj/src\"])   ;=> ({:file \"/path/to/proj/src/app.blsp\" :total 120 :covered 110 :missing (14 15 …)} …)"
   ;; `project` is required lazily here rather than in the header: `project` itself
   ;; requires `coverage` (for `nest test --cover`), so a top-level require would be
   ;; circular. This runtime require is idempotent (project is already loaded whenever
@@ -303,7 +313,9 @@ suite, then reports which functions were never entered. Backs `nest test --cover
     (coverage-sum key-of (rest results) (+ acc (key-of (first results))))))
 
 (defn line-report (root source-dirs)
-  "Print the line-coverage report — a per-file percentage, then each file's uncovered lines — and return the total percentage (an int 0-100)."
+  "Print the line-coverage report — a per-file percentage, then each file's uncovered lines — and return the total percentage (an int 0-100).
+
+    (coverage/line-report \"/path/to/proj\" [\"/path/to/proj/src\"])   ;=> 92 — the total line percentage, the per-file report printed"
   (let (results (line-results source-dirs)
         total (coverage-sum coverage-result-total results 0)
         covered (coverage-sum coverage-result-covered results 0))
@@ -398,7 +410,9 @@ suite, then reports which functions were never entered. Backs `nest test --cover
   "Per-file branch coverage as a list of `{:file :total :covered :partial :missing}`:
 `covered` = branches with both edges taken, `partial` = the `[line col state]` triples
 with exactly one edge taken, `missing` = the `[line col]` points never reached. Only
-files under `source-dirs` are measured; files with no branches are omitted."
+files under `source-dirs` are measured; files with no branches are omitted.
+
+    (coverage/branch-results [\"/path/to/proj/src\"])   ;=> ({:file \"/path/to/proj/src/app.blsp\" :total 40 :covered 31 :partial ([12 5 :then] …) :missing ([30 9] …)} …)"
   (let (taken-by-file (coverage-branch-taken-index)
         sites-by-file (coverage-branch-sites-index)
         files (or (coverage-safely (fn ()
@@ -456,7 +470,9 @@ files under `source-dirs` are measured; files with no branches are omitted."
 (defn branch-report (root source-dirs)
   "Print the branch-coverage report — a per-file percentage of fully-covered branches
 (both edges taken), then each file's half-covered branches — and return the total
-percentage (an int 0-100)."
+percentage (an int 0-100).
+
+    (coverage/branch-report \"/path/to/proj\" [\"/path/to/proj/src\"])   ;=> 87 — the total branch percentage, the per-file report printed"
   (let (results (branch-results source-dirs)
         total (coverage-sum coverage-result-total results 0)
         covered (coverage-sum coverage-result-covered results 0))

@@ -41,7 +41,9 @@ release requires. Pure — no I/O; the registry provider that fetches for real l
 (defn make-provider (versions-fn deps-fn)
   "A provider the resolver queries: `versions-fn` maps a package name to the list of
 version strings that exist for it; `deps-fn` maps a name + a version to that release's
-`[dep-name constraint]` requirements."
+`[dep-name constraint]` requirements.
+
+    (resolver/make-provider (fn (name) [\"1.0.0\" \"1.1.0\"]) (fn (name version) [['json \"^1.0\"]]))   ;=> {:versions … :deps …} — the provider the resolver queries"
   {:versions versions-fn :deps deps-fn})
 
 (defn provider-versions (provider name)

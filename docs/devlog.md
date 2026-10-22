@@ -3271,3 +3271,11 @@ ILLUSTRATION for a function whose result depends on the world. Not evaluated, bu
 its form and fails it when it does not read or calls something undefined, so a rename is still
 caught; the example audit counts it. A line starting with `;` stays prose (the continuation
 style `reflect/source-deps` already used).
+
+2026-10-22 (night, illustrations campaign): ~550 docstring examples across the effectful std
+surface (I/O, network, processes, tooling, the editor), by four agents over disjoint module
+groups — illustrations where the result depends on the world, executed examples wherever a
+deterministic one existed. Gated here: whole-image doctest 0 failures (repo root and /tmp), every
+local gate green; two executed examples that depended on the doctest process's own state
+(`eval-server/baseline-globals`, `release-holds-of`) became illustrations. `audit/exampleless`
+674 → 120, the rest being Rust builtins and generated record accessors.

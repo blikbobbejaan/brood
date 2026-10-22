@@ -162,7 +162,9 @@ not parse as one, or an illustration (` ;=> `) that does not read or calls nothi
 
 (defn documented-names-under (prefix)
   "Every public name starting with `prefix` whose docstring carries at least one indented
-example — `\"myapp/\"` for one package's own surface. A nil `prefix` means every public name."
+example — `\"myapp/\"` for one package's own surface. A nil `prefix` means every public name.
+
+    (doctest/documented-names-under \"myapp/\")   ;=> (myapp/parse …) — that package's names with examples"
   ;; Narrow by PREFIX before looking for examples, not after: `documented?` evaluates a
   ;; global to read its docstring, so filtering last makes a scoped run pay that for every
   ;; one of the thousands of names it is about to discard.
@@ -173,7 +175,9 @@ example — `\"myapp/\"` for one package's own surface. A nil `prefix` means eve
     (seq/filter scoped documented?)))
 
 (defn documented-names ()
-  "Every public name in the image whose docstring carries at least one indented example."
+  "Every public name in the image whose docstring carries at least one indented example.
+
+    (doctest/documented-names)   ;=> (count/… string/join …) — every public name with an indented example"
   (documented-names-under nil))
 
 (defn- failures-of (s)
@@ -185,10 +189,14 @@ example — `\"myapp/\"` for one package's own surface. A nil `prefix` means eve
 (defn failures-under (prefix)
   "Every documented example that does not hold, for public names under `prefix` (nil = the
 whole image). A vector of descriptions, empty when every example holds — the caller decides
-whether that is a failure, so this is usable as a report as well as a gate."
+whether that is a failure, so this is usable as a report as well as a gate.
+
+    (doctest/failures-under \"no-such-module/\")   → []"
   (apply vector
     (fold (documented-names-under prefix) [] (fn (acc s) (append acc (failures-of s))))))
 
 (defn failures ()
-  "Every documented example in the image that does not hold."
+  "Every documented example in the image that does not hold.
+
+    (doctest/failures)   ;=> [] — or one description per example that does not hold"
   (failures-under nil))

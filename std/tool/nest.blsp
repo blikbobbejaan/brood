@@ -213,7 +213,9 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
 (def- *short-aliases* {"-c" "--check" "-o" "--out" "-t" "--template"})
 
 (defn subcommands ()
-  "The subcommands this module implements, sorted — hidden ones (`complete`) excluded."
+  "The subcommands this module implements, sorted — hidden ones (`complete`) excluded.
+
+    (nest/subcommands)   ;=> (\"add\" \"check\" \"doc\" … \"ws\")"
   (sort (seq/filter (keys *commands*) (fn (cmd) (not (get (get *commands* cmd) :hidden))))))
 
 (defn- command-spec (cmd)
@@ -1047,7 +1049,9 @@ so a matching local setup needs no flag."
     "Run `argv` — the subcommand and its words, as a list of strings (what `main.rs` builds
 with `blsp_string_list`) — and return the exit code. `--help`/`-h` where nest reads its own
 flags prints the command's usage; after `--`, or among a `:trailing` command's program
-words, it is the program's."
+words, it is the program's.
+
+    (nest/main [\"check\" \"src/app.blsp\"])   ;=> 0 — the exit code"
     (let (cmd (first argv) spec (get *commands* cmd))
       (if (nil? spec)
         (do (eputs "nest: '" cmd "' is not implemented in std/tool/nest.blsp") 2)
@@ -1080,7 +1084,9 @@ the words typed so far: the value of a flag left pending by the previous word (i
 list), flags when `current` starts with `-` (the command's own plus the global
 `--max-parallel`/`--jobs`), else the positional's allowed values or the candidates of its
 kind (`doc`'s module names, `check`'s `.blsp` files, `test`'s test files). Never raises;
-prints nothing when it cannot tell."
+prints nothing when it cannot tell.
+
+    (nest/complete \"test\" [\"--only\"] \"sl\")   ;=> nil — prints \"slow\", the matching selector"
   (try
     (let (spec (command-spec cmd)
           previous (last prior)
@@ -1123,14 +1129,18 @@ prints nothing when it cannot tell."
 
 (defn all-subcommands ()
   "Every subcommand `nest` accepts, hidden ones excluded, sorted: this module's plus the
-ones still implemented in Rust."
+ones still implemented in Rust.
+
+    (nest/all-subcommands)   ;=> (\"add\" \"attach\" \"check\" … \"ws\")"
   (sort (append (subcommands) (keys *rust-commands*))))
 
 (defn complete-words (words)
   "Print the candidates for `words` — everything typed after `nest`, the (possibly empty)
 partial word last, one candidate per line. With no settled subcommand yet, the subcommand
 names; a settled one completes through [[complete]] — from `*commands*`, or a Rust-side
-one from its mirror in `*rust-commands*`. Never raises."
+one from its mirror in `*rust-commands*`. Never raises.
+
+    (nest/complete-words [\"te\"])   ;=> nil — prints \"test\", the matching subcommand"
   (try
     (let (current (or (last words) "")
           prior (if (empty? words) (list) (seq/drop-last words 1))

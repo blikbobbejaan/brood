@@ -57,7 +57,9 @@ identity and may override those paths. The rest of the tool is its siblings:
 (defn trace-with-packages (trace:seqable -> (or nil (list any)))
   "Annotate each stack-trace frame (`{:fn :file :line :col}`) with `:package` — the owning
   package of its function (ADR-172). `trace` is the `:trace` on a caught kernel-error map.
-  Frames whose function is root/std/unrecorded get `:package nil`."
+  Frames whose function is root/std/unrecorded get `:package nil`.
+
+    (project/trace-with-packages (get err :trace))   ;=> ({:fn myapp/main :file \"src/app.blsp\" :line 12 :col 3 :package …} …)"
   (map trace (fn (frame) (assoc frame :package (ns-package (get frame :fn))))))
 ;; Only ever set inside `setup` (from the manifest) and read by
 ;; `package` when it publishes — so they must be declared ambient here, like the
@@ -173,7 +175,9 @@ identity and may override those paths. The rest of the tool is its siblings:
       else (list (symbol (string/join (seq/drop-last parts 1) "/")) (symbol (last parts))))))
 
 (defn set-project-main (spec)
-  "Override the `nest run` entry point from a CLI spec string (`\"module\"`, `\"module/fn\"`, or `\"a/nested/module/fn\"` — with three or more segments the last is the fn), without editing the manifest's `:main`. Sets a dedicated override slot that wins over the manifest even though `run` re-applies the manifest internally. Backs `nest run --main`."
+  "Override the `nest run` entry point from a CLI spec string (`\"module\"`, `\"module/fn\"`, or `\"a/nested/module/fn\"` — with three or more segments the last is the fn), without editing the manifest's `:main`. Sets a dedicated override slot that wins over the manifest even though `run` re-applies the manifest internally. Backs `nest run --main`.
+
+    (project/set-project-main \"myapp/serve\")   ;=> the override — `nest run` now calls myapp/serve"
   (def *project-main-override* (project-parse-main-spec spec)))
 
 ;; --- dependency manifest parsing (ADR-037, packages.md) ----------------------
@@ -465,7 +469,9 @@ manifest is read, naming the key, not later inside whoever consumes the map."
             (assoc acc (if (symbol? nm) nm (symbol (str nm))) constraint))))))
 
 (defn apply-config (opts)
-  "Apply a parsed manifest `opts` (a plist) by `def`ing the `*project-*` globals — name, version, description, paths, `:main` entry, dependencies and formatter settings; returns the project name."
+  "Apply a parsed manifest `opts` (a plist) by `def`ing the `*project-*` globals — name, version, description, paths, `:main` entry, dependencies and formatter settings; returns the project name.
+
+    (project/apply-config '(:name \"myapp\" :version \"0.1.0\"))   ;=> \"myapp\" — the *project-* globals now set"
   (def *project-name* (plist-get opts :name))
   (def *project-version* (plist-get opts :version))
   ;; Package-registry metadata (ADR-147): human summary + the git URL this package
@@ -502,7 +508,9 @@ manifest is read, naming the key, not later inside whoever consumes the map."
 ;; Walk up from `dir` toward the filesystem root, looking for project.blsp.
 ;; parent-directory is its own fixed point at "/" and ".", which terminates the walk.
 (defn find-root (dir:string -> (or string nil))
-  "Walk up from `dir` toward the filesystem root, returning the first directory that contains a `project.blsp`, or nil if none is found."
+  "Walk up from `dir` toward the filesystem root, returning the first directory that contains a `project.blsp`, or nil if none is found.
+
+    (project/find-root \"/path/to/proj/src/app\")   ;=> \"/path/to/proj\" — or nil outside any project"
   (cond
     (file/exists? (path/join dir "project.blsp")) dir
     (= dir (path/dirname dir)) nil
@@ -510,7 +518,9 @@ manifest is read, naming the key, not later inside whoever consumes the map."
 
 (defn require-root (who &optional from)
   "The project root `find-root` finds walking up from `from` (default the cwd), or raise
-`<who>: not in a Brood project …` — the guard every project command opens with."
+`<who>: not in a Brood project …` — the guard every project command opens with.
+
+    (project/require-root \"nest test\")   ;=> \"/path/to/proj\", or raises \"nest test: not in a Brood project …\""
   (let (dir (or from (file/cwd)))
     (or (find-root dir) (error who ": not in a Brood project (no project.blsp found from " dir ")"))))
 
@@ -528,22 +538,30 @@ path ends in `suffix`; nil when `dir` is not a directory."
 
 (defn collect-tests (dir)
   "Every `<name>_test.blsp` under `dir`, recursively, as a list of full paths — nil when
-`dir` is not a directory."
+`dir` is not a directory.
+
+    (project/collect-tests \"/path/to/proj/tests\")   ;=> (\"/path/to/proj/tests/app_test.blsp\" …)"
   (files-ending-in dir "_test.blsp"))
 
 (defn collect-sources (dir)
   "Every `.blsp` file under `dir`, recursively (the project's source files) — nil when
-`dir` is not a directory."
+`dir` is not a directory.
+
+    (project/collect-sources \"/path/to/proj/src\")   ;=> (\"/path/to/proj/src/app.blsp\" \"/path/to/proj/src/app/util.blsp\" …)"
   (files-ending-in dir ".blsp"))
 
 (defn source-files (root)
   "Every `.blsp` file under the source paths of the project at `root`, in source-path
-order: the project's code, as every tool that walks it sees it."
+order: the project's code, as every tool that walks it sees it.
+
+    (project/source-files \"/path/to/proj\")   ;=> (\"/path/to/proj/src/app.blsp\" …)"
   (apply append (map (abs-paths root *project-source-paths*) collect-sources)))
 
 (defn test-files (root)
   "Every `<name>_test.blsp` under the test paths of the project at `root`, in test-path
-order. Co-located tests are [[project-colocated-test-files]]."
+order. Co-located tests are [[project-colocated-test-files]].
+
+    (project/test-files \"/path/to/proj\")   ;=> (\"/path/to/proj/tests/app_test.blsp\" …)"
   (apply append (map (abs-paths root *project-test-paths*) collect-tests)))
 
 ;; A source file that carries co-located tests (ADR-225): it has a top-level
@@ -562,7 +580,9 @@ order. Co-located tests are [[project-colocated-test-files]]."
 (defn project-colocated-test-files (root)
   "The project's source files that carry co-located tests (ADR-225), so a `describe` written
 beside the code runs under `nest test` without a `tests/` file. Scans the source paths
-only; `tests/` files come from [[collect-tests]]."
+only; `tests/` files come from [[collect-tests]].
+
+    (project/project-colocated-test-files \"/path/to/proj\")   ;=> (\"/path/to/proj/src/app/parse.blsp\" …) — sources with a describe"
   (seq/filter (source-files root) project-file-has-tests?))
 
 ;; The feature a source file provides — the name of its top-level `(defmodule NAME …)`
@@ -608,7 +628,9 @@ only; `tests/` files come from [[collect-tests]]."
 ;; With `:skip-loaded`, any module already on `*features*` is skipped (the check
 ;; pre-flight, which runs *after* the image is loaded and must not re-evaluate it).
 (defn load-sources (root & opts)
-  "Load every source file under `root`'s source paths, attributing each file's load-time requires to the root section (KI-37). `:skip-loaded` skips files whose feature is already loaded."
+  "Load every source file under `root`'s source paths, attributing each file's load-time requires to the root section (KI-37). `:skip-loaded` skips files whose feature is already loaded.
+
+    (project/load-sources \"/path/to/proj\" :skip-loaded)   ;=> nil — every source file under the source paths loaded"
   (let (skip-all? (includes? opts :skip-loaded)
         before *features*)
     (fold (abs-paths root *project-source-paths*)
@@ -748,7 +770,9 @@ it keeps them. Requires nothing, fetches nothing. An absent `dir` is [].
 `app`/`app-version` are the host's own name and version: a package whose `:enhances` names
 `app` but demands a newer host than `app-version` is excluded, via the same
 `version/satisfies-all?` the resolver and `nest search` use. Naming `app` is what gates — an
-empty `:enhances` (an ordinary library) satisfies-all vacuously, so it must not count."
+empty `:enhances` (an ordinary library) satisfies-all vacuously, so it must not count.
+
+    (project/enhancers-in \"/home/me/.local/share/bedit/packages\" 'bedit \"0.4.0\")   ;=> [\"bedit-git\" …] — the plugins whose :enhances admits bedit 0.4.0"
   (let (app-symbol (symbol app)
         host {app-symbol app-version})
     (if (not (file/exists? dir))
@@ -762,7 +786,9 @@ empty `:enhances` (an ordinary library) satisfies-all vacuously, so it must not 
 (defn installed-enhancers (root:string app:any app-version:any -> (vector string))
   "The names of packages installed under `root/_deps` that enhance `app` at a satisfied
 `app-version` — `enhancers-in` over a project's dependency dir. The runtime sibling of the
-registry's `?enhances=` query (`nest search --enhances`)."
+registry's `?enhances=` query (`nest search --enhances`).
+
+    (project/installed-enhancers \"/path/to/proj\" 'bedit \"0.4.0\")   ;=> [\"bedit-git\" …] — enhancers found under /path/to/proj/_deps"
   (enhancers-in (path/join root "_deps") app app-version))
 
 (defn- project-plugin-format-headers (root plugin-name)
@@ -830,7 +856,9 @@ rules merged in declaration order, then this project's own `:format-headers` on 
 (defn project-check-brood-version ()
   "Refuse a runtime the manifest's `:brood` constraint does not admit (ADR-209) — what `setup`
   checks before anything runs, and `nest release` before it bundles: a release built on a
-  brood the project refuses would ship the very mismatch the gate exists to stop."
+  brood the project refuses would ship the very mismatch the gate exists to stop.
+
+    (project/project-check-brood-version)   ;=> nil, or raises \"project: this project requires Brood …\""
   (when *project-brood*
     (when (not (string? *project-brood*))
       (error "project: :brood must be a version-constraint string (e.g. \">= 0.2\"), got "
@@ -843,7 +871,9 @@ rules merged in declaration order, then this project's own `:format-headers` on 
         " — upgrade brood, or relax the :brood constraint in project.blsp"))))
 
 (defn setup (root:string -> string)
-  "Initialise the project rooted at `root`: reset the path conventions, apply its `project.blsp` manifest, refuse an incompatible runtime, put its sources and dependencies on the load path, and enable package rooting; returns `root`."
+  "Initialise the project rooted at `root`: reset the path conventions, apply its `project.blsp` manifest, refuse an incompatible runtime, put its sources and dependencies on the load path, and enable package rooting; returns `root`.
+
+    (project/setup \"/path/to/proj\")   ;=> \"/path/to/proj\" — manifest applied, sources and deps on the load path"
   (def *project-root* root)
   ;; Restore the path conventions BEFORE applying the manifest. `apply`
   ;; only assigns these when the manifest names them, so without the reset a root
@@ -925,7 +955,9 @@ rules merged in declaration order, then this project's own `:format-headers` on 
 (defn setup-tooling-image (root)
   "Bootstrap a project image for tooling (LSP / MCP): load the project's sources
 plus the test + format frameworks, so cross-module names and framework macros
-resolve in the advisory checker. Returns the project root."
+resolve in the advisory checker. Returns the project root.
+
+    (project/setup-tooling-image \"/path/to/proj\")   ;=> \"/path/to/proj\" — sources and the test/format frameworks loaded"
   (setup root)
   ;; Image-backed (ADR-218): a tooling image starts from the artifact when the tree
   ;; is unchanged, and writes one when it isn't — no separate build step, ever.
@@ -975,7 +1007,9 @@ resolve in the advisory checker. Returns the project root."
 (defdyn *config-registry-token* nil)
 
 (defn config (& opts)
-  "Set user-level tooling preferences — the form the user config file (`~/.config/brood/config.blsp`) contains. Recognized keys: `:git-init` (whether `nest new` runs `git init`), `:registry` (the package-registry base URL), and `:registry-token` (the Bearer token `nest publish` sends; $HIVE_TOKEN overrides it). Sets only the keys given; returns nil."
+  "Set user-level tooling preferences — the form the user config file (`~/.config/brood/config.blsp`) contains. Recognized keys: `:git-init` (whether `nest new` runs `git init`), `:registry` (the package-registry base URL), and `:registry-token` (the Bearer token `nest publish` sends; $HIVE_TOKEN overrides it). Sets only the keys given; returns nil.
+
+    (project/config :git-init false :registry \"https://hive.example.org\")   ;=> nil — the preferences are set"
   (let (gi (plist-get opts :git-init)) (unless (nil? gi) (def *config-git-init* gi)))
   (let (rg (plist-get opts :registry)) (unless (nil? rg) (def *config-registry* rg)))
   (let (tok (plist-get opts :registry-token)) (unless (nil? tok) (def *config-registry-token* tok)))
@@ -1001,7 +1035,9 @@ resolve in the advisory checker. Returns the project root."
 ;; apply it. Called by the `brood` subcommands, so a tool use always leaves an
 ;; editable config behind.
 (defn load-config ()
-  "Ensure the user config (`~/.config/brood/config.blsp`) exists — writing a documented default on first use — then apply it. Called by the `nest` subcommands."
+  "Ensure the user config (`~/.config/brood/config.blsp`) exists — writing a documented default on first use — then apply it. Called by the `nest` subcommands.
+
+    (project/load-config)   ;=> nil — ~/.config/brood/config.blsp written if absent, then applied"
   (let (p (config-path))
     (unless (file/exists? p)
       (file/mkdir (config-dir))

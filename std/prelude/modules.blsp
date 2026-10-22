@@ -1325,7 +1325,9 @@ a loader waiting on a dependency another process was mid-load of blocked its OS 
 (defn require-one (mod)
   "Load a single feature `mod` once (a no-op if already loaded); returns its name.
 Safe under concurrency: never returns while another process is mid-load of `mod` —
-it waits for that load to finish (a half-evaluated module is never observable)."
+it waits for that load to finish (a half-evaluated module is never observable).
+
+    (require-one 'json)   → \"json\""
   (%require-one mod (%load-edge-skipped?) (%load-may-hand-off?)))
 
 ;; `require-one`'s body. Both flags are one-shot, taken at `require-one`'s entry so no load

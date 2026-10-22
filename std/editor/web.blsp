@@ -167,7 +167,9 @@ message would arrive (`[:key m]`)."
           (response 204 {} "")))))
 
 (defn handler ()
-  "The request handler: the static page, the event stream, and input by tab id."
+  "The request handler: the static page, the event stream, and input by tab id.
+
+    (editor/web/handler)   ;=> a (fn (req) …) routing /, /app.js, /events and tab input"
   (let (routes {"/" (static "index.html" "text/html; charset=utf-8")
                 "/app.js" (static "app.js" "text/javascript; charset=utf-8")
                 "/events" events})
@@ -179,7 +181,9 @@ message would arrive (`[:key m]`)."
 
 (defn listen (port)
   "Serve the browser frontend on 127.0.0.1:`port` in a process of its own; returns
-its pid. A session manager must be registered (`editor/serve`) for a tab to get an app."
+its pid. A session manager must be registered (`editor/serve`) for a tab to get an app.
+
+    (editor/web/listen 8080)   ;=> #<pid …> serving the frontend on 127.0.0.1:8080"
   (spawn (serve port (handler))))
 
 ;; --- a built page, served as files --------------------------------------------------------
@@ -220,5 +224,7 @@ that would leave `dir` (a `..` segment, or a backslash).
 (defn listen-files (port dir)
   "Serve the files under `dir` on 127.0.0.1:`port` — a build of an app that runs in the
 tab (`tab.html` and `tab.js` from `page`, the wasm runtime, the bundle), which needs nothing
-but files, a `.wasm` typed `application/wasm`. Returns the server's pid."
+but files, a `.wasm` typed `application/wasm`. Returns the server's pid.
+
+    (editor/web/listen-files 8080 \"web/tab\")   ;=> #<pid …> serving web/tab's files"
   (spawn (serve port (router {} (serve-file dir)))))

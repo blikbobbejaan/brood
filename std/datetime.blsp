@@ -120,11 +120,15 @@ milliseconds.
 ;; ---- current time -----------------------------------------------------------
 
 (defn utc-now ()
-  "The current UTC datetime."
+  "The current UTC datetime.
+
+    (datetime/utc-now)   ;=> …a datetime record of the current instant, UTC…"
   (epoch-ms-> (os/now)))
 
 (defn today ()
-  "The current UTC date."
+  "The current UTC date.
+
+    (datetime/today)   ;=> …a date record of today's date, UTC…"
   (->date (utc-now)))
 
 ;; ---- accessors --------------------------------------------------------------

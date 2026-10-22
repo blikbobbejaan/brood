@@ -65,12 +65,16 @@ read+write primitive for compare-and-swap-style patterns.")
 ;; ---- public API -------------------------------------------------------------
 
 (defn start (init-fn)
-  "Spawn an agent whose initial state is `(init-fn)`. Returns the agent's pid."
+  "Spawn an agent whose initial state is `(init-fn)`. Returns the agent's pid.
+
+    (agent/start (fn () 0))   ;=> the agent's pid, holding state 0"
   (spawn (agent-loop (init-fn))))
 
 (defn start-link (init-fn)
   "Like `start` but links the agent to the calling process — the agent crashes
-if its owner crashes and vice versa."
+if its owner crashes and vice versa.
+
+    (agent/start-link (fn () {}))   ;=> the agent's pid, linked to the caller"
   (spawn-link (agent-loop (init-fn))))
 
 ;; Every synchronous op below is `gen/call`: it monitors the agent
@@ -115,7 +119,9 @@ state.
 (defn cast (pid: (or map pid) f:any -> nil)
   "Fire-and-forget update: apply `(f state)` asynchronously, no reply waited. There is no
 caller to report to, so an `f` that raises crashes the agent (let it crash) — use
-`update` when the error should come back to you."
+`update` when the error should come back to you.
+
+    (agent/cast counter inc)   ;=> nil — the state is incremented asynchronously"
   (send pid [:$cast f]))
 
 (defn stop (pid)

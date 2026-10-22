@@ -22,7 +22,9 @@ The environment/subprocess half moved to `os` on 2026-08-27: `system/env` was li
   This is the RAW invocation, host CLI and all — for `brood run.blsp -- --verbose` it is
   `[\"brood\" \"run.blsp\" \"--\" \"--verbose\"]`. A script wanting its own options wants
   [[script-args]] instead; finding them here means knowing where brood's arguments stop,
-  which is knowing brood's parser."
+  which is knowing brood's parser.
+
+    (system/argv)   ;=> [\"brood\" \"run.blsp\" \"--\" \"--verbose\"]"
   (%argv))
 
 (defn script-args ()
@@ -35,7 +37,9 @@ The environment/subprocess half moved to `os` on 2026-08-27: `system/env` was li
 
   For a bundled app (`nest release`), which boots before any CLI parsing and owns its whole
   argv, this is everything after `argv[0]` — so a bundled program and a script see the same
-  shape."
+  shape.
+
+    (system/script-args)   ;=> [\"--verbose\" \"x\"] for `brood run.blsp -- --verbose x`"
   (%script-args))
 
 ;; ---- subprocess -------------------------------------------------------------
@@ -43,7 +47,9 @@ The environment/subprocess half moved to `os` on 2026-08-27: `system/env` was li
 ;; ---- process control --------------------------------------------------------
 
 (defn halt (& args)
-  "Exit the process. `(halt)` exits with code 0; `(halt n)` exits with code `n`."
+  "Exit the process. `(halt)` exits with code 0; `(halt n)` exits with code `n`.
+
+    (system/halt 1)   ;=> does not return; the process exits with code 1"
   (%halt (if (nil? args) 0 (first args))))
 
 ;; ---- build identity ----------------------------------------------------------

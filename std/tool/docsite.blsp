@@ -489,7 +489,9 @@ result and the cited name stays escaped."
   - `:wrap?` (default true) — emit a whole self-contained `<html>` page (inlined CSS +
     filter script). When false, emit only the `<div class=\"layout\">…</div>` content
     fragment, for embedding inside a host page (the CSS/script are the caller's job).
-  - `:title` — the `<title>`/page heading; defaults to the model's `:name`."
+  - `:title` — the `<title>`/page heading; defaults to the model's `:name`.
+
+    (docsite/render (docs/model-project) {:wrap? false :title \"myapp\"})   ;=> \"<div class=\\\"layout\\\">…</div>\""
   (let (fragment (str "<div class=\"docsite\"><div class=\"layout\">"
                    (content-html model)
                    "</div></div>"))

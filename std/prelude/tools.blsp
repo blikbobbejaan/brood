@@ -38,7 +38,9 @@ matches first, ties broken by name. A list of `[name doc]` pairs. Searches
 behaviour, not just names: `(doc-search \"node up down\")` finds `monitor-node`
 even when no single docstring holds that exact phrase. A single-word query
 degrades to a plain case-insensitive name/docstring search, e.g.
-`(doc-search \"random\")`."
+`(doc-search \"random\")`.
+
+    (doc-search \"node up down\")   ;=> ([monitor-node \"…\"] …whatever the loaded image documents…)"
   (let (terms (%doc-search-terms query))
     (when (not (empty? terms))
       (map

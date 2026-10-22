@@ -11,5 +11,7 @@
 (0..1, default ~0.18 — pass a small `vol` for quiet/ambient sounds). Fire-and-forget: it
 never blocks the caller and overlapping beeps mix, so a game can blip from its frame loop.
 Synthesised on a dedicated audio thread (needs --features audio). A graceful no-op without the
-feature, with no audio device, or when muted via BROOD_AUDIO=0 / BROOD_GUI_HEADLESS. Returns nil."
+feature, with no audio device, or when muted via BROOD_AUDIO=0 / BROOD_GUI_HEADLESS. Returns nil.
+
+    (audio/beep 440 120)   ;=> nil; a 120 ms A4 tone plays in the background"
   (if (empty? more) (%audio-beep freq-hz ms) (%audio-beep freq-hz ms (first more))))

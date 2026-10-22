@@ -78,7 +78,9 @@ so a module that registers at load is safe to reload. Returns `entry`.
 ;; blink). `defmemo` compares by `=`, which is immediate for the very map it saw last.
 (defmemo ranked-table 16 (table)
   "`table`'s `[key entry]` rows in rank order — the memoised half of [[ranked]], public only
-because `defmemo` defines a public function."
+because `defmemo` defines a public function.
+
+    (registry/ranked-table {:b {:rank 2} :a {:rank 1}})   → ([:a {:rank 1}] [:b {:rank 2}])"
   (rank-order table))
 
 (defn ranked (id:any -> list)

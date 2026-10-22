@@ -68,7 +68,9 @@
 
 (defn rename (pairs)
   "Apply `[[old new] …]` token renames across the project's own .blsp sources. Prints each
-  changed file and returns the count."
+  changed file and returns the count.
+
+    (codemod/rename [[\"old-parse\" \"parse\"] [\"mk-user\" \"user/new\"]])   ;=> 3 — files changed, each one printed"
   (let (changed (seq/filter (map (project-blsp) (fn (f) (rewrite-file pairs f)))
                   (fn (f) (not (nil? f)))))
     (for (f changed) (io/puts "  changed: " f))
@@ -247,7 +249,9 @@ byte-identical.
 
 (defn cst-rename (old new &optional mode)
   "Apply `cst-rename-text` across the project's own .blsp sources — the context-aware
-counterpart to `rename`. Prints each changed file and returns the count."
+counterpart to `rename`. Prints each changed file and returns the count.
+
+    (codemod/cst-rename \"old-parse\" \"parse\" :refs-only)   ;=> 3 — files changed, each one printed"
   (let (changed (seq/filter (map (project-blsp)
                               (fn (f)
                                 (let (before (file/slurp f)

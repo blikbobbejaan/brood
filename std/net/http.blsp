@@ -164,7 +164,9 @@ The socket must be in **binary mode** (the server sets it once, for the
 connection's whole life) so the framing is byte-faithful: chunks arrive as
 `bytes` values, `Content-Length` counts bytes, and a binary body round-trips
 exactly. There is no mode flip-back — outbound writes are mode-independent
-(ADR-141), so the response path needs nothing."
+(ADR-141), so the response path needs nothing.
+
+    (http/read-request sock)   ;=> #b\"GET / HTTP/1.0\\r\\n…\", nil on an early close, or a refusal response"
   (tcp/set-binary sock true)
   (http-read-raw sock))
 
@@ -355,15 +357,21 @@ exactly. There is no mode flip-back — outbound writes are mode-independent
     nil))
 
 (defn ok (body)
-  "A 200 text/html response with `body`."
+  "A 200 text/html response with `body`.
+
+    (http/ok \"<h1>hi</h1>\")   ;=> a 200 text/html `response` record with that body"
   (response 200 {"Content-Type" "text/html; charset=utf-8"} body))
 
 (defn text-response (body)
-  "A 200 text/plain response with `body`. (Named `text-response`, not `text`, to avoid colliding with `std/display`'s render-op `text`.)"
+  "A 200 text/plain response with `body`. (Named `text-response`, not `text`, to avoid colliding with `std/display`'s render-op `text`.)
+
+    (http/text-response \"pong\")   ;=> a 200 text/plain `response` record with that body"
   (response 200 {"Content-Type" "text/plain; charset=utf-8"} body))
 
 (defn not-found ()
-  "A 404 text/plain response."
+  "A 404 text/plain response.
+
+    (http/not-found)   ;=> a 404 text/plain `response` record, body \"Not Found\""
   (response 404 {"Content-Type" "text/plain; charset=utf-8"} "Not Found"))
 
 ;; ---- wire-safety: no CR/LF may reach the wire from caller-supplied text -------
@@ -387,7 +395,9 @@ exactly. There is no mode flip-back — outbound writes are mode-independent
 
 **Raises** if any header name or value contains a CR or LF — splicing one into
 the CRLF-framed wire format would let the caller inject extra headers (HTTP
-request/response splitting)."
+request/response splitting).
+
+    (http/render-headers {\"Host\" \"x\"})   → \"Host: x\\r\\n\""
   ;; Render each header line, then one `(apply str …)` — a `(str acc …)` fold would
   ;; rebuild the whole accumulator per header (O(headers²) in total bytes).
   (apply str
@@ -406,7 +416,9 @@ body — `string-length` counts codepoints and understated the length of any
 non-ASCII body, truncating it at spec-honoring clients). The `:body` may be any
 iolist: a string, a `bytes` value (binary bodies — images, archives), or a
 nested tree of those; it is materialised once here so the length and the sent
-bytes can never disagree."
+bytes can never disagree.
+
+    (http/render-response (http/ok \"hi\"))   ;=> an iolist: the status line, headers, blank line and body bytes"
   (let (status (/get resp :status 200)
         body-bytes (bytes/concat (or (/get resp :body) ""))
         headers (assoc (or (/get resp :headers) {})
@@ -424,7 +436,9 @@ bytes can never disagree."
   "Render just the HTTP/1.0 status line + `headers` + the blank line as a wire
 **iolist** (ADR-139) — no body and no Content-Length. For a streaming response
 whose body is written incrementally over the socket afterwards (see
-`stream-response`). `(bytes-concat …)` materialises it for inspection."
+`stream-response`). `(bytes-concat …)` materialises it for inspection.
+
+    (http/render-head 200 (sse/headers))   ;=> an iolist: \"HTTP/1.0 200 OK\\r\\n\" … the headers … \"\\r\\n\""
   ["HTTP/1.0 "
     (str status)
     " "
@@ -446,7 +460,9 @@ whose body is written incrementally over the socket afterwards (see
 
 (defn streaming? (resp)
   "True if `resp` is a `stream-response` — the connection is handed to its `:stream` fn
-rather than closed after a body. An identity check on the record, not a key sniff."
+rather than closed after a body. An identity check on the record, not a key sniff.
+
+    (http/streaming? (http/ok \"hi\"))   → false"
   (and (record? resp) (= (record-id resp) :http/stream-response)))
 
 ;; ---- static files -----------------------------------------------------------
@@ -465,12 +481,16 @@ rather than closed after a body. An identity check on the record, not a key snif
    ".ico" "image/x-icon"})
 
 (defn mime-type (path:string -> any)
-  "A guessed Content-Type for `path` based on its extension."
+  "A guessed Content-Type for `path` based on its extension.
+
+    (http/mime-type \"index.html\")   → \"text/html; charset=utf-8\""
   (/get *http-mime* (path/extension path) "application/octet-stream"))
 
 (defn serve-file (path)
   "A 200 response serving the file at `path` with a guessed Content-Type, or 404 if it is
-missing. The body is the file's raw bytes, so an image or an archive is served as-is."
+missing. The body is the file's raw bytes, so an image or an archive is served as-is.
+
+    (http/serve-file \"public/logo.png\")   ;=> a 200 image/png response with the file's bytes, or a 404"
   ;; `file/slurp` decodes TEXT and raised on the first PNG — every binary file 500'd.
   (if (regular? path)
     (response 200 {"Content-Type" (mime-type path)} (file/slurp-bytes path))
@@ -572,7 +592,9 @@ so the response time says nothing about how much of a guess was right.
 
 ;; ---- the server -------------------------------------------------------------
 (defn listen (port)
-  "A listening socket on 127.0.0.1:`port` (port 0 = OS-assigned), owned by the calling process — which must be the one that runs `serve-loop` on it."
+  "A listening socket on 127.0.0.1:`port` (port 0 = OS-assigned), owned by the calling process — which must be the one that runs `serve-loop` on it.
+
+    (http/listen 0)   ;=> #<socket …> listening on an OS-assigned port of 127.0.0.1"
   (tcp/listen "127.0.0.1" port))
 
 (defn serve-loop (ls handler)
@@ -583,7 +605,9 @@ runs `handler`, then loop immediately — so a slow request never blocks the acc
 loop or other connections. Shipping the `handler` closure to the worker is sound
 (closure-capturing-closure round-trips `closure_to_message`); the freshly-accepted
 socket is registered *passive* (no reader until the worker calls
-`tcp/controlling-process`), so no inbound bytes are lost in the handoff."
+`tcp/controlling-process`), so no inbound bytes are lost in the handoff.
+
+    (http/serve-loop (http/listen 8080) (fn (req) (http/ok \"hi\")))   ;=> never returns; serves each connection in its own process"
   (receive
     ([:tcp-accept ^ls c] (spawn (http-serve-conn c handler))
       (serve-loop ls handler))))
@@ -637,7 +661,9 @@ socket is registered *passive* (no reader until the worker calls
       (throw problem))))
 
 (defn serve (port:int handler:any -> any)
-  "Listen on 127.0.0.1:`port` and serve `handler` forever. **Blocks** (the accept loop runs in the calling process) — `(spawn (serve …))` to run it in the background. One handler process per connection (HTTP/1.0)."
+  "Listen on 127.0.0.1:`port` and serve `handler` forever. **Blocks** (the accept loop runs in the calling process) — `(spawn (serve …))` to run it in the background. One handler process per connection (HTTP/1.0).
+
+    (http/serve 8080 (fn (req) (http/text-response \"hi\")))   ;=> never returns; wrap it in `spawn` to serve in the background"
   (serve-loop (listen port) handler))
 
 ;; ---- HTTP client -----------------------------------------------------------
@@ -654,7 +680,9 @@ socket is registered *passive* (no reader until the worker calls
 http, port 80/443 by scheme, path \"/\". The RFC-3986 parsing itself lives in one
 place — `url/parse-url` (the full parser); a scheme-less input is treated as an
 `http://` authority so a bare `host[:port]/path` still parses as a host, and a
-network-path reference `//host/path` takes the scheme alone."
+network-path reference `//host/path` takes the scheme alone.
+
+    (http/parse-url \"https://example.com/a\")   → {:scheme \"https\" :host \"example.com\" :port 443 :path \"/a\" :query nil}"
   (let (with-scheme (cond
                       (>= (index-of url "://") 0) url
                       (string/starts-with? url "//") (str "http:" url)
@@ -669,7 +697,9 @@ network-path reference `//host/path` takes the scheme alone."
   "Parse a raw HTTP response (`bytes`, from the transport; a string is accepted
 too) into a `response` record: the head is decoded to strings (`:headers`
 keys lower-cased); `:body` stays a `bytes` value, byte-faithful — use
-`(body-text resp)` when you know it is text."
+`(body-text resp)` when you know it is text.
+
+    (http/parse-response \"HTTP/1.0 200 OK\\r\\n\\r\\nhi\")   ;=> a `response` record: status 200, body #b\"hi\""
   (let (raw (if (string? raw) (string/->bytes raw) raw)
         marker (bytes/index-of raw #b"\r\n\r\n")
         head-end (if (< marker 0) (bytes/length raw) marker)
@@ -688,7 +718,9 @@ keys lower-cased); `:body` stays a `bytes` value, byte-faithful — use
 (defn body-text (resp)
   "The `:body` of a response (or parsed request) decoded as UTF-8 text. A string
 body passes through; nil decodes to \"\". For the common case where the caller
-knows the body is text — the map itself always carries byte-faithful `bytes`."
+knows the body is text — the map itself always carries byte-faithful `bytes`.
+
+    (http/body-text {:body #b\"hi\"})   → \"hi\""
   (let (b (/get resp :body))
     (cond
       (nil? b) ""
@@ -800,7 +832,9 @@ response); the root process counts."
   "GET `url` (http or https) — `request` with method \"GET\". `opts` may carry a
 `:headers` map. Returns `{:status :headers :body}` with `:body` a byte-faithful
 `bytes` value — `(body-text resp)` decodes a text body (`:status 0` + `:error` on
-a transport failure). Must run in a process."
+a transport failure). Must run in a process.
+
+    (http/fetch \"https://example.com/\")   ;=> {:status 200 :headers {…} :body #b\"<!doctype html>…\"}"
   (request "GET" url opts))
 
 (defn post (url body &optional (opts {}))
@@ -808,5 +842,7 @@ a transport failure). Must run in a process."
 `tls/request` takes an iolist) to `url` —
 `request` with method \"POST\". Set the content type yourself via `opts`
 `:headers`, e.g. `{:headers {\"Content-Type\" \"application/json\"}}`. Returns the
-response map (`:body` is `bytes`; see `body-text`)."
+response map (`:body` is `bytes`; see `body-text`).
+
+    (http/post \"http://localhost:8080/api\" \"{}\" {:headers {\"Content-Type\" \"application/json\"}})   ;=> the response map, :body as bytes"
   (request "POST" url (assoc opts :body body)))

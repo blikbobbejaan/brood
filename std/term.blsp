@@ -10,16 +10,22 @@
 (defn enter ()
   "Enter raw mode + the alternate screen, hide the cursor, and enable mouse capture,
 taking over the terminal for a full-screen UI (so click/scroll reach `term/poll`). Pair
-with `term/leave`."
+with `term/leave`.
+
+    (term/enter)   ;=> the terminal taken over: raw mode, alternate screen, mouse capture"
   (%term-enter))
 
 (defn leave ()
   "Restore the terminal: show the cursor, disable mouse capture, leave the alternate
-screen, disable raw mode. The normal-path teardown for `term/enter`."
+screen, disable raw mode. The normal-path teardown for `term/enter`.
+
+    (term/leave)   ;=> the terminal restored to its normal state"
   (%term-leave))
 
 (defn size ()
-  "The terminal size as [cols rows] in character cells."
+  "The terminal size as [cols rows] in character cells.
+
+    (term/size)   ;=> [120 40]"
   (%term-size))
 
 (defn poll (ms)
@@ -30,7 +36,9 @@ combos like :alt-f), a mouse event as a vector [:mouse action button row col mod
 (action: :press :release :drag :scroll-up :scroll-down — :drag is motion with a button
 held, reported once per cell crossed; button: :left :right :middle or nil for scroll;
 row/col 0-based cells; mods a vector of held modifier keywords in :ctrl :alt :shift order,
-[] when none), or nil on timeout. Always pass a finite `ms`."
+[] when none), or nil on timeout. Always pass a finite `ms`.
+
+    (term/poll 50)   ;=> \"a\", :ctrl-c, [:mouse :press :left 3 10 []], or nil on timeout"
   (%term-poll ms))
 
 (defn draw (frame)
@@ -39,22 +47,30 @@ str face], [:rect row col w h face], [:cursor row col] / [:cursor row col style]
 a map like {:fg :red :bold true}; a colour is a palette keyword (:red … :dark-grey) or an
 explicit [r g b] vector / \"#rrggbb\" hex string. [:rect …] fills a w×h cell block with the
 face's background. The optional cursor `style` is :block (default), :bar, or :underline. The
-in-process frontend for the display protocol; returns nil."
+in-process frontend for the display protocol; returns nil.
+
+    (term/draw [[:clear] [:text 0 0 \"hello\" {:fg :red}] [:cursor 0 5]])   ;=> nil"
   (%term-draw frame))
 
 (defn raw-enter ()
   "Enter raw mode only — NO alternate screen, cursor stays visible, scrollback preserved.
 The seam for an inline line editor (the REPL); use `term/enter` instead for a full-screen
-TUI. Pair with `term/raw-leave`."
+TUI. Pair with `term/raw-leave`.
+
+    (term/raw-enter)   ;=> raw mode on; the screen and scrollback stay in place"
   (%term-raw-enter))
 
 (defn raw-leave ()
-  "Leave raw mode (the teardown for `term/raw-enter`). Idempotent with the panic-path restore."
+  "Leave raw mode (the teardown for `term/raw-enter`). Idempotent with the panic-path restore.
+
+    (term/raw-leave)   ;=> raw mode off"
   (%term-raw-leave))
 
 (defn emit (ops)
   "Paint inline, relative-motion render `ops` (for an in-place editor that must not take
 over the screen): [:print str], [:print str face], [:cr], [:nl], [:up n], [:down n],
 [:col n], [:clear-eol], [:clear-below], [:clear-screen]. A face is a map like
-{:fg :cyan :bold true}. Queues all ops then flushes once; unknown ops are skipped; returns nil."
+{:fg :cyan :bold true}. Queues all ops then flushes once; unknown ops are skipped; returns nil.
+
+    (term/emit [[:cr] [:print \"> \" {:fg :cyan}] [:clear-eol]])   ;=> nil"
   (%term-emit ops))

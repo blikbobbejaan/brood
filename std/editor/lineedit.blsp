@@ -379,7 +379,9 @@ can restore it, and selecting the newest match (empty query → newest entry)."
 (defn- lineedit-candidates (pfx)
   "Sorted global names beginning with `pfx` — the default Tab-completion source.
 Reads the live image (`reflect/global-names`), so globals + macros (defn/when/cond/…) are
-all in (and a new project's own globals, since it's the live runtime)."
+all in (and a new project's own globals, since it's the live runtime).
+
+    (editor/lineedit/*lineedit-candidates* \"string/jo\")   ;=> (\"string/join\" …every live global with that prefix…)"
   (sort (seq/filter (map (reflect/global-names) str) (fn (s) (string/starts-with? s pfx)))))
 
 ;; The completion source: a `(fn pfx -> sorted-candidate-strings)`. Defaults to the
@@ -561,7 +563,9 @@ next (newer) history entry (↓ / C-n).
   (let (down (lineedit-down-point (get state :text) (get state :point)))
     (if (nil? down) (lineedit-hist-next state) (lineedit-move state down))))
 (defn lineedit-complete (state _)
-  "Complete the symbol under point (Tab)."
+  "Complete the symbol under point (Tab).
+
+    (editor/lineedit/lineedit-complete state nil)   ;=> state, its symbol completed from the live globals"
   (lineedit-complete-impl state))
 (defn lineedit-clear-screen (state _)
   "Request a screen clear + redraw (C-l).
@@ -713,7 +717,9 @@ column the formatter would put it, rather than submitting.
 (defn lineedit-bind (key cmd)
   "Bind `key` (a keyword like `:ctrl-x`, or a 1-char string) to command symbol `cmd`
 in the editor keymap, taking effect on the next keystroke. The ergonomic way to
-customise the REPL from the REPL: `(lineedit-bind :ctrl-x 'lineedit-clear-screen)`."
+customise the REPL from the REPL: `(lineedit-bind :ctrl-x 'lineedit-clear-screen)`.
+
+    (editor/lineedit/lineedit-bind :ctrl-x 'editor/lineedit/lineedit-clear-screen)   ;=> …the keymap rebound: Ctrl-X now clears the screen…"
   (def *lineedit-keymap* (assoc *lineedit-keymap* key cmd)))
 
 (defn- lineedit-fallback (state key)
@@ -1018,7 +1024,9 @@ the typed text on Enter (possibly multi-line — `:eof` true on Ctrl-D at an emp
 multi-line editing: `:cont-prompt` for continuation lines and `:complete?` (a
 `text -> bool`) so Enter inserts a newline while the form is incomplete and the whole
 multi-line form is edited + repainted in place (bracket matches light up across lines).
-The terminal is restored even if rendering raises (the caller must be on a TTY)."
+The terminal is restored even if rendering raises (the caller must be on a TTY).
+
+    (editor/lineedit/lineedit-read \"> \" [])   ;=> {:line \"…what the user typed…\"}"
   (do
     (term/raw-enter)
     (let (result (try

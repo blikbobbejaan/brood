@@ -24,7 +24,9 @@ scheduling unit, updated every quantum; exact for spawned processes, coarse for 
 root; :cpu-us the CPU time the process has actually consumed, in µs — set beside a
 wall-clock measurement it says whether a slow step did work or WAITED to run; 0 where
 the platform has no per-thread CPU clock). nil for a remote/dead pid. The
-process-introspection snapshot the observer reads; see std/tool/observer.blsp."
+process-introspection snapshot the observer reads; see std/tool/observer.blsp.
+
+    (proc/info (self))   ;=> {:id 12 :status :running :mailbox 0 :name nil …}"
   (%process-info pid))
 
 ;; `& more`, not `&optional value`: for this primitive an ABSENT value reads the flag
@@ -44,18 +46,24 @@ way) — so a sender can queue-and-retry across a net-split; pairs with the reco
 reconnector. :no-break — when truthy, a breakpoint (`debug/break`) passes this
 process through instead of parking it: for infrastructure other processes wait on (a
 buffer process, a registry), where a parked process freezes whoever asked it something
-and nothing could resume it."
+and nothing could resume it.
+
+    (proc/flag :max-heap 8000000)   ;=> the previous limit, e.g. nil"
   (if (empty? more) (%process-flag flag) (%process-flag flag (first more))))
 
 (defn list (-> (list pid))
   "Every currently-live pid on this runtime (one per registered mailbox). Order is
 unspecified — sort if you need stability. For agents/tools enumerating spawned
-processes."
+processes.
+
+    (proc/list)   ;=> every live pid, e.g. (<pid> <pid> …)"
   (%list-processes))
 
 (defn mailbox-size (pid)
   "How many messages are queued in pid's mailbox (its receive backlog), or nil if pid is
-not a live local process. See std/tool/observer.blsp."
+not a live local process. See std/tool/observer.blsp.
+
+    (proc/mailbox-size pid)   ;=> an int, e.g. 0, or nil for a dead pid"
   (%mailbox-size pid))
 
 (defn hibernate ()
@@ -66,7 +74,9 @@ resumes from its receive. Use it in a process that will wait a long while (a poo
 connection, an idle session actor) — it trades a one-off cache rebuild on the next call
 for a substantially smaller idle footprint. Do NOT use it in a request loop: dropping the
 caches per park costs message-heavy code 12-26%, which is exactly why this is an explicit
-call and not automatic."
+call and not automatic.
+
+    (proc/hibernate)   ;=> the bytes of slab capacity released, e.g. 65536"
   (%hibernate))
 
 ;; `offload` stays a BARE prelude wrapper (core dirty-native concurrency, used

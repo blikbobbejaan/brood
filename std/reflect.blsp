@@ -65,7 +65,9 @@ answers `((render [x]))`."
   (%check form))
 
 (defn check-deps-fp (dep-keys)
-  "Recompute the fingerprint of a file's dep-keys (from check-file-deps) against the current global image. The incremental check cache reuses a file's warnings iff this equals the stored fingerprint."
+  "Recompute the fingerprint of a file's dep-keys (from check-file-deps) against the current global image. The incremental check cache reuses a file's warnings iff this equals the stored fingerprint.
+
+    (reflect/check-deps-fp dep-keys)   ;=> the fingerprint, to compare with the one stored beside `dep-keys`"
   (%check-deps-fp dep-keys))
 
 (defn strict-checking? ()
@@ -75,19 +77,27 @@ answers `((render [x]))`."
   (%check-strict?))
 
 (defn check-file (path & more)
-  "Advisory type-check every top-level form in the file at path: a list of `path:line:col: warning: …` strings, or nil. Does not evaluate the file. `required-mods` is the file's transitive require-closure (module-name strings) — the KI-17 reachability set that flags a qualified `mod/name` whose module the file never requires; omit it (single-file / editor) to disable that lint."
+  "Advisory type-check every top-level form in the file at path: a list of `path:line:col: warning: …` strings, or nil. Does not evaluate the file. `required-mods` is the file's transitive require-closure (module-name strings) — the KI-17 reachability set that flags a qualified `mod/name` whose module the file never requires; omit it (single-file / editor) to disable that lint.
+
+    (reflect/check-file \"src/app.blsp\")   ;=> (\"src/app.blsp:3:5: warning: …\"), or nil"
   (if (empty? more) (%check-file path) (%check-file path (first more))))
 
 (defn check-file-deps (path & more)
-  "Incremental-cache check (ADR-119): returns [warnings dep-keys fingerprint] — the GNU warning strings, the set of global observations the check made, and a fingerprint of them against the current image. Store dep-keys+fingerprint; reuse warnings on a later run iff (check-deps-fp dep-keys) still matches and the file's mtime is unchanged. `required-mods`: see check-file."
+  "Incremental-cache check (ADR-119): returns [warnings dep-keys fingerprint] — the GNU warning strings, the set of global observations the check made, and a fingerprint of them against the current image. Store dep-keys+fingerprint; reuse warnings on a later run iff (check-deps-fp dep-keys) still matches and the file's mtime is unchanged. `required-mods`: see check-file.
+
+    (reflect/check-file-deps \"src/app.blsp\")   ;=> [warnings dep-keys fingerprint]"
   (if (empty? more) (%check-file-deps path) (%check-file-deps path (first more))))
 
 (defn check-file-structured (path & more)
-  "Like check-file but returns a list of `{:file :line :col :message}` maps instead of GNU-format strings — for tools (the `nest mcp` `check` tool, editor diagnostics). `required-mods`: see check-file."
+  "Like check-file but returns a list of `{:file :line :col :message}` maps instead of GNU-format strings — for tools (the `nest mcp` `check` tool, editor diagnostics). `required-mods`: see check-file.
+
+    (reflect/check-file-structured \"src/app.blsp\")   ;=> ({:file \"src/app.blsp\" :line 3 :col 5 :message \"…\"})"
   (if (empty? more) (%check-file-structured path) (%check-file-structured path (first more))))
 
 (defn file-signatures (path)
-  "The signature the checker holds for every function the file at path defines: a list of `{:name :sig :declared? :informative?}` maps, `:sig` written in source syntax (`\"(int int -> int)\"`) and ready to paste into a `(sig …)`, or nil where the type names a runtime kind the grammar cannot write. `:declared?` marks the ones a `(sig …)` already states; `:informative?` marks the ones saying something an all-`any` arrow does not. Does not evaluate the file. The bulk counterpart of the editor's declare-sig action."
+  "The signature the checker holds for every function the file at path defines: a list of `{:name :sig :declared? :informative?}` maps, `:sig` written in source syntax (`\"(int int -> int)\"`) and ready to paste into a `(sig …)`, or nil where the type names a runtime kind the grammar cannot write. `:declared?` marks the ones a `(sig …)` already states; `:informative?` marks the ones saying something an all-`any` arrow does not. Does not evaluate the file. The bulk counterpart of the editor's declare-sig action.
+
+    (reflect/file-signatures \"src/app.blsp\")   ;=> ({:name \"twice\" :sig \"(int -> int)\" :declared? false :informative? true})"
   (%file-signatures path))
 
 (defn source-signatures (src)
@@ -123,7 +133,9 @@ What a REPL line or an editor's eval-in-buffer wants: a form pulled out of a mod
 buffer names the module's imports bare and its `deftype`s by their short names, and only
 this context resolves them the way `eval` will — checked as a standalone file, every one
 of them reads as unbound. Forms that open a `(defmodule …)` of their own are checked under
-it, as a file would be."
+it, as a file would be.
+
+    (reflect/check-string-here \"(+ 1 2)\")   → nil"
   (%check-string-here src))
 
 (defn source-deps (src)
@@ -194,7 +206,9 @@ anything."
   (%scan-form-end s from n-forms))
 
 (defn scan-source-extract (src)
-  "Native per-file scan for the whole-project check (ADR-119): parse src and return [counts privs def-names] — a map of every symbol's occurrence count, this file's `defn-`/`def-` privates as [bare qual], and every top-level def's qualified name. The fast path replacing the interpreted CST walk."
+  "Native per-file scan for the whole-project check (ADR-119): parse src and return [counts privs def-names] — a map of every symbol's occurrence count, this file's `defn-`/`def-` privates as [bare qual], and every top-level def's qualified name. The fast path replacing the interpreted CST walk.
+
+    (nth (reflect/scan-source-extract \"(defn f () 1)\") 2)   → (\"f\")"
   (%scan-source-extract src))
 
 (defn scan-tokens (s)
@@ -265,7 +279,9 @@ string arg; a `deftype` alias is a type, not a signature, and answers nil.
 the qualified name and the type-expression as written, rendered — sorted by name. With
 `module` (a symbol or string), only that module's: `(type-aliases 'editor/pane)`. A
 `deftype` binds no global, so this is the only way to enumerate them; `nest doc` renders
-a module's under a Types heading."
+a module's under a Types heading.
+
+    (reflect/type-aliases 'editor/pane)   ;=> ({:name \"editor/pane/…\" :type \"…\"} …)"
   (let (prefix (if (nil? module) nil (str (->string module) "/"))
         entries (seq/filter (%type-aliases)
                   (fn (entry) (or (nil? prefix) (string/starts-with? (first entry) prefix)))))
@@ -295,9 +311,13 @@ live, from a buffer that is mid-edit half the time.
   (%expr-type src))
 
 (defn form-pos (form)
-  "A form's [line col] source position, or nil."
+  "A form's [line col] source position, or nil.
+
+    (reflect/form-pos 42)   → nil"
   (%form-pos form))
 
 (defn current-file ()
-  "The path of the file currently being loaded, or nil."
+  "The path of the file currently being loaded, or nil.
+
+    (reflect/current-file)   ;=> the path being loaded, e.g. \"src/app.blsp\", or nil"
   (%current-file))

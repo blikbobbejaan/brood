@@ -788,7 +788,9 @@ test discovery, lints, release, config)."
       (check-allow :discarded-catch (try (format/file p) (catch _ nil))))))
 
 (defn new-project (nm &optional template)
-  "Scaffold a new project named `nm` (or `\".\"` for the current directory, taking the project name from the cwd's basename): a `project.blsp` manifest, the baked-in language guide, and starter code chosen by `template` — `\"default\"` (a `main`+`hello` module pair, the default), `\"tui-loop\"` (a tail-recursive animation loop), `\"gen\"` (a stateful gen_server process), `\"editor\"` (a tiny text editor on the `ui` framework), `\"gui\"` (a windowed app on the `ui` framework, opened with `(gui-display)` — needs a `--features gui` runtime), `\"hatch\"` (a Hatch web app with a Postgres-backed message board — requires hatch + store-postgres as sibling path deps; run `nest run --main db-setup` once to create the database, then `nest run` to start), or `\"web-api\"` (a minimal Hatch JSON API — no live layer, no database; requires hatch as a sibling path dep; `nest run` to start). Existing scaffold files are overwritten, not rejected. Backs `nest new [--template …]`."
+  "Scaffold a new project named `nm` (or `\".\"` for the current directory, taking the project name from the cwd's basename): a `project.blsp` manifest, the baked-in language guide, and starter code chosen by `template` — `\"default\"` (a `main`+`hello` module pair, the default), `\"tui-loop\"` (a tail-recursive animation loop), `\"gen\"` (a stateful gen_server process), `\"editor\"` (a tiny text editor on the `ui` framework), `\"gui\"` (a windowed app on the `ui` framework, opened with `(gui-display)` — needs a `--features gui` runtime), `\"hatch\"` (a Hatch web app with a Postgres-backed message board — requires hatch + store-postgres as sibling path deps; run `nest run --main db-setup` once to create the database, then `nest run` to start), or `\"web-api\"` (a minimal Hatch JSON API — no live layer, no database; requires hatch as a sibling path dep; `nest run` to start). Existing scaffold files are overwritten, not rejected. Backs `nest new [--template …]`.
+
+    (scaffold/new-project \"myapp\" \"gen\")   ;=> myapp/ created — project.blsp, the language guide and a gen_server starter"
   ;; `nest new .` scaffolds into the current directory (cargo init's shape);
   ;; the project name is then the cwd's basename. Both forms — `nest new .` and
   ;; `nest new foobar` — *overwrite* existing scaffold files rather than
@@ -862,7 +864,9 @@ test discovery, lints, release, config)."
 ;; evolves; this re-syncs them to the installed version. Everything else the project
 ;; owns (its code, manifest, CLAUDE.md) is left alone.
 (defn update-tooling ()
-  "Rewrite this project's AI-assistant tooling — `docs/brood-for-claude.md` and the `.claude/skills/writing-brood` skill — from THIS `brood` binary, so the shipped language reference matches the installed language. Run it after upgrading Brood. Backs `nest update-tooling`."
+  "Rewrite this project's AI-assistant tooling — `docs/brood-for-claude.md` and the `.claude/skills/writing-brood` skill — from THIS `brood` binary, so the shipped language reference matches the installed language. Run it after upgrading Brood. Backs `nest update-tooling`.
+
+    (scaffold/update-tooling)   ;=> docs/brood-for-claude.md and .claude/skills/writing-brood/SKILL.md rewritten, both paths printed"
   ;; `nest update-tooling` runs `require-project` first, so the CLI never reaches here
   ;; without a project — but guard directly too, so a bare `(scaffold/update-tooling)`
   ;; at the REPL errors clearly instead of writing into the cwd.

@@ -67,7 +67,9 @@ return a *handle* (the coordinator pid). When `thunk` finishes, `:reply-to`
 hard-killed after that long and `:reply-to` gets `[:task-timeout handle]`
 instead. Every reply is tagged with `handle`, so a reply from a finished or
 cancelled task is easy to ignore — match on the handle you last started. Cancel
-early with `cancel`."
+early with `cancel`.
+
+    (task/task (fn () (slow-compute)) {:timeout 5000})   ;=> a handle; later `[:task-done handle value]`"
   (let (o (if (empty? opts) {} (first opts))
         reply-to (or (get o :reply-to) (self))
         timeout (get o :timeout))
@@ -76,7 +78,9 @@ early with `cancel`."
 (defn cancel (handle: (or map pid) -> nil)
   "Stop the task identified by `handle` early: its worker is hard-killed and no
 reply is delivered. A no-op if the task already finished (its handle is a dead
-pid). Returns nil."
+pid). Returns nil.
+
+    (task/cancel h)   ;=> nil — no reply for `h` will arrive"
   (send handle :task--cancel)
   nil)
 
@@ -86,7 +90,9 @@ pid). Returns nil."
 `(task thunk & opts)` and return the new handle. The 'only the most recent matters'
 pattern — a debounced search, an interactive eval re-run, a live recheck — where a new
 trigger should abandon the previous job rather than queue behind it. Store the returned
-handle and pass it back as `prev` on the next trigger."
+handle and pass it back as `prev` on the next trigger.
+
+    (task/latest prev (fn () (search query)))   ;=> the new handle; `prev`'s reply never arrives"
   (when prev (cancel prev))
   (apply task thunk opts))
 
