@@ -491,9 +491,13 @@ mod tests {
                     "native"
                 };
                 format!(
-                    "uid {} nsites {} {state} calls {} deopts {} (total {}) entry-deopts {}",
+                    "{} uid {} nsites {} {state} compile-epoch {} stale {} calls {} deopts {} \
+                     (total {}) entry-deopts {}",
+                    arm.dbg_label(),
                     arm.uid,
                     arm.nsites,
+                    arm.compile_epoch.load(Relaxed),
+                    arm.stale_bindings.load(Relaxed),
                     arm.jit_calls.load(Relaxed),
                     arm.jit_deopts.load(Relaxed),
                     arm.jit_deopts_total.load(Relaxed),
@@ -501,15 +505,22 @@ mod tests {
                 )
             })
             .collect();
+        // Each hypothesis left after 2026-10-22 reads off these: the caller's IC entry for the
+        // callee (arm-less? a stale or never-native arm? an epoch behind?) and the cell beside
+        // it (a builtin cell where a Brood link belongs), against the global epoch.
+        let sites = interp.heap.dbg_call_ics_for(callee);
         panic!(
             "the pair never published a fast-link mirror — the state under test was never \
-             reached ({runs} runs of {run} in 90 s; published: {:?})\narms:\n  {}",
+             reached ({runs} runs of {run} in 90 s; published: {:?})\nglobal epoch {}\n\
+             call ICs for the callee:\n  {}\narms:\n  {}",
             interp
                 .heap
                 .vm_fast_links_published()
                 .iter()
                 .map(|(_, fl)| crate::core::value::symbol_name(fl.sym))
                 .collect::<Vec<_>>(),
+            interp.heap.global_epoch(),
+            sites.join("\n  "),
             arms.join("\n  ")
         );
     }

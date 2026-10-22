@@ -946,6 +946,68 @@ impl Heap {
             .collect()
     }
 
+    /// **Test-only.** Every call-IC entry naming `sym`, with the arm it holds and the
+    /// fast-link cell at the same absolute site — what a "never published" failure needs to
+    /// say WHY: no entry, an arm-less entry, an arm not native or stale, an epoch behind,
+    /// or a builtin cell (`nslots == u32::MAX`) where a Brood link was expected (KI-281).
+    #[cfg(all(feature = "jit", test))]
+    pub fn dbg_call_ics_for(&self, sym: Symbol) -> Vec<String> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let ics = self.vm_call_ics.borrow();
+        let fls = self.vm_fast_links.borrow();
+        ics.iter()
+            .enumerate()
+            .filter_map(|(abs, e)| e.as_ref().filter(|e| e.sym == sym).map(|e| (abs, e)))
+            .map(|(abs, e)| {
+                let callee = match e.callee.unpack() {
+                    crate::core::value::ValueRef::Fn(_) => "closure",
+                    crate::core::value::ValueRef::Native(_) => "native",
+                    _ => "other",
+                };
+                let arm = match e.arm.as_ref() {
+                    None => "arm-less".to_string(),
+                    Some((arm, _)) => {
+                        let code = arm.jit_code.load(Relaxed);
+                        let state = if code.is_null() {
+                            "uncompiled"
+                        } else if code == crate::jit::QUEUED {
+                            "QUEUED"
+                        } else if code == crate::jit::BAILED {
+                            "BAILED"
+                        } else {
+                            "native"
+                        };
+                        format!(
+                            "arm uid {} {state} compile-epoch {} stale {} captures {} nslots {}",
+                            arm.uid,
+                            arm.compile_epoch.load(Relaxed),
+                            arm.stale_bindings.load(Relaxed),
+                            arm.capture_names.len(),
+                            arm.nslots,
+                        )
+                    }
+                };
+                let cell = match fls.get(abs) {
+                    Some(fl) if fl.code != 0 => format!(
+                        "cell epoch {} {} sym-match {}",
+                        fl.epoch,
+                        if fl.nslots == u32::MAX {
+                            "BUILTIN".to_string()
+                        } else {
+                            format!("nslots {}", fl.nslots)
+                        },
+                        fl.sym == sym
+                    ),
+                    _ => "no cell".to_string(),
+                };
+                format!(
+                    "site {abs} argc {} epoch {} callee {callee} {arm}; {cell}",
+                    e.argc, e.epoch
+                )
+            })
+            .collect()
+    }
+
     #[cfg(all(feature = "jit", debug_assertions))]
     pub fn vm_fast_link_epoch(&self, site: u32) -> Option<u64> {
         let abs = (self.cur_ic_base.get() + site) as usize;

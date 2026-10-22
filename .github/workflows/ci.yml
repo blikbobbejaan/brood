@@ -180,6 +180,12 @@ jobs:
       # Same invocation as `make clippy`: all targets, all features, warnings fatal.
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+      # `--all-features` is a superset, and dead-code lints only go one way: a field only
+      # `gui-gpu` reads is dead in a `gui` build without it — the feature set a configured
+      # `make release` builds (`EmitterStep::present` warned there, 2026-10-21, while this
+      # job was green). Same as `make clippy`'s second line.
+      - name: Clippy (gui without gui-gpu)
+        run: cargo clippy -p brood --lib --features gui -- -D warnings
 
       # Lives HERE for LOAD BALANCING, not for artifact reuse — an earlier version of this
       # comment claimed reuse and was simply wrong. `cargo clippy` runs `clippy-driver`, and
