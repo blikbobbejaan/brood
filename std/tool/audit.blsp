@@ -105,11 +105,13 @@ private, and anything defined outside `std/`.
   (not (= "" (docstring-of name))))
 
 (defn exemplified? (name)
-  "True when `name`'s docstring carries at least one `form → result` example —
-the shape `doctest` executes.
+  "True when `name`'s docstring carries at least one `form → result` example — the shape
+`doctest` executes — or a `form ;=> result` illustration, the shape for a function whose
+result depends on the world, which `doctest` reads and checks the callee of.
 
     (audit/exemplified? 'audit/documented?)   → true"
-  (includes? (docstring-of name) "→"))
+  (let (d (docstring-of name))
+    (or (includes? d "→") (includes? d " ;=> "))))
 
 (defn undocumented (-> seqable)
   "The public names carrying no docstring at all."

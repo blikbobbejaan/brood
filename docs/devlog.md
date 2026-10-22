@@ -3265,3 +3265,9 @@ and limited to deterministic, environment-free functions. Gated here: a whole-im
 `audit/exampleless` (all modules loaded) 834 → 676. One docstring was wrong and is fixed:
 `explain/error` returns the code it looked up for an unknown code, `:unknown` only when none
 could be derived.
+
+2026-10-22 (night, illustrations): docstring examples gained a second kind — ` ;=> `, an
+ILLUSTRATION for a function whose result depends on the world. Not evaluated, but doctest reads
+its form and fails it when it does not read or calls something undefined, so a rename is still
+caught; the example audit counts it. A line starting with `;` stays prose (the continuation
+style `reflect/source-deps` already used).

@@ -25,6 +25,13 @@ the right. A trailing `; comment` is ignored. Only indented lines count — inli
 prose is left alone deliberately, since much of it names values that do not exist outside
 the sentence.
 
+An **illustration** is the same shape with ` ;=> ` in place of the arrow — for a function
+whose result depends on the world (a file, the clock, a socket, a pid) and so cannot be
+pinned. It is not evaluated, but it is still held to something: its left side must read as
+one form, and the function it calls must exist — so a rename or a typo fails here too.
+
+    (file/slurp \"notes.txt\")   ;=> \"…the file's text…\"
+
     (doctest/failures-under \"myapp/\")   ;; → the examples that do not hold
     (doctest/failures)                    ;; → …across every public name in the image")
 
@@ -55,6 +62,38 @@ the sentence.
   "The indented ` → ` lines of docstring `d` — the example cases it carries."
   (seq/filter (string/split (str d) "\n") example-line?))
 
+(defn- illustration-line? (l)
+  ;; Indented, not an executed case, and carrying the ` ;=> ` marker AFTER a form — a line
+  ;; that starts with `;` is a result continuing the form on the line above, which is prose.
+  (and (string/starts-with? l "    ")
+    (not (string/starts-with? (string/trim l) ";"))
+    (not (example-line? l))
+    (includes? l " ;=> ")))
+
+(defn illustration-lines (d)
+  "The indented ` ;=> ` lines of docstring `d` — illustrations: examples that are read and
+whose callee must exist, but that are not evaluated.
+
+    (doctest/illustration-lines (doc file/slurp))   ;=> (…its illustration lines…)
+
+    (count (doctest/illustration-lines \"x\\n    (file/slurp \\\"a\\\")   ;=> \\\"…\\\"\"))   → 1"
+  (seq/filter (string/split (str d) "\n") illustration-line?))
+
+(defn- check-illustration (name-str line)
+  ;; nil when the illustration reads as one form whose head is bound or a special form.
+  (let (src (string/trim (first (string/split line " ;=> ")))
+        ;; check-allow :discarded-catch — a form that does not read is the failure reported below
+        parsed (check-allow :discarded-catch (try [:ok (reflect/read-string src)] (catch _ nil)))
+        form (if parsed (second parsed) nil)
+        head (if (pair? form) (first form) nil))
+    (cond
+      (nil? parsed) (str name-str ": " src "  ;=> illustration does not read as one form")
+      (and (symbol? head)
+        (not (bound? head))
+        (not (includes? (reflect/special-forms) (->string head))))
+        (str name-str ": " src "  ;=> illustration calls `" head "`, which is not defined")
+      else nil)))
+
 (defn- case-of (line)
   ;; `[source expected]` for one example line, or nil when it does not split cleanly.
   (let (parts (string/split (strip-comment line) " → "))
@@ -84,40 +123,42 @@ the sentence.
 
 (defn check (name-str line)
   "nil when `line` is not an example at all, or when the example it carries holds; else a
-description of how it failed — a wrong result, or a line that looks like an example and does
-not parse as one.
+description of how it failed — a wrong result, a line that looks like an example and does
+not parse as one, or an illustration (` ;=> `) that does not read or calls nothing defined.
 
 `name-str` only labels the message — it is the name the example was found on.
 
     (doctest/check \"x\" \"plain prose\")  → nil"
-  (when (example-line? line)
-    (let (c (case-of line))
-      (if (nil? c)
-        ;; Selected as an example — indented, with an arrow outside any comment — but it does
-        ;; not split. That is a MALFORMED example, not prose, and saying so is the difference
-        ;; between an unchecked promise and a known one. Silence here is how a typo'd second
-        ;; arrow removes a case from the gate without anyone noticing.
-        (str name-str ": " (string/trim line) "  → malformed example: expected exactly one ` → `")
-        (let ([src expected] c
-              outcome (try
-                        [:ok (reflect/eval (reflect/read-string src))]
-                        (catch e [:raised (str "RAISED " (error-message e))]))
-              ok (if (= (first outcome) :raised)
-                   (= (second outcome) expected)
-                   (holds? (second outcome) expected)))
-          (when (not ok)
-            (str name-str
-              ": "
-              src
-              "  → got "
-              (if (= (first outcome) :raised) (second outcome) (pr-str (second outcome)))
-              ", documented "
-              expected)))))))
+  (if (illustration-line? line)
+    (check-illustration name-str line)
+    (when (example-line? line)
+      (let (c (case-of line))
+        (if (nil? c)
+          ;; Selected as an example — indented, with an arrow outside any comment — but it does
+          ;; not split. That is a MALFORMED example, not prose, and saying so is the difference
+          ;; between an unchecked promise and a known one. Silence here is how a typo'd second
+          ;; arrow removes a case from the gate without anyone noticing.
+          (str name-str ": " (string/trim line) "  → malformed example: expected exactly one ` → `")
+          (let ([src expected] c
+                outcome (try
+                          [:ok (reflect/eval (reflect/read-string src))]
+                          (catch e [:raised (str "RAISED " (error-message e))]))
+                ok (if (= (first outcome) :raised)
+                     (= (second outcome) expected)
+                     (holds? (second outcome) expected)))
+            (when (not ok)
+              (str name-str
+                ": "
+                src
+                "  → got "
+                (if (= (first outcome) :raised) (second outcome) (pr-str (second outcome)))
+                ", documented "
+                expected))))))))
 
 (defn- documented? (s)
   ;; check-allow :discarded-catch — an expected value that does not read falls back to a pr-str comparison
   (let (d (check-allow :discarded-catch (try (doc (reflect/eval s)) (catch _ nil))))
-    (and d (not (empty? (example-lines d))))))
+    (and d (or (not (empty? (example-lines d))) (not (empty? (illustration-lines d)))))))
 
 (defn documented-names-under (prefix)
   "Every public name starting with `prefix` whose docstring carries at least one indented
@@ -137,7 +178,9 @@ example — `\"myapp/\"` for one package's own surface. A nil `prefix` means eve
 
 (defn- failures-of (s)
   (let (d (doc (reflect/eval s)))
-    (seq/filter (map (example-lines d) (fn (l) (check (->string s) l))) (fn (x) (not (nil? x))))))
+    (seq/filter (map (append (example-lines d) (illustration-lines d))
+                  (fn (l) (check (->string s) l)))
+      (fn (x) (not (nil? x))))))
 
 (defn failures-under (prefix)
   "Every documented example that does not hold, for public names under `prefix` (nil = the

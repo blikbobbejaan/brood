@@ -70,3 +70,19 @@
     (assert= [] (apply vector (doctest/documented-names-under "zzz-no-such-package/"))))
   (test "the standard library's own examples hold"
     (assert= [] (doctest/failures-under "string/"))))
+
+(describe "illustrations — ` ;=> ` examples for results that depend on the world"
+  (test "an illustration is read and its callee checked, never evaluated"
+    ;; `file/slurp` of a file that does not exist would RAISE if evaluated: a nil here is
+    ;; the proof it was not.
+    (is (nil? (doctest/check "x" "    (file/slurp \"/no/such/file\")   ;=> \"…the text…\""))))
+  (test "a callee that does not exist fails"
+    (is (includes? (doctest/check "x" "    (file/slurpp \"a\")   ;=> \"…\"") "not defined")))
+  (test "a form that does not read fails"
+    (is (includes? (doctest/check "x" "    (file/slurp \"a\"   ;=> \"…\"") "does not read")))
+  (test "a special form is a fine head"
+    (is (nil? (doctest/check "x" "    (let (p \"a\") (file/slurp p))   ;=> \"…\""))))
+  (test "a result continuing the line above is prose, not an illustration"
+    (assert= 0 (count (doctest/illustration-lines "x\n    (f 1)\n    ;=> {:a 1}"))))
+  (test "the audit counts an illustration as an example"
+    (is (audit/exemplified? 'doctest/illustration-lines))))

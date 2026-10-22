@@ -648,6 +648,12 @@ evaluate docstrings). The engine is `std/tool/doctest.blsp`; `doctest/failures-u
 a run to one package's surface, and `tests/doc_examples_test.blsp` is what points it at the
 standard library.
 
+A function whose result depends on the world — a file, the clock, a socket, a pid, the loaded
+image — cannot be pinned by a ` → ` example. Write an **illustration** instead, ` ;=> ` in place
+of the arrow: `    (file/slurp "notes.txt")   ;=> "…the file's text…"`. It is not evaluated,
+but doctest still reads its left side and fails it when the form does not read or calls a
+function that does not exist, so a rename or a typo is caught; the example audit counts it.
+
     "Twice `n`.
 
         (demo/double 4)   → 8"
