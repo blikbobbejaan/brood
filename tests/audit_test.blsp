@@ -39,6 +39,12 @@
     (is (data-first? 'sort))
     (is (any? (sig-params 'sort) (fn (t) (includes? t "->"))))))
 
+;; Documented, deliberately WITHOUT an example: the negative case below must not lean on a std
+;; function, which may (and did) gain one.
+(defn audit-fixture-plain ()
+  "Documented, and carrying no example."
+  nil)
+
 (describe "surface audit: docs and examples"
   (test "the audit sees a real surface, so an empty result would not pass vacuously"
     (is (> (count (public-names)) 300)))
@@ -46,7 +52,7 @@
   (test "documented? and exemplified? read the binding's docstring"
     (is (documented? 'audit/report))
     (is (exemplified? 'audit/data-first?))
-    (is (not (exemplified? 'audit/undocumented))))
+    (is (not (exemplified? 'audit-test/audit-fixture-plain))))
 
   (test "report returns the four counts it prints"
     (let (r (with-out-str (report)))
