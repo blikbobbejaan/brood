@@ -317,3 +317,32 @@ three — it is paid once — but at 300M lines an hour becomes five minutes on 
    everything — the `nest test` start) and `warm lazy` (image install only — the `nest run`
    start) columns. The script had driven ADR-325's OLD function names for a month with
    nothing running it; fixed with the row.
+
+## Load- and check-path work removed, 2026-10-23 — NOT MEASURED
+
+From a read-only review of the per-module and per-reference costs; **not measured — the bedit
+startup and idle-check timings need re-taking on the test machine** before any of this is
+counted as a win.
+
+- `%refer`'s refer-all and the checker's module walk filter the globals on borrowed spellings
+  under the table's lock (`Heap::global_symbols_where`) instead of copying every key and
+  allocating every name, per `(:use …)` clause; the export and namespace indexes allocate a
+  key per module, not per global.
+- `Ctx::bind` consumes the scope: a loop of N binds made N whole-scope copies.
+- The macro walkers ask `Heap::list_items` (no error for an atom) instead of `list_to_vec`,
+  which allocated a boxed error per leaf; one walk for a four-item `fold`/`reduce` gates all
+  three source rewrites, which each walked the whole form.
+- `macroexpand_1` looks a head up once unless a require bound something; `resolve_sym`
+  memoises `ns/bare` per namespace instead of formatting and re-interning it per reference.
+- `require` asks `%builtin-module?` and copies a std module's source only when it loads from
+  source, not on the stdlib-image path.
+- Embedded modules are found through a hash index, not a scan of every table; a settled
+  signature index costs a read lock per query, not the write lock; a curated-signature
+  existence check no longer clones the `Sig`.
+
+Left as they were, deliberately: the expansion and resolve walks still rebuild unchanged
+lists — a fresh pair per occurrence is what keeps a spliced-twice macro argument (or a rewrite
+that duplicates a body, as the range-fold fallback does) from becoming one pair compiled in
+two lexical contexts under the VM body cache's AST-identity key. An incremental module-prefix
+index was not built: the refer-all's import order (and so the order of its shadow warnings)
+is the global table's hash order, which no secondary index reproduces.
