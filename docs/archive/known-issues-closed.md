@@ -14775,3 +14775,172 @@ promoted into). Positions are diagnostics, so nothing that checks VALUES saw it.
 modules under `BROOD_GC_STRESS`; every module's inner error must report its own line. Red
 three runs in three with the carry removed (`BAD (1 3 10)`), green with it; with aging
 disabled (`BROOD_RT_GC_FLOOR` huge) the bug never reproduced, which pins it to aging.
+
+## KI-287 — a guest could take a full peer's node name, and with it the peer's link and traffic ✅ FIXED 2026-10-23
+
+**Closed 2026-10-23: every guard ran green and went red under its sabotage, on GitHub
+Actions** (the desktop the fix was written on runs no tests) — the observed output is under
+Guard. Found by reading the code while fixing KI-286 (2026-10-23); never observed.
+
+**Symptom.** None observed. What it would look like: a full peer's link to a node that
+granted a guest drops (its watchers get `[:nodedown]`) the moment a guest attaches, and
+messages this node sends to that peer — and the pids in them — reach the guest instead. Or a
+`node/connect` to a full peer answers at once without dialing, and the node it "reached" is a
+guest.
+
+**Cause.** A node name is whatever the initiator wrote in its `Hello`; the cookie proves only
+that it holds the node cookie or a grant. ADR-415 bound nothing about the guest's NAME — the
+grant records its cookie, its `:names` and an `:as` identity, and `:as` (what bedit's
+`--invite NAME` binds) is who the person is, not a node name; the session grant has no `:as`
+at all, and a client's node name is `editor/serve`'s generated `attach-<time>`. So
+`register_link` treated a guest link like any other under the name it claimed:
+
+1. **A new incarnation retired the full link.** A guest naming itself after a connected full
+   peer, with any other incarnation, took the restarted-peer arm: the full link was retired as
+   a node-down and the guest registered under the name. `route` then sent the guest everything
+   addressed to that name, and its `note_outbound` made every local pid in it reachable.
+2. **A name the full peer was not holding at that moment** — down, restarting, not yet dialed
+   — was the guest's for the taking, with the same result for every pid of that peer still
+   held here.
+3. **The same incarnation won the tie-break.** A guest's link is always inbound, so its
+   connector is the claimed name — the same connector the real peer dialing in has, and the
+   equal-connector rule keeps the registered link: a guest that copied the real peer's
+   incarnation would hold the name against it.
+4. **A dial reused it.** `linked_peer_for` answered a `node/connect` from any link under the
+   claimed name, or any link advertising the dialed address — and a guest's advertised
+   address is its claim too; `mesh_consider` skipped dialing any gossiped name in `NODES`.
+
+**Why it survived.** ADR-415's threat model was what a guest's FRAMES may do; the guest
+test (`a_guest_link_reaches_what_it_was_given_and_ships_no_code`) runs one guest under its
+own name on a node with no other peer. The duplicate and restart tests in `dist::tests` have
+no guest. No test put a guest and a full peer under one name.
+
+**Fix, second and final (2026-10-23, ADR-425).** The first fix below was a check, and it
+could not see the case it left open. This one removes the thing being checked: a guest link
+is never registered under the name it claims. `establish` mints it one —
+`guest~<serial>.<host incarnation>~<claim>` (`guest::GuestLink::new`) — in a namespace
+`node/start` refuses and `register_link` refuses to a full link, so no guest name is any full
+peer's, here or anywhere in the cluster, linked or never seen, and no two guests share one.
+The link translates the pids of the guest's node between its claimed and minted spellings in
+both directions (`translate_inbound` after `admit`; `translate_outbound` in `route` and
+`send_frame`), so an unchanged client — every bedit out there — works, with no wire change.
+`guest_may_take`, `FULL_PEER_NAMES` and `register_link`'s "a full link always displaces a
+guest" arm are gone with the collision they arbitrated; `linked_peer_for`'s full-link filter
+stays (a guest's advertised address is still a claim), and the mesh skips a gossiped `guest~`
+name. `node/peer-grant` adds `:claimed`. The paragraphs below are the first fix, kept as the
+record of how it was reasoned; where they disagree with this one, this one is the code.
+
+**Fix (first, superseded by the above).** A guest's name is never a full peer's, enforced in `register_link` under the
+`NODES` write lock (`guest_may_take`): a guest link is refused if the name is held by a full
+link or by a guest of another grant (another person's session), or if a full link has EVER
+held it here (`FULL_PEER_NAMES`, written as a full link registers; bounded by the node
+cookie, since only a holder adds a name). A guest of the same grant under its own name is
+that guest reconnecting and follows the ordinary rules. A full link under a name a guest
+holds always displaces it, as a node-down, whatever the incarnations or connectors. A dial
+(`linked_peer_for`) and the mesh (`mesh_consider`) count only full links as already
+connected, so a dial goes ahead and its full link displaces the guest.
+
+Deliberately not done: binding a NODE name into the grant, which was the first proposal.
+The grant has no node name to bind — `:as` is an identity — and the session grant is one
+cookie for any number of clients, each under its own generated name, so an exact bound name
+would admit one client per cookie. The rule above needs nothing from the client and closes
+the hijack for every grant. What it leaves: a guest may still claim a name that is a full
+peer's ELSEWHERE in the cluster and has never linked here. Until that peer links (directly,
+or by the dial gossip about it now triggers), a pid of it that a third node forwards here
+routes to the guest. Closing that needs names a guest cannot spell — a guest namespace, or
+names the host assigns — which is a protocol change, for an ADR. (It turned out not to need a
+protocol change: ADR-425 mints the name and translates at the link, above.)
+
+**Guard (ADR-425's; the first fix's two tests were rewritten into these).** Written on a
+desktop that runs no tests; run and sabotaged on GitHub Actions 2026-10-23 — every guard
+verified (the distribution guard last, after its host script was fixed; see after the list).
+Each with the sabotage beside it:
+
+- `dist::tests::a_guest_is_never_registered_under_the_name_it_claims` — a guest claiming a
+  connected full peer's name, a down one's, and one that has NEVER linked here is registered
+  under a minted `guest~` name each time; the full link and its node monitor are untouched,
+  and a `route` to the never-linked name finds no link. Sabotage: delete `let peer =
+  guest.as_ref().map_or(peer, |standing| standing.name());` in `establish` (guests register
+  under their claim) — red at "displaced its link" (a release build; a debug build panics
+  first, at `register_link`'s "minted name was already registered"); then "has never
+  linked here".
+- `dist::tests::guests_and_a_full_link_claiming_one_name_are_separate_links` — two guests
+  claiming one name are two links, a full link under it displaces neither, and
+  `linked_peer_for` answers a dial with neither (by name, route or advertised address).
+  Sabotage: the same `establish` line — red at that `debug_assert`, or "retired the first"
+  in a release build; separately, drop
+  `link.guest.is_none() &&` from `linked_peer_for`'s address search — red at "a dial reused".
+- `dist::tests::no_full_peer_may_use_the_guest_namespace` — sabotage: delete the
+  `guest::is_guest_name(peer)` refusal in `register_link` (red at "a full link registered"),
+  then the one in `node_listen` (red at "node/start took").
+- `dist::tests::a_guest_receives_its_own_pids_in_its_own_spelling` — reads the far end of the
+  socket. Sabotage: delete `guest.translate_outbound(&mut frame)` in `route` — red at "its own
+  pid under the name the host minted".
+- `dist::guest::tests::a_guest_link_is_named_by_the_host_and_its_pids_are_translated_at_the_edge`
+  — sabotage: make `rename_pids` return at once — red at "becomes a pid of its minted name".
+- distribution `a_guest_link_reaches_what_it_was_given_and_ships_no_code` — now also checks
+  the host's `(node/list)` shows `guest~`, `:claimed` is the client's, and the client's own pid
+  comes back as its own. Sabotage: delete `guest.translate_inbound(&mut frame)` in
+  `handle_inbound_frame` — the host's reply to the client's pid has no route and the client
+  fails with "no reply by name".
+
+**Sabotage runs, 2026-10-23, on GitHub Actions** (a throwaway branch, one patch per job, the
+job passing only if the guard went red; a control job with no patch). On `e9e1af8b`, every
+UNIT guard above went red under its sabotage and green without it:
+
+| sabotage | red at |
+|---|---|
+| `establish` registers a guest under its claim (test profile, `debug_assert` on) | both `a_guest_is_never_registered_under_the_name_it_claims` and `guests_and_a_full_link_claiming_one_name_are_separate_links` panic at `dist.rs:1842`: "a guest link's minted name was already registered" |
+| the same, `CARGO_PROFILE_TEST_DEBUG_ASSERTIONS=false` | "assertion `left == right` failed: a guest claiming a full peer's name displaced its link" (`dist.rs:2595`); "a second guest claiming a name retired the first, or was refused" (`dist.rs:2674`) |
+| `linked_peer_for`'s address search without `link.guest.is_none() &&` | "a dial reused a guest's link as the peer it was looking for" (`dist.rs:2683`) |
+| `register_link`'s guest-namespace refusal off | "a full link registered under a name in the guest namespace" (`dist.rs:2715`) |
+| `node_listen`'s guest-namespace refusal off | "node/start took a name in the guest namespace" (`dist.rs:2725`) |
+| `route` without `translate_outbound` | "a guest was sent its own pid under the name the host minted for it" (`dist.rs:2768`) |
+| `rename_pids` returns at once | "the guest's own pid becomes a pid of its minted name" (`guest.rs:439`) |
+
+**The distribution guard, verified last.** `a_guest_link_reaches_what_it_was_given_and_ships_no_code`
+is red on `e9e1af8b` WITHOUT any sabotage, on both tries, every time:
+
+```
+--- guest stderr ---
+/tmp/brood-dist-guest-9802/client.blsp:5:74: error: no reply by name
+--- host stderr ---
+/tmp/brood-dist-guest-9802/server.blsp:9:69: unbound error: unbound symbol: nodes
+```
+
+The host script ADR-425 added calls `(nodes)`, which is unbound there, so the host dies before
+it replies; the `translate_inbound` sabotage reads "no reply by name" too, and proves nothing
+until the script is fixed. (It looped 10/10 green on `7ed008cf`, before ADR-425 extended it.)
+The script now calls `(node/list)`, the name `(nodes)` has in std (`0315006e`), and CI is
+green on `0315006e` (run 39961582459), so the guard now passes with no sabotage. What was then still
+missing: the guard's sabotage run. Delete
+`guest.translate_inbound(&mut frame)` in `handle_inbound_frame` and confirm it goes red at "no
+reply by name" with NO `unbound symbol` in the host's stderr (that message alone is what the
+broken script printed too); loop the unsabotaged test a few times beside it.
+
+**Verified 2026-10-23 on `0a98308b`** ([run 39965725392](https://github.com/broodlang/brood/actions/runs/39965725392)).
+With `guest.translate_inbound(&mut frame)` deleted, the case went red on both tries
+(`TRY 1 FAIL [30.283s]`, `TRY 2 FAIL [30.215s]`), the host's stderr EMPTY — no `unbound symbol`:
+
+```
+panicked at crates/cli/tests/distribution.rs:2949:5:
+--- guest stderr ---
+/tmp/brood-dist-guest-8386/client.blsp:5:74: error: no reply by name
+--- host stderr ---
+```
+
+The guest's own pid arrived at the host still under its claimed name, which no link carries,
+so the host's reply never reached it. The control — the same case unsabotaged, beside it —
+passed 5/5 on the first try (1.6 s each).
+
+The first fix's guards, before ADR-425 replaced them, were verified the same way on `7ed008cf`:
+`guest_may_take` returning `true` turned `a_guest_cannot_take_a_full_peers_name` red ("a guest
+claiming a full peer's name displaced its link"); dropping `register_link`'s
+`existing.guest.is_some() && link.guest.is_none()` disjunct turned
+`a_full_link_displaces_a_guest_holding_its_name_whatever_the_tie_break` red ("a full link lost a
+duplicate tie-break to a guest holding its name"); dropping `linked_peer_for`'s
+`link.guest.is_none()` filter turned it red at "a dial reused a guest's link as the peer it was
+looking for".
+
+Runs: [39950556262](https://github.com/broodlang/brood/actions/runs/39950556262) (`7ed008cf`),
+[39954644031](https://github.com/broodlang/brood/actions/runs/39954644031) (`e9e1af8b`).
