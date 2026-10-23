@@ -1125,51 +1125,73 @@ fn handle_capture_outcome(
 /// re-queue to run again; otherwise park as the mailbox waiter for `send`/the timer to
 /// wake. The state lock serialises this with `exit`'s waiter-take, so a process can't
 /// end up parked-with-a-pending-kill and stuck forever.
+///
+/// A park that is due a trim (see `Heap::trim_parked`) runs it with the lock RELEASED,
+/// then re-checks from the top: the trim is a full collection and a slab shrink, and
+/// holding the lock across it stalled every sender and the kill latch behind it. Letting
+/// go reopens exactly the window the suspend → park step already has — the process is in
+/// no queue and no waiter slot, a sender finds no waiter and queues, a kill or a timer
+/// finds none and sets its flag — and the re-check below is what closes that window
+/// today, so it closes this one too. At most one trim per park.
 fn park_on_receive(proc: Box<Process>, mailbox: &Arc<Mailbox>) {
-    let mut st = crate::core::sync::lock(&mailbox.state);
-    if mailbox.kill_pending.load(Ordering::Relaxed) {
-        let reason = st
-            .take_kill()
-            .unwrap_or_else(|| Message::Keyword(*pk::KILLED_SYMBOL));
-        drop(st);
-        proc.retire(reason);
-        // `proc` dropped here → its captured continuation + LOCAL heap are freed.
-    } else if st.queue.len() > st.scanned {
-        // A message raced in during the park — resume instead of parking. This is a
-        // wake, so the process may migrate (`wake_enqueue`).
-        drop(st);
-        wake_enqueue(proc);
-    } else if st
-        .recv_deadline
-        .is_some_and(crate::process::timer::SchedDeadline::reached)
-    {
-        // The receive deadline elapsed inside the suspend→park window: the timer fired
-        // before we got here, found no `waiter`, and consumed its (current-gen) entry, so
-        // parking now would hang forever (nothing left to wake us). Re-queue instead — the
-        // process re-scans, finds the deadline passed, and takes its `after` clause. The
-        // timer-fire and this check both serialise on `mailbox.state`, so exactly one of
-        // them re-queues: either the timer saw a `waiter`, or we see the passed deadline.
-        //
-        // `reached` reads the scheduler clock the deadline was minted on — the only clock
-        // a `SchedDeadline` can be compared with. On wasm that clock is logical; this gate
-        // on real time would re-queue while `receive_match`'s gate still said "not yet",
-        // forever, at 100% CPU (see `SchedDeadline`).
-        drop(st);
-        wake_enqueue(proc);
-    } else {
+    let mut proc = proc;
+    let mut trimmed = false;
+    loop {
+        let mut st = crate::core::sync::lock(&mailbox.state);
+        if mailbox.kill_pending.load(Ordering::Relaxed) {
+            let reason = st
+                .take_kill()
+                .unwrap_or_else(|| Message::Keyword(*pk::KILLED_SYMBOL));
+            drop(st);
+            proc.retire(reason);
+            // `proc` dropped here → its captured continuation + LOCAL heap are freed.
+            return;
+        }
+        if st.queue.len() > st.scanned {
+            // A message raced in during the park — resume instead of parking. This is a
+            // wake, so the process may migrate (`wake_enqueue`).
+            drop(st);
+            wake_enqueue(proc);
+            return;
+        }
+        if st
+            .recv_deadline
+            .is_some_and(crate::process::timer::SchedDeadline::reached)
+        {
+            // The receive deadline elapsed inside the suspend→park window: the timer fired
+            // before we got here, found no `waiter`, and consumed its (current-gen) entry,
+            // so parking now would hang forever (nothing left to wake us). Re-queue instead
+            // — the process re-scans, finds the deadline passed, and takes its `after`
+            // clause. The timer-fire and this check both serialise on `mailbox.state`, so
+            // exactly one of them re-queues: either the timer saw a `waiter`, or we see the
+            // passed deadline.
+            //
+            // `reached` reads the scheduler clock the deadline was minted on — the only
+            // clock a `SchedDeadline` can be compared with. On wasm that clock is logical;
+            // this gate on real time would re-queue while `receive_match`'s gate still said
+            // "not yet", forever, at 100% CPU (see `SchedDeadline`).
+            drop(st);
+            wake_enqueue(proc);
+            return;
+        }
         // The process is genuinely parking: no message, no kill, no elapsed deadline. This
         // is the one moment we know it has nothing to do, so trim what it is holding —
         // collect its garbage and hand back retained slab capacity (see
-        // `Heap::trim_parked`, which no-ops below its threshold so a small, frequently
-        // parking responder is unaffected). Done under the mailbox lock, which is already
-        // held and which a would-be sender needs anyway; the process owns its heap here
-        // (no worker is running it), so the collection cannot race.
-        let mut proc = proc;
-        proc.trim_on_park();
+        // `Heap::trim_parked`; the gate is three loads, so a small, frequently parking
+        // responder pays only that). The process owns its heap here (no worker is running
+        // it, and it is not yet the waiter a sender could take), so the collection cannot
+        // race — and it runs unlocked, then the checks above run again.
+        if !trimmed && proc.park_trim_due() {
+            drop(st);
+            proc.trim_on_park();
+            trimmed = true;
+            continue;
+        }
         // It blocked, so whatever it spawned before now was a spawn-then-block: forget the
         // history that would have marked it CPU-bound (see `SPAWNS_SINCE_PARK`).
         proc.spawns_since_park = 0;
         st.waiter = Some(proc);
+        return;
     }
 }
 

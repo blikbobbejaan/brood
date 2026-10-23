@@ -127,6 +127,15 @@ impl Heap {
         before.saturating_sub(after)
     }
 
+    /// Would [`trim_parked`](Self::trim_parked) do anything — has capacity grown enough
+    /// since the last trim? The gate runs on EVERY park, so it is three loads and a compare
+    /// — see `park_trim_probe`. Only capacity accumulated *since the last trim* counts; an
+    /// absolute threshold fails in both directions (`PARK_TRIM_GROWTH_SLOTS`). Asked on its
+    /// own by the park, which runs the trim itself outside the mailbox lock.
+    pub fn park_trim_due(&self) -> bool {
+        park_trim_due(park_trim_probe(&self.local), self.park_trim_mark)
+    }
+
     /// **Trim a process that is about to park.** Returns the bytes of retained capacity
     /// handed back, or `0` if the process was below the threshold and nothing was done.
     ///
@@ -147,13 +156,10 @@ impl Heap {
     /// last trim, so a latency-sensitive process that parks constantly with a small heap
     /// pays one integer comparison and nothing else.
     pub fn trim_parked(&mut self) -> usize {
-        // The gate runs on EVERY park, so it is three loads and a compare — see
-        // `park_trim_probe`. Only capacity accumulated *since the last trim* counts; an
-        // absolute threshold fails in both directions (`PARK_TRIM_GROWTH_SLOTS`).
-        let probe = park_trim_probe(&self.local);
-        if !park_trim_due(probe, self.park_trim_mark) {
+        if !self.park_trim_due() {
             return 0;
         }
+        let probe = park_trim_probe(&self.local);
         let before =
             slab_capacity_bytes(&self.local) + self.old_opt().map_or(0, slab_capacity_bytes);
         self.collect(&mut [], &mut []);

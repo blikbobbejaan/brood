@@ -906,6 +906,11 @@ impl Process {
         self.heap.trim_parked();
     }
 
+    /// Would [`trim_on_park`](Self::trim_on_park) do anything? See [`Heap::park_trim_due`].
+    fn park_trim_due(&self) -> bool {
+        self.heap.park_trim_due()
+    }
+
     /// Stash a captured continuation back into the process before it parks or re-queues
     /// (so the next `run_one` resumes from it).
     fn store_resume(&mut self, s: crate::eval::compile::Continuation) {
