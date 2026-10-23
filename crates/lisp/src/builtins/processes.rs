@@ -601,7 +601,8 @@ pub(super) fn make_ref(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let id = crate::process::next_ref();
     // Stamp the receive-mark (ADR-195): a `receive` pinned on this ref can skip every
     // message already in our mailbox, since none of them can carry a ref that did not
-    // exist when they were enqueued. One relaxed atomic load, no mailbox lock.
+    // exist when they were enqueued. One mailbox-lock acquisition (`next_seq` lives under
+    // it — see `self_mailbox_seq` for why there is no lock-free copy), no ctx clone.
     heap.set_recv_mark(id, crate::process::self_mailbox_seq());
     Ok(Value::ref_(id))
 }

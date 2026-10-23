@@ -32,7 +32,7 @@ use super::message::{Message, from_message, to_message_to_runtime};
 // unconditionally makes a `--no-default-features` build warn.
 #[cfg(feature = "dev-tools")]
 use super::message::to_message;
-use super::scheduler::{Ctx, Process, ensure_ctx, wake_enqueue};
+use super::scheduler::{CurrentProcess, Process, current_process, wake_enqueue};
 use super::timer::{SchedDeadline, arm_timer};
 
 /// Coarse run-status for `process-info` (ADR-051), stored as a lock-free cell on
@@ -475,10 +475,11 @@ fn value_alias(heap: &Heap, v: Value) -> Option<u64> {
 /// suppress someone else's traffic. Already-queued messages are untouched: this is
 /// about what arrives next, exactly like `demonitor` without `flush`.
 pub fn deactivate_alias(ref_id: u64) {
-    let mb = ensure_ctx().mailbox;
-    crate::core::sync::lock(&mb.state)
-        .dead_aliases
-        .insert(ref_id);
+    super::scheduler::with_ctx(|ctx| {
+        crate::core::sync::lock(&ctx.mailbox.state)
+            .dead_aliases
+            .insert(ref_id)
+    });
 }
 
 impl Mailbox {
@@ -1280,7 +1281,7 @@ fn receive_match_timed(
     tags: Value,
     pin: Value,
 ) -> LispResult {
-    let ctx = ensure_ctx();
+    let ctx = current_process();
     // Mailbox-bound probe (ADR-307): a receiver parked in a never-matching `receive`
     // wakes here on every delivery and may never pass a VM safepoint, so the entry to
     // the scan is where a flooded process reliably notices its own breach. Raised
@@ -1383,7 +1384,7 @@ fn receive_match_timed(
 /// Returns how the receive ended; the cleanup every ending shares is the caller's.
 fn scan_until_answered(
     heap: &mut Heap,
-    ctx: &Ctx,
+    ctx: &CurrentProcess,
     rbase: usize,
     mark: Option<u64>,
     deadline: Option<SchedDeadline>,
@@ -1554,7 +1555,7 @@ fn apply_matcher(
 /// another message).
 fn scan_mailbox(
     heap: &mut Heap,
-    ctx: &Ctx,
+    ctx: &CurrentProcess,
     rbase: usize,
     i: &mut usize,
     // The receive-mark, if this receive pinned a ref we minted (ADR-195): no message with
@@ -1852,7 +1853,7 @@ fn reinsert_at_seq(st: &mut MailboxState, i: usize, m: Envelope) -> usize {
 }
 
 /// [`reinsert_at_seq`] against the current process's mailbox, taking the lock.
-fn reinsert_candidate(ctx: &Ctx, i: usize, m: Envelope) -> usize {
+fn reinsert_candidate(ctx: &CurrentProcess, i: usize, m: Envelope) -> usize {
     let mut st = crate::core::sync::lock(&ctx.mailbox.state);
     reinsert_at_seq(&mut st, i, m)
 }
@@ -1874,7 +1875,7 @@ fn reinsert_candidate(ctx: &Ctx, i: usize, m: Envelope) -> usize {
 /// panics in `wait`, an uncatchable trap there, and a native-nested receive (e.g.
 /// `(do (sleep 5) :slept)`) reaches it. The fix is a non-blocking park for the nested
 /// case on wasm.
-fn wait_for_message(ctx: &Ctx, i: usize, deadline: Option<SchedDeadline>) {
+fn wait_for_message(ctx: &CurrentProcess, i: usize, deadline: Option<SchedDeadline>) {
     let st = crate::core::sync::lock(&ctx.mailbox.state);
     if st.queue.len() > i {
         return; // a message arrived between the scan and here — re-scan
@@ -2085,7 +2086,7 @@ pub(super) fn pin_cpu_clock_to_this_thread(mailbox: &Mailbox) {
 
 /// Set the run-status of the *current* process (used by `receive_match` for the
 /// root, which never goes through `run_one`).
-fn set_self_status(ctx: &Ctx, status: u8) {
+fn set_self_status(ctx: &CurrentProcess, status: u8) {
     set_status(&ctx.mailbox, status);
 }
 
@@ -2322,7 +2323,7 @@ mod tests {
     fn empty_receive_in_a_capture_run_suspends() {
         let mailbox = Mailbox::new();
         // Greenness comes from `in_capture_run` (set below), not a yielder.
-        let ctx = Ctx {
+        let ctx = crate::process::scheduler::Ctx {
             pid: 999_999,
             mailbox: Arc::clone(&mailbox),
             capture: Vec::new(),

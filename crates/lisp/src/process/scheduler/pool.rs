@@ -822,7 +822,6 @@ fn run_one_timed(mut proc: Box<Process>) {
             body
         );
     }
-    let mailbox = Arc::clone(&proc.mailbox);
     let wid = proc.worker_id;
     // Pulled to run: the single `STEALABLE` decrement site, paired with the increment in
     // `enqueue`, whether its owner drained it or a thief stole it.
@@ -836,7 +835,7 @@ fn run_one_timed(mut proc: Box<Process>) {
     if STRANDED_LATCH.load(Ordering::Relaxed) {
         STRANDED_LATCH.store(false, Ordering::Relaxed);
     }
-    set_status(&mailbox, ST_RUNNING); // about to resume on this worker
+    set_status(&proc.mailbox, ST_RUNNING); // about to resume on this worker
 
     // Pure diagnostics (`peak_threads()`): no invariant needs a total order with other
     // atomics, so `Relaxed` is enough on this per-quantum path. The peak is read before
@@ -897,7 +896,7 @@ fn run_one_timed(mut proc: Box<Process>) {
     let tail = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         fault_quantum_tail();
         set_capture_run(false);
-        proc.save_ctx();
+        let mailbox = proc.save_ctx();
         // Read back before `handle_capture_outcome`, which routes a parking process into
         // `park_on_receive` — the one place that resets this.
         proc.spawns_since_park = SPAWNS_SINCE_PARK.with(|c| c.get());

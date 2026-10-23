@@ -446,16 +446,13 @@ pub fn next_isolate_token() -> u64 {
 
 /// The scope this process stamps on children it spawns (`0` = not inside any isolate).
 pub fn self_isolate_scope() -> u64 {
-    ensure_ctx().mailbox.isolate_scope.load(Ordering::Relaxed)
+    with_ctx(|ctx| ctx.mailbox.isolate_scope.load(Ordering::Relaxed))
 }
 
 /// Set the scope stamped on this process's future children, returning the previous one.
 /// `%isolate` brackets its thunk with this; nothing else should call it.
 pub fn set_self_isolate_scope(scope: u64) -> u64 {
-    ensure_ctx()
-        .mailbox
-        .isolate_scope
-        .swap(scope, Ordering::Relaxed)
+    with_ctx(|ctx| ctx.mailbox.isolate_scope.swap(scope, Ordering::Relaxed))
 }
 
 /// The `%isolate` scope `pid` was spawned under, or `0` (also for a pid that has since
@@ -921,11 +918,16 @@ impl Process {
     /// Establish `CURRENT` for this quantum. Resets the per-quantum thread-locals
     /// (GC-block depth, stack base, macro block) to 0: each quantum runs on a fresh
     /// worker stack, so they are re-established here.
-    fn install_ctx(&self) {
+    ///
+    /// The capture stack MOVES into the ctx (and `save_ctx` moves it back): for the
+    /// quantum's duration `CURRENT` is its only home — nothing reads `Process::capture`
+    /// while the process runs — so a clone in and a clone out was two `Vec` copies per
+    /// quantum for nothing.
+    fn install_ctx(&mut self) {
         let ctx = Ctx {
             pid: self.pid,
             mailbox: Arc::clone(&self.mailbox),
-            capture: self.capture.clone(),
+            capture: std::mem::take(&mut self.capture),
         };
         let displaced = CURRENT.with(|c| c.borrow_mut().take());
         DISPLACED.with(|d| d.borrow_mut().push(displaced));
@@ -943,18 +945,41 @@ impl Process {
     /// RESTORES rather than clears. On a worker thread the displaced value is `None` and the
     /// two are the same thing; on wasm the quantum runs on the caller's thread, and clearing
     /// threw away the caller's own context — see `DISPLACED` (KI-115).
-    fn save_ctx(&mut self) {
-        if let Some(cap) = CURRENT.with(|c| c.borrow().as_ref().map(|ctx| ctx.capture.clone())) {
-            self.capture = cap;
-        }
+    ///
+    /// The quantum's ctx is TAKEN, not cloned: it is overwritten by the restore below
+    /// either way, so its capture stack moves straight back into the process. (A quantum
+    /// whose `CURRENT` was cleared from under it — only `deregister_root_ctx`, a host
+    /// API — comes back with no capture stack; it had already lost its pid by then.)
+    ///
+    /// Returns this process's mailbox `Arc` for the post-quantum tail, which needs one it
+    /// owns (the process moves into that mailbox's waiter slot while the tail holds its
+    /// lock): the reference `install_ctx` took, handed on instead of dropped here and
+    /// re-taken there.
+    fn save_ctx(&mut self) -> Arc<Mailbox> {
+        let mailbox = match CURRENT.with(|c| c.borrow_mut().take()) {
+            Some(ctx) => {
+                self.capture = ctx.capture;
+                ctx.mailbox
+            }
+            None => Arc::clone(&self.mailbox),
+        };
         let displaced = DISPLACED.with(|d| d.borrow_mut().pop()).flatten();
         CURRENT.with(|c| *c.borrow_mut() = displaced);
+        // Always the same mailbox: the stack of displaced contexts makes every nested
+        // install/save pair restore before this one runs. Checked rather than trusted,
+        // since a wrong mailbox here would park the process where no sender looks.
+        if Arc::ptr_eq(&mailbox, &self.mailbox) {
+            mailbox
+        } else {
+            Arc::clone(&self.mailbox)
+        }
     }
 }
 
-/// `(self)` — this process's pid.
+/// `(self)` — this process's pid. A borrow of the installed ctx, not a clone of it
+/// (which copied the capture stack and bumped the mailbox `Arc` to read one `u64`).
 pub fn self_pid() -> u64 {
-    ensure_ctx().pid
+    with_ctx(|ctx| ctx.pid)
 }
 
 /// This process's mailbox arrival sequence right now, for `(ref)` to stamp a receive-mark
@@ -964,9 +989,43 @@ pub fn self_pid() -> u64 {
 /// moves that cost onto ref creation, which is rarer than sending by construction, and the
 /// caller is about to take the same lock to `send` anyway.
 pub fn self_mailbox_seq() -> u64 {
-    let mb = ensure_ctx().mailbox;
+    with_ctx(|ctx| crate::core::sync::lock(&ctx.mailbox.state).next_seq)
+}
 
-    crate::core::sync::lock(&mb.state).next_seq
+/// Run `f` on this thread's process context, minting a root one first exactly as
+/// [`ensure_ctx`] does — but BORROWED, where `ensure_ctx` hands back a clone (the
+/// mailbox `Arc` and the whole capture stack). For the accessors that read one field.
+///
+/// `f` runs under a shared borrow of `CURRENT`, so it must not reach anything that
+/// installs, clears or pushes to the context (`begin_capture`, a quantum): a field read
+/// or the mailbox lock, nothing that can run Brood.
+pub(super) fn with_ctx<T>(f: impl FnOnce(&Ctx) -> T) -> T {
+    CURRENT.with(|current| {
+        if current.borrow().is_none() {
+            ensure_ctx();
+        }
+        let installed = current.borrow();
+        f(installed
+            .as_ref()
+            .expect("ensure_ctx installs this thread's context"))
+    })
+}
+
+/// What a `receive` needs of the running process: its pid and mailbox, without the
+/// capture stack a full [`Ctx`] clone would copy on every receive.
+pub(super) struct CurrentProcess {
+    pub(super) pid: u64,
+    pub(super) mailbox: Arc<Mailbox>,
+}
+
+/// The running process's [`CurrentProcess`] (minting a root context if this thread has
+/// none). One `Arc` bump: the receive holds the mailbox across matcher runs that may
+/// themselves touch `CURRENT`, so it cannot keep a borrow instead.
+pub(super) fn current_process() -> CurrentProcess {
+    with_ctx(|ctx| CurrentProcess {
+        pid: ctx.pid,
+        mailbox: Arc::clone(&ctx.mailbox),
+    })
 }
 
 /// This process's pid **without** minting a context — `None` if it has none yet.

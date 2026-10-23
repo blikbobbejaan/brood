@@ -328,18 +328,25 @@ fn spawn_impl_timed(
     link_parent: bool,
     monitor_ref: Option<u64>,
 ) -> Result<u64, LispError> {
-    // The spawner is the parent. Captured before minting the child pid so the
-    // root (whose ctx/pid is lazily minted here on its first spawn) gets the
-    // lower id. `ensure_ctx` needs no heap.
-    let parent = self_pid();
-    // Inherit a snapshot of the spawner's capture stack (the same `Arc`s), so a
-    // child of an MCP-watchdog'd handler still diverts its output off the JSON-RPC
-    // channel. An empty stack (the common case) clones to an empty `Vec`.
-    let inherited_capture = CURRENT.with(|c| {
-        c.borrow()
-            .as_ref()
-            .map(|ctx| ctx.capture.clone())
-            .unwrap_or_default()
+    // Everything the child takes from the spawner's context, in ONE borrow of it:
+    //
+    // - the spawner is the parent. Read before minting the child pid so the root (whose
+    //   ctx/pid is lazily minted here on its first spawn) gets the lower id. Minting
+    //   needs no heap.
+    // - a snapshot of the spawner's capture stack (the same `Arc`s), so a child of an
+    //   MCP-watchdog'd handler still diverts its output off the JSON-RPC channel. An
+    //   empty stack (the common case) clones to an empty `Vec`.
+    // - the isolate scope we are running under, stamped on the child so an `%isolate`
+    //   can reap what it spawned without walking a `parent` chain that dies with any
+    //   intermediate process (KI-89). Only this process's own `%isolate` changes it, and
+    //   not during this call, so reading it here rather than at the mailbox's creation
+    //   below reads the same value. `0` when no isolate is active.
+    let (parent, inherited_capture, isolate_scope) = super::with_ctx(|ctx| {
+        (
+            ctx.pid,
+            ctx.capture.clone(),
+            ctx.mailbox.isolate_scope.load(Ordering::Relaxed),
+        )
     });
     if !matches!(f, Value::Fn(_)) {
         return Err(LispError::type_err("spawn: argument must be a function"));
@@ -362,11 +369,9 @@ fn spawn_impl_timed(
     // fan-out of many churny processes doesn't each climb to the single-process
     // GC ceiling. Balanced by the `live_process_dec` in `deregister`.
     crate::core::heap::live_process_inc();
-    // Stamp the child with the isolate scope we are currently running under, so an
-    // `%isolate` can reap what it spawned without walking a `parent` chain that dies with
-    // any intermediate process (KI-89). Read from OUR scope, which `%isolate` swaps for
-    // the duration of its thunk; `0` when no isolate is active.
-    let mailbox = Mailbox::new_with_parent(parent, super::self_isolate_scope());
+    // Stamp the child with the isolate scope read above — OUR scope, which `%isolate`
+    // swaps for the duration of its thunk.
+    let mailbox = Mailbox::new_with_parent(parent, isolate_scope);
     // So `send` can tell this process shares our runtime without touching its heap.
     mailbox.set_runtime_tag(heap.runtime_tag());
     REGISTRY.insert(pid, Arc::clone(&mailbox));
