@@ -1425,6 +1425,15 @@ arm's own `compile_epoch` guard only covers the second; declined for now as 3–
 a staleness class this repo has paid for three times. Recorded so the next reading starts
 here rather than at "profile it".
 
+#### 7.3, the message path's fixed costs trimmed (2026-10-23) — not measured, needs the message rows A/B'd on the test machine
+
+- `Ctx` drop/save/install: the capture stack moves into and out of `CURRENT` instead of being cloned both ways; `(self)`/`(ref)`/receive borrow the ctx instead of cloning it (`4f583761`).
+- `Registry::get` + mailbox lock on a send to a busy receiver: looked up once, not twice; L1 skips its lock unless the receiver reads `ST_WAITING` (`66e964c4`).
+- park/wake round trip: a parking receive takes two mailbox locks, not three; the per-receive status swap is skipped when already running (`a6177c0d`).
+- process exit: the name sweep is O(names of the pid) under a read lock for an unnamed pid, and `NODE_MONITORS` is write-locked only when the pid watches a node (`7120d5c8`).
+- remote frames: one copy out (sealed in place, writes batched) and one in (decrypted in place, buffered reads); guest filters skipped with no guest connected (`33e3333e`, `b4bd46dc`).
+- `from_message` checks the stack every 32 levels, the list copy builds one `Vec`, the exit/down keywords are interned once (`636f9b9d`, `3e7f17c3`).
+
 ### 7.4 `sort` is a GC row and the kernel is 5.6% of it — the cheap question is ANSWERED (2026-08-29)
 
 > **The page-fault theory is dead; don't re-chase it.** `perf stat -e page-faults` on the
@@ -1669,6 +1678,10 @@ before it ships. Ranked by expected value.
    it). Note while touching it: the trim→sysmon deadlock is prevented only by `save_ctx`
    incidentally clearing `CURRENT` first — worth an assert. Rows: `latency`, judged
    unpinned via its own p50/p99.
+
+   > **2026-10-23: the `dirty_block()` half is CLOSED** — it now runs after the
+   > `wake_pending` early-out (`b7abdcd7`). Not measured — needs the message rows A/B'd on
+   > the test machine. `trim_on_park` under the lock is still open.
 
 The same audit's correctness findings are KI-91–97; the mailbox slot-table scan (item of
 the same family as 5) was already fixed with KI-92 (`MsgRoots.free`).
