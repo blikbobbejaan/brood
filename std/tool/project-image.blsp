@@ -172,10 +172,13 @@ come from `*module-files*`).
 ;; name `require` uses (a global `myproj/shapes/area` comes from feature `myproj/shapes`).
 ;; nil for a root-level name — a registry, or a def from a file with no `defmodule`.
 (defn- project-image-section-of (n)
-  (let (parts (string/split (->string n) "/"))
-    (cond
-      (< (count parts) 2) nil
-      else (string/join (take parts (- (count parts) 1)) "/"))))
+  ;; One scan and one substring per name: this runs for every global the build created —
+  ;; 208 000 on the 302-module rig — and splitting each name into a list and re-joining it
+  ;; made the section grouping the largest step of a cold build after the load itself.
+  ;; `/` alone (division) has its slash at 0: root, as the split made it.
+  (let (s (->string n)
+        i (%str-last-index-of s "/"))
+    (if (> i 0) (string/substring s 0 i) nil)))
 
 ;; Whether module key `k` belongs to a DEPENDENCY rather than to this project. A project
 ;; roots its own modules under its `:name` (ADR-070) exactly as a dep's are rooted under

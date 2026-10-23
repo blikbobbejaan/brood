@@ -3437,3 +3437,7 @@ require edges (a warm start would replay them and load everything), no `dev` mod
 build, `*features-waiting*` kept out of the image, a failure reported as the sequential walk
 reports it, and KI-289 — positions lost on code re-homed after a RUNTIME aging flip, a runtime
 bug any concurrent load could hit (`crates/cli/tests/rehome_keeps_positions.rs`).
+
+2026-10-23 (image write): profiled the cold build's image step after ADR-426 — the kernel's
+encode is 0.6 s, the Brood section grouping was 1.13 s (`project-image-section-of` split and
+re-joined 208 000 names). One `%str-last-index-of` + substring: image step 1.8 s → 1.1 s.
