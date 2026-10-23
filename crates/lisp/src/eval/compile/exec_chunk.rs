@@ -1089,11 +1089,6 @@ pub(crate) fn exec_chunk(
                         }
                     }
                 }
-                let n = heap.roots_len();
-                argv = SmallVec::with_capacity(argc);
-                for k in 0..argc {
-                    argv.push(heap.root_at(n - argc + k));
-                }
                 // Inline fast-path: IC hit for the exact same arm, same captured env, no
                 // optional/rest params, and GC is not yet due. Covers the common
                 // `(defn f (x) … (f …))` self-tail pattern (which uses `Inst::Call` via
@@ -1101,13 +1096,13 @@ pub(crate) fn exec_chunk(
                 // This is the main speedup for loop/collatz/fib/reduce.
                 //
                 // We check the inline condition here — using borrows only — before the
-                // `match fast` below consumes `argv` and `fast`. If the check passes we
-                // reset the frame and `continue` the inner loop without ever returning to
-                // `vm_run_bc`. If it doesn't, we fall through to the normal dispatch path.
+                // `match fast` below consumes `fast`. If the check passes we reset the frame
+                // straight from the operand stack and `continue` the inner loop without
+                // ever returning to `vm_run_bc`. If it doesn't, we fall through to the
+                // normal dispatch path, which copies the args off the stack below.
                 //
-                // GC guard: `argv` was read from roots just above, with no allocation in
-                // between, so the values are still valid. We skip the inline if GC is due
-                // so the outer loop can collect (and can't have stale off-heap SmallVec).
+                // GC guard: we skip the inline if GC is due so the outer loop can collect;
+                // nothing between the operand reads and the frame writes allocates.
                 if *tail {
                     let is_self = self_tail
                         || matches!(fast, Some((ref compiled, cenv, _))
@@ -1119,8 +1114,7 @@ pub(crate) fn exec_chunk(
                             && !heap.gc_due()
                         {
                             crate::perf_bump!(self_tail);
-                            heap.truncate_roots(base + arm.nslots);
-                            reset_frame_keep_captures(heap, arm, base, &argv);
+                            reset_frame_from_operands(heap, arm, base, argc);
                             *ip = 0;
                             if let Some(exit) = loop_safepoint(heap, capture)? {
                                 return Ok(exit);
@@ -1128,6 +1122,11 @@ pub(crate) fn exec_chunk(
                             continue;
                         }
                     }
+                }
+                let n = heap.roots_len();
+                argv = SmallVec::with_capacity(argc);
+                for k in 0..argc {
+                    argv.push(heap.root_at(n - argc + k));
                 }
                 // IC hit with a VM arm → skip `dispatch` entirely; else resolve with
                 // `tail = true` so a VM-closure callee comes back as `Step::Tail` (the
@@ -1242,15 +1241,10 @@ pub(crate) fn exec_chunk(
                 // call-return and a `SmallVec` construction per iteration.
                 //
                 // Safety ordering: GC runs first (args still rooted on the operand
-                // stack), then args are read (relocated values used), then the frame is
-                // reset. No collection fires after the args leave the root stack.
+                // stack), then the frame is reset straight from the operand stack
+                // (relocated values used). No collection fires after the args leave it.
                 if !crate::process::macro_block_active() && heap.gc_due() {
                     heap.collect(&mut [], &mut []);
-                }
-                let n = heap.roots_len();
-                let mut argv: SmallVec<[Value; 4]> = SmallVec::with_capacity(*argc);
-                for k in 0..*argc {
-                    argv.push(heap.root_at(n - argc + k));
                 }
                 // Hot-reload guard (ADR-013). `SelfCall` is the zero-lookup loop back-edge:
                 // it resets the frame and jumps to ip 0 without consulting the global at
@@ -1312,6 +1306,9 @@ pub(crate) fn exec_chunk(
                             // `Inst::Call`: a native callee can collect, and `argv` is a
                             // copy the collector does not see. The driver drops the
                             // leftover operands for a `Tail`/`Done`, as it does there.
+                            let n = heap.roots_len();
+                            let argv: SmallVec<[Value; 4]> =
+                                (0..*argc).map(|k| heap.root_at(n - argc + k)).collect();
                             return Ok(match dispatch(heap, callee, argv, true, env) {
                                 Ok(Step::Tail {
                                     compiled,
@@ -1335,8 +1332,7 @@ pub(crate) fn exec_chunk(
                     }
                 }
                 // Reset frame in place (same as the old outer-loop SelfTail handler).
-                heap.truncate_roots(base + arm.nslots);
-                reset_frame_keep_captures(heap, arm, base, &argv);
+                reset_frame_from_operands(heap, arm, base, *argc);
                 *ip = 0;
                 // Frame already reset; on a `Preempt` the driver captures it as-is.
                 if let Some(exit) = loop_safepoint(heap, capture)? {
@@ -1714,26 +1710,39 @@ pub(super) fn quantum_checks(heap: &Heap) -> Result<(), LispError> {
 /// still exactly right — and nil-ing them is not a reset, it is a loss: the next read of
 /// a captured name in the loop body sees `nil` (e.g. a `defn` inside a `let` that sends
 /// to a captured `me`).
+///
+/// The new args are read straight off the operand stack — the call's last `argc` roots —
+/// rather than through a copied-out `SmallVec`. The copy is forward-safe: the operands sit
+/// above the frame (`roots_len() - argc >= base + nslots`), so every source slot is above
+/// every destination slot. Only the slots the args do not overwrite are nil-ed, and
+/// `roots` is truncated once, to the frame top. Nothing here allocates, so no collection
+/// can move a value between the read and the write.
 #[inline]
-fn reset_frame_keep_captures(heap: &mut Heap, arm: &CompiledArm, base: usize, argv: &[Value]) {
-    // No captures to keep — nearly every loop: the frame is nil but for the args, which is one
-    // bulk fill, not a test per slot (the call sites have truncated `roots` to the frame top).
+fn reset_frame_from_operands(heap: &mut Heap, arm: &CompiledArm, base: usize, argc: usize) {
+    let first_operand = heap.roots_len() - argc;
+    let frame_top = base + arm.nslots;
+    debug_assert!(
+        first_operand >= frame_top,
+        "self-tail operands overlap the frame they reset"
+    );
+    let written = argc.min(arm.nrequired);
+    for k in 0..written {
+        let v = heap.root_at(first_operand + k);
+        heap.set_root_at(base + k, v);
+    }
+    // No captures to keep — nearly every loop: the rest of the frame is nil, which is one
+    // bulk fill, not a test per slot.
     if arm.capture_names.is_empty() {
-        heap.truncate_roots(base);
-        heap.extend_roots_to_nil(base + arm.nslots);
-        for (i, &a) in argv.iter().enumerate().take(arm.nrequired) {
-            heap.set_root_at(base + i, a);
-        }
+        heap.truncate_roots(base + written);
+        heap.extend_roots_to_nil(frame_top);
         return;
     }
+    heap.truncate_roots(frame_top);
     let capture_lo = arm.nrequired;
     let capture_hi = capture_lo + arm.capture_names.len();
-    for i in 0..arm.nslots {
+    for i in written..arm.nslots {
         if i < capture_lo || i >= capture_hi {
             heap.set_root_at(base + i, Value::nil());
         }
-    }
-    for (i, &a) in argv.iter().enumerate().take(arm.nrequired) {
-        heap.set_root_at(base + i, a);
     }
 }
