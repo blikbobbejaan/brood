@@ -7,6 +7,9 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 ## Unreleased
 
 **Added.**
+- `nest new NAME --from SOURCE [--template T]` scaffolds from a template a PACKAGE declares
+  (`:templates` in its manifest: a directory of plain files, with `{{name}}` and `{{package}}`
+  filled in), from a path, a git URL or a registry name (ADR-424). Nothing in the package runs.
 - `~name` and `~name/…` in `path/absolute` resolve to that user's home, as a shell reads them
   (a `~name` that is no user stays a relative file name), over the new `%user-home` /
   `os/user-home` — the password database (`getpwnam`), so NSS users resolve too. An editor's
@@ -21,6 +24,10 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   inverse of `os/shell-quote`, for a command line typed into a prompt and run as an argv.
 
 **Changed.**
+- **Breaking:** `nest new --template hatch` and `--template web-api` are gone from std. They
+  are hatch's now: `nest new shop --from hatch --template app` (or `api`), which depends on
+  hatch by registry version instead of needing `../hatch` and `../store-postgres` checked out
+  beside the project (ADR-424).
 - `nest format --changed` asks `vcs/changed`, so it works in any registered VCS, and in git
   takes the commits not yet upstream as well as the uncommitted edits — diffed from where
   the branch left its upstream, so commits that landed there since are not counted.

@@ -103,9 +103,10 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
                        ["--check-boot" "--no-check"]]
           :no-positional-with ["--check-boot"]
           :run (fn (options) (run-run options))}
-   "new" {:about "Scaffold a new project: NAME becomes the directory and the manifest's `:name` (`.` scaffolds into the current directory). `--template` picks the starter code; an unknown name lists the set."
+   "new" {:about "Scaffold a new project: NAME becomes the directory and the manifest's `:name` (`.` scaffolds into the current directory). `--template` picks the starter code; an unknown name lists the set. `--from SOURCE` takes the starter from a package instead — a path, a git URL (`url#ref`) or a registry name — whose manifest declares `:templates` (ADR-424); `--template` then names one of those."
           :flags {"--template" {:value "NAME" :complete "template"}
-                  "-t" {:value "NAME" :complete "template"}}
+                  "-t" {:value "NAME" :complete "template"}
+                  "--from" "SOURCE"}
           :positional ["name" nil]
           :arity 1
           :run (fn (options) (run-new options))}
@@ -863,10 +864,12 @@ parsed command line."
 
 (defn- run-new (options)
   ;; `load-config` first: the user config decides e.g. whether the scaffold runs `git init`.
-  (let (name (first (get options :positionals)) template (get (get options :flags) "--template"))
+  (let (name (first (get options :positionals))
+        flags (get options :flags)
+        template (or (get flags "--template") (get flags "-t")))
     (project/load-config)
     (require-one 'scaffold)
-    (if template (scaffold/new-project name template) (scaffold/new-project name))
+    (scaffold/new-project name template (get flags "--from"))
     0))
 
 (defn- run-update-tooling (options)

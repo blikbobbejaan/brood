@@ -13,15 +13,14 @@
 //! resolve, and `nest run` is the first thing the `nest new` epilogue tells a user to
 //! type.
 //!
-//! Deliberately excluded: `hatch` and `web-api`. Those scaffold `:path`
-//! dependencies on sibling checkouts (`../hatch`) that do not exist in a temp dir,
-//! so every command correctly fails on the unresolved dep — nothing to do with
-//! template quality. See `scaffolded_hatch_template_explains_its_missing_dep`.
+//! A package's own templates (`nest new NAME --from SOURCE`, ADR-424) get the same gates
+//! through a fixture package below: the project they make must check, test and run with
+//! nothing checked out beside it.
 
 use std::path::Path;
 use std::process::Command;
 
-/// Templates that scaffold a self-contained project (no external path deps).
+/// The built-in templates — each scaffolds a self-contained project.
 const SELF_CONTAINED: &[&str] = &["default", "tui-loop", "gen", "editor", "gui"];
 
 /// Of those, the ones whose `main` TERMINATES, so the gate can run the program instead of
@@ -169,9 +168,6 @@ fn assert_runs_to_completion(template: &str) {
 /// Splitting is not a coverage trade: every template still gets every gate. It cuts
 /// each case to a single scaffold (~18 s), lets nextest run them in parallel, and
 /// makes a failure name its template in the case name instead of only in the message.
-///
-/// `hatch` and `web-api` stay out for the reason the module header gives: they scaffold
-/// `:path` deps on siblings that do not exist in a temp dir.
 macro_rules! template_gate_cases {
     ($($module:ident => $template:literal),* $(,)?) => {
         /// The templates the macro actually generated cases for. Exists so the list
@@ -284,73 +280,147 @@ fn no_template_leaks_a_hoisted_comment_above_its_first_form() {
     }
 }
 
-/// The hatch templates depend on sibling checkouts. That is by design, but the
-/// failure a user meets when they aren't present should name the missing dep — it
-/// is the first thing that happens after `nest new`, so it has to be legible.
+/// The generic next step is one that works: every built-in template is self-contained, so
+/// `nest test && nest run` is a promise the project can keep.
 #[test]
-fn scaffolded_hatch_template_explains_its_missing_dep() {
-    let (_tmp, root) = scaffold("web-api");
-    let checked = nest(&root, &["check"]);
-    assert!(
-        !checked.ok,
-        "expected the unresolved sibling dep to fail; if hatch is now bundled, \
-         move `web-api` into SELF_CONTAINED"
-    );
-    assert!(
-        checked.out.contains("hatch"),
-        "the error should name the missing dependency:\n{}",
-        checked.out
-    );
-}
-
-/// The scaffolder must not print a "Next:" step that cannot work. The hatch
-/// templates depend on sibling checkouts, so the generic
-/// `Next: cd x && nest test && nest run` was a promise the project could not keep —
-/// it was the first thing a user saw after `nest new`, and running it failed.
-#[test]
-fn next_steps_are_accurate_per_template() {
-    // Self-contained: the generic next step really works.
+fn a_builtin_template_suggests_test_and_run() {
     let tmp = temp_dir("scaf-next-default");
     let made = nest(&tmp.path, &["new", "nx", "--template", "default"]);
     assert!(made.ok, "{}", made.out);
     assert!(
-        made.out.contains("nest test && nest run"),
+        made.out.contains("Next:  cd nx && nest test && nest run"),
         "a self-contained template should suggest test+run:\n{}",
         made.out
     );
-
-    // Sibling-dep templates: name the prerequisite instead of promising test+run.
-    for (template, expect_deps) in [
-        ("hatch", vec!["../hatch", "../store-postgres"]),
-        ("web-api", vec!["../hatch"]),
-    ] {
-        let tmp = temp_dir(&format!("scaf-next-{template}"));
-        let made = nest(&tmp.path, &["new", "nx", "--template", template]);
-        assert!(made.ok, "{}", made.out);
-        for dep in &expect_deps {
-            assert!(
-                made.out.contains(dep),
-                "{template} should name its sibling dep {dep}:\n{}",
-                made.out
-            );
-        }
-        assert!(
-            !made.out.contains("nest test && nest run"),
-            "{template} must not promise test+run, which cannot work without the siblings:\n{}",
-            made.out
-        );
-    }
 }
 
-/// Singular vs plural in that message — one dep must not read "as sibling path deps".
+fn write_file(path: &Path, text: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+/// A package that declares one template, `app`: a library module (`greetkit/greet`) and a
+/// starter project that depends on it through `{{package}}` and names itself through
+/// `{{name}}`. Written by the test, so no network and no sibling checkout is involved.
+fn template_package(dir: &Path) -> std::path::PathBuf {
+    let package = dir.join("greetkit");
+    write_file(
+        &package.join("project.blsp"),
+        "(project\n  :name \"greetkit\"\n  :version \"0.1.0\"\n  :templates\n    {\"app\" {:dir \"templates/app\" :about \"A greeting app.\" :next [\"nest test\" \"nest run\"]}})\n",
+    );
+    write_file(
+        &package.join("src/greetkit.blsp"),
+        "(defmodule greetkit \"Greetings.\")\n\n(defn greet (who) \"A greeting for `who`.\" (str \"hello, \" who))\n",
+    );
+    write_file(
+        &package.join("templates/app/project.blsp"),
+        "(project :name \"{{name}}\" :version \"0.1.0\" :dependencies [{{package}}])\n",
+    );
+    write_file(
+        &package.join("templates/app/src/main.blsp"),
+        "(defmodule main \"Entry point for {{name}}.\" (:use greetkit))\n\n(defn main () \"Greets.\" (io/puts (greet \"{{name}}\")))\n",
+    );
+    write_file(
+        &package.join("templates/app/tests/main_test.blsp"),
+        "(defmodule main-test (:use test) (:use greetkit))\n\n(describe \"{{name}}\" (test \"greets\" (assert= (greet \"x\") \"hello, x\")))\n",
+    );
+    package
+}
+
+/// ADR-424: `nest new NAME --from <path>` copies the template the package declares, fills
+/// `{{name}}` and `{{package}}`, and the project it makes depends on the package where it was
+/// found — so it formats clean, tests green and RUNS with nothing checked out beside it,
+/// which the hatch templates std used to carry could not do.
 #[test]
-fn the_sibling_dep_message_agrees_in_number() {
-    let tmp = temp_dir("scaf-plural");
-    let made = nest(&tmp.path, &["new", "nx", "--template", "web-api"]);
-    assert!(made.ok, "{}", made.out);
+fn a_package_template_scaffolds_a_project_that_depends_on_it() {
+    let tmp = temp_dir("scaf-from-path");
+    let package = template_package(&tmp.path);
+    let made = nest(
+        &tmp.path,
+        &["new", "shop", "--from", package.to_str().unwrap()],
+    );
+    assert!(made.ok, "nest new --from failed:\n{}", made.out);
     assert!(
-        made.out.contains("as a sibling path dep,") && made.out.contains("until it is"),
-        "a single dep should read in the singular:\n{}",
+        made.out.contains("[greetkit app template]"),
+        "the summary should name the package and template:\n{}",
+        made.out
+    );
+    assert!(
+        made.out.contains("Next:  cd shop && nest test && nest run"),
+        "the template's own :next steps should be printed:\n{}",
+        made.out
+    );
+
+    let root = tmp.path.join("shop");
+    let manifest = std::fs::read_to_string(root.join("project.blsp")).unwrap();
+    assert!(manifest.contains(":name \"shop\""), "{manifest}");
+    assert!(
+        manifest.contains("greetkit :path")
+            && manifest.contains(&format!("\"{}\"", package.display())),
+        "{{{{package}}}} should be the dependency that reaches the package where it was found:\n{manifest}"
+    );
+    let main = std::fs::read_to_string(root.join("src/main.blsp")).unwrap();
+    assert!(main.contains("Entry point for shop."), "{main}");
+    assert!(
+        !main.contains("{{"),
+        "a placeholder was left unfilled:\n{main}"
+    );
+
+    let formatted = nest(&root, &["format", "--check"]);
+    assert!(formatted.ok, "{}", formatted.out);
+    let tested = nest(&root, &["test"]);
+    assert!(
+        tested.ok && tested.out.contains(" passed,"),
+        "the scaffolded project's tests should pass:\n{}",
+        tested.out
+    );
+    let ran = nest(&root, &["run"]);
+    assert!(
+        ran.ok && ran.out.contains("hello, shop"),
+        "the scaffolded project should run against its dependency:\n{}",
+        ran.out
+    );
+}
+
+/// A template the package does not declare is refused BEFORE anything is written, naming
+/// the ones it does — so a typo leaves no half-made directory behind.
+#[test]
+fn a_missing_package_template_is_named_and_nothing_is_written() {
+    let tmp = temp_dir("scaf-from-missing");
+    let package = template_package(&tmp.path);
+    let made = nest(
+        &tmp.path,
+        &[
+            "new",
+            "shop",
+            "--from",
+            package.to_str().unwrap(),
+            "--template",
+            "nope",
+        ],
+    );
+    assert!(!made.ok, "an undeclared template must fail:\n{}", made.out);
+    assert!(
+        made.out.contains("has no template 'nope'") && made.out.contains("app"),
+        "the error should name what the package does have:\n{}",
+        made.out
+    );
+    assert!(
+        !tmp.path.join("shop").exists(),
+        "nothing should be written for a template that does not exist"
+    );
+}
+
+/// `hatch` and `web-api` were built in until ADR-424. The name now says where templates
+/// like them come from rather than only listing the built-in set.
+#[test]
+fn an_unknown_template_points_at_from() {
+    let tmp = temp_dir("scaf-unknown");
+    let made = nest(&tmp.path, &["new", "nx", "--template", "hatch"]);
+    assert!(!made.ok, "{}", made.out);
+    assert!(
+        made.out.contains("--from"),
+        "an unknown template should say a package's templates come with --from:\n{}",
         made.out
     );
 }

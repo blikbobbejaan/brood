@@ -429,277 +429,125 @@ test discovery, lints, release, config)."
     "# it out of the language stats (it's Brood, not Clojure).\n"
     "*.blsp linguist-language=Clojure linguist-detectable=false\n"))
 
-;; --- `hatch` template: Hatch web app + Postgres-backed form ----------------
-;; Generates a minimal but runnable Hatch web application with a message board
-;; backed by PostgreSQL. The scaffold is self-contained: `nest run` starts the
-;; server after setting $PG* env vars (or with a local Postgres at the defaults).
+;; --- templates a package provides (`nest new NAME --from SOURCE`, ADR-424) ------------------
+;; A framework's starter project belongs to the framework. Until ADR-424 std carried a Hatch
+;; app and a Hatch API as string concatenations, tied to Hatch's module names and to sibling
+;; `:path` checkouts that a fresh machine does not have. A package now declares its own in
+;; its manifest — `:templates {"app" {:dir "templates/app" :about "…" :next ["…"]}}` — as
+;; plain FILES under `:dir`, and `nest new` copies them. Nothing in the package runs: a
+;; template is data, so scaffolding from one trusts it no more than reading it would.
 ;;
-;; Files generated (in addition to the shared manifest + docs):
-;;   project.blsp (overwritten with hatch + store-postgres deps)
-;;   src/main.blsp           — entry point: logger + DB + HTTP
-;;   src/db.blsp             — DB singleton (schema + CRUD helpers)
-;;   src/web/server.blsp     — HTTP listener (configures hatch's web/endpoint)
-;;   src/web/layout.blsp     — HTML shell (Tailwind + daisyUI via CDN)
-;;   src/web/routes.blsp     — routes with session/CSRF pipeline
-;;   src/web/views/home.blsp — home page
-;;   src/web/views/messages.blsp — Postgres-backed message board
-;;   tests/main_test.blsp
-;;   tests/web/views/messages_test.blsp
+;; Two placeholders are filled in every file: `{{name}}`, the new project's name, and
+;; `{{package}}`, the dependency entry that reaches the package the way `--from` named it (a
+;; path, a git URL or a registry name) — so a template's manifest depends on its own
+;; framework without guessing where it lives.
 
-(defn- project-hatch-manifest-template (nm)
-  (str ";; "
-    nm " — a Hatch web application.\n" ";;\n"
-    ";; Serves a Postgres-backed message board at GET/POST /messages.\n"
-    ";; Swap the :path deps for :git deps when targeting a published release.\n" "(project\n"
-    "  :name \"" nm "\"\n" "  :version \"0.1.0\"\n" "  :dependencies [[hatch :path \"../hatch\"]\n"
-    "                 [store-postgres :path \"../store-postgres\"]]\n"
-    "  :format-plugins [hatch])\n"))
+(defn- template-source-kind (source)
+  "How `--from SOURCE` names its package: `:git` (a URL, `git@…`, or `….git`, each with an
+optional `#ref`), `:path` (an existing directory, or one spelled as a path), else
+`:registry` (a published package's name)."
+  (let (url (first (string/split source "#")))
+    (cond
+      (or (includes? url "://") (string/starts-with? url "git@") (string/ends-with? url ".git"))
+        :git
+      (or (string/starts-with? source ".")
+        (string/starts-with? source "/")
+        (string/starts-with? source "~")
+        (file/dir? source))
+        :path
+      :else :registry)))
 
-(defn- project-hatch-main-template (nm)
-  (str "(defmodule main \"Entry point for "
-    nm ".\"\n" "  (:use web/server :only [serve])\n"
-    "  (:use web/application :only [start default-logger-opts])\n" "  (:alias db)\n"
-    "  (:alias pg))\n" "\n" "(defn main ()\n"
-    "  \"Start logging, open the DB pool, boot the endpoint, and park.\"\n" "  (start\n"
-    "    {:logger   (default-logger-opts)\n" "     :children [(fn () (db/start (pg/opts-from-env \""
-    nm "\")))\n" "                (fn () (serve))]}))\n"))
+(defn- template-fetch (source)
+  "The package `source` names, on disk: `{:root <its directory> :pin <how a manifest reaches
+it, after the name> :temporary <a directory to remove afterwards, or nil>}`."
+  (let (kind (template-source-kind source))
+    (cond
+      (= kind :path)
+        (let (root (path/absolute source))
+          {:root root :pin (str ":path " (pr-str root)) :temporary nil})
+      (= kind :git)
+        (let (parts (string/split source "#")
+              url (first parts)
+              ref (second parts)
+              commit (%git-resolve-ref url (or ref "HEAD"))
+              dest (path/temp "brood-template-"))
+          (when (nil? commit) (error "new: " url " has no ref " (or ref "HEAD")))
+          (%git-clone url dest (or ref "HEAD") commit)
+          ;; a named ref is what the user asked to track; with none, pin what was read
+          {:root dest
+           :pin (str ":git " (pr-str url) " :ref " (pr-str (or ref commit)))
+           :temporary dest})
+      :else
+        (let (dest (path/temp "brood-template-"))
+          (when (not (project/valid-dep-name? source))
+            (error "new: --from " (pr-str source) " is not a path, a git URL or a package name"))
+          (file/mkdir dest)
+          (let (installed (package/registry-install source dest))
+            {:root (:path installed)
+             :pin (str ":version " (pr-str (str "^" (:version installed))))
+             :temporary dest})))))
 
-(defn- project-hatch-db-template (_nm)
-  (str "(defmodule db\n"
-    "  \"Database singleton: the shared repo handle and messages schema.\n"
-    "  Call `(db/start opts)` once from `main`; handlers then use\n"
-    "  `(db/all-messages)` / `(db/insert-message row)`.\"\n" "  (:alias repo)\n"
-    "  (:alias query)\n" "  (:alias pg)\n"
-    "  ;; `web/repo` aliases to `repo` by default, colliding with store's `repo` above —\n"
-    "  ;; give it an explicit `:as` name.\n" "  (:alias web/repo :as web-repo))\n" "\n"
-    "(def *repo* nil)\n" "\n" "(def messages-schema\n" "  {:table :messages\n"
-    "   :primary-key :id\n" "   :fields {:id :serial :name :text :body :text}})\n" "\n"
-    ";; The schema history, oldest first: store's versioned migrations. Append one per\n"
-    ";; change (`migration/generate` writes it from the schema); never edit a deployed one.\n"
-    "(def migrations\n" "  [{:version 20260101000000\n" "    :name \"messages\"\n"
-    "    :up [[:create-table :messages\n"
-    "           {:primary-key :id :fields {:id :serial :name :text :body :text}}]]}])\n" "\n"
-    "(defn start (opts)\n"
-    "  \"Open the Postgres pool, apply pending migrations (dev; production only checks), and\n"
-    "  warm up the connections.\"\n"
-    "  (def *repo* (web-repo/start (pg/adaptor) opts migrations)))\n" "\n" "(defn all-messages ()\n"
-    "  \"All messages, oldest first (id ASC).\"\n"
-    "  (repo/all *repo* (-> (query/from :messages) (query/order-by :id :asc))))\n" "\n"
-    "(defn insert-message (row)\n"
-    "  \"Insert a `{:name ... :body ...}` row; return the inserted row with `:id`.\"\n"
-    "  (repo/insert *repo* :messages row))\n"))
+(defn- template-manifest (root source)
+  "The manifest of the package at `root`, as a plist read as DATA — nothing in it evaluated."
+  (let (path (path/join root "project.blsp")
+        form (and (file/exists? path) (reflect/read-first (file/slurp path))))
+    (if (and (pair? form) (= (first form) 'project))
+      (rest form)
+      (error "new: " source " is not a Brood package (no project.blsp with a (project …) form)"))))
 
-(defn- project-hatch-db-setup-template (nm)
-  (str "(defmodule db-setup\n"
-    "  \"Create the app database if absent, then run schema migrations.\n"
-    "  Run with: `nest run --main db-setup`\"\n" "  (:alias pg)\n" "  (:alias db))\n" "\n"
-    "(defn main ()\n" "  (let (o (pg/opts-from-env \"" nm "\"))\n" "    (pg/create-database o)\n"
-    "    (db/start o)\n" "    (io/puts \"Done. Run `nest run` to start the server.\")))\n"))
+(defn- template-choose (templates wanted source)
+  "`[name row]` for the template `wanted` names among `templates` — or, with none named, the
+only one, else the one called \"default\"."
+  (let (names (sort (map (keys (or templates {})) ->string))
+        pick (fn (name) [name (or (get templates name) (get templates (keyword name)))]))
+    (cond
+      (empty? names) (error "new: " source " declares no :templates in its project.blsp")
+      wanted
+        (if (includes? names wanted)
+          (pick wanted)
+          (error "new: "
+            source
+            " has no template '"
+            wanted
+            "' (it has: "
+            (string/join names ", ")
+            ")"))
+      (= (count names) 1) (pick (first names))
+      (includes? names "default") (pick "default")
+      :else
+        (error "new: "
+          source
+          " has several templates — choose one with --template ("
+          (string/join names ", ")
+          ")"))))
 
-(defn- project-hatch-server-template (_nm)
-  (str "(defmodule web/server\n"
-    "  \"The app's endpoint: its configuration of hatch's standard response pipeline\n"
-    "  (`web/endpoint`: the per-request task and deadline, the crash log, compression,\n"
-    "  security headers, themed error pages).\n" "\n"
-    "  Not named `web/endpoint`: that is hatch's module, and a release bundle would load it\n"
-    "  in place of this one.\"\n" "  (:alias web/endpoint)\n" "  (:alias web/routes)\n"
-    "  (:alias web/layout))\n" "\n" "(def *config*\n" "  {:router web/routes/app-router\n"
-    "   ;; The status table is hatch's; the page around it is the app's.\n"
-    "   :errors {:render web/layout/error-page}})\n" "\n" "(defn serve ()\n"
-    "  \"Start the HTTP listener on $HATCH_PORT, else 5000.\"\n"
-    "  (web/endpoint/serve *config*))\n"))
+(defn- template-files (root row name dependency)
+  "The template's files as `[relative-path content]` pairs, each with `{{name}}` and
+`{{package}}` filled in."
+  (let (relative (:dir row)
+        dir (path/join root (or relative ""))
+        prefix (str dir "/"))
+    (when (or (not (string? relative)) (includes? relative ".."))
+      (error "new: a template's :dir must be a path inside its package, got " (pr-str relative)))
+    (when (not (file/dir? dir)) (error "new: the template directory " dir " does not exist"))
+    (map (sort (or (file/walk-files dir) (list)))
+      (fn (path)
+        [(string/substring path (string/length prefix))
+          (string/replace (string/replace (file/slurp path) "{{name}}" name)
+            "{{package}}" dependency)]))))
 
-(defn- project-hatch-layout-template (nm)
-  (str "(defmodule web/layout \"Shared HTML page shell — Tailwind + daisyUI via CDN.\n"
-    "  `layout` returns plain Hiccup, which web/page renders; `error-page` is the error\n"
-    "  page's HTML, for hatch's web/endpoint (`:errors {:render …}` in web/server).\"\n"
-    "  (:use web/template :only [html]))\n" "\n" "(defn layout (title & children)\n"
-    "  [:html {:data-theme \"light\"}\n" "    [:head {}\n" "      [:meta {:charset \"utf-8\"}]\n"
-    "      [:meta {:name \"viewport\" :content \"width=device-width, initial-scale=1\"}]\n"
-    "      [:title {} title]\n" "      [:link {:rel \"stylesheet\"\n"
-    "              :href \"https://cdn.jsdelivr.net/npm/daisyui@4/dist/full.min.css\"}]\n"
-    "      [:script {:src \"https://cdn.tailwindcss.com\"} \"\"]]\n"
-    "    [:body {:class \"min-h-screen bg-base-100 text-base-content\"}\n"
-    "      [:div {:class \"navbar bg-base-300 shadow-sm sticky top-0 z-50\"}\n"
-    "        [:div {:class \"navbar-start\"}\n"
-    "          [:a {:href \"/\" :class \"btn btn-ghost text-xl\"} \"" nm "\"]]\n"
-    "        [:div {:class \"navbar-end\"}\n"
-    "          [:a {:href \"/messages\" :class \"btn btn-ghost btn-sm\"} \"Messages\"]]]\n"
-    "      [:main {:class \"max-w-2xl mx-auto p-6\"} children]]])\n" "\n"
-    "(defn error-page (code title blurb)\n"
-    "  \"The page for error `code`, in the shared layout.\"\n"
-    "  (html (layout (str code \" — \" title)\n" "    [:div {:class \"text-center py-16\"}\n"
-    "      [:h1 {:class \"text-7xl font-bold text-primary\"} (str code)]\n"
-    "      [:p {:class \"text-2xl mt-4 mb-2\"} title]\n"
-    "      [:p {:class \"opacity-70 mb-8\"} blurb]\n"
-    "      [:a {:href \"/\" :class \"btn btn-primary\"} \"Back home\"]])))\n"))
-
-(defn- project-hatch-routes-template (_nm)
-  (str "(defmodule web/routes \"HTTP routes — session + CSRF protected.\"\n"
-    "  (:use web/router)\n" "  (:alias web/session)\n" "  (:alias web/csrf))\n" "\n"
-    "; Set $SECRET_KEY_BASE in production. Never ship this dev fallback.\n" "(def session-secret\n"
-    "  (or (os/env \"SECRET_KEY_BASE\") \"dev-only-insecure-secret-change-me\"))\n" "\n"
-    "(defrouter app-router\n" "  (get \"/\" web/views/home/index)\n"
-    "  (through [(session/fetch-session (session/cookie-store session-secret {:encrypt true}))\n"
-    "            session/fetch-flash csrf/protect-from-forgery]\n"
-    "    (get \"/messages\" web/views/messages/index)\n"
-    "    (post \"/messages\" web/views/messages/create)))\n"))
-
-(defn- project-hatch-home-template (nm)
-  (str "(defmodule web/views/home \"Home page.\"\n"
-    "  (:use web/page)\n" "  (:use web/layout))\n" "\n" "(defn index (conn)\n"
-    "  \"GET / — welcome page.\"\n" "  (page conn\n" "    (layout \"" nm "\"\n"
-    "      [:h1 {:class \"text-3xl font-bold mb-4\"} \"Welcome to " nm "!\"]\n"
-    "      [:p {:class \"mb-4 opacity-70\"} \"A Hatch web app backed by PostgreSQL.\"]\n"
-    "      [:a {:href \"/messages\" :class \"btn btn-primary\"} \"View messages\"])))\n"))
-
-(defn- project-hatch-messages-view-template (_nm)
-  (str "(defmodule web/views/messages\n"
-    "  \"GET /messages — list messages + form. POST /messages — insert + redirect.\"\n"
-    "  (:use web/page)\n" "  (:use web/layout)\n" "  (:use web/conn)\n" "  (:alias web/session)\n"
-    "  (:alias web/csrf)\n" "  (:alias db))\n" "\n" "(defn index (conn)\n"
-    "  \"GET /messages — render the message board.\"\n" "  (let (msgs (db/all-messages))\n"
-    "    (page conn\n" "      (layout \"Messages\"\n"
-    "        [:h1 {:class \"text-2xl font-bold mb-4\"} \"Message board\"]\n"
-    "        (flash-banner conn)\n" "        (message-list msgs)\n"
-    "        (new-message-form conn)))))\n" "\n" "(defn flash-banner (conn)\n"
-    "  \"One-shot success banner from the flash, or nothing.\"\n"
-    "  (let (msg (web/session/get-flash conn \"info\"))\n"
-    "    (if (nil? msg) \"\" [:div {:class \"alert alert-success mb-4\"} [:span {} msg]])))\n" "\n"
-    "(defn message-list (msgs)\n" "  \"Render message cards, or an empty-state prompt.\"\n"
-    "  (if (empty? msgs)\n"
-    "    [:p {:class \"opacity-60 mb-6\"} \"No messages yet -- be the first!\"]\n"
-    "    [:div {:class \"space-y-3 mb-6\"}\n" "      (map msgs (fn (m)\n"
-    "             [:div {:class \"card bg-base-200\"}\n"
-    "               [:div {:class \"card-body py-3\"}\n"
-    "                 [:p {:class \"font-semibold\"} (get m :name)]\n"
-    "                 [:p {} (get m :body)]]]))]))\n" "\n" "(defn new-message-form (conn)\n"
-    "  \"The form to post a new message.\"\n"
-    "  [:form {:method \"post\" :action \"/messages\" :class \"card bg-base-200\"}\n"
-    "    [:div {:class \"card-body space-y-3\"}\n"
-    "      [:h2 {:class \"card-title\"} \"Post a message\"]\n" "      (web/csrf/csrf-input conn)\n"
-    "      [:label {:class \"label\"} [:span {:class \"label-text\"} \"Name\"]]\n"
-    "      [:input {:name \"name\" :placeholder \"Your name\"\n"
-    "               :class \"input input-bordered w-full\"}]\n"
-    "      [:label {:class \"label\"} [:span {:class \"label-text\"} \"Message\"]]\n"
-    "      [:textarea {:name \"body\" :rows \"3\" :placeholder \"Say something...\"\n"
-    "                  :class \"textarea textarea-bordered w-full\"} \"\"]\n"
-    "      [:div {:class \"card-actions\"}\n"
-    "        [:button {:class \"btn btn-primary\"} \"Post\"]]]])\n" "\n" "(defn create (conn)\n"
-    "  \"POST /messages -- validate, insert into Postgres, and PRG-redirect.\"\n"
-    "  (let (name (or (param conn \"name\") \"\")\n"
-    "        body (or (param conn \"body\") \"\"))\n"
-    "    (if (or (string/blank? name) (string/blank? body))\n" "      (-> conn\n"
-    "        (web/session/put-flash \"info\" \"Name and message are required.\")\n"
-    "        (redirect-resp \"/messages\"))\n" "      (do\n"
-    "        (db/insert-message {:name name :body body})\n" "        (-> conn\n"
-    "          (web/session/put-flash \"info\" \"Message posted!\")\n"
-    "          (redirect-resp \"/messages\"))))))\n"))
-
-(defn- project-hatch-main-test-template (_nm)
-  (str ";; Smoke test: ensure main loads without error.\n"
-    "(defmodule main-test (:use main) (:use test))\n" "\n" "(describe \"main\"\n"
-    "  (test \"main is callable\" (is (fn? main))))\n"))
-
-(defn- project-hatch-messages-test-template (_nm)
-  (str ";; Pure rendering tests for web/views/messages -- no database needed.\n"
-    ";; (db/*repo* starts nil at load time; DB functions are only called at request time.)\n"
-    "(defmodule web-views-messages-test\n" "  (:use test)\n"
-    "  (:use web/template :only [render])\n" "  (:use web/views/messages :only [message-list]))\n"
-    "\n" "(describe \"message-list\"\n" "  (test \"empty state shows invitation\"\n"
-    "    (is (> (index-of (render (message-list (list))) \"No messages yet\") -1)))\n"
-    "  (test \"renders message name and body\"\n"
-    "    (let (html (render (message-list (list {:id 1 :name \"Ada\" :body \"Hello!\"}))))\n"
-    "      (is (> (index-of html \"Ada\") -1))\n"
-    "      (is (> (index-of html \"Hello!\") -1)))))\n"))
-
-;; --- `web-api` template: minimal Hatch JSON API (no live, no database) -------
-;; A JSON-over-HTTP starter: the router dispatches to handlers that return JSON
-;; via web/live/encode. No WebSocket/live layer, no store dep — the smallest
-;; runnable Hatch app. `nest run` starts it; hit GET /api/health to smoke it.
-;;
-;; Files generated (in addition to the shared manifest + docs):
-;;   project.blsp (overwritten with just the hatch dep)
-;;   src/main.blsp           — entry point: logger + HTTP
-;;   src/web/server.blsp     — HTTP listener (no ws-handler); JSON 500/504
-;;   src/web/routes.blsp     — the JSON routes
-;;   src/web/api.blsp        — the JSON handlers
-;;   tests/main_test.blsp
-;;   tests/web/api_test.blsp
-
-(defn- project-web-api-manifest-template (nm)
-  (str ";; "
-    nm " — a Hatch JSON API.\n" ";;\n"
-    ";; Serves JSON at GET /api/health and GET|POST /api/echo. No live layer, no database.\n"
-    ";; Swap the :path dep for a :git dep when targeting a published release.\n" "(project\n"
-    "  :name \"" nm "\"\n" "  :version \"0.1.0\"\n" "  :dependencies [[hatch :path \"../hatch\"]]\n"
-    "  :format-plugins [hatch])\n"))
-
-(defn- project-web-api-main-template (nm)
-  (str "(defmodule main \"Entry point for "
-    nm ".\"\n" "  (:use web/server :only [serve])\n"
-    "  (:use web/application :only [start default-logger-opts]))\n" "\n" "(defn main ()\n"
-    "  \"Start logging, boot the endpoint, and park.\"\n" "  (start\n"
-    "    {:logger   (default-logger-opts)\n" "     :children [(fn () (serve))]}))\n"))
-
-(defn- project-web-api-server-template (_nm)
-  (str "(defmodule web/server\n"
-    "  \"HTTP endpoint: bridges raw requests through the router. Not named `web/endpoint`:\n"
-    "  that is hatch's module, and a release bundle would load it in place of this one.\"\n"
-    "  (:alias http/server)\n" "  (:alias web/conn)\n" "  (:alias web/routes)\n"
-    "  (:alias task))\n" "\n"
-    "; Hard deadline per request — kills a wedged handler and returns 504.\n"
-    "(def *handler-timeout-ms* 30000)\n" "\n"
-    "(def json-headers {:content-type \"application/json\"})\n" "\n"
-    "(defn error-json (status message)\n"
-    "  \"A bare JSON error body — no template layer for an API.\"\n"
-    "  {:status status :headers json-headers\n"
-    "   :body (str \"{\\\"error\\\":\\\"\" message \"\\\"}\")})\n" "\n" "(defn adapter (request)\n"
-    "  \"Bridge an http/server request through the router to a response, under a timeout.\"\n"
-    "  (let (conn (conn/build request)\n" "        h (task/task\n"
-    "            (fn () (conn/conn->response (routes/app-router conn)))\n"
-    "            {:timeout *handler-timeout-ms*}))\n" "    (receive\n"
-    "      ([:task-done ^h resp] resp)\n"
-    "      ([:task-error ^h _msg] (error-json 500 \"internal server error\"))\n"
-    "      ([:task-timeout ^h] (error-json 504 \"request timed out\")))))\n" "\n" "(defn port ()\n"
-    "  \"Serve on $HATCH_PORT if set and numeric, else 5000.\"\n"
-    "  (let (n (string/->number (or (os/env \"HATCH_PORT\") \"\")))\n"
-    "    (if (failure? n) 5000 n)))\n" "\n" "(defn serve ()\n"
-    "  \"Start the HTTP listener on `(port)` — no ws-handler, so no live layer.\"\n"
-    "  (server/start (port) adapter))\n"))
-
-(defn- project-web-api-routes-template (_nm)
-  (str "(defmodule web/routes \"JSON API routes.\"\n"
-    "  (:use web/router)\n" "  (:alias web/api))\n" "\n" "(defrouter app-router\n"
-    "  (get \"/\" web/api/index)\n" "  (get \"/api/health\" web/api/health)\n"
-    "  (get \"/api/echo\" web/api/echo)\n" "  (post \"/api/echo\" web/api/echo))\n"))
-
-(defn- project-web-api-handlers-template (nm)
-  (str "(defmodule web/api\n"
-    "  \"JSON API handlers. Each returns a JSON response built from `web/live/encode`\n"
-    "  (Hatch's wire JSON encoder — maps, vectors, strings, numbers, bools, nil).\"\n"
-    "  (:use web/conn)\n" "  (:alias web/live))\n" "\n" "(defn json (conn value)\n"
-    "  \"Encode `value` to JSON and send it as an application/json 200.\"\n"
-    "  (json-resp conn (web/live/encode value)))\n" "\n" "(defn index (conn)\n"
-    "  \"GET / — a tiny service descriptor.\"\n" "  (json conn {:name \"" nm
-    "\" :endpoints [\"/api/health\" \"/api/echo\"]}))\n" "\n" "(defn health (conn)\n"
-    "  \"GET /api/health — a liveness probe.\"\n" "  (json conn {:status \"ok\"}))\n" "\n"
-    "(defn echo (conn)\n"
-    "  \"GET|POST /api/echo — echo the `msg` param back. web/conn merges query and JSON\n"
-    "  body into :params, so `?msg=hi` and a `{\\\"msg\\\":\\\"hi\\\"}` body both work.\"\n"
-    "  (json conn {:echo (or (param conn \"msg\") \"\")}))\n"))
-
-(defn- project-web-api-test-template (_nm)
-  (str ";; Route tests through the web/test harness — no running server needed.\n"
-    "(defmodule web-api-test\n" "  (:use test)\n" "  (:use web/test)\n" "  (:alias web/routes))\n"
-    "\n" "(describe \"api\"\n" "  (test \"GET /api/health returns ok\"\n"
-    "    (let (resp (request web/routes/app-router \"GET\" \"/api/health\"))\n"
-    "      (is (= (status resp) 200))\n" "      (is (body-contains? resp \"ok\"))))\n"
-    "  (test \"GET /api/echo echoes the msg param\"\n"
-    "    (let (resp (request web/routes/app-router \"GET\" \"/api/echo\" {:params {\"msg\" \"hi\"}}))\n"
-    "      (is (= (status resp) 200))\n" "      (is (body-contains? resp \"hi\"))))\n"
-    "  (test \"unknown route 404s\"\n"
-    "    (is (= (status (request web/routes/app-router \"GET\" \"/nope\")) 404))))\n"))
+(defn- package-template (source wanted name)
+  "What `nest new NAME --from SOURCE [--template WANTED]` scaffolds: `{:label :files :next}`."
+  (let (fetched (template-fetch source))
+    (try
+      (let (manifest (template-manifest (:root fetched) source)
+            package (plist-get manifest :name)
+            [chosen row] (template-choose (plist-get manifest :templates) wanted source)
+            dependency (str "[" package " " (:pin fetched) "]"))
+        {:label (str package " " chosen)
+         :files (template-files (:root fetched) row name dependency)
+         :next (or (:next row) [])})
+      (finally (when (:temporary fetched) (file/rmdir (:temporary fetched)))))))
 
 ;; (new-project "foobar") — scaffold ./foobar with a runnable two-module
 ;; skeleton: project.blsp + src/main.blsp + src/<project>.blsp (where main `require`s
@@ -709,7 +557,7 @@ test discovery, lints, release, config)."
 ;; .claude/skills/writing-brood skill, so the project is self-contained for
 ;; AI-assisted editing. Errors on a bad name; an existing folder is reused (its
 ;; scaffold files overwritten), not rejected.
-(defdyn *project-templates* ["default" "tui-loop" "gen" "editor" "gui" "hatch" "web-api"])
+(defdyn *project-templates* ["default" "tui-loop" "gen" "editor" "gui"])
 
 ;; The template-specific files, as `[path content]` pairs with `path` relative to the
 ;; project directory. The shared files (manifest, CLAUDE.md, guide, …) are written by the
@@ -729,26 +577,6 @@ test discovery, lints, release, config)."
     (= tmpl "gui")
       [["src/main.blsp" (project-gui-main-template actual-name)]
         ["tests/main_test.blsp" (project-gui-test-template actual-name)]]
-    (= tmpl "hatch")
-      [["project.blsp" (project-hatch-manifest-template actual-name)]
-        ["src/main.blsp" (project-hatch-main-template actual-name)]
-        ["src/db.blsp" (project-hatch-db-template actual-name)]
-        ["src/db-setup.blsp" (project-hatch-db-setup-template actual-name)]
-        ["src/web/server.blsp" (project-hatch-server-template actual-name)]
-        ["src/web/layout.blsp" (project-hatch-layout-template actual-name)]
-        ["src/web/routes.blsp" (project-hatch-routes-template actual-name)]
-        ["src/web/views/home.blsp" (project-hatch-home-template actual-name)]
-        ["src/web/views/messages.blsp" (project-hatch-messages-view-template actual-name)]
-        ["tests/main_test.blsp" (project-hatch-main-test-template actual-name)]
-        ["tests/web/views/messages_test.blsp" (project-hatch-messages-test-template actual-name)]]
-    (= tmpl "web-api")
-      [["project.blsp" (project-web-api-manifest-template actual-name)]
-        ["src/main.blsp" (project-web-api-main-template actual-name)]
-        ["src/web/server.blsp" (project-web-api-server-template actual-name)]
-        ["src/web/routes.blsp" (project-web-api-routes-template actual-name)]
-        ["src/web/api.blsp" (project-web-api-handlers-template actual-name)]
-        ["tests/main_test.blsp" (project-hatch-main-test-template actual-name)]
-        ["tests/web/api_test.blsp" (project-web-api-test-template actual-name)]]
     else
       (let (module (project-module-name actual-name))
         [["src/main.blsp" (project-main-template actual-name)]
@@ -787,10 +615,11 @@ test discovery, lints, release, config)."
     (when (string/ends-with? p ".blsp")
       (check-allow :discarded-catch (try (format/file p) (catch _ nil))))))
 
-(defn new-project (nm &optional template)
-  "Scaffold a new project named `nm` (or `\".\"` for the current directory, taking the project name from the cwd's basename): a `project.blsp` manifest, the baked-in language guide, and starter code chosen by `template` — `\"default\"` (a `main`+`hello` module pair, the default), `\"tui-loop\"` (a tail-recursive animation loop), `\"gen\"` (a stateful gen_server process), `\"editor\"` (a tiny text editor on the `ui` framework), `\"gui\"` (a windowed app on the `ui` framework, opened with `(gui-display)` — needs a `--features gui` runtime), `\"hatch\"` (a Hatch web app with a Postgres-backed message board — requires hatch + store-postgres as sibling path deps; run `nest run --main db-setup` once to create the database, then `nest run` to start), or `\"web-api\"` (a minimal Hatch JSON API — no live layer, no database; requires hatch as a sibling path dep; `nest run` to start). Existing scaffold files are overwritten, not rejected. Backs `nest new [--template …]`.
+(defn new-project (nm &optional template from)
+  "Scaffold a new project named `nm` (or `\".\"` for the current directory, taking the project name from the cwd's basename): a `project.blsp` manifest, the baked-in language guide, and starter code. Without `from`, `template` picks a built-in starter — `\"default\"` (a `main`+`hello` module pair, the default), `\"tui-loop\"` (a tail-recursive animation loop), `\"gen\"` (a stateful gen_server process), `\"editor\"` (a tiny text editor on the `ui` framework) or `\"gui\"` (a windowed app on the `ui` framework, opened with `(gui-display)` — needs a `--features gui` runtime). With `from` — a package's path, git URL (`url#ref`) or registry name — the starter is one of the templates that package declares (`:templates` in its manifest, ADR-424), `template` naming which when it has several; its files fill in `{{name}}` and `{{package}}` (the dependency entry that reaches the package). Existing scaffold files are overwritten, not rejected. Backs `nest new [--template …] [--from …]`.
 
-    (scaffold/new-project \"myapp\" \"gen\")   ;=> myapp/ created — project.blsp, the language guide and a gen_server starter"
+    (scaffold/new-project \"myapp\" \"gen\")   ;=> myapp/ created — project.blsp, the language guide and a gen_server starter
+    (scaffold/new-project \"shop\" \"app\" \"hatch\")   ;=> shop/ created from hatch's app template, depending on hatch from the registry"
   ;; `nest new .` scaffolds into the current directory (cargo init's shape);
   ;; the project name is then the cwd's basename. Both forms — `nest new .` and
   ;; `nest new foobar` — *overwrite* existing scaffold files rather than
@@ -800,12 +629,12 @@ test discovery, lints, release, config)."
         actual-name (if in-place (path/basename (file/cwd)) nm)
         reusing-dir (file/exists? nm)
         tmpl (or template "default"))
-    (unless (includes? *project-templates* tmpl)
+    (unless (or from (includes? *project-templates* tmpl))
       (error "new: unknown template '"
         tmpl
         "' (use one of: "
         (string/join *project-templates* ", ")
-        ")"))
+        "; a package's own templates come with --from <package>)"))
     (unless (or in-place (project-valid-name? nm))
       (error "new: invalid project name '" nm "' (no '/' or spaces, and not empty)"))
     (when (and in-place (= actual-name ""))
@@ -814,7 +643,13 @@ test discovery, lints, release, config)."
       (error "new: project name '"
         actual-name "' is reserved by the standard library (it owns the '" actual-name
         "' module namespace); choose another name"))
-    (let (src-dir (path/join nm "src")
+    ;; resolved BEFORE anything is written, so a bad --from leaves no half-made project
+    (let (starter (if from
+                    (package-template from template actual-name)
+                    {:label (if (= tmpl "default") nil tmpl)
+                     :files (project-template-files tmpl actual-name)
+                     :next []})
+          src-dir (path/join nm "src")
           tests-dir (path/join nm "tests")
           docs-dir (path/join nm "docs")
           skill-dir (path/join nm ".claude/skills/writing-brood"))
@@ -831,14 +666,13 @@ test discovery, lints, release, config)."
       (file/spit (path/join skill-dir "SKILL.md") (%builtin-doc 'writing-brood-skill))
       (let (manifest (str nm "/project.blsp")
             ;; a template's own manifest is printed on the summary's fixed manifest line
-            code-files (seq/reject (scaffold-write-files nm
-                                     (project-template-files tmpl actual-name))
+            code-files (seq/reject (scaffold-write-files nm (:files starter))
                          (fn (path) (= path manifest)))
             _ (scaffold-format-generated (cons manifest code-files)))
         (io/puts (str "Created Brood project '"
                    actual-name
                    "'"
-                   (if (= tmpl "default") "" (str " [" tmpl " template]"))
+                   (if (:label starter) (str " [" (:label starter) " template]") "")
                    (cond
                      in-place " (in-place — files in current directory overwritten)"
                      reusing-dir " (existing files overwritten)"
@@ -855,7 +689,7 @@ test discovery, lints, release, config)."
         (if (= 0 (os/run-process "git" (list "init" "-q" nm)))
           (io/puts "  initialized a git repository")
           (io/puts "  (git init failed)")))
-      (scaffold-print-next-steps tmpl nm in-place)
+      (scaffold-print-next-steps (:next starter) nm in-place)
       nm)))
 
 ;; `nest update-tooling` — rewrite the AI-assistant files `nest new` drops into a
@@ -881,27 +715,11 @@ test discovery, lints, release, config)."
     (io/puts (str "  " (path/join docs-dir "brood-for-claude.md")))
     (io/puts (str "  " (path/join skill-dir "SKILL.md")))))
 
-;; Templates whose manifest declares `:path` dependencies on SIBLING checkouts,
-;; mapped to what has to be present for the project to resolve.
-(def- *scaffold-sibling-deps* {"hatch" ["hatch" "store-postgres"] "web-api" ["hatch"]})
-
-;; What to do next — and for the hatch templates, what to do FIRST.
-;;
-;; These scaffold `:path` deps on sibling checkouts, so without them every command
-;; fails on an unresolved dependency. The generic "Next: nest test && nest run" was
-;; therefore a promise the project could not keep: it was the first thing a user saw
-;; after `nest new`, and it did not work. Say what is required instead.
-(defn- scaffold-print-next-steps (tmpl nm in-place)
-  (let (siblings (get *scaffold-sibling-deps* tmpl)
-        enter (if in-place "" (str "cd " nm " && ")))
-    (if (nil? siblings)
-      (io/puts (str "Next:  " enter "nest test && nest run"))
-      (do
-        (io/puts (str "This template depends on "
-                   (string/join (map siblings (fn (d) (str "../" d))) " and ")
-                   (if (= (count siblings) 1) " as a sibling path dep," " as sibling path deps,")))
-        (io/puts (str "so `nest` commands will fail until "
-                   (if (= (count siblings) 1) "it is" "they are")
-                   " checked out beside this project"))
-        (io/puts "(or the manifest's :dependencies are repointed at :git sources).")
-        (io/puts (str "Next:  " enter "nest fetch   # once the dependencies are in place"))))))
+;; What to do next: the template's own `:next` commands when it declares them (a database to
+;; create first, say), else test and run — which every built-in starter and a package
+;; template without its own steps can do at once (`nest test` fetches the dependencies).
+(defn- scaffold-print-next-steps (steps nm in-place)
+  (let (enter (if in-place "" (str "cd " nm " && ")))
+    (io/puts (str "Next:  "
+               enter
+               (if (empty? steps) "nest test && nest run" (string/join steps " && "))))))

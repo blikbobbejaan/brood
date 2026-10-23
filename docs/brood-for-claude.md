@@ -1341,10 +1341,11 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
 project** (`nest new greeter` → `src/greeter.blsp` providing `greeter`). Other `--template`
 options scaffold starter shapes you'd otherwise hand-write: `tui-loop` (a
 tail-recursive animation loop, pairs with `nest run --for`), `gen` (a stateful
-`defserver` process), `hatch` (a full Postgres-backed Hatch web app),
-`web-api` (a minimal Hatch JSON API, no live layer or database), `editor` (a tiny
-text editor on `ui-run`), and `gui` (a windowed `ui-run` app — see *Interactive
-apps* above; needs a `--features gui` build).
+`defserver` process), `editor` (a tiny text editor on `ui-run`), and `gui` (a windowed
+`ui-run` app — see *Interactive apps* above; needs a `--features gui` build). A framework
+ships its own starters: `nest new shop --from hatch --template app` (a Postgres-backed Hatch
+web app) or `--template api` (a minimal JSON API) — `--from` takes a package path, git URL
+or registry name, and the package declares its templates in `:templates` (ADR-424).
 
 What `nest new greeter` writes, with the module docstrings and comments abridged
 (it also writes `project.blsp`, `tests/main_test.blsp`, a `CLAUDE.md` and this file):
