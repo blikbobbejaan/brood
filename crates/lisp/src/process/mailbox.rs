@@ -64,7 +64,16 @@ pub(super) fn parked_count() -> usize {
 /// status transition funnels through here so a `ST_WAITING`-boundary crossing (in
 /// either direction) adjusts the counter exactly once. The `swap` reads the true prior
 /// status even under a race, so concurrent transitions can't double-count.
+///
+/// A status that already reads `new` is left alone — every `receive` marks itself
+/// running, and inside a green quantum `run_one` already did, so the swap (a locked RMW
+/// on a line senders read) was a no-op paid per receive. Skipping it is the swap's own
+/// outcome linearised at the load: a transition racing in after the load lands as if it
+/// came after our write, which the swap admitted too, and no counter moves on a skip.
 pub(super) fn set_status(mb: &Mailbox, new: u8) {
+    if mb.status.load(Ordering::Relaxed) == new {
+        return;
+    }
     let old = mb.status.swap(new, Ordering::Relaxed);
     match (old == ST_WAITING, new == ST_WAITING) {
         (false, true) => {
@@ -323,9 +332,10 @@ pub(super) struct MailboxState {
     /// *beyond* this — not for ones it already skipped. 0 for a plain FIFO receive.
     ///
     /// **Never reset between suspend cycles, and that is correct:** it is read only in
-    /// `run_one`'s `Suspend::Receive` arm, and every path to that arm writes it first in
-    /// the same cycle (`wait_for_message`'s green branch, or `receive_match`'s capture
-    /// suspend). Don't add a `Suspend::Receive` path that skips the write.
+    /// `run_one`'s `Suspend::Receive` arm (`park_on_receive`), and every path to that arm
+    /// writes it first in the same cycle: `receive_match`'s capture suspend follows a
+    /// no-match scan, and `scan_mailbox` writes it at each of its no-match returns. Don't
+    /// add a `Suspend::Receive` path that skips the write.
     pub(super) scanned: usize,
     /// The absolute deadline of the `receive` currently in progress, or `None`. A
     /// captured `receive` is re-entered from scratch on each wake (the continuation
@@ -1482,15 +1492,11 @@ fn scan_until_answered(
                 // the dirty-scheduler carve-out (§7.4). Only a clean top-level receive
                 // captures (and can migrate).
                 if crate::process::in_capture_run() && crate::process::capture_top_level() {
-                    {
-                        // Clamp: a matcher that ran a *consuming* nested `receive` can
-                        // leave the queue shorter than the scan index, and `scanned` past
-                        // the length means `park_on_receive`'s `queue.len() > scanned`
-                        // gate needs several more messages before it will re-run us — a
-                        // process that sleeps through the very message it is waiting for.
-                        let mut st = crate::core::sync::lock(&ctx.mailbox.state);
-                        st.scanned = i.min(st.queue.len());
-                    }
+                    // `scanned` was recorded by the scan's no-match return, under the lock
+                    // it held to find the end of the queue — so suspending takes no lock
+                    // of its own. That value is what re-locking here to store
+                    // `i.min(queue.len())` computed: `i` was the queue's length then, and
+                    // since then only senders have touched the queue, and they append.
                     set_self_status(ctx, ST_WAITING);
                     if let Some(d) = deadline {
                         let generation = ctx.mailbox.timer_gen.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1659,7 +1665,16 @@ fn scan_mailbox(
                     *i = st.queue.partition_point(|e| e.seq <= ps);
                 }
             }
+            // Every no-match return records `scanned` under the lock it already holds (here
+            // and the two below), for `park_on_receive`'s "did a message arrive past what
+            // we looked at?" gate. The whole queue, which is where `*i` stands at all
+            // three: at least `*i` (the re-anchor and the mark search never leave it past
+            // the end), and never MORE than the queue — a `scanned` past the length
+            // needs several more messages before the gate re-runs the process, which then
+            // sleeps through the one it is waiting for (a matcher's consuming nested
+            // `receive` can shorten the queue under the scan).
             if *i >= st.queue.len() {
+                st.scanned = st.queue.len();
                 return Ok(None); // scanned to the end with no match
             }
             // Receive-mark: skip straight past every message that predates the pinned ref.
@@ -1674,6 +1689,7 @@ fn scan_mailbox(
                     optimistic = false; // the head is no longer the candidate
                 }
                 if *i >= st.queue.len() {
+                    st.scanned = st.queue.len();
                     return Ok(None);
                 }
             }
@@ -1701,6 +1717,7 @@ fn scan_mailbox(
             let mut skipped_any = false;
             loop {
                 if *i >= st.queue.len() {
+                    st.scanned = st.queue.len();
                     return Ok(None); // scanned to the end with no match
                 }
                 let rejected = match &st.queue[*i].msg {
