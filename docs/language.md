@@ -651,8 +651,10 @@ standard library.
 A function whose result depends on the world — a file, the clock, a socket, a pid, the loaded
 image — cannot be pinned by a ` → ` example. Write an **illustration** instead, ` ;=> ` in place
 of the arrow: `    (file/slurp "notes.txt")   ;=> "…the file's text…"`. It is not evaluated,
-but doctest still reads its left side and fails it when the form does not read or calls a
-function that does not exist, so a rename or a typo is caught; the example audit counts it.
+but doctest still reads its left side and fails it when the form does not read, calls a
+function that does not exist, or passes an argument count no arm of that function takes — so a
+rename, a typo or an argument reorder is caught (a `…` argument stands for any number); the
+example audit counts it.
 
     "Twice `n`.
 
@@ -3660,7 +3662,7 @@ At the REPL the namespace tracks the last `defmodule`; `(reflect/current-ns)` re
 > time (ADR-070), enforced once the package manager lands (ADR-037).
 
 ### Introspection (editor tooling)
-`doc`  `arglist`  `reflect/global-names`  `bound?`  `apropos`  `doc-search`
+`doc`  `arglist`  `reflect/arglists`  `reflect/global-names`  `bound?`  `apropos`  `doc-search`
 
 For self-description — the substrate an editor (and the planned language server,
 `docs/lsp.md`) reads for hover, signature help, completion, and "is this name
@@ -3671,6 +3673,7 @@ redefined.
 (defn add (a b & more) "Sum the arguments." (reduce + (+ a b) more))
 (doc add)              ;=> "Sum the arguments."
 (arglist add)          ;=> (a b & more)        ; mirrors the source surface
+(reflect/arglists (fn ((a) a) ((a b) b)))   ;=> ((a) (a b))   ; every arm; arglist shows the last
 (bound? 'add)          ;=> true   (quote the name; bound? takes a symbol)
 (bound? 'no-such)      ;=> false
 (includes? (reflect/global-names) 'map)  ;=> true      ; every global, for completion

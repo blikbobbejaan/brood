@@ -151,6 +151,11 @@ pub fn compile(heap: &mut Heap, form: Value, env: EnvId) -> LispResult {
     // gensyms must be fresh per invocation, which a once-at-compile expansion freezes).
     let out = expand_static_quasiquotes(heap, resolved);
     heap.truncate_roots(roots_base);
+    // The warning port is Brood code that may collect: keep `out` rooted across it.
+    let out_root = heap.root(out);
+    flush_pending_warnings(heap, env);
+    let out = heap.read_root(out_root);
+    heap.truncate_roots(roots_base);
     Ok(out)
 }
 
@@ -193,11 +198,28 @@ fn warn_macro_shadow(heap: &Heap, ns_name: &str, name: value::Symbol) {
         .map(|mut w| w.get_or_insert_with(HashSet::new).insert(key.clone()))
         .unwrap_or(true);
     if first {
-        eprintln!(
-            "warning: `{key}` shadows the prelude macro `{bare}`: inside `{ns_name}` a bare \
-             `({bare} …)` now means this definition. Reach the macro as `/{bare}`; declare the \
-             shadow with (:shadow {bare}) in the defmodule header to silence this."
-        );
+        // Queued, not printed: resolve runs with collection and macro expansion blocked, so it
+        // cannot call the `*err*` port. `compile` writes the queue once the pass is done.
+        PENDING_WARNINGS.with(|q| {
+            q.borrow_mut().push(format!(
+                "warning: `{key}` shadows the prelude macro `{bare}`: inside `{ns_name}` a bare \
+                 `({bare} …)` now means this definition. Reach the macro as `/{bare}`; declare \
+                 the shadow with (:shadow {bare}) in the defmodule header to silence this."
+            ))
+        });
+    }
+}
+
+thread_local! {
+    static PENDING_WARNINGS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Write the warnings the resolve pass queued, through the `*err*` port.
+fn flush_pending_warnings(heap: &mut Heap, env: EnvId) {
+    let pending = PENDING_WARNINGS.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    for message in pending {
+        crate::builtins::warn_line(heap, env, &message);
     }
 }
 

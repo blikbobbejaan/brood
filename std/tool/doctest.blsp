@@ -79,8 +79,40 @@ whose callee must exist, but that are not evaluated.
     (count (doctest/illustration-lines \"x\\n    (file/slurp \\\"a\\\")   ;=> \\\"…\\\"\"))   → 1"
   (seq/filter (string/split (str d) "\n") illustration-line?))
 
+(defn- arm-accepts? (params n)
+  ;; Does one arm's parameter list take `n` arguments?
+  (let (fixed (count (take-while params (fn (p) (not (string/starts-with? (->string p) "&")))))
+        optional (count (take-while (rest (drop-while params (fn (p) (not (= p '&optional)))))
+                          (fn (p) (not (= p '&)))))
+        rest? (includes? params '&))
+    (and (>= n fixed) (or rest? (<= n (+ fixed optional))))))
+
+(defn- arity-fault (head form)
+  ;; A message when no arm of the function `head` names takes the illustration's argument
+  ;; count; nil when one does, or when the count is not knowable — a `…` placeholder stands for
+  ;; any number of arguments, and a macro's arity is its own business.
+  (let (value (reflect/eval head)
+        arms (if (fn? value) (reflect/arglists value) nil)
+        args (rest form)
+        n (count args))
+    (cond
+      (nil? arms) nil
+      (any? args (fn (a) (and (symbol? a) (string/starts-with? (->string a) "…")))) nil
+      (any? arms (fn (params) (arm-accepts? params n))) nil
+      else
+        (str "illustration passes "
+          n
+          " argument"
+          (if (= n 1) "" "s")
+          " to `"
+          head
+          "`, which takes "
+          (string/join (map arms pr-str) " or ")))))
+
 (defn- check-illustration (name-str line)
-  ;; nil when the illustration reads as one form whose head is bound or a special form.
+  ;; nil when the illustration reads as one form whose head is bound or a special form, and,
+  ;; for a function head, is called with an argument count one of its arms takes. Never run —
+  ;; so after a rename or a reorder this is the only thing that notices it went stale.
   (let (src (string/trim (first (string/split line " ;=> ")))
         ;; check-allow :discarded-catch — a form that does not read is the failure reported below
         parsed (check-allow :discarded-catch (try [:ok (reflect/read-string src)] (catch _ nil)))
@@ -92,6 +124,8 @@ whose callee must exist, but that are not evaluated.
         (not (bound? head))
         (not (includes? (reflect/special-forms) (->string head))))
         (str name-str ": " src "  ;=> illustration calls `" head "`, which is not defined")
+      (and (symbol? head) (bound? head) (arity-fault head form))
+        (str name-str ": " src "  ;=> " (arity-fault head form))
       else nil)))
 
 (defn- case-of (line)

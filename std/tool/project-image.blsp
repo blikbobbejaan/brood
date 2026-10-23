@@ -380,7 +380,9 @@ the record the next partial rebuild reads.
   ;; check-allow :discarded-catch — a best-effort cache write: the next edit rebuilds whole
   (check-allow :discarded-catch
     (try
-      (file/spit (modules-record-path root)
+      ;; Written beside and renamed over, as the image is: concurrent runs of one project
+      ;; each write this, and a reader must never see half a record.
+      (file/spit-atomic (modules-record-path root)
         (pr-str
           {:fingerprint fp
            :global (image-global-key)

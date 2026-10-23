@@ -77,14 +77,49 @@
                 acc))
       (fold form acc (fn (a f) (quoted-heads-in f a))))))
 
-(defn- offenders ()
-  (fold (reflect/read-all prelude-source)
+;; The third shape: a capturable root name in ARGUMENT position — `(map ~xs first)`. ADR-423's
+;; definition-time pass writes a template's call HEADS as `/name`, never its arguments (an
+;; argument may be a binder, or data), so these still need the hand-written `/first`.
+(defn- args-in (form in-template acc)
+  (cond
+    (and in-template (symbol? form) (contains? capturable (->string form)))
+      (conj acc (->string form))
+    (vector? form) (fold form acc (fn (a f) (args-in f in-template a)))
+    (not (pair? form)) acc
+    (= (first form) 'quote) acc
+    (= (first form) 'unquote) acc
+    (= (first form) 'unquote-splicing) acc
+    (= (first form) 'quasiquote) (args-in (second form) true acc)
+    ;; inside a template the head is the call, which the pass escapes; walk the arguments
+    else (fold (if in-template (rest form) form) acc (fn (a f) (args-in f in-template a)))))
+
+(defn- macro-offenders (forms label-of scan)
+  (fold forms
     {}
     (fn (acc form)
       (if (and (pair? form) (= (first form) 'defmacro))
-        (let (hits (seq (quoted-heads-in form (heads-in form false #{}))))
-          (if (empty? hits) acc (assoc acc (->string (second form)) (sort hits))))
+        (let (hits (seq (scan form)))
+          (if (empty? hits) acc (assoc acc (label-of form) (sort hits))))
         acc))))
+
+;; The prelude is held to all three shapes — its heads are escaped by hand, and the gate
+;; predates ADR-423's automatic pass.
+(defn- offenders ()
+  (macro-offenders (reflect/read-all prelude-source)
+    (fn (form) (->string (second form)))
+    (fn (form) (args-in form false (quoted-heads-in form (heads-in form false #{}))))))
+
+;; Every std module's macros, not only the prelude's: a module macro expands in the module
+;; that USES it, where — since ADR-423 — that module's own `first` wins a bare reference.
+(defn- std-arg-offenders ()
+  (fold (seq/filter (file/walk-files "std") (fn (f) (string/ends-with? f ".blsp")))
+    {}
+    (fn (acc f)
+      (merge acc
+        ;; arguments only: a module macro's call heads are escaped for it (ADR-423)
+        (macro-offenders (reflect/read-all (file/slurp f))
+          (fn (form) (str f " " (->string (second form))))
+          (fn (form) (args-in form false #{})))))))
 
 (describe "prelude macro templates cannot be captured by user code"
   ;; Compared as the whole MAP, not a count: a failure then prints which macro emits
@@ -92,6 +127,16 @@
   ;;
   (test "no template emits a bare capturable name"
     (assert= (offenders) {}))
+
+  (test "no std macro passes a capturable root name as a template argument"
+    (assert= (std-arg-offenders) {}))
+
+  ;; The scans above pass on an empty result, so prove each shape is SEEN.
+  (test "the scans see each shape they gate"
+    (assert= (args-in (reflect/read-string "(defmacro m (x) `(map ~x first))") false #{})
+      #{"first"})
+    (assert= (heads-in (reflect/read-string "(defmacro m (x) `(first ~x))") false #{})
+      #{"first"}))
 
   ;; The gate above is a static scan; this is the behaviour it stands for. If someone
   ;; drops the escape, this fails with a wrong VALUE, which is what a user would see.
@@ -193,6 +238,24 @@
          (defn first (xs) :CAPTURED)
          (capture-probe-lib/head-of [7 8])")
       7)))
+
+(describe "the shadow warnings go through *err*"
+  ;; Kernel warnings, written through the dynamic `*err*` port so a test or a tool can capture
+  ;; them as it captures any Brood output. (Module names are unique per case: each warning is
+  ;; printed once per definition per process.)
+  (test "defining a root macro's name warns, and (:shadow …) silences it"
+    (is (includes? (with-err-str (%load-string "(defmodule capture-warn-a) (defn spy (x) x)"))
+          "`capture-warn-a/spy` shadows the prelude macro `spy`"))
+    (assert= ""
+      (with-err-str (%load-string "(defmodule capture-warn-b (:shadow spy)) (defn spy (x) x)"))))
+  (test "an import that shadows a root function warns"
+    (is
+      (includes?
+        (with-err-str
+          (%load-string
+            "(defmodule capture-warn-lib) (defn identity (x) [:mine x])
+               (defmodule capture-warn-user (:use capture-warn-lib))"))
+        "refers `identity`, which shadows the prelude/root `identity`"))))
 
 (describe "macro shadowing across processes"
   ;; Every worker compiles its own module defining `when`, in parallel; each must see its own

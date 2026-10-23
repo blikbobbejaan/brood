@@ -82,6 +82,20 @@
     (is (includes? (doctest/check "x" "    (file/slurp \"a\"   ;=> \"…\"") "does not read")))
   (test "a special form is a fine head"
     (is (nil? (doctest/check "x" "    (let (p \"a\") (file/slurp p))   ;=> \"…\""))))
+  ;; Never run, so after a rename or an argument reorder the argument COUNT is the one thing
+  ;; that notices an illustration went stale.
+  (test "an argument count no arm of the callee takes fails, naming the arities"
+    (let (fault (doctest/check "x" "    (file/slurp \"a\" \"b\" \"c\")   ;=> \"…\""))
+      (is (includes? fault "passes 3 arguments"))
+      (is (includes? fault "(path)"))))
+  (test "every arm of a multi-arity callee counts, and so do optional and rest parameters"
+    ;; `table/get` has a 2- and a 3-arity arm; `str` takes any number
+    (is (nil? (doctest/check "x" "    (table/get t :k :default)   ;=> …")))
+    (is (nil? (doctest/check "x" "    (table/get t :k)   ;=> …")))
+    (is (includes? (doctest/check "x" "    (table/get t)   ;=> …") "passes 1 argument"))
+    (is (nil? (doctest/check "x" "    (str 1 2 3 4 5)   ;=> …"))))
+  (test "a `…` argument stands for any number"
+    (is (nil? (doctest/check "x" "    (file/slurp …)   ;=> …"))))
   (test "a result continuing the line above is prose, not an illustration"
     (assert= 0 (count (doctest/illustration-lines "x\n    (f 1)\n    ;=> {:a 1}"))))
   (test "the audit counts an illustration as an example"

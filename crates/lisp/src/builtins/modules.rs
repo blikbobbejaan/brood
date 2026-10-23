@@ -1443,9 +1443,14 @@ fn refer_add(
         && std::env::var_os("BROOD_NO_SHADOW_WARN").is_none()
     {
         let b = value::symbol_name(bare);
-        eprintln!(
-            "warning: (:use {mod_name}) refers `{b}`, which shadows the prelude/root `{b}`; \
-             reach the original as `/{b}`, or drop it with `:exclude [{b}]`"
+        let global = heap.global();
+        crate::builtins::warn_line(
+            heap,
+            global,
+            &format!(
+                "warning: (:use {mod_name}) refers `{b}`, which shadows the prelude/root `{b}`; \
+                 reach the original as `/{b}`, or drop it with `:exclude [{b}]`"
+            ),
         );
     }
     heap.add_import(bare, qualified);

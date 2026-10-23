@@ -12,7 +12,7 @@
 
 (defmodule file
   "The file & filesystem library: whole-file and line read/write
-(`file/slurp`/`file/spit`/`read-lines`/`write-lines`/`file/spit-append`), predicates
+(`file/slurp`/`file/spit`/`read-lines`/`write-lines`/`spit-atomic`/`file/spit-append`), predicates
 (`regular?`/`file/dir?`/`file/exists?`), and directory listing (`list-files`/`list-dirs`/
 `walk-files`). Pure path-string manipulation (extension, stem, basename, join) is the
 `path` module's job — `file` only touches the filesystem. Pure Brood over the fs
@@ -47,6 +47,24 @@ primitives. The kernel also provides the always-available file primitives
   ;; The empty guard matters: `(string/join () "\n")` is "", and an unguarded trailing "\n" would
   ;; write a one-byte file where the fold wrote an empty one.
   (file/spit path (if (empty? lines) "" (str (string/join lines "\n") "\n"))))
+
+(defn spit-atomic (path:string text:string -> nil)
+  "Write `text` to `path` so that no reader ever sees half of it: into a sibling temp file,
+then renamed over `path` (a rename within one directory is atomic). Concurrent writers do not
+interleave either — the last rename wins whole. For a file other processes read while it is
+rewritten: a cache, a record beside an image, a config another tool polls.
+
+    (file/spit-atomic \"state.edn\" (pr-str {:n 1}))   ;=> nil; state.edn holds the whole map"
+  (let (tmp (str path "." (rand/token 8) ".tmp"))
+    (file/spit tmp text)
+    (try
+      (file/rename tmp path)
+      (catch e
+        (do
+          (when (file/exists? tmp) (file/rm tmp))
+          (throw e))))
+    nil))
+
 ;; `lines` is `seqable`, not `(list string)` — `fold` accepts a list, vector, set or range,
 ;; so the broader domain checks the argument (a non-seqable is flagged) without false-flagging
 ;; a vector caller the way `(list string)` would.

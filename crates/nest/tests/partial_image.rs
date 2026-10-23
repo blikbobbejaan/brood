@@ -288,3 +288,116 @@ fn a_headerless_or_deleted_file_rebuilds_the_image_whole() {
     );
     assert_eq!(answer, answer_from_scratch(&dir, "whole-oracle"));
 }
+
+/// `nest <args>` in `dir`, asserting success; the combined output.
+fn nest_ok(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_nest"))
+        .args(args)
+        .current_dir(dir)
+        .env("BROOD_NO_CRASH_REPORT", "1")
+        .output()
+        .expect("spawn nest");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "nest {args:?} failed:\n{combined}");
+    combined
+}
+
+/// A `nest run` after an edit writes the image with every unchanged section COPIED from the
+/// image before it, not re-encoded. So after a chain of edits most sections are copies of
+/// copies — and the tools that load the whole project (`--check-boot` here, as `nest test` and
+/// `nest check` do) must read that image exactly as they read a fresh build.
+#[test]
+fn a_chain_of_copied_images_serves_every_consumer() {
+    let dir = scratch("chain");
+    fixture(&dir);
+    nest_run(&dir);
+    for (step, (rel, src)) in [
+        (
+            "src/geom.blsp",
+            module("geom", "", "(def k 11)\n(defn sq (x) (* x x))"),
+        ),
+        ("src/other.blsp", module("other", "", "(def v 5)")),
+        (
+            "src/shapes.blsp",
+            module("shapes", "", "(def area-k (+ 1 (geom/sq geom/k)))"),
+        ),
+        (
+            "src/geom.blsp",
+            module("geom", "", "(def k 12)\n(defn sq (x) (* x x))"),
+        ),
+    ]
+    .iter()
+    .enumerate()
+    {
+        edit(&dir, rel, src);
+        let (out, loaded, answer) = nest_run(&dir);
+        assert!(
+            out.contains("Rebuilt pfx"),
+            "step {step}: a partial rebuild:\n{out}"
+        );
+        assert!(
+            !loaded.contains("sizes") && !loaded.contains("hooks"),
+            "step {step}: an untouched module is reused:\n{out}"
+        );
+        assert_eq!(
+            answer,
+            answer_from_scratch(&dir, &format!("chain-oracle-{step}")),
+            "step {step}"
+        );
+    }
+    // The whole-project load, over the copied image: every module, no rebuild, no error.
+    let out = nest_ok(&dir, &["run", "--check-boot"]);
+    assert!(
+        !out.contains("Building") && !out.contains("Rebuilt"),
+        "the image is current for a whole-project load:\n{out}"
+    );
+    let (out, loaded, answer) = nest_run(&dir);
+    assert!(loaded.is_empty(), "{out}");
+    assert!(answer.contains("area-k=145"), "{answer}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Several `nest run`s of one project right after an edit each make the partial rebuild and
+/// each write the image (and the record beside it). The writes are atomic renames, and a copy
+/// reads from the image file the run itself opened, so one run renaming a new image over the
+/// path cannot change the bytes another is copying. Every run must answer like a fresh build,
+/// and whichever image wins must serve the next run without a rebuild.
+#[test]
+fn concurrent_runs_after_an_edit_agree_and_leave_a_current_image() {
+    let dir = scratch("concurrent");
+    fixture(&dir);
+    nest_run(&dir);
+    for round in 0..3 {
+        edit(
+            &dir,
+            "src/geom.blsp",
+            &module(
+                "geom",
+                "",
+                &format!("(def k {})\n(defn sq (x) (* x x))", 30 + round),
+            ),
+        );
+        let oracle = answer_from_scratch(&dir, &format!("concurrent-oracle-{round}"));
+        let answers: Vec<String> = std::thread::scope(|s| {
+            let runs: Vec<_> = (0..4).map(|_| s.spawn(|| nest_run(&dir).2)).collect();
+            runs.into_iter().map(|r| r.join().unwrap()).collect()
+        });
+        for answer in &answers {
+            assert_eq!(
+                answer, &oracle,
+                "round {round}: a concurrent run answered differently"
+            );
+        }
+        let (out, loaded, answer) = nest_run(&dir);
+        assert!(
+            loaded.is_empty(),
+            "round {round}: the image a concurrent run left is current:\n{out}"
+        );
+        assert_eq!(answer, oracle);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -138,6 +138,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         arglist,
     );
     primitives.def(
+        "reflect/arglists",
+        Arity::exact(1),
+        Sig::new(vec![any], list_ty),
+        &["f"],
+        "Every arm's parameter list of a function, macro, or primitive — one list per arity of a multi-arity `defn`, where `arglist` shows only the last — or nil.\n\n    (reflect/arglists (fn ((a) a) ((a b) b)))   → ((a) (a b))\n    (reflect/arglists inc)                     → ((n))",
+        arglists,
+    );
+    primitives.def(
         "reflect/global-names",
         Arity::exact(0),
         Sig::nullary(list_ty),
@@ -560,6 +568,48 @@ pub(super) fn doc(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
 /// list, mirroring the source surface: required names, then `&optional` names,
 /// then `& rest`. `nil` for a non-function (or a primitive without recorded
 /// params). Feeds signature help / hover.
+/// `(reflect/arglists f)` — one parameter list per arm (see `arglist`, which shows the last).
+pub(super) fn arglists(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
+    let id = match arg(args, 0) {
+        Value::Fn(id) | Value::Macro(id) => id,
+        Value::Native(_) => {
+            let one = arglist(args, _env, heap)?;
+            return Ok(if matches!(one, Value::Nil) {
+                one
+            } else {
+                heap.list(vec![one])
+            });
+        }
+        _ => return Ok(Value::nil()),
+    };
+    let arms: Vec<_> = heap
+        .closure(id)
+        .arms
+        .iter()
+        .map(|arm| {
+            (
+                arm.params.clone(),
+                arm.optionals.iter().map(|&(s, _)| s).collect::<Vec<_>>(),
+                arm.rest,
+            )
+        })
+        .collect();
+    let mut lists = Vec::with_capacity(arms.len());
+    for (params, optionals, rest) in arms {
+        let mut items: Vec<Value> = params.into_iter().map(Value::Sym).collect();
+        if !optionals.is_empty() {
+            items.push(value::sym("&optional"));
+            items.extend(optionals.into_iter().map(Value::Sym));
+        }
+        if let Some(r) = rest {
+            items.push(value::sym("&"));
+            items.push(Value::symbol(r));
+        }
+        lists.push(heap.list(items));
+    }
+    Ok(heap.list(lists))
+}
+
 pub(super) fn arglist(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
     let id = match arg(args, 0) {
         Value::Fn(id) | Value::Macro(id) => id,

@@ -3308,3 +3308,19 @@ as a symbol — a package's module names are rooted under it, and a function cal
 by name is still late. `vcs` stays in std, self-contained, with a ROADMAP item to move it to a
 package if it ever should. Also fixed the other red `a9423365` left: `format_changed`'s
 fallback test reads the new "not in a version-controlled checkout" line.
+
+2026-10-23 (robustness pass): closing the gaps the last two days left.
+- **Partial image rebuild:** `partial_image.rs` gains a chain of four copied images followed by a
+  whole-project load (`--check-boot`), and four concurrent `nest run`s after an edit, three
+  rounds — every answer equals a fresh build, and the image left behind is current. The chain
+  case reds when the copy reads one byte off. The record beside the image is now written with
+  the new `file/spit-atomic` (temp file + rename): a plain `spit` let a concurrent reader see 81
+  torn reads in 200, `spit-atomic` 0 (`file_test`, sabotage-verified).
+- **Macro capture:** the capture gate now scans ARGUMENT positions too, and every std macro, not
+  only the prelude's (ADR-423 escapes heads; arguments are by hand). Nothing found; a fixture
+  case proves the scans see each shape.
+- **Illustrations:** doctest checks the argument count of a ` ;=> ` illustration against every
+  arm of the callee, so a rename or reorder that leaves one stale is caught. New
+  `reflect/arglists` (every arm; `arglist` shows the last). No stale illustration in std.
+- **Shadow warnings** (import and root macro) are written through the dynamic `*err*` port, so
+  `with-err-str` captures them; the macro one is queued during resolve and flushed by `compile`.
