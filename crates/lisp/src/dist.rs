@@ -414,8 +414,71 @@ fn local_incarnation() -> u64 {
 
 /// Locally registered name → local process id, so a peer can address a process by
 /// a stable name before anyone holds its pid (`(proc/register :echo (self))`).
-static NAMES: LazyLock<RwLock<HashMap<Symbol, u64>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+static NAMES: LazyLock<RwLock<NameTable>> = LazyLock::new(|| RwLock::new(NameTable::default()));
+
+/// The registered names, indexed both ways. `by_pid` exists for the death path: every
+/// process exit sweeps its names, and with only `name → pid` that sweep was a pass over
+/// EVERY registered name, under the write lock, per exit. Both maps change together
+/// under the one `NAMES` lock, through the methods below and nowhere else, so each is
+/// always the other's inverse.
+#[derive(Default)]
+struct NameTable {
+    by_name: HashMap<Symbol, u64>,
+    /// pid → the names bound to it, in binding order. Nearly always one name or none (an
+    /// entry is removed when its last name goes).
+    by_pid: HashMap<u64, Vec<Symbol>>,
+}
+
+impl NameTable {
+    fn get(&self, name: Symbol) -> Option<u64> {
+        self.by_name.get(&name).copied()
+    }
+
+    /// Bind `name` to `pid`, taking it from any previous holder.
+    fn bind(&mut self, name: Symbol, pid: u64) {
+        match self.by_name.insert(name, pid) {
+            Some(previous) if previous == pid => return,
+            Some(previous) => self.forget_name_of(previous, name),
+            None => {}
+        }
+        self.by_pid.entry(pid).or_default().push(name);
+    }
+
+    /// Drop `name`'s binding, returning the pid it named.
+    fn unbind(&mut self, name: Symbol) -> Option<u64> {
+        let pid = self.by_name.remove(&name)?;
+        self.forget_name_of(pid, name);
+        Some(pid)
+    }
+
+    /// Drop every name bound to `pid`.
+    fn unbind_pid(&mut self, pid: u64) {
+        for name in self.by_pid.remove(&pid).unwrap_or_default() {
+            self.by_name.remove(&name);
+        }
+    }
+
+    fn holds_any(&self, pid: u64) -> bool {
+        self.by_pid.contains_key(&pid)
+    }
+
+    /// The first name still bound to `pid`.
+    fn first_name_of(&self, pid: u64) -> Option<Symbol> {
+        self.by_pid
+            .get(&pid)
+            .and_then(|names| names.first().copied())
+    }
+
+    /// Remove `name` from `pid`'s reverse entry (the forward one is the caller's).
+    fn forget_name_of(&mut self, pid: u64, name: Symbol) {
+        if let Some(names) = self.by_pid.get_mut(&pid) {
+            names.retain(|&held| held != name);
+            if names.is_empty() {
+                self.by_pid.remove(&pid);
+            }
+        }
+    }
+}
 
 /// Node-name → pids that asked to watch it (`monitor-node`). Each gets a
 /// `[:nodedown name]` message when a link to that node tears down.
@@ -487,7 +550,7 @@ pub(crate) fn register(name: Symbol, id: u64) -> Registration {
     if !process::is_alive(id) {
         return Registration::DeadPid;
     }
-    names.insert(name, id);
+    names.bind(name, id);
     Registration::Bound
 }
 
@@ -495,7 +558,7 @@ pub(crate) fn register(name: Symbol, id: u64) -> Registration {
 /// callers test for an existing registration before re-`spawn`ing a server
 /// they're about to register (idempotent bootstrap; used by `remote-spawn`).
 pub(crate) fn whereis(name: Symbol) -> Option<u64> {
-    crate::core::sync::read(&NAMES).get(&name).copied()
+    crate::core::sync::read(&NAMES).get(name)
 }
 
 /// `(proc/unregister name)` — drop `name`'s binding, returning whether one existed.
@@ -504,41 +567,61 @@ pub(crate) fn whereis(name: Symbol) -> Option<u64> {
 /// released except by that process dying. A service that wants to hand its name to a
 /// replacement, or step down without exiting, needs this.
 pub(crate) fn unregister(name: Symbol) -> bool {
-    crate::core::sync::write(&NAMES).remove(&name).is_some()
+    crate::core::sync::write(&NAMES).unbind(name).is_some()
 }
 
 /// The name `pid` is registered under, if any — the reverse of [`whereis`].
 /// Used by the scheduler's death reporter to name a crashed process
-/// (`process ticker (pid 6) died: …`) instead of only its opaque pid. O(n) over
-/// the (small) `NAMES` table, and only on the cold death path, so the linear
-/// scan is fine. Must be read *before* [`unregister_dead_pid_while`] clears the entry.
+/// (`process ticker (pid 6) died: …`) instead of only its opaque pid. With several
+/// names bound, the first still held. Must be read *before*
+/// [`unregister_dead_pid_while`] clears the entry.
 pub(crate) fn name_for_pid(pid: u64) -> Option<Symbol> {
-    crate::core::sync::read(&NAMES)
-        .iter()
-        .find_map(|(&name, &p)| if p == pid { Some(name) } else { None })
+    crate::core::sync::read(&NAMES).first_name_of(pid)
 }
 
 /// The death path's name sweep: remove every `NAMES` entry pointing at `pid` (a name
 /// lives only as long as its process — else `whereis` returns a corpse and named-spawn
 /// never respawns), and prune `pid` from every `NODE_MONITORS` watcher list.
 ///
-/// `retire` (the `REGISTRY` removal) runs **inside** the same `NAMES` write lock as
-/// the sweep, so no [`register`] can fall between them, see the pid still alive, and
-/// bind a name the sweep has already passed — and a pid absent from `REGISTRY` is
-/// already absent from `NAMES`. NAMES → REGISTRY is the nesting [`spawn_or_get`] and
-/// [`register`] already use, so this adds no new lock order.
+/// `retire` (the `REGISTRY` removal) runs **inside** the `NAMES` lock with the sweep, so
+/// no [`register`] can fall between them, see the pid still alive, and bind a name the
+/// sweep has already passed — and a pid absent from `REGISTRY` is already absent from
+/// `NAMES` (KI-80). NAMES → REGISTRY is the nesting [`spawn_or_get`] and [`register`]
+/// already use, so this adds no new lock order.
+///
+/// A pid holding no name (nearly every one) retires under the READ lock, so exits do not
+/// serialise on the table. That keeps both properties, because every binding is made
+/// under the WRITE lock, which a held read lock excludes: a [`register`] that saw the pid
+/// alive finished before this read and left a binding it sees (the write path below), and
+/// one that runs after the read is released finds the pid already gone from `REGISTRY`.
 pub(crate) fn unregister_dead_pid_while<R>(pid: u64, retire: impl FnOnce() -> R) -> R {
     let retired = {
-        let mut names = crate::core::sync::write(&NAMES);
-        names.retain(|_, &mut p| p != pid);
-        retire()
+        let names = crate::core::sync::read(&NAMES);
+        if names.holds_any(pid) {
+            drop(names);
+            // Anything bound between the two locks is swept too: the write lock holds
+            // off every further `register` until `retire` has run.
+            let mut names = crate::core::sync::write(&NAMES);
+            names.unbind_pid(pid);
+            retire()
+        } else {
+            retire()
+        }
     };
-    // Prune the dead pid from every NODE_MONITORS watcher list.
-    let mut monitors = crate::core::sync::write(&NODE_MONITORS);
-    for watchers in monitors.values_mut() {
-        watchers.retain(|&w| w != pid);
+    // Prune the dead pid from every NODE_MONITORS watcher list — when it is on one. The
+    // read is the sweep's linearisation point when it is not: a `monitor_node` naming
+    // this pid after it is a registration after the sweep, which the unconditional write
+    // lock admitted just the same (`monitor_node` does not check liveness).
+    let watching = crate::core::sync::read(&NODE_MONITORS)
+        .values()
+        .any(|watchers| watchers.contains(&pid));
+    if watching {
+        let mut monitors = crate::core::sync::write(&NODE_MONITORS);
+        for watchers in monitors.values_mut() {
+            watchers.retain(|&w| w != pid);
+        }
+        monitors.retain(|_, v| !v.is_empty());
     }
-    monitors.retain(|_, v| !v.is_empty());
     retired
 }
 
@@ -566,16 +649,16 @@ pub(crate) fn spawn_or_get<E>(
     spawner: impl FnOnce() -> Result<u64, E>,
 ) -> Result<u64, E> {
     let mut names = crate::core::sync::write(&NAMES);
-    if let Some(&existing) = names.get(&name) {
+    if let Some(existing) = names.get(name) {
         if process::is_alive(existing) {
             return Ok(existing);
         }
         // Stale (the process registered under this name has died); drop and
         // fall through to a fresh spawn.
-        names.remove(&name);
+        names.unbind(name);
     }
     let pid = spawner()?;
-    names.insert(name, pid);
+    names.bind(name, pid);
     Ok(pid)
 }
 
@@ -981,7 +1064,7 @@ pub(crate) fn route(node: Symbol, target: Target, msg: Message) -> bool {
     if is_local(node) {
         let id = match target {
             Target::Pid(id) => id,
-            Target::Name(name) => match crate::core::sync::read(&NAMES).get(&name).copied() {
+            Target::Name(name) => match crate::core::sync::read(&NAMES).get(name) {
                 Some(id) => id,
                 None => {
                     warn_dropped_to_unregistered_name(name, "local");
@@ -2048,7 +2131,7 @@ fn sever_couplings(peer: Symbol) {
 fn deliver_inbound(target: Target, msg: Message) {
     let id = match target {
         Target::Pid(id) => id,
-        Target::Name(name) => match crate::core::sync::read(&NAMES).get(&name).copied() {
+        Target::Name(name) => match crate::core::sync::read(&NAMES).get(name) {
             Some(id) => id,
             None => {
                 warn_dropped_to_unregistered_name(name, "inbound");
