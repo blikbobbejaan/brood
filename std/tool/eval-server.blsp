@@ -588,7 +588,7 @@ not yet a node. Answers its authoritative name, or raises with why not."
     ;; A name of our own is needed before anyone can be dialled, and it is not taken at
     ;; boot: an unnamed runtime costs nothing and cannot be reached, which is what a child
     ;; that usually only talks to its editor should be.
-    (node/start (keyword (str "bedit-sandbox-" (os/now)))
+    (node/start (keyword (str "eval-sandbox-" (os/now)))
       nil
       (when (and cookie (not (= cookie ""))) cookie)))
   (node/connect spec))
