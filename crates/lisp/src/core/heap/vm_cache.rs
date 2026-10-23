@@ -787,7 +787,7 @@ impl Heap {
     /// the Brood one.
     pub fn dispatch_identity(&self, v: Value) -> Value {
         if let Value::Map(mid) = v {
-            let key = Value::keyword(crate::core::value::intern(kw::RECORD_ID));
+            let key = Value::keyword(*crate::core::value::RECORD_ID_SYMBOL);
             if let Some(id) = self.map_get(mid, key)
                 && crate::eval::truthy(id)
             {
@@ -813,7 +813,7 @@ impl Heap {
         match self.map_get(mid, k) {
             Some(v) if !matches!(v, Value::Nil) => Some(v),
             _ => {
-                let key = Value::keyword(crate::core::value::intern(kw::RECORD_ID));
+                let key = Value::keyword(*crate::core::value::RECORD_ID_SYMBOL);
                 match self.map_get(mid, key) {
                     Some(id) if crate::eval::truthy(id) => None,
                     _ => Some(Value::nil()),
@@ -835,7 +835,7 @@ impl Heap {
         if !matches!(v, Value::Nil) {
             return Some(v);
         }
-        let key = Value::keyword(crate::core::value::intern(kw::RECORD_ID));
+        let key = Value::keyword(*crate::core::value::RECORD_ID_SYMBOL);
         match self.map_get(mid, key) {
             Some(id) if crate::eval::truthy(id) => None,
             _ => Some(Value::nil()),

@@ -74,6 +74,13 @@ thread_local! {
     static HASH_CACHE: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
 }
 
+/// The `__id__` symbol a record's identity key spells (`kw::RECORD_ID`), interned once.
+/// Symbol ids are process-global and never recycled, so one id serves every thread; the
+/// record probes on the map-miss and dispatch paths read it per call, where `intern` would
+/// pay a thread-local `RefCell` borrow and a SipHash of the spelling each time.
+pub static RECORD_ID_SYMBOL: LazyLock<Symbol> =
+    LazyLock::new(|| intern(crate::core::keywords::RECORD_ID));
+
 pub fn intern(name: &str) -> Symbol {
     // `try_with`, not `with`: a thread-local destructor may intern after this thread's
     // cache is already gone (a root context's `RootCtxGuard` retires the pid and interns

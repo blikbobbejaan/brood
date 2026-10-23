@@ -499,7 +499,7 @@ pub(super) fn record_seq(heap: &mut Heap, v: Value) -> Result<Option<Value>, Lis
         _ => return Ok(None),
     };
     if heap
-        .map_get(m, Value::Keyword(crate::core::value::intern("__id__")))
+        .map_get(m, Value::Keyword(*crate::core::value::RECORD_ID_SYMBOL))
         .is_none()
     {
         return Ok(None);
@@ -682,7 +682,7 @@ fn record_counted(heap: &mut Heap, v: Value) -> Result<Option<Value>, LispError>
     let Value::Map(m) = v else {
         return Ok(None);
     };
-    let Some(id) = heap.map_get(m, Value::Keyword(intern("__id__"))) else {
+    let Some(id) = heap.map_get(m, Value::Keyword(*crate::core::value::RECORD_ID_SYMBOL)) else {
         return Ok(None);
     };
     let genv = heap.global();

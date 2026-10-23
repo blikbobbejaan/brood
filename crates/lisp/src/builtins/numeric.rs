@@ -578,7 +578,7 @@ pub(super) fn num_bin(
 /// dispatch a nil/false id as `:map`.
 fn is_record(heap: &Heap, v: Value) -> bool {
     let Value::Map(m) = v else { return false };
-    match heap.map_get(m, Value::Keyword(crate::core::value::intern("__id__"))) {
+    match heap.map_get(m, Value::Keyword(*crate::core::value::RECORD_ID_SYMBOL)) {
         Some(id) => !matches!(id, Value::Nil | Value::Bool(false)),
         None => false,
     }
