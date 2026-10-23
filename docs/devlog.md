@@ -3447,3 +3447,15 @@ Rust builtins' doc strings carry illustrations (seven run as executed examples);
 now GENERATES an illustration in each constructor and accessor docstring, so every record —
 std's and every future one — is covered; the ability ops take theirs from the ability's
 docstring. Whole-image doctest 0 failures.
+
+2026-10-24 (KI-290, a require cycle across processes): the bedit downstream smoke went red once on
+`14232c96` — 13 tests `unbound symbol: ed-layout-now` in `aside`, which does `(:use panes)` — and
+the build before them printed `[require] BUG: waited 30s for an in-flight load of 'bedit/panes'`.
+The parallel cold build (ADR-426) had split a require cycle across two workers: each held one end
+and waited for the other, so neither load could finish, and the backstop then loaded `panes` a
+second time while the first was still in flight. A waiter now walks the wait-for chain every
+250 ms; the process that finds itself on it raises, its claims are discarded and released as that
+unwinds, the other process finishes the cycle on its own — as one process would — and the
+raiser's outermost load requires its module again. The driver also reloads such a file
+sequentially should the error reach it. Guard in `tests/modules_test.blsp` (two fixture modules
+that pause after their claim, so the cycle forms every run); not run on this machine.

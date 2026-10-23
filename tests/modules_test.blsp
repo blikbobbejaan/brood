@@ -123,6 +123,37 @@
       (file/rm path)
       (assert= (reqcirc-mod/ok) :yes)))
 
+  ;; The same cycle split across two processes: one holds `xcyc-a` and requires `xcyc-b`,
+  ;; the other holds `xcyc-b` and requires `xcyc-a`, so each load can only finish after the
+  ;; other's. It deadlocked until the 30 s backstop force-loaded one end a second time while
+  ;; its first load was still in flight — the parallel cold build met it on bedit (`panes`
+  ;; half-published, `aside`'s `ed-layout-now` left bare). The pause after each claim makes
+  ;; the cycle certain: both processes hold their module before either asks for the other's.
+  ;; The process that sees the cycle backs out, and both end with both modules loaded, well
+  ;; inside the backstop.
+  (test "a require cycle split across two processes resolves, both modules whole"
+    (let (a-path "/tmp/xcyc-a.blsp"
+          b-path "/tmp/xcyc-b.blsp"
+          saved-path *load-path*
+          me (self))
+      (file/spit a-path
+        "(defmodule xcyc-a)\n(receive (after 300 nil))\n(require-one 'xcyc-b)\n(defn a () :a)\n")
+      (file/spit b-path
+        "(defmodule xcyc-b)\n(receive (after 300 nil))\n(require-one 'xcyc-a)\n(defn b () :b)\n")
+      (reflect/set-load-path (cons "/tmp" *load-path*))
+      (doseq (first-module ['xcyc-a 'xcyc-b])
+        (spawn (send me
+                 [:xcyc
+                   (try
+                     (do (require-one first-module) [(xcyc-a/a) (xcyc-b/b)])
+                     (catch e [:err (error-message e)]))])))
+      (let (results (mapv (range 2)
+                      (fn (_) (receive ([:xcyc r] r) (after 10000 :timeout)))))
+        (reflect/set-load-path saved-path)
+        (file/rm a-path)
+        (file/rm b-path)
+        (assert= results [[:a :b] [:a :b]]))))
+
   ;; A refer-all against a module ANOTHER process is mid-load is not a cycle. `require-one`
   ;; waits for that load and returns on its `provide`, which lands inside `%require-force` a
   ;; few instructions before the loader clears its marker — so a `(:use m)` evaluated in that

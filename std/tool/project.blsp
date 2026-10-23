@@ -729,8 +729,14 @@ only; `tests/` files come from [[collect-tests]].
                                 (conj failures [:failed "a load worker" reason])
                                 missing))))))
 
+;; A module the pool could not load by key, or whose load met a require cycle across two
+;; workers that the loader did not settle itself (`%require-cycle?` in the prelude) — either
+;; way the file is loaded sequentially after the pool, where a cycle is the ordinary
+;; single-process kind.
 (defn- project-load-missing? (e)
-  (includes? (str (if (map? e) (get e :message) e)) "not found"))
+  (let (message (str (if (map? e) (get e :message) e)))
+    (or (includes? message "not found")
+      (includes? message "a load cycle across processes"))))
 
 ;; Is this walk COLD and big enough for the pool? `entries` are `[file feature]`.
 (defn- project-load-parallel? (entries before)
