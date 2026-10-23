@@ -925,14 +925,15 @@ pub mod l1_stats {
     }
 }
 
-/// Outcome of the L1 attempt. When it declines, it hands back the target's runtime tag so
-/// the caller does not look the registry up a *second* time to decide whether a shared
-/// closure handle may cross (ADR-208) — that lookup sat on the busy-receiver send path.
+/// Outcome of the L1 attempt. When it declines, it hands back the target's mailbox, so the
+/// caller looks the registry up ONCE for everything the busy-receiver send path needs: the
+/// runtime tag that decides whether a shared closure handle may cross (ADR-208), and the
+/// mailbox the serialised message is then pushed to.
 enum LocalDelivery {
     /// Delivered into the parked receiver's heap; nothing further to do.
     Delivered,
-    /// Not delivered. `runtime_tag` is the target's, or `None` if there is no such process.
-    Declined { runtime_tag: Option<u64> },
+    /// Not delivered. `mailbox` is the target's, or `None` if there is no such process.
+    Declined { mailbox: Option<Arc<Mailbox>> },
 }
 
 /// **The L1 local-send fast path.** Try to deliver `v` to local process `pid` by copying
@@ -950,9 +951,20 @@ enum LocalDelivery {
 fn try_deliver_local(src: &Heap, pid: u64, v: Value) -> LocalDelivery {
     let Some(mb) = REGISTRY.get(pid) else {
         l1_stats::bump(&l1_stats::NO_PROC);
-        return LocalDelivery::Declined { runtime_tag: None };
+        return LocalDelivery::Declined { mailbox: None };
     };
-    let tag = mb.runtime_tag();
+    // A receiver that is not parked has no waiter to take, so the lock below would only
+    // find that out. `ST_WAITING` is set BEFORE a green process files itself as the
+    // waiter (`receive_match`'s capture suspend, then `park_on_receive`) and left only
+    // after the waiter is taken, so a parked receiver reads `ST_WAITING` here. The load is
+    // relaxed and may be stale, which is safe in both directions: a stale "waiting" takes
+    // the lock and finds no waiter (the decline below), and a stale "not waiting" sends
+    // the message down the wire path, whose `take_wake` takes and wakes any waiter that
+    // is there — the slow path is always correct, this only skips a lock that would fail.
+    if mb.status.load(Ordering::Relaxed) != ST_WAITING {
+        l1_stats::bump(&l1_stats::NO_WAITER);
+        return LocalDelivery::Declined { mailbox: Some(mb) };
+    }
     let mut st = crate::core::sync::lock(&mb.state);
     // One-shot reply alias (OTP 24): the receiver deactivated this ref, so the reply is
     // dropped here — before the cross-heap copy, before the queue, before any wake.
@@ -967,9 +979,8 @@ fn try_deliver_local(src: &Heap, pid: u64, v: Value) -> LocalDelivery {
     // Not parked → we have no safe access to its heap.
     let Some(mut proc) = st.waiter.take() else {
         l1_stats::bump(&l1_stats::NO_WAITER);
-        return LocalDelivery::Declined {
-            runtime_tag: Some(tag),
-        };
+        drop(st);
+        return LocalDelivery::Declined { mailbox: Some(mb) };
     };
     // Bounded (KI-56): this copy runs with the mailbox mutex held — that is what gives us
     // exclusive access to the parked receiver's heap — so its cost is a stall for every
@@ -991,9 +1002,8 @@ fn try_deliver_local(src: &Heap, pid: u64, v: Value) -> LocalDelivery {
         } else {
             &l1_stats::DECLINED
         });
-        return LocalDelivery::Declined {
-            runtime_tag: Some(tag),
-        };
+        drop(st);
+        return LocalDelivery::Declined { mailbox: Some(mb) };
     };
     let tag = leading_keyword(proc.heap_mut(), copied);
     let slot = proc.heap_mut().msg_root_add(copied);
@@ -1020,25 +1030,40 @@ fn deliver_envelope(pid: u64, env: Envelope) {
 }
 
 fn deliver_envelope_timed(pid: u64, env: Envelope) {
-    let mailbox = REGISTRY.get(pid);
-    if let Some(mb) = mailbox {
-        let mut st = crate::core::sync::lock(&mb.state);
-        // One-shot reply alias (OTP 24) — the wire-path twin of the check in
-        // `try_deliver_local`. Dropped here, so it never occupies a queue slot and no
-        // later selective receive ever re-scans it. See `DeadAliases`.
-        if !st.dead_aliases.is_empty()
-            && let Payload::Wire(msg) = &env.msg
-            && let Some(id) = message_alias(msg)
-            && st.dead_aliases.take(id)
-        {
-            return;
-        }
-        st.push(env);
-        mb.note_mailbox_bound(st.queue.len());
-        let wake = st.take_wake();
-        drop(st);
-        wake.fire(&mb);
+    if let Some(mb) = REGISTRY.get(pid) {
+        push_and_wake(&mb, env);
     }
+}
+
+/// Push `env` onto a mailbox the caller already holds and wake its owner — the tail of
+/// [`deliver_envelope`], for a sender whose declined L1 attempt already looked the
+/// mailbox up (`send`).
+///
+/// Holding the `Arc` rather than re-reading the registry admits one more interleaving
+/// than a lookup did, and it is the one a lookup already admitted: the owner dies after
+/// the mailbox was found and before the push. The push then lands in a mailbox that has
+/// left the registry; nothing scans it again (a death drains nothing from the queue —
+/// `deregister` reads only the status, and the root-ctx retire's `clear` runs once), so
+/// the message is dropped with the last `Arc`, which is what a send to a dead pid does.
+/// A dead process holds no waiter (it was running when it died, or its retire took the
+/// waiter), so the wake finds none to enqueue.
+fn push_and_wake(mb: &Mailbox, env: Envelope) {
+    let mut st = crate::core::sync::lock(&mb.state);
+    // One-shot reply alias (OTP 24) — the wire-path twin of the check in
+    // `try_deliver_local`. Dropped here, so it never occupies a queue slot and no
+    // later selective receive ever re-scans it. See `DeadAliases`.
+    if !st.dead_aliases.is_empty()
+        && let Payload::Wire(msg) = &env.msg
+        && let Some(id) = message_alias(msg)
+        && st.dead_aliases.take(id)
+    {
+        return;
+    }
+    st.push(env);
+    mb.note_mailbox_bound(st.queue.len());
+    let wake = st.take_wake();
+    drop(st);
+    wake.fire(mb);
 }
 
 /// Signal **both** wake paths for a mailbox we have just pushed to (or set a kill on):
@@ -1091,22 +1116,39 @@ pub fn send(heap: &Heap, target_val: Value, msg_val: Value) -> Result<(), LispEr
     let has_trace = heap.trace_context().is_some();
     #[cfg(not(feature = "dev-tools"))]
     let has_trace = false;
-    // Reused below as the shared-handle destination (ADR-208) when L1 declines, so the
-    // registry is consulted once for both purposes.
-    let mut dest_runtime: Option<u64> = None;
+    // Reused below when L1 declines, so the registry is consulted once for every purpose:
+    // the shared-handle destination (ADR-208), and the mailbox the message is pushed to.
+    let mut dest_mailbox: Option<Arc<Mailbox>> = None;
     if !has_trace
         && let Value::Pid { node, id } = target_val
         && crate::dist::is_local(node)
     {
         match try_deliver_local(heap, id, msg_val) {
             LocalDelivery::Delivered => return Ok(()),
-            LocalDelivery::Declined { runtime_tag } => dest_runtime = runtime_tag,
+            LocalDelivery::Declined { mailbox } => dest_mailbox = mailbox,
         }
     }
-    // `dest_runtime` was filled in by the declining L1 attempt above (one registry lookup for
-    // both jobs). It stays `None` for every other destination — a remote node, a name address,
-    // an unknown pid, or a traced send — which serialises exactly as it did before ADR-208.
-    let msg = to_message_to_runtime(heap, msg_val, dest_runtime)?;
+    // `dest_mailbox` was filled in by the declining L1 attempt above (one registry lookup for
+    // all its jobs). It stays `None` for every other destination — a remote node, a name
+    // address, an unknown pid, or a traced send — which serialises exactly as it did before
+    // ADR-208 and is routed below.
+    let msg = to_message_to_runtime(
+        heap,
+        msg_val,
+        dest_mailbox.as_ref().map(|mailbox| mailbox.runtime_tag()),
+    )?;
+    // A live local pid whose receiver was busy: push to the mailbox L1 already found,
+    // rather than letting `route` → `deliver` repeat the `is_local` test, the registry
+    // shard lock and the `Arc` clone. For a local pid `route` does nothing else (no
+    // counter, no trace, no guest bookkeeping — those are the remote branch), and it
+    // reports `true`, so `:send-errors` has nothing to raise. See `push_and_wake` for the
+    // receiver dying in between.
+    if let Some(mailbox) = dest_mailbox {
+        crate::perf_time!(ns_deliver, {
+            push_and_wake(&mailbox, Envelope::plain(msg))
+        });
+        return Ok(());
+    }
     // (dev-tools) Send-level causality (ADR-174): if the sender carries a debugger
     // trace context and the target is a LOCAL pid, ship the context alongside so the
     // receiver adopts it on pop. Context is per-runtime, so it never crosses nodes;
