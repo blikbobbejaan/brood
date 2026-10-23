@@ -141,18 +141,29 @@
       (file/spit b-path
         "(defmodule xcyc-b)\n(receive (after 300 nil))\n(require-one 'xcyc-a)\n(defn b () :b)\n")
       (reflect/set-load-path (cons "/tmp" *load-path*))
-      (doseq (first-module ['xcyc-a 'xcyc-b])
-        (spawn (send me
-                 [:xcyc
-                   (try
-                     (do (require-one first-module) [(xcyc-a/a) (xcyc-b/b)])
-                     (catch e [:err (error-message e)]))])))
-      (let (results (mapv (range 2)
-                      (fn (_) (receive ([:xcyc r] r) (after 10000 :timeout)))))
+      (let (pids (mapv ['xcyc-a 'xcyc-b]
+                   (fn (first-module)
+                     (spawn (send me
+                              [:xcyc
+                                (try
+                                  (do (require-one first-module) [(xcyc-a/a) (xcyc-b/b)])
+                                  (catch e [:err (error-message e)]))]))))
+            results (mapv (range 2)
+                      (fn (_) (receive ([:xcyc r] r) (after 10000 :timeout))))
+            ;; On a timeout, what the loader's registries held for the two keys — who claims
+            ;; each, who waits on it, whether it was provided — so a red run says why.
+            stuck (when (includes? results :timeout)
+                    {:pids pids
+                     :loading (seq/filter (%map-pairs *features-loading*)
+                                (fn (pair) (string/starts-with? (first pair) "xcyc")))
+                     :waiting (seq/filter (%map-pairs *features-waiting*)
+                                (fn (pair) (string/starts-with? (first pair) "xcyc")))
+                     :provided [(%registry-member? '*features* "xcyc-a")
+                                 (%registry-member? '*features* "xcyc-b")]}))
         (reflect/set-load-path saved-path)
         (file/rm a-path)
         (file/rm b-path)
-        (assert= results [[:a :b] [:a :b]]))))
+        (assert= [results stuck] [[[:a :b] [:a :b]] nil]))))
 
   ;; A refer-all against a module ANOTHER process is mid-load is not a cycle. `require-one`
   ;; waits for that load and returns on its `provide`, which lands inside `%require-force` a
