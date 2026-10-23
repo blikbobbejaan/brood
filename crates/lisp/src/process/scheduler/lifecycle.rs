@@ -157,7 +157,7 @@ pub(super) fn retire_root_ctx(pid: u64) {
     let Some(mailbox) = crate::dist::unregister_dead_pid_while(pid, || REGISTRY.remove(pid)) else {
         return; // already retired (an explicit `deregister_root_ctx`, then thread exit)
     };
-    let reason = Message::Keyword(value::intern(pk::NORMAL));
+    let reason = Message::Keyword(*pk::NORMAL_SYMBOL);
     if crate::process::sysmon::armed() {
         crate::process::sysmon::emit_exit(pid, &reason);
     }
@@ -205,7 +205,7 @@ pub(crate) fn exit_reason_phrase(reason: &Message) -> String {
 /// fires at the next reduction tick (`preempt`); any other reason is the soft
 /// signal that waits for the next `receive` iteration.
 pub(super) fn is_kill_reason(reason: &Message) -> bool {
-    matches!(reason, Message::Keyword(k) if *k == value::intern(pk::KILL))
+    matches!(reason, Message::Keyword(k) if *k == *pk::KILL_SYMBOL)
 }
 
 /// `(exit pid reason)` — deliver an exit signal to a green process (Erlang
@@ -224,7 +224,7 @@ pub fn exit(pid: u64, reason: Message) {
     // list has `:killed` and not `:kill`, so a deliberate kill printed a crash report.
     // Every other path here already defaults to `:killed`; this was the one that didn't.
     let reason = if hard {
-        Message::Keyword(value::intern(pk::KILLED))
+        Message::Keyword(*pk::KILLED_SYMBOL)
     } else {
         reason
     };

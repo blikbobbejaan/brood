@@ -913,7 +913,7 @@ fn run_one_timed(mut proc: Box<Process>) {
         // already deregistered — `deregister` is not idempotent (it would re-fire every
         // watcher and double-count the live-process gauge). No heap: the unwind dropped it.
         if crate::process::mailbox::is_alive(pid) {
-            deregister(pid, Message::Keyword(value::intern(pk::KILLED)), None);
+            deregister(pid, Message::Keyword(*pk::KILLED_SYMBOL), None);
         }
         // `finish_quantum`'s gauges (RUNNING / WORKER_BUSY) may be skewed if the panic
         // preceded it; both are documented as pure diagnostics, and squaring them up
@@ -1038,7 +1038,7 @@ fn handle_capture_outcome(
             // read `:normal`. The signal outlives the body, so take it as the reason;
             // absent one, the body really did finish normally.
             let pending = crate::core::sync::lock(&mailbox.state).take_kill();
-            proc.retire(pending.unwrap_or_else(|| Message::Keyword(value::intern(pk::NORMAL))));
+            proc.retire(pending.unwrap_or_else(|| Message::Keyword(*pk::NORMAL_SYMBOL)));
         }
         Ok(Ok(VmOutcome::Suspended(s))) => {
             // Store the parked continuation in the process, then park (the
@@ -1055,7 +1055,7 @@ fn handle_capture_outcome(
             if mailbox.pending_hard_kill() {
                 let reason = crate::core::sync::lock(&mailbox.state)
                     .take_kill()
-                    .unwrap_or_else(|| Message::Keyword(value::intern(pk::KILLED)));
+                    .unwrap_or_else(|| Message::Keyword(*pk::KILLED_SYMBOL));
                 proc.retire(reason);
                 return;
             }
@@ -1070,7 +1070,7 @@ fn handle_capture_outcome(
             // A hard `:kill` was observed at a loop-top safepoint. Take its reason.
             let reason = crate::core::sync::lock(&mailbox.state)
                 .take_kill()
-                .unwrap_or_else(|| Message::Keyword(value::intern(pk::KILLED)));
+                .unwrap_or_else(|| Message::Keyword(*pk::KILLED_SYMBOL));
             proc.retire(reason);
         }
         Ok(Err(e)) => {
@@ -1081,7 +1081,7 @@ fn handle_capture_outcome(
             if e.is_kill_signal() {
                 let reason = crate::core::sync::lock(&mailbox.state)
                     .take_kill()
-                    .unwrap_or_else(|| Message::Keyword(value::intern(pk::KILLED)));
+                    .unwrap_or_else(|| Message::Keyword(*pk::KILLED_SYMBOL));
                 proc.retire(reason);
                 return;
             }
@@ -1114,7 +1114,7 @@ fn handle_capture_outcome(
             let who = proc_descr(proc.pid);
             eprintln!("process {who} panicked");
             crate::cli_support::dump_process_death(&who, "panicked");
-            proc.retire(Message::Keyword(value::intern(pk::KILLED)));
+            proc.retire(Message::Keyword(*pk::KILLED_SYMBOL));
         }
     }
 }
@@ -1130,7 +1130,7 @@ fn park_on_receive(proc: Box<Process>, mailbox: &Arc<Mailbox>) {
     if mailbox.kill_pending.load(Ordering::Relaxed) {
         let reason = st
             .take_kill()
-            .unwrap_or_else(|| Message::Keyword(value::intern(pk::KILLED)));
+            .unwrap_or_else(|| Message::Keyword(*pk::KILLED_SYMBOL));
         drop(st);
         proc.retire(reason);
         // `proc` dropped here → its captured continuation + LOCAL heap are freed.

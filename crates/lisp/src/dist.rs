@@ -1934,12 +1934,7 @@ fn handle_inbound_frame(peer: Symbol, frame: Frame) {
             // an entry forever (see `record_remote_link`), so tell the peer instead — its
             // linked process gets `:noproc`, exactly what a LOCAL `link` to a dead pid gets.
             if !process::record_remote_link(to_pid, peer, from_pid) {
-                send_link_exit(
-                    peer,
-                    from_pid,
-                    to_pid,
-                    Message::Keyword(value::intern(pk::NOPROC)),
-                );
+                send_link_exit(peer, from_pid, to_pid, Message::Keyword(*pk::NOPROC_SYMBOL));
             }
         }
         Frame::Unlink { from_pid, to_pid } => {

@@ -359,9 +359,9 @@ pub fn emit_spawn(child: u64, parent: u64) {
 fn is_clean(reason: &Message) -> bool {
     match reason {
         Message::Keyword(k) => {
-            *k == value::intern(pk::NORMAL)
-                || *k == value::intern(pk::KILL)
-                || *k == value::intern(pk::KILLED)
+            *k == *pk::NORMAL_SYMBOL
+                || *k == *pk::KILL_SYMBOL
+                || *k == *pk::KILLED_SYMBOL
                 || *k == value::intern("shutdown")
         }
         Message::Vector(items) => {

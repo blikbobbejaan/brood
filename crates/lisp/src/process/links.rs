@@ -84,7 +84,7 @@ pub fn link(a: u64, b: u64) {
     deliver_exit_to(
         a,
         Message::local_pid(b),
-        Message::Keyword(value::intern(pk::NOPROC)),
+        Message::Keyword(*pk::NOPROC_SYMBOL),
     );
 }
 
@@ -165,17 +165,13 @@ fn traps_exit(pid: u64) -> bool {
 }
 
 fn is_normal(reason: &Message) -> bool {
-    matches!(reason, Message::Keyword(k) if *k == value::intern(pk::NORMAL))
+    matches!(reason, Message::Keyword(k) if *k == *pk::NORMAL_SYMBOL)
 }
 
 /// `[:EXIT <pid> <reason>]` — the message a trapping process receives. `dead_msg`
 /// is the dead peer's `Message::Pid` (its node may be local or remote).
 fn exit_message(dead_msg: Message, reason: Message) -> Message {
-    Message::Vector(vec![
-        Message::Keyword(value::intern(pk::EXIT)),
-        dead_msg,
-        reason,
-    ])
+    Message::Vector(vec![Message::Keyword(*pk::EXIT_SYMBOL), dead_msg, reason])
 }
 
 /// How many *local* peers `pid` is linked to (0 for a dead/unlinked pid).

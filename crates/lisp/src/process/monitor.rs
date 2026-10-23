@@ -316,7 +316,7 @@ fn fire_down_inner(w: Watcher, dying_pid: u64, reason: Message) {
 /// correct: the dying pid lives on us).
 fn down_message(pid_msg: Message, mref: u64, reason: Message) -> Message {
     Message::Vector(vec![
-        Message::Keyword(value::intern(pk::DOWN)),
+        Message::Keyword(*pk::DOWN_SYMBOL),
         Message::Ref(mref),
         pid_msg,
         reason,
@@ -365,7 +365,7 @@ pub(crate) fn add_monitor(target: u64, watcher: Watcher) {
         return;
     }
     drop(mons); // release before delivering — `fire_down` may need other locks
-    fire_down(watcher, target, Message::Keyword(value::intern(pk::NOPROC)));
+    fire_down(watcher, target, Message::Keyword(*pk::NOPROC_SYMBOL));
 }
 
 /// `(demonitor mref)` — drop the calling process's monitor with that ref. A `[:down …]`

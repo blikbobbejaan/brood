@@ -1078,7 +1078,7 @@ pub fn shutdown_runtime_parked(runtime: &Arc<crate::core::heap::RuntimeCode>) ->
             }
         };
         if let Some(p) = taken {
-            p.retire(Message::Keyword(crate::core::value::intern(pk::KILLED)));
+            p.retire(Message::Keyword(*pk::KILLED_SYMBOL));
             reaped += 1;
         }
     }

@@ -69,3 +69,27 @@ pub const NONODE: &str = "nonode";
 pub const STATUS_RUNNING: &str = "running";
 pub const STATUS_RUNNABLE: &str = "runnable";
 pub const STATUS_WAITING: &str = "waiting";
+
+// --- The same spellings, interned once. ---
+//
+// The exit and down paths build or compare against these on every death and every
+// monitor fire; `value::intern` is a per-thread string-map lookup each time. Symbols are
+// process-wide (one interner per OS process), so a once-initialised id is valid in every
+// runtime and on every thread — the shape `dist`'s `NONODE` already uses.
+
+use std::sync::LazyLock;
+
+use crate::core::value::{Symbol, intern};
+
+/// [`DOWN`], interned.
+pub static DOWN_SYMBOL: LazyLock<Symbol> = LazyLock::new(|| intern(DOWN));
+/// [`EXIT`], interned.
+pub static EXIT_SYMBOL: LazyLock<Symbol> = LazyLock::new(|| intern(EXIT));
+/// [`NORMAL`], interned.
+pub static NORMAL_SYMBOL: LazyLock<Symbol> = LazyLock::new(|| intern(NORMAL));
+/// [`KILL`], interned.
+pub static KILL_SYMBOL: LazyLock<Symbol> = LazyLock::new(|| intern(KILL));
+/// [`KILLED`], interned.
+pub static KILLED_SYMBOL: LazyLock<Symbol> = LazyLock::new(|| intern(KILLED));
+/// [`NOPROC`], interned.
+pub static NOPROC_SYMBOL: LazyLock<Symbol> = LazyLock::new(|| intern(NOPROC));
