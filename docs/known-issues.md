@@ -204,10 +204,12 @@ is red on `e9e1af8b` WITHOUT any sabotage, on both tries, every time:
 The host script ADR-425 added calls `(nodes)`, which is unbound there, so the host dies before
 it replies; the `translate_inbound` sabotage reads "no reply by name" too, and proves nothing
 until the script is fixed. (It looped 10/10 green on `7ed008cf`, before ADR-425 extended it.)
-The script now calls `(node/list)`, the name `(nodes)` has in std (fixed the same day). This
-entry stays open on that one guard until it is green without the sabotage AND red under the
-`translate_inbound` one — red at "no reply by name" with NO `unbound symbol` in the host's
-stderr, since that message alone is what the broken script printed too.
+The script now calls `(node/list)`, the name `(nodes)` has in std (`0315006e`), and CI is
+green on `0315006e` (run 39961582459), so the guard now passes with no sabotage. What is still
+missing, and the only thing keeping this entry open: the guard's sabotage run. Delete
+`guest.translate_inbound(&mut frame)` in `handle_inbound_frame` and confirm it goes red at "no
+reply by name" with NO `unbound symbol` in the host's stderr (that message alone is what the
+broken script printed too); loop the unsabotaged test a few times beside it.
 
 The first fix's guards, before ADR-425 replaced them, were verified the same way on `7ed008cf`:
 `guest_may_take` returning `true` turned `a_guest_cannot_take_a_full_peers_name` red ("a guest
