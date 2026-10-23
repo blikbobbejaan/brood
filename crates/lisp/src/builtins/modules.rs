@@ -36,6 +36,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         builtin_module,
     );
     primitives.def(
+        "%builtin-module?",
+        Arity::exact(1),
+        Sig::new(vec![sym.union(kw).union(string)], bool_ty),
+        &[],
+        "",
+        builtin_module_present,
+    );
+    primitives.def(
         "%builtin-module-file",
         Arity::exact(1),
         Sig::new(vec![sym.union(kw).union(string)], string.union(nil_ty)),
@@ -932,6 +940,27 @@ pub(super) fn builtin_module(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
         },
         None => Ok(Value::nil()),
     }
+}
+
+/// `(%builtin-module? name)` — is there a baked-in std module, or a module of a mounted
+/// release bundle, under `name`? Exactly when `%builtin-module` answers a string, without
+/// copying the source into the heap: `require` asks this of every module it loads, and on
+/// the stdlib-image path never reads the source at all.
+pub(super) fn builtin_module_present(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let v = arg(args, 0);
+    let Some(name) = embedded_name(heap, v) else {
+        return Err(LispError::wrong_type(
+            heap,
+            "%builtin-module?",
+            "module name",
+            v,
+        ));
+    };
+    let present = embedded_module(&name).is_some()
+        || crate::bundle::mounted()
+            .as_ref()
+            .is_some_and(|b| b.module_src(&name).is_some());
+    Ok(Value::Bool(present))
 }
 
 /// `(%builtin-module-file name)` — where a baked-in module's source was written: its

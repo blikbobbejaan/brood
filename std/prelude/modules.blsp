@@ -966,21 +966,27 @@ not a header, or does not read: the load itself reports a malformed one."
   ;; / `store-postgres/pool` regardless of load order. The load below uses the resolved key for
   ;; both its context (`%bundle-module-package`) and its source file. `src` is read under
   ;; `(when load-key …)`, so the source branch below knows `load-key` is a key.
-  (let (direct (%builtin-module key)
+  ;; Whether the module is embedded is asked with `%builtin-module?`, which copies nothing,
+  ;; and the source itself is read only when the image will not serve it: the image branch
+  ;; needs to know THAT the module is embedded, never what it says. `embedded` is `true` or
+  ;; nil, never `false` — the image branch reads it by nil-ness.
+  (let (direct (%builtin-module? key)
         load-key (if direct key (%bundle-resolve-bare key))
-        src (when load-key (if direct direct (%builtin-module load-key))))
+        embedded (when (and load-key (or direct (%builtin-module? load-key))) true)
+        hit (%image-section-for key)
+        from-image (and hit (%std-image-serves? (first hit) embedded))
+        src (when load-key (if from-image nil (%builtin-module load-key))))
     (cond
       ;; The IMAGE branch is tested FIRST — before the embedded-source branch below.
-      ;; Every baked-in std module has embedded source, so `src` matches for all of them
+      ;; Every baked-in std module has embedded source, so `embedded` holds for all of them
       ;; and this branch would be unreachable for exactly the modules a stdlib image exists
       ;; to serve. Preferring it is safe on its own terms: an image is only ever installed
       ;; after its fingerprint matched (the stdlib image keys on `system/build-id`, so it cannot
       ;; outlive the binary whose source it snapshotted), and a module with no section
       ;; still falls through to the source branch unchanged.
-      (let (hit (%image-section-for key))
-        (and hit (%std-image-serves? (first hit) src)))
-        (let ([img-path sec] (%image-section-for key))
-          ;; `src` non-nil means this key is an EMBEDDED module — the same condition under
+      from-image
+        (let ([img-path sec] hit)
+          ;; `embedded` means this key is an EMBEDDED module — the same condition under
           ;; which the source branch below reaches `%load-module-source`, which is what makes
           ;; a std module's functions reserved (ADR-166). A project's own image must not
           ;; reserve its functions: the program is allowed to redefine those.
@@ -1024,7 +1030,11 @@ not a header, or does not read: the load itself reports a malformed one."
                          nimpls
                          " impls\n"))))
           ;; Bindings last — the moment the module becomes reachable by a global hit.
-          (%image-load-section img-path (first sec) (second sec) (not (nil? src)) (->string key))
+          (%image-load-section img-path
+            (first sec)
+            (second sec)
+            (not (nil? embedded))
+            (->string key))
           (when (%getenv "BROOD_IMAGE_TRACE") (%eprint (str "[image] " (->string key) "\n")))
           ;; `provide` after all of it: it is what makes `require-one` return immediately for
           ;; every other process, so providing earlier publishes a module whose dependencies
@@ -1056,7 +1066,7 @@ not a header, or does not read: the load itself reports a malformed one."
       ;; module coexist in one flat bundle (dev/release parity). `%bundle-module-package`
       ;; picks the context; it returns nil for std and for a bundle's unrooted root-project
       ;; module (both load at ROOT). In a non-bundle dev run this branch only ever fires for
-      ;; std (a dep loads from disk — `%builtin-module` returns nil), and std namespaces are
+      ;; std (a dep loads from disk — `%builtin-module?` answers false), and std namespaces are
       ;; never packages, so the check is a no-op there.
         (do
           (let (prefix (%bundle-module-package load-key)
