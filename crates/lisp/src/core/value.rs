@@ -51,6 +51,12 @@ static IDS: LazyLock<Mutex<HashMap<String, Symbol>>> = LazyLock::new(|| Mutex::n
 // id already costs, so the hot path is an indexed load of a `u64` where it was a `u32`.
 static NAME_HASHES: LazyLock<boxcar::Vec<u64>> = LazyLock::new(boxcar::Vec::new);
 
+// How many names containing a `/` have been minted, bumped under the `IDS` lock after the
+// new name is in both tables. A reader that found `a/b` absent and then reads the same
+// count again knows no qualified name was minted in between, so `a/b` is still absent —
+// without taking the lock to ask (see `qualified_names_minted`).
+static QUALIFIED_NAMES_MINTED: AtomicU64 = AtomicU64::new(0);
+
 // Recover from a poisoned `IDS` lock rather than letting one panicking thread
 // wedge symbol interning everywhere (the tables are append-only, so a recovered
 // guard is consistent).
@@ -112,8 +118,21 @@ fn intern_global(name: &str) -> Symbol {
     // hash of `NAMES[id]` — see the table's own note (KI-166).
     let hashed = NAME_HASHES.push(hash_name(&owned)) as Symbol;
     debug_assert_eq!(id, hashed, "NAMES and NAME_HASHES must stay in lockstep");
+    let qualified = owned.contains('/');
     ids.insert(owned, id);
+    if qualified {
+        QUALIFIED_NAMES_MINTED.fetch_add(1, Ordering::Release);
+    }
     id
+}
+
+/// How many names containing a `/` this process has interned so far. Monotonic: when two
+/// reads return the same count, no qualified name was minted between them, so an
+/// [`intern_existing`] that missed a qualified spelling after the first read would still
+/// miss. Lets a caller remember "`ns/name` is not a symbol" without re-asking under the
+/// `IDS` lock, and without interning the spelling just to look it up.
+pub fn qualified_names_minted() -> u64 {
+    QUALIFIED_NAMES_MINTED.load(Ordering::Acquire)
 }
 
 /// FNV-1a over the spelling's bytes. Deterministic across processes and builds — which is
@@ -199,6 +218,11 @@ pub fn symbol_name_opt(sym: Symbol) -> Option<&'static str> {
 /// `dist::connect`'s pre-dial de-dup) that don't want to grow the interner with
 /// a name that may never be used as a value.
 pub fn intern_existing(name: &str) -> Option<Symbol> {
+    // This thread's cache holds only names already interned, so a hit answers without the
+    // lock; a miss may still be a name another thread minted, which only the table knows.
+    if let Ok(Some(id)) = CACHE.try_with(|c| c.borrow().get(name).copied()) {
+        return Some(id);
+    }
     ids().get(name).copied()
 }
 

@@ -283,6 +283,23 @@ impl Heap {
         answer
     }
 
+    /// Could [`root_qualified_ref`](Self::root_qualified_ref) root a name `ns_name/…` — is
+    /// a package active whose modules include `ns_name`? Asked without interning `ns_name`:
+    /// the compile namespace is the one the resolver passes, so its symbol answers; any
+    /// other spelling answers yes whenever a package is active, which only costs the caller
+    /// the intern it would have paid anyway.
+    pub(crate) fn package_may_root(&self, ns_name: &str) -> bool {
+        let Some(cold) = self.cold().filter(|c| c.package_prefix.is_some()) else {
+            return false;
+        };
+        match cold.compile_ns {
+            Some(ns) if crate::core::value::symbol_name_ref(ns) == ns_name => {
+                cold.package_modules.contains(&ns)
+            }
+            _ => true,
+        }
+    }
+
     /// [`root_qualified_ref`](Self::root_qualified_ref) without the memo — the rule itself.
     fn root_qualified_ref_uncached(&self, sym: Symbol) -> Option<Symbol> {
         let prefix = self.package_prefix()?;

@@ -816,9 +816,8 @@ pub(super) fn resolve_sym(
     }
     // Own namespace first (a same-named local def shadows an import), then a
     // `(:use …)` import, then root/prelude fall-through (left bare).
-    let qsym = qualified_in(ns_name, s, name);
-    if heap.ns_knows_name(s) || heap.env_get(value::EnvId::GLOBAL, qsym).is_some() {
-        qsym
+    if let Some(own) = own_definition(heap, s, ns_name, name) {
+        own
     } else if let Some(candidates) = heap.ambiguous_import_of(s) {
         // Imported bare from two or more modules (ADR-235). A same-namespace def or a
         // local (checked above / at the top) would have shadowed it; reaching here means
@@ -841,35 +840,124 @@ pub(super) fn resolve_sym(
         // catches a name bound NOWHERE: either this namespace's, defined by a later
         // `eval` (the case worth fixing), or a typo, which now reports the qualified
         // spelling. Deliberately after the import branch, so `(:use …)` still wins.
-        qsym
+        qualified_in(ns_name, s, name)
     } else {
         s
     }
 }
 
-thread_local! {
-    /// `ns/bare` per bare symbol, for the namespace named first: every free bare reference
-    /// and every macro head asks [`resolve_sym`] for its own-namespace spelling, and one file
-    /// resolves under one namespace, so the spelling was formatted and re-interned per
-    /// reference. A different namespace clears it. Exact: the symbol is a function of the
-    /// two spellings, and an interned symbol is never freed.
-    static QUALIFIED_IN_NS: std::cell::RefCell<(String, crate::core::heap::SymbolMap<value::Symbol>)> =
-        std::cell::RefCell::new((String::new(), crate::core::heap::SymbolMap::default()));
+/// `ns/name` when this namespace defines the bare `s` (spelled `name`): the file's pre-scan
+/// names it, or a global already binds `ns/name`.
+///
+/// The global half asks without interning: a free bare reference to a prelude name (`first`,
+/// `map`) is the common case, and interning `mod/first` just to find it unbound grew the
+/// never-freed symbol table by one dead name per (namespace, prelude name) pair. A spelling
+/// that is not a symbol binds nothing — no global, staged load write or dynamic binding can
+/// key on it — so absence of the symbol is absence of the binding. The one lookup that could
+/// still hit is ADR-070's rooted fallback (`ns/name` → `prefix/ns/name`, inside a package
+/// whose modules include `ns`); there the spelling is interned as before.
+fn own_definition(
+    heap: &Heap,
+    s: value::Symbol,
+    ns_name: &str,
+    name: &str,
+) -> Option<value::Symbol> {
+    if heap.ns_knows_name(s) {
+        return Some(qualified_in(ns_name, s, name));
+    }
+    let qualified = if heap.package_may_root(ns_name) {
+        qualified_in(ns_name, s, name)
+    } else {
+        existing_qualified_in(ns_name, s, name)?
+    };
+    heap.env_get(value::EnvId::GLOBAL, qualified)
+        .is_some()
+        .then_some(qualified)
 }
 
-/// The symbol spelled `ns_name/name`, `name` being `bare`'s spelling.
-fn qualified_in(ns_name: &str, bare: value::Symbol, name: &str) -> value::Symbol {
+/// What the memo knows about the spelling `ns/bare`.
+#[derive(Clone, Copy)]
+enum QualifiedSpelling {
+    /// It is this symbol — exact for good, since an interned symbol is never freed.
+    Interned(value::Symbol),
+    /// It was not a symbol when [`value::qualified_names_minted`] read this count; still
+    /// true while the count is unchanged.
+    Absent(u64),
+}
+
+/// The per-thread memo behind [`qualified_in`] and [`existing_qualified_in`].
+#[derive(Default)]
+struct QualifiedMemo {
+    /// The namespace the entries are for.
+    namespace: String,
+    /// Per bare symbol, what its `namespace/bare` spelling is.
+    by_bare: crate::core::heap::SymbolMap<QualifiedSpelling>,
+    /// Reused to spell `namespace/bare` for a lookup, so a re-check allocates nothing.
+    spelling: String,
+}
+
+thread_local! {
+    /// `ns/bare` per bare symbol, for the namespace named last: every free bare reference
+    /// and every macro head asks [`resolve_sym`] for its own-namespace spelling, and one file
+    /// resolves under one namespace, so the spelling was formatted and re-interned per
+    /// reference. A different namespace clears it.
+    static QUALIFIED_IN_NS: std::cell::RefCell<QualifiedMemo> =
+        std::cell::RefCell::new(QualifiedMemo::default());
+}
+
+/// Run `body` over the memo, cleared first if it holds another namespace's entries.
+fn with_qualified_memo<T>(ns_name: &str, body: impl FnOnce(&mut QualifiedMemo) -> T) -> T {
     QUALIFIED_IN_NS.with(|memo| {
         let mut memo = memo.borrow_mut();
-        let (memo_ns, by_bare) = &mut *memo;
-        if memo_ns != ns_name {
-            memo_ns.clear();
-            memo_ns.push_str(ns_name);
-            by_bare.clear();
+        if memo.namespace != ns_name {
+            memo.namespace.clear();
+            memo.namespace.push_str(ns_name);
+            memo.by_bare.clear();
         }
-        *by_bare
-            .entry(bare)
-            .or_insert_with(|| value::intern(&format!("{ns_name}/{name}")))
+        body(&mut memo)
+    })
+}
+
+/// The symbol spelled `ns_name/name`, `name` being `bare`'s spelling — interned if it is not
+/// one yet.
+fn qualified_in(ns_name: &str, bare: value::Symbol, name: &str) -> value::Symbol {
+    with_qualified_memo(ns_name, |memo| {
+        if let Some(QualifiedSpelling::Interned(symbol)) = memo.by_bare.get(&bare) {
+            return *symbol;
+        }
+        let symbol = value::intern(&format!("{ns_name}/{name}"));
+        memo.by_bare
+            .insert(bare, QualifiedSpelling::Interned(symbol));
+        symbol
+    })
+}
+
+/// The symbol spelled `ns_name/name` if one exists, never interning it. A remembered absence
+/// is re-asked only after some qualified name has been minted since, so a namespace's
+/// references to prelude names take the interner's lock once each, not once per reference.
+fn existing_qualified_in(ns_name: &str, bare: value::Symbol, name: &str) -> Option<value::Symbol> {
+    with_qualified_memo(ns_name, |memo| {
+        match memo.by_bare.get(&bare) {
+            Some(QualifiedSpelling::Interned(symbol)) => return Some(*symbol),
+            Some(QualifiedSpelling::Absent(count)) if *count == value::qualified_names_minted() => {
+                return None;
+            }
+            _ => {}
+        }
+        // Read the count BEFORE the lookup: a name minted after this read moves the count,
+        // so the absence recorded below is re-asked rather than trusted.
+        let count = value::qualified_names_minted();
+        memo.spelling.clear();
+        memo.spelling.push_str(ns_name);
+        memo.spelling.push('/');
+        memo.spelling.push_str(name);
+        let found = value::intern_existing(&memo.spelling);
+        let remembered = match found {
+            Some(symbol) => QualifiedSpelling::Interned(symbol),
+            None => QualifiedSpelling::Absent(count),
+        };
+        memo.by_bare.insert(bare, remembered);
+        found
     })
 }
 
