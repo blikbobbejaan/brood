@@ -31,6 +31,16 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 - `nest format --changed` asks `vcs/changed`, so it works in any registered VCS, and in git
   takes the commits not yet upstream as well as the uncommitted edits — diffed from where
   the branch left its upstream, so commits that landed there since are not counted.
+- A guest link's node name is now its host's to mint (ADR-425): whatever a guest calls itself,
+  the host registers it as `guest~<n>.<incarnation>~<claim>` — what `(nodes)` lists and what
+  its pids carry there — and translates its pids at the link, so guest clients need no change.
+  `node/peer-grant` adds `:claimed`, the name the guest gave itself. `node/start` refuses a
+  name starting `guest~`, and a peer claiming one is refused as a full link.
+
+**Security.**
+- A guest could still claim the node name of a full peer that had never linked to its host,
+  and receive what that host sent to a pid of the peer (KI-287's last case). A guest is never
+  registered under a name it chose now, so this cannot happen (ADR-425).
 
 ## v0.43.0 — BLAKE3, workers that cannot be starved, and module loads that park
 

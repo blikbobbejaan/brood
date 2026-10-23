@@ -2897,7 +2897,7 @@ fn a_guest_link_reaches_what_it_was_given_and_ships_no_code() {
 (node/grant-guest "guest-cookie-0123456789" {{:names [:echo] :as "alice"}})
 (defn serve ()
   (receive
-    ([:hi from] (do (send from [:pong (self) (node/peer-grant from)]) (serve)))
+    ([:hi from] (do (send from [:pong (self) (node/peer-grant from) (nodes) from]) (serve)))
     ([:ping from] (do (send from [:pong-by-pid]) (serve)))
     ([:run f reply] (do (send reply [:ran (f)]) (serve)))
     (_ (serve))))
@@ -2910,8 +2910,11 @@ fn a_guest_link_reaches_what_it_was_given_and_ships_no_code() {
 (node/start :b "127.0.0.1:{port_b}" "guest-cookie-0123456789")
 (node/connect "a@127.0.0.1:{port_a}")
 (send {{:name :echo :node :a@127.0.0.1}} [:hi (self)])
-(def reply (receive ([:pong p grant] [p grant]) (after 30000 (throw "no reply by name"))))
+(def reply (receive ([:pong p grant ns me] [p grant ns me]) (after 30000 (throw "no reply by name"))))
 (io/puts (str "AS=" (:as (second reply))))
+(io/puts (str "CLAIMED=" (:claimed (second reply))))
+(io/puts (str "HOSTNODES=" (nth reply 2)))
+(io/puts (str "SELF-BACK=" (= (nth reply 3) (self))))
 (send {{:name :secret :node :a@127.0.0.1}} [:x])
 (node/spawn :a@127.0.0.1 (io/puts "SPAWNED"))
 (send (first reply) [:run (fn () 42) (self)])
@@ -2947,6 +2950,28 @@ fn a_guest_link_reaches_what_it_was_given_and_ships_no_code() {
     assert!(
         stdout.contains("AS=alice"),
         "the grant names the guest.\n{report}"
+    );
+    // ADR-425: the host knows the guest by a name it minted, never the `b@…` it claimed,
+    // and its pids cross the link in each side's own spelling — the client's own pid,
+    // echoed back by the host, is still its own.
+    let line = |prefix: &str| {
+        stdout
+            .lines()
+            .find(|l| l.starts_with(prefix))
+            .unwrap_or("")
+            .to_string()
+    };
+    assert!(
+        line("HOSTNODES=").contains("guest~"),
+        "the host registers a guest under a name it minted.\n{report}"
+    );
+    assert!(
+        line("CLAIMED=").contains("b@127.0.0.1"),
+        "peer-grant tells the host what the guest called itself.\n{report}"
+    );
+    assert!(
+        line("SELF-BACK=").contains("true"),
+        "a guest's own pid comes back to it as its own.\n{report}"
     );
     assert!(
         stdout.contains("CLOSURE-DROPPED"),

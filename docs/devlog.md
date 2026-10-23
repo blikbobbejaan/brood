@@ -3382,3 +3382,14 @@ into two bodies did the same. One helper, `copy_form`, now copies whatever a rew
 and the walk gives a quote form cells of its own. Found by reading, not observed; the guards
 (`one_pair_one_position.rs`, a `linmap_soundness_test` case, `vm_body_identity_test.blsp`) were
 not run on this machine and still need running and sabotaging on the test machine.
+
+2026-10-23 (ADR-425, a guest's node name is its host's): KI-287's check could not refuse a
+name that is a full peer's elsewhere in the cluster and has never linked here. Rather than a
+reserved namespace the client must claim in (a new client, and names still the guest's to
+choose) or a name assigned in the handshake (the responder only knows it is a guest after both
+`Hello`s, and the guest would have to rename itself), the host mints `guest~<n>.<incarnation>~
+<claim>` for each guest link and translates the guest's pids between the two spellings at the
+link — no wire change, every existing client works. No full node may use `guest~`, so the
+collision is gone by construction, and `guest_may_take` / `FULL_PEER_NAMES` with it.
+`node/peer-grant` adds `:claimed`. Guards written, not run here; the sabotage for each is in
+KI-287.
