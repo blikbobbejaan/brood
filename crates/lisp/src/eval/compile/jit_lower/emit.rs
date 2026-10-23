@@ -1511,7 +1511,8 @@ pub(super) fn table_prim(
 }
 
 /// Runtime-dispatched `=` on materialised operands — the codegen twin of the VM's
-/// keyword/symbol fast path in `prim2_inline_exec`. Cases, by runtime tags:
+/// inline `=` in `prim2_inline_exec` (Int × Int, then `Heap::equal` for anything but a
+/// seq-view). Cases, by runtime tags:
 ///   * Int × Int → payload compare (the same two tag-checks the old int path paid);
 ///   * either side Sym/Keyword → interned identity: equal iff tags equal AND ids
 ///     equal (a keyword/symbol equals nothing but its same-tag same-id self — never

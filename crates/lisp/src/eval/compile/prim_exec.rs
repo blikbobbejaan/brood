@@ -147,23 +147,17 @@ pub(crate) fn prim2_inline_exec(
     }
     // Int overflow, an inexact or ÷0 `%div`, or Cons with Int operands → the
     // native owns it (prim_apply's Int×Int arm is this same table).
-    // Interned-immediate `=` fast path: `(%eq (type-of x) :kw)` is the single most
-    // common non-int comparison in Brood — every type predicate (`empty?`/`nil?`/
-    // `cond`/…) runs it, and `type-of` yields a `Keyword`. Comparing two keywords
-    // (or two symbols) is interned-id equality, exactly what `heap.equal` returns
-    // for them, with no heap touch and no native call. Without this, each one misses
-    // both `prim2_int_fast` and `prim_apply` (numeric-only) and takes the full
-    // `prim2_dispatch_rooted` slow path.
-    if op == PrimOp::Eq {
-        let eq = match (x.unpack(), y.unpack()) {
-            (ValueRef::Keyword(a), ValueRef::Keyword(b)) => Some(a == b),
-            (ValueRef::Sym(a), ValueRef::Sym(b)) => Some(a == b),
-            _ => None,
-        };
-        if let Some(r) = eq {
-            crate::perf_bump!(prim2_inline);
-            return Ok(Some(Value::boolean(r)));
-        }
+    // Every other `=` answers inline too. The guard above proved the head still resolves
+    // (through `=`'s passthrough arm) to the `%eq` native, and `%eq` (`prim_eq`) is
+    // exactly `heap.equal` unless an operand is a lazy seq-view — the one case it needs an
+    // evaluator for, which still defers. The commonest such compare is `(%eq (type-of x)
+    // :kw)` from every type predicate (keyword identity inside `equal`); strings, floats
+    // and structural values used to take the whole `prim2_dispatch_rooted` path (`=`
+    // looked up, dispatched, `%eq` looked up, the native called) for the same answer.
+    // The JIT's residual `=` (`brood_rt_equal`, KI-132) is this same rule.
+    if op == PrimOp::Eq && !matches!(x, Value::SeqView(_)) && !matches!(y, Value::SeqView(_)) {
+        crate::perf_bump!(prim2_inline);
+        return Ok(Some(Value::boolean(heap.equal(x, y))));
     }
     // Float, BigInt, overflow, Cons, Div, VectorRef — the cold, type-coercing
     // path (not inlined, so it stays out of exec_chunk's instruction footprint).
