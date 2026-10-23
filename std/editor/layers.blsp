@@ -309,12 +309,36 @@ prefix merge), so a layer owns its chord.
     (get (editor/layers/active-keymap {:layers (list {:keymap {:x 'one}} {:keymap {:x 'two :y 'three}})}) :y)   → three"
   (apply merge (cons {} (reverse (layer-collect ctx :keymap)))))
 
+(defn layer-binding (ctx key)
+  "What `key` is bound to in the context's active keymap — the same answer as
+`(get (active-keymap ctx) key)`, without building the merged map: the first layer whose
+keymap has `key` owns it (an explicit `nil` binding included, as the merge keeps it).
+What dispatch asks on every keystroke; the merge is for help text that wants the whole map.
+
+    (editor/layers/layer-binding {:layers (list {:keymap {:x 'one}} {:keymap {:x 'two :y 'three}})} :y)   → three"
+  (layer-binding-in (layers-list ctx) key))
+
+(defn- layer-binding-in (layers key)
+  (if (empty? layers)
+    nil
+    (let (keymap (get (layers-resolve (first layers)) :keymap))
+      (if (and (map? keymap) (contains? keymap key))
+        (get keymap key)
+        (layer-binding-in (rest layers) key)))))
+
+(defn layer-resolve (ctx pending key)
+  "`keymap-resolve` over the context's layers: `[binding pending']` for `key`, looked up
+in `pending` mid-chord, else through [[layer-binding]].
+
+    (editor/layers/layer-resolve {:layers (list {:keymap {:x 'one}})} nil :x)   → [one nil]"
+  (if (nil? pending) (keymap-classify (layer-binding ctx key)) (keymap-resolve pending nil key)))
+
 (defn layer-dispatch (ctx pending key fallback)
   "One keystroke through the context's composed active keymap, via `keymap-step`:
 returns `[ctx' pending']`. The bridge from layers to keymap — compose, then step.
 
     (get (first (editor/layers/layer-dispatch {} nil :z (fn (s k) (assoc s :key k)))) :key)   → :z"
-  (keymap-step (active-keymap ctx) pending ctx key fallback))
+  (keymap-run (layer-resolve ctx pending key) pending ctx key fallback))
 
 ;; ============================================================================
 ;; Phase 2 — buffer-type binding
@@ -499,6 +523,19 @@ precedence; a layer still owns its chord).
     (get (editor/layers/scope-keymap [{:layers (list {:keymap {:x 'buf}})} {:layers (list {:keymap {:x 'app :y 'quit}})}]) :y)   → quit"
   (active-keymap {:layers (compose-layers ctxs)}))
 
+(defn scope-binding (ctxs key)
+  "[[layer-binding]] across several scopes `ctxs` (first = highest precedence): what
+`(get (scope-keymap ctxs) key)` answers, without merging every layer's keymap per key.
+
+    (editor/layers/scope-binding [{:layers (list {:keymap {:x 'buf}})} {:layers (list {:keymap {:x 'app}})}] :x)   → buf"
+  (layer-binding-in (compose-layers ctxs) key))
+
+(defn scope-resolve (ctxs pending key)
+  "[[layer-resolve]] across several scopes `ctxs`: `[binding pending']` for `key`.
+
+    (editor/layers/scope-resolve [{:layers (list {:keymap {:x 'buf}})}] nil :x)   → [buf nil]"
+  (if (nil? pending) (keymap-classify (scope-binding ctxs key)) (keymap-resolve pending nil key)))
+
 (defn- scope-shadow-of (layers i k)
   "The `:name` of the highest-precedence layer BEFORE index `i` whose keymap owns first
 key `k`, or nil when nothing above binds it.
@@ -548,7 +585,7 @@ of `ctxs` so its window-level layers compose with the focused buffer's. Returns
 `[state' pending']`. The multi-scope counterpart to `layer-dispatch`.
 
     (first (editor/layers/scope-dispatch [{} {}] 0 nil :z (fn (s k) (inc s))))   → 1"
-  (keymap-step (scope-keymap ctxs) pending state key fallback))
+  (keymap-run (scope-resolve ctxs pending key) pending state key fallback))
 
 (defn switch-focus (from to)
   "Move focus from context `from` to `to`: fan `:on-blur` across `from`'s layers and

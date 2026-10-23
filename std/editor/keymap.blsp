@@ -81,12 +81,20 @@ Pure — no eval, no state, nothing to mock.
 
     (editor/keymap/keymap-resolve {:a 'save} nil :a)   → [save nil]
     (editor/keymap/keymap-resolve {:a 'save} nil :zz)  → [nil nil]"
-  (let (active (if (nil? pending) keymap pending)
-        binding (get active key))
-    (cond
-      (map? binding) [nil binding]
-      (nil? binding) [nil nil]
-      else [binding nil])))
+  (keymap-classify (get (if (nil? pending) keymap pending) key)))
+
+(defn keymap-classify (binding -> vector)
+  "What one looked-up `binding` means to a chord walk, as [[keymap-resolve]] reports it:
+`[nil binding]` for a nested keymap (a prefix entered), `[nil nil]` for nothing bound,
+`[binding nil]` for a completed chord. For a caller that finds the binding its own way
+— `editor/layers` asks its layers one at a time rather than merging their keymaps.
+
+    (editor/keymap/keymap-classify 'save)   → [save nil]
+    (editor/keymap/keymap-classify nil)     → [nil nil]"
+  (cond
+    (map? binding) [nil binding]
+    (nil? binding) [nil nil]
+    else [binding nil]))
 
 (defn keymap-step (keymap pending state key fallback)
   "One keystroke through a (possibly chorded) `keymap`, returning `[state' pending']`
@@ -103,7 +111,16 @@ up in `pending` when mid-chord, else in `keymap`:
     dropped and the chord resets (Emacs-style \"undefined\"), so a partial chord
     never self-inserts via the fallback.
 Pure apart from the symbol resolution; testable without a terminal."
-  (let ([binding entered] (keymap-resolve keymap pending key))
+  (keymap-run (keymap-resolve keymap pending key) pending state key fallback))
+
+(defn keymap-run (resolved pending state key fallback)
+  "The running half of [[keymap-step]]: act on `resolved`, a `[binding pending']` that
+[[keymap-resolve]] (or [[keymap-classify]]) produced for `key`, returning `[state'
+pending']` by the same rules. A caller that resolves a key without a merged keymap in
+hand — `editor/layers/layer-dispatch` — steps through this.
+
+    (first (editor/keymap/keymap-run [nil nil] nil 1 :z (fn (s k) (inc s))))   → 2"
+  (let ([binding entered] resolved)
     (cond
       (not (nil? entered)) [state entered]
       (nil? binding)
