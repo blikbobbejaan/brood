@@ -55,7 +55,10 @@ interleave either — the last rename wins whole. For a file other processes rea
 rewritten: a cache, a record beside an image, a config another tool polls.
 
     (file/spit-atomic \"state.edn\" (pr-str {:n 1}))   ;=> nil; state.edn holds the whole map"
-  (let (tmp (str path "." (rand/token 8) ".tmp"))
+  ;; The suffix comes from the kernel's OS RNG directly, not `rand/token`: `file` is loaded by
+  ;; nearly everything (the test framework among them), and a module dependency here would ride
+  ;; along into each of their load closures.
+  (let (tmp (str path "." (string/join (map (seq (%random-bytes 8)) ->string) "-") ".tmp"))
     (file/spit tmp text)
     (try
       (file/rename tmp path)
