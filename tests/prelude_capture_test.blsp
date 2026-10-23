@@ -178,8 +178,9 @@
       (%load-string
         "(defmodule capture-probe-spy (:shadow spy))
          (defn- spy (x) [:mine x])
-         [(spy 1) (with-out-str (/spy 3))]")
-      [[:mine 1] "spy: 3\n"]))
+         [(spy 1) (/spy 3)]")
+      ;; the macro returns its expression's value; the module's function would give [:mine 3]
+      [[:mine 1] 3]))
 
   ;; The same pass covers a MODULE's macro: its template's root heads are escaped too, so a
   ;; consumer that defines `first` does not capture a library macro that calls it.
