@@ -899,7 +899,20 @@ fn all_modules() -> impl Iterator<Item = &'static EmbeddedModule> {
 /// The baked-in module registered under `key`, core table first then dev/tooling
 /// (absent in a lean release runtime).
 fn embedded_module(key: &str) -> Option<&'static EmbeddedModule> {
-    all_modules().find(|m| m.key == key)
+    // An index over the tables, built once: `%builtin-module`, `is_embedded_module` and
+    // `is_std_namespace` ask this per require and per checked reference, and a linear
+    // compare over every module answered each. The first table entry for a key wins, as
+    // the scan's `find` did.
+    static BY_KEY: std::sync::LazyLock<
+        std::collections::HashMap<&'static str, &'static EmbeddedModule>,
+    > = std::sync::LazyLock::new(|| {
+        let mut by_key = std::collections::HashMap::new();
+        for module in all_modules() {
+            by_key.entry(module.key).or_insert(module);
+        }
+        by_key
+    });
+    BY_KEY.get(key).copied()
 }
 
 /// Every baked-in std module as `(key, source)`, core table first — the scanner behind the

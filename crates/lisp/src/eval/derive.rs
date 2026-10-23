@@ -837,6 +837,16 @@ pub fn register_image_sigs_raw(bytes: Vec<u8>) {
 
 /// Decode the set-aside footer bytes into the index, once — the first query pays it.
 fn settle_raw() {
+    // Every signature query passes here, and after the first nothing is left to settle: a
+    // shared read answers that, where taking the write lock serialised every query.
+    if image_sigs()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .raw
+        .is_none()
+    {
+        return;
+    }
     let raw = {
         let mut sigs = image_sigs().write().unwrap_or_else(|e| e.into_inner());
         sigs.raw.take()
@@ -855,7 +865,7 @@ fn settle_raw() {
 /// one's regions, like `image_heap_sig`.
 fn ensure_module_indexed(heap: &Heap, sym: Symbol) {
     settle_raw();
-    let name = value::symbol_name(sym);
+    let name = value::symbol_name_ref(sym);
     let Some(slash) = name.rfind('/') else {
         return;
     };
