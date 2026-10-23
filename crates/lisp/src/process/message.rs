@@ -689,9 +689,12 @@ fn copy_value_inner<T: CopyTarget>(
         },
         Value::Pair(_) => {
             // Walk the spine charging per cons cell, so the L1 copy declines a huge list
-            // before paying its whole O(n) spine under the mailbox lock.
+            // before paying its whole O(n) spine under the mailbox lock — and copy each
+            // head as its cell is visited, so the walk builds one `Vec` rather than the
+            // heads and then their copies. The budget is charged the same nodes either
+            // way (one per cell, then the head's own), so it bounds the same work.
             // A dotted list's tail rides as one more item (`dotted` knows it is the tail).
-            let mut items = Vec::new();
+            let mut out = Vec::new();
             let mut cursor = v;
             let dotted = loop {
                 match cursor.unpack() {
@@ -699,19 +702,15 @@ fn copy_value_inner<T: CopyTarget>(
                     crate::core::value::ValueRef::Pair(pair) => {
                         target.charge()?;
                         let (head, tail) = src.pair(pair);
-                        items.push(head);
+                        out.push(copy_value(target, src, head, depth + 1)?);
                         cursor = tail;
                     }
                     _ => {
-                        items.push(cursor);
+                        out.push(copy_value(target, src, cursor, depth + 1)?);
                         break true;
                     }
                 }
             };
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                out.push(copy_value(target, src, item, depth + 1)?);
-            }
             if dotted {
                 target.dotted(out)
             } else {
@@ -1426,13 +1425,27 @@ pub fn from_message(heap: &mut Heap, m: &Message) -> Value {
 
 fn from_message_timed(heap: &mut Heap, m: &Message) -> Value {
     if m.nests() {
-        grow(|| from_message_inner(heap, m))
+        grow(|| from_message_inner(heap, m, 0))
     } else {
-        from_message_inner(heap, m)
+        from_message_inner(heap, m, 0)
     }
 }
 
-fn from_message_inner(heap: &mut Heap, m: &Message) -> Value {
+/// Rebuild a container's element, `depth` levels below the message's root. The root
+/// made sure of room ([`grow`]); below it the stack is re-checked every 32 levels — the
+/// rule [`copy_value`] uses on the way in — rather than at every nested container, which
+/// read the remaining stack (and, with `perf-stats`, the clock, timing each element
+/// inside its parent's own `ns_msg_in`) once per container. A closure always checks: its
+/// rebuild runs a whole decoder of its own, not one more level of this walk.
+fn from_message_nested(heap: &mut Heap, m: &Message, depth: u32) -> Value {
+    if depth % 32 == 31 || matches!(m, Message::Closure(_)) {
+        grow(|| from_message_inner(heap, m, depth))
+    } else {
+        from_message_inner(heap, m, depth)
+    }
+}
+
+fn from_message_inner(heap: &mut Heap, m: &Message, depth: u32) -> Value {
     match m {
         // A closure handed over by handle (same runtime, already-shared region). No rebuild,
         // no allocation — the point of the whole exercise.
@@ -1487,7 +1500,7 @@ fn from_message_inner(heap: &mut Heap, m: &Message) -> Value {
         Message::List(items, pos) => {
             let mut vals = Vec::with_capacity(items.len());
             for item in items {
-                vals.push(from_message(heap, item));
+                vals.push(from_message_nested(heap, item, depth + 1));
             }
             let v = heap.list(vals);
             // Re-stamp the original source position on the rebuilt pair, so
@@ -1502,7 +1515,7 @@ fn from_message_inner(heap: &mut Heap, m: &Message) -> Value {
         Message::Dotted(items) => {
             let mut vals = Vec::with_capacity(items.len());
             for item in items {
-                vals.push(from_message(heap, item));
+                vals.push(from_message_nested(heap, item, depth + 1));
             }
             // Never empty off this runtime's encoder, and the wire decoder refuses fewer
             // than two; an empty one still rebuilds as `nil` rather than panic.
@@ -1512,14 +1525,17 @@ fn from_message_inner(heap: &mut Heap, m: &Message) -> Value {
         Message::Vector(items) => {
             let mut vals = Vec::with_capacity(items.len());
             for item in items {
-                vals.push(from_message(heap, item));
+                vals.push(from_message_nested(heap, item, depth + 1));
             }
             heap.alloc_vector(vals)
         }
         Message::Failure(entries) => {
             let mut pairs = Vec::with_capacity(entries.len());
             for (k, v) in entries {
-                pairs.push((from_message(heap, k), from_message(heap, v)));
+                pairs.push((
+                    from_message_nested(heap, k, depth + 1),
+                    from_message_nested(heap, v, depth + 1),
+                ));
             }
             match heap.map_from_pairs(pairs) {
                 Value::Map(id) => Value::failure(id),
@@ -1529,8 +1545,8 @@ fn from_message_inner(heap: &mut Heap, m: &Message) -> Value {
         Message::Map(entries) => {
             let mut pairs = Vec::with_capacity(entries.len());
             for (k, v) in entries {
-                let k = from_message(heap, k);
-                let v = from_message(heap, v);
+                let k = from_message_nested(heap, k, depth + 1);
+                let v = from_message_nested(heap, v, depth + 1);
                 pairs.push((k, v));
             }
             heap.map_from_pairs(pairs)
@@ -1538,7 +1554,7 @@ fn from_message_inner(heap: &mut Heap, m: &Message) -> Value {
         Message::Set(items) => {
             let mut elems = Vec::with_capacity(items.len());
             for item in items {
-                elems.push(from_message(heap, item));
+                elems.push(from_message_nested(heap, item, depth + 1));
             }
             heap.set_from_elems(elems)
         }
