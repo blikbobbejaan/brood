@@ -405,13 +405,15 @@ Bindings are ONE flat list, exactly like `let`'s — not a list per pair. `(with
 ;; ---- error handling ----
 ;; The kernel gives us `throw` (raise) and `%try` (low-level catch). Everything
 ;; user-facing — `error`, `try`/`catch` — is written here in Brood.
-(defn last (xs)
+(defn last (xs:seqable -> any)
   "The last item of `xs`.
 
     (last [1 2 3])   → 3
     (last nil)       → nil"
   ;; A vector answers by index; anything else is walked to its end. Both skip the
-  ;; `reverse` that used to build a whole list just to read its head.
+  ;; `reverse` that used to build a whole list just to read its head. The `seqable`
+  ;; domain is declared, because the checker used to derive it from that `reverse` call
+  ;; — `(last :k)` must still read as the error it is (`element_types` tests).
   (if (vector? xs)
     (let (n (%vector-length xs)) (if (= n 0) nil (%vector-ref xs (- n 1))))
     (%last-walk (seq xs))))
