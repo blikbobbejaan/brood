@@ -339,6 +339,27 @@ counted as a win.
 - Embedded modules are found through a hash index, not a scan of every table; a settled
   signature index costs a read lock per query, not the write lock; a curated-signature
   existence check no longer clones the `Sig`.
+- The import table is an `ImportTable` that records whether any key may be an `(:alias …)`
+  (`short/`) or a `(:use-internals …)` grant (`/internals/mod`), carried with the entries
+  through every save/restore; the resolver, the privacy check and the auto-require inference
+  skip spelling and interning a `prefix/` key — and the privacy check its grant key — in a
+  file that declared none. The privacy check also stopped re-spelling `mod/bare`: unaliased
+  it is the reference itself, rooted it is the rooted symbol.
+- A free bare reference no longer interns `ns/name` to find it unbound — `mod/first`,
+  `mod/map` were permanent entries in the never-freed symbol table, one per namespace per
+  prelude name mentioned. It asks `intern_existing` (a spelling that is no symbol binds
+  nothing) except where ADR-070's rooted fallback could still hit, and the memo remembers an
+  absence stamped with a count of qualified names minted, so it re-asks under the interner's
+  lock only after some `a/b` name was minted.
+- `%std-edges-for` filters an image module's edges with the native `%baked-module?` (the
+  embedded-module index: baked into THIS binary, a mounted bundle not counted) instead of
+  building a set of every `reflect/builtin-modules` name per materialised module.
+
+One ordering caveat, stated rather than hidden: the global table iterates in the hash order
+of symbol ids, and the refer-all's shadow warnings follow it. Interning fewer names shifts
+the ids minted later, so where two warnings fire from one `(:use …)` their relative order can
+differ from before — as it already did between an imaged and a source boot (KI-166), and as
+any change that interns a different set of names does.
 
 Left as they were, deliberately: the expansion and resolve walks still rebuild unchanged
 lists — a fresh pair per occurrence is what keeps a spliced-twice macro argument (or a rewrite
