@@ -3426,3 +3426,14 @@ fused-pipeline case of `one_pair_one_position.rs` is red under none of KI-288's 
 same run A/B'd the day's perf batch against `32e71066` with a base-vs-base control,
 indicative only (a shared runner): nothing regressed at the default tier; at tier 1 `collatz`
 −10.3% and `fib` +3.7% (floor 1.5%, control +0.8%) — compute-frontier.md §7.8's addendum.
+
+2026-10-23 (ADR-426, the parallel cold load): a cold project build loads its modules in a pool
+of processes — each `require-one`s modules off the driver's queue, and a dependency another
+worker is loading is waited for by `require-one`'s own claim/park. 302 × 3k rig on 12 cores:
+load 8.5 s → 2.1 s, cold `--check-boot` 12.9 s → 6.5 s, warm runs unchanged. Getting it to
+build the SAME project as the sequential walk took five fixes, each pinned by
+`crates/nest/tests/parallel_load.rs` against `BROOD_LOAD_SEQUENTIAL=1`: no root-section
+require edges (a warm start would replay them and load everything), no `dev` module in the
+build, `*features-waiting*` kept out of the image, a failure reported as the sequential walk
+reports it, and KI-289 — positions lost on code re-homed after a RUNTIME aging flip, a runtime
+bug any concurrent load could hit (`crates/cli/tests/rehome_keeps_positions.rs`).

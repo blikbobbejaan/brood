@@ -286,7 +286,11 @@ Sequential is now 0.2 GB over the load floor. The parallel arm's remaining +0.7 
 pool: worker results arriving as messages the driver has not collected yet, and the
 allocator's per-thread pages.
 
-## Finding 3 — cold load is one thread
+## Finding 3 — cold load is one thread (fixed 2026-10-23, ADR-426)
+
+**Now a pool.** A cold walk `require-one`s its modules from a pool of processes: on the
+302 × 3k rig the load 8.5 s → 2.1 s on 12 cores, a cold `--check-boot` 12.9 s → 6.5 s. The
+image write (1.7 s) is now the largest single step. The original finding:
 
 39 s for 3M lines, single-threaded (`Building bigproj … Built in …`). Files in different
 subtrees of the require graph could load in parallel processes and be promoted into the
@@ -307,7 +311,7 @@ three — it is paid once — but at 300M lines an hour becomes five minutes on 
    edit reloads the edited modules and their dependents and materialises the rest; one edited
    module on the 302 × 3k rig 13.2 s → 2.7 s, and with unchanged sections COPIED rather than
    re-encoded (same day) `nest run` after an edit is **0.30 s**; check/test, which need every
-   module, ~2.2 s. Parallel loading of a COLD build is still open. The original note: (Finding 3) — no longer "paid once": since ADR-382 it is what an EDIT
+   module, ~2.2 s. Parallel loading of a COLD build: **done 2026-10-23, ADR-426** (load 8.5 s → 2.1 s). The original note: (Finding 3) — no longer "paid once": since ADR-382 it is what an EDIT
    costs, because the edit invalidates the whole image and the next check loads everything
    from source before re-deriving two files. Parallel loading divides it by cores; module-level
    image staleness (materialise the unchanged modules, load the changed ones) makes it

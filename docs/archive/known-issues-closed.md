@@ -14747,3 +14747,31 @@ one sees the splice at run time (the structural case sees both).
 
 Runs: [39950556262](https://github.com/broodlang/brood/actions/runs/39950556262) (`7ed008cf`),
 [39954644031](https://github.com/broodlang/brood/actions/runs/39954644031) (`e9e1af8b`).
+
+## KI-289 — a definition published while the RUNTIME code region aged lost every inner source position ✅ FIXED 2026-10-23
+
+**Symptom.** An error inside a function reported its CALLER's line and column, not the line
+in the function's own file: `[8 21]` (the call site in `app.blsp`) where a sequential build
+said `[25 11]` (the `(+ x 3)` inside `mod9.blsp`). Seen on about one module in 25 after a
+parallel cold load of the 302-module rig; the image sections of those modules were ~27 KB
+smaller than a sequential build's.
+
+**Cause.** Code a load promotes into the RUNTIME region while generation G is current, but
+publishes (`def`) after aging has flipped to G′, is re-homed into G′ at `def` time
+(`rehome_to_current_locked`) so no shared root points at the draining generation. The re-home
+copies the pairs with `flush_rt_value` and never carried their `(form-pos …)` entries — aging's
+own migration (`migrate_live_globals`, step b2) did, the re-home did not. When G was freed its
+position entries were purged, and the copies had none.
+
+**Why it survived.** It needs a load in flight in one process while another process's
+allocation turns the region over. Every load test runs one loader; `BROOD_GC_STRESS` runs
+were sequential loads, which never re-home (their defs publish into the generation they were
+promoted into). Positions are diagnostics, so nothing that checks VALUES saw it.
+
+**Fix.** The re-home carries positions exactly as aging does — both now call
+`Heap::carry_positions`.
+
+**Guard.** `crates/cli/tests/rehome_keeps_positions.rs`: four processes `require-one` twenty
+modules under `BROOD_GC_STRESS`; every module's inner error must report its own line. Red
+three runs in three with the carry removed (`BAD (1 3 10)`), green with it; with aging
+disabled (`BROOD_RT_GC_FLOOR` huge) the bug never reproduced, which pins it to aging.

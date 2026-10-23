@@ -494,8 +494,8 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
       replays its verdict); the parallel walk (ADR-386); check memory (2026-10-22: the peak was
       persistent-map garbage in the lints, sequential 1.15 → 0.81 GB, parallel 1.75 → 1.5 GB);
       an edit reloads only the edited modules and their dependents (ADR-419: 13.2 → 2.7 s on
-      the 302 × 3k rig; with unchanged sections copied, `nest run` after an edit 0.30 s). Left: a
-      COLD build still loads on one thread.
+      the 302 × 3k rig; with unchanged sections copied, `nest run` after an edit 0.30 s). A COLD
+      build loads in a pool of processes since 2026-10-23 (ADR-426: 8.5 s → 2.1 s).
 - [x] **Inline `sig` signatures** — DONE 2026-10-22 (ADR-420) as typed parameters,
       `(defn area (w:number h:number -> number) …)`: the planned `((x int) -> int)` collided
       with list patterns and `&optional` defaults. `_` marks an open position, and a missing

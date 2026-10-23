@@ -267,7 +267,29 @@ impl Heap {
         let old_guard = self.runtime.gens[g].load();
         let dst_guard = self.runtime.gens[cur].load();
         let mut forward = RuntimeForward::for_gens(g, cur);
-        flush_rt_value(&old_guard, &dst_guard, &mut forward, v)
+        let moved = flush_rt_value(&old_guard, &dst_guard, &mut forward, v);
+        // The re-homed code is new pairs; its source positions must follow it, as aging's
+        // migration carries them. Without this a definition published after an aging flip —
+        // a module load in flight in another process when the generation turned — kept its
+        // code and lost every inner position: an error inside it reported the CALLER's line
+        // (the 2026-10-23 parallel cold load lost them on ~1 module in 25).
+        self.carry_positions(&forward, g, cur);
+        moved
+    }
+
+    /// Copy the `(form-pos …)` entry of every pair `forward` moved from `old_gen` to its new
+    /// index in `dest_gen`. The old entries stay for as long as `old_gen` is retained.
+    fn carry_positions(&self, forward: &RuntimeForward, old_gen: usize, dest_gen: usize) {
+        let mut p = self
+            .runtime
+            .positions
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        for (&old_idx, &new_idx) in forward.pairs.iter() {
+            if let Some(entry) = p.get(&rt_pos_key(old_idx as usize, old_gen)).cloned() {
+                p.insert(rt_pos_key(new_idx as usize, dest_gen), entry);
+            }
+        }
     }
 
     pub fn migrate_live_globals(&self, old_gen: usize) -> usize {
@@ -312,20 +334,8 @@ impl Heap {
             .collect();
 
         // (b2) Carry `(form-pos …)` entries for every forwarded pair to its new index,
-        // so source positions resolve on the migrated code too (the old-gen entries stay
-        // for as long as `old_gen` is retained). Diagnostics-only, mirroring compaction.
-        {
-            let mut p = self
-                .runtime
-                .positions
-                .write()
-                .unwrap_or_else(|e| e.into_inner());
-            for (&old_idx, &new_idx) in forward.pairs.iter() {
-                if let Some(entry) = p.get(&rt_pos_key(old_idx as usize, old_gen)).cloned() {
-                    p.insert(rt_pos_key(new_idx as usize, dest_gen), entry);
-                }
-            }
-        }
+        // so source positions resolve on the migrated code too. Mirrors compaction.
+        self.carry_positions(&forward, old_gen, dest_gen);
 
         // (c) Reconcile under the write locks: install a migrated handle only where the
         // binding still points into `old_gen` (a concurrent redefinition wins).

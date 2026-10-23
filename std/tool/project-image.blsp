@@ -44,6 +44,10 @@ takes; everything else is the mechanism behind it.")
     ;; In-flight loads, keyed to the loader's pid — empty by the time an image is written,
     ;; and a pid is meaningless in the next process anyway.
     '*features-loading*
+    ;; …and the processes parked on them (`%require-await`). Only a RACING requirer writes
+    ;; it, so a sequential build never had one to carry — the parallel cold load (2026-10-23)
+    ;; does, and pids of a finished build mean nothing in the next process.
+    '*features-waiting*
     ;; ADR-070's dependency-module maps. The image already carries a dep's bindings, and
     ;; restoring these would only send `require` down the source-load branch for modules the
     ;; image can serve directly.

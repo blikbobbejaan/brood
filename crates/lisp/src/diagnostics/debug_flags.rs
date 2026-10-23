@@ -481,6 +481,11 @@ pub const FLAGS: &[DebugFlag] = &[
         "opt OUT of fanning `nest check`'s per-file walk across the worker pool: check every file in this process, whatever the project's size (the A/B and bisect lever; the control arm of the parallel/sequential warning differential)",
     ),
     f(
+        "BROOD_LOAD_SEQUENTIAL",
+        OPTOUT,
+        "opt OUT of the parallel cold load: a cold project build loads every module in this process, in walk order, instead of across a pool of processes (the A/B and bisect lever; the control arm of `crates/nest/tests/parallel_load.rs`)",
+    ),
+    f(
         "BROOD_NO_CHECK_CACHE",
         DIAG,
         "bypass `nest check`'s incremental result cache AND `brood file`'s run pre-flight verdict cache — recheck everything from scratch",

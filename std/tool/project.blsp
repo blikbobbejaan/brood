@@ -627,12 +627,154 @@ only; `tests/` files come from [[collect-tests]].
 ;; edits (the hot-reload contract; the file watcher in std/reload uses `system/reload-defs`).
 ;; With `:skip-loaded`, any module already on `*features*` is skipped (the check
 ;; pre-flight, which runs *after* the image is loaded and must not re-evaluate it).
+;; ═══ Loading a COLD project in parallel ═══════════════════════════════════
+;; A cold build loaded every file on one thread (39 s for 3M lines; docs/large-project-
+;; scaling.md Finding 3). Modules in different parts of the require graph are independent,
+;; and `require-one` is already safe under concurrency: it claims a module atomically, a racing
+;; requirer parks until the winner provides, and a failed load releases its waiters. So a pool
+;; of worker processes each `require-one`s modules off a shared queue; a dependency another
+;; worker is mid-way through is simply waited for. `def`s land in the runtime's shared code,
+;; which is what every process — and then the image write — reads.
+;;
+;; Only for a COLD walk — no project module loaded yet. A warm walk RE-loads modules that were
+;; already loaded (the hot-reload contract, `project-should-load?`), and `require-one` never
+;; re-loads. Files with no `defmodule` define root-level globals and have no module key to
+;; claim, so they load first, sequentially, in their walk order. A module `require-one` cannot
+;; find by its key falls back to the sequential `reflect/load` after the pool.
+
+; below this many module files, a cold walk loads in-process (the pool costs a few ms)
+(def *load-min-parallel* 16)
+(sig *load-min-parallel* int)
+
+(defn- project-load-pool-size ()
+  ;; The kernel primitive, not `dev/worker-threads`: loading `dev` here would put its (and
+  ;; its dependencies') registries into the user's project image. The count is 0 until the
+  ;; first spawn.
+  (spawn (fn () nil))
+  (sleep 1)
+  (math/max 1 (%worker-threads)))
+
+;; One worker: ask the driver for a module, load it, report, repeat until told to stop.
+;; Ships only data (the driver's pid); the work is this global's code.
+(defn- project-load-worker (driver)
+  (send driver [:next (self) nil])
+  (project-load-worker-loop driver))
+
+(defn- project-load-worker-loop (driver)
+  (receive
+    ([:job feature file]
+      (let (outcome
+            ;; check-allow :discarded-catch — the error IS the report: the driver rethrows it
+            (check-allow :discarded-catch
+              (try
+                (do
+                  ;; No parent: the worker's own require of the module is the walk's doing, not an
+                  ;; edge of anything. Under `""` every module became a require of the ROOT
+                  ;; section, which a warm start replays — loading the whole project (0.2 s →
+                  ;; 1.3 s on the 302-module rig). Requires INSIDE a module still key on its ns.
+                  (binding (*require-parent* nil) (require-one (symbol feature)))
+                  [:ok file])
+                (catch e [:failed file e]))))
+        (send driver [:next (self) outcome])
+        (project-load-worker-loop driver)))
+    (:stop nil)))
+
+;; The driver: hand each idle worker the next `[feature file]`, gather outcomes until every
+;; worker has stopped. Answers `[failures missing]` — `missing` are files whose module
+;; `require-one` could not resolve by key (loaded sequentially afterwards).
+(defn- project-load-drive (jobs live downs failures missing)
+  ;; `live`: workers not yet told to stop. `downs`: worker exits seen. Every worker is
+  ;; monitored, so each exit — a normal one after `:stop` included — sends one `[:down …]`;
+  ;; all of them are taken here, so none is left in the caller's mailbox for a later
+  ;; `(receive (m m))` to mistake for its own.
+  (cond
+    (and (= live 0) (= downs 0)) [failures missing]
+    (= live 0)
+      (receive
+        ([:down _ _ reason] (project-load-drive jobs
+                              0
+                              (dec downs)
+                              (if (= reason :normal)
+                                failures
+                                (conj failures [:failed "a load worker" reason]))
+                              missing)))
+    else
+      (receive
+        ([:next pid outcome]
+          (let (failed? (and outcome (= (first outcome) :failed))
+                not-found? (and failed? (project-load-missing? (third outcome)))
+                failures (if (and failed? (not not-found?))
+                           (conj failures outcome)
+                           failures)
+                missing (if not-found? (conj missing (second outcome)) missing))
+            ;; Fail fast: after the first real failure hand out nothing more —
+            ;; every dependent of the broken module would only retry its load
+            ;; and fail the same way.
+            (if (or (empty? jobs) (not (empty? failures)))
+              (do
+                (send pid :stop)
+                (project-load-drive jobs (dec live) downs failures missing))
+              (do
+                (send pid
+                  (let ([feature file] (first jobs)) [:job feature file]))
+                (project-load-drive (rest jobs) live downs failures missing)))))
+        ;; a down while workers are still live: a NORMAL exit is a worker already counted out at
+        ;; `:stop`; anything else died mid-job — its module's waiters were released by
+        ;; `require-one`, its outcome is lost, so report it and count it out
+        ([:down _ _ reason] (if (= reason :normal)
+                              (project-load-drive jobs live (dec downs) failures missing)
+                              (project-load-drive jobs
+                                (dec live)
+                                (dec downs)
+                                (conj failures [:failed "a load worker" reason])
+                                missing))))))
+
+(defn- project-load-missing? (e)
+  (includes? (str (if (map? e) (get e :message) e)) "not found"))
+
+;; Is this walk COLD and big enough for the pool? `entries` are `[file feature]`.
+(defn- project-load-parallel? (entries before)
+  (let (modules (seq/filter entries second))
+    (and (nil? (os/env "BROOD_LOAD_SEQUENTIAL"))
+      (>= (count modules) *load-min-parallel*)
+      (not (any? modules (fn (e) (contains? before (second e))))))))
+
+(defn- project-load-parallel (entries)
+  ;; headerless files first, sequentially, in walk order
+  (doseq (e (seq/reject entries second))
+    (binding (*require-parent* "") (reflect/load (first e))))
+  (let (jobs (map (seq/filter entries second) (fn (e) [(second e) (first e)]))
+        n (math/min (project-load-pool-size) (count jobs))
+        me (self))
+    (doseq (_ (range n))
+      (monitor (spawn (project-load-worker me))))
+    (let ([failures missing] (project-load-drive jobs n n [] []))
+      (doseq (f missing)
+        (binding (*require-parent* "") (reflect/load f)))
+      ;; The ORIGINAL error, location and all. A worker's `catch` holds only the message, and
+      ;; the worker that reports first is often a dependent of the module that failed — so
+      ;; re-load that file the sequential way, which raises exactly what a sequential build
+      ;; would have, where it was raised.
+      (when (not (empty? failures))
+        (let ([_ file e] (first failures))
+          (when (string? file) (binding (*require-parent* "") (reflect/load file)))
+          (error "loading " file ": " e))))))
+
 (defn load-sources (root & opts)
-  "Load every source file under `root`'s source paths, attributing each file's load-time requires to the root section (KI-37). `:skip-loaded` skips files whose feature is already loaded.
+  "Load every source file under `root`'s source paths, attributing each file's load-time requires to the root section (KI-37). `:skip-loaded` skips files whose feature is already loaded. A cold walk of many modules loads them in parallel (`BROOD_LOAD_SEQUENTIAL=1` pins it to one process).
 
     (project/load-sources \"/path/to/proj\" :skip-loaded)   ;=> nil — every source file under the source paths loaded"
   (let (skip-all? (includes? opts :skip-loaded)
-        before *features*)
+        before *features*
+        entries (map (source-files root) (fn (f) [f (project-file-feature f)])))
+    (if (project-load-parallel? entries before)
+      (do
+        (project-load-parallel entries)
+        (doseq (e entries) (note-loaded (first e))))
+      (project-load-sequential root skip-all? before))))
+
+(defn- project-load-sequential (root skip-all? before)
+  (do
     (fold (abs-paths root *project-source-paths*)
       nil
       (fn (_ dir)
