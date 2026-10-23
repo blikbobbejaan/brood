@@ -1463,6 +1463,10 @@ pub struct NativeFn {
     /// signature (which still satisfies the contract). See `types.rs` and
     /// `types/check.rs`.
     pub sig: crate::types::Sig,
+    /// Is this the `apply` builtin? Set once, from the name, when the primitive is
+    /// registered: both dispatchers unfold `(apply f … xs)` inline instead of calling
+    /// it, and asking per call compared the name as a string on every native callee.
+    pub is_apply: bool,
 }
 
 // ----- handle-free constructors (interned; no heap needed) -----

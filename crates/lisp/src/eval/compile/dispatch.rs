@@ -24,6 +24,15 @@ pub(crate) fn dispatch(
     tail: bool,
     genv: EnvId,
 ) -> Result<Step, LispError> {
+    // A builtin other than `apply` — the arm-less call-IC hit's usual callee — is exactly
+    // `call_native`: the passthrough loop below only redirects closures, the unfolding only
+    // `apply`, and the fall-through `eval::apply` of a native is `call_native` itself. Taken
+    // up front, so a native call skips that walk.
+    if let ValueRef::Native(id) = callee.unpack()
+        && !heap.native(id).is_apply
+    {
+        return Ok(Step::Done(crate::eval::call_native(heap, id, &argv, genv)?));
+    }
     let mut cur_callee = callee;
     let mut cur_argv = argv;
     // Outer `'apply` loop: mirrors the TW's `'dispatch` loop (eval.rs). Each
@@ -90,7 +99,7 @@ pub(crate) fn dispatch(
         // After unfolding, `continue 'apply` re-runs passthrough on the real callee.
         // If the callee is not `apply`, or arity < 2, break and dispatch normally.
         if let ValueRef::Native(id) = cur_callee.unpack()
-            && heap.native(id).name == "apply"
+            && heap.native(id).is_apply
             && cur_argv.len() >= 2
         {
             let list = cur_argv

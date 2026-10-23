@@ -137,6 +137,7 @@ impl Primitives<'_> {
             func,
             params,
             doc,
+            is_apply: name == "apply",
         });
         self.heap.env_define(self.root, value::intern(name), v);
     }

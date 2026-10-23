@@ -1712,7 +1712,7 @@ impl<'e> Machine<'e> {
         // `continue 'dispatch` rather than recursing.
         'dispatch: loop {
             while let ValueRef::Native(id) = cur_callee.unpack() {
-                if heap.native(id).name != "apply" || cur_argv.len() < 2 {
+                if !heap.native(id).is_apply || cur_argv.len() < 2 {
                     break;
                 }
                 let last = cur_argv.pop().expect("argv non-empty (checked above)");
