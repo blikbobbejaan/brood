@@ -827,7 +827,9 @@ fn self_ascent(
     let mut ret = Ty::NEVER;
     let mut older: Option<Ty> = None;
     for round in 0..MAX_SELF_ASCENT_ROUNDS {
-        let scope = ctx.bind(name, Some(Ty::arrow(Sig::variadic(Ty::ANY, ret.clone()))));
+        let scope = ctx
+            .clone()
+            .bind(name, Some(Ty::arrow(Sig::variadic(Ty::ANY, ret.clone()))));
         let mut next = type_round(&scope)?.union(ret.clone());
         next = next.widen_intervals_against(&ret);
         for prev in std::iter::once(&ret).chain(older.iter()) {

@@ -999,8 +999,10 @@ impl Ctx {
     /// doesn't fire on it). Disconnects `sym` from the alias graph entirely
     /// — removes its bin and also removes it from every neighbour's bin —
     /// so a fresh binding doesn't inherit aliases through stale back-edges.
-    pub(super) fn bind(&self, sym: Symbol, ty: Option<Ty>) -> Ctx {
-        let mut c = self.clone();
+    /// Consumes the scope, so a loop of binds pays no clone per binding; a caller
+    /// binding from a borrowed scope clones it once first.
+    pub(super) fn bind(self, sym: Symbol, ty: Option<Ty>) -> Ctx {
+        let mut c = self;
         match ty {
             Some(t) => {
                 c.types.insert(sym, t);
@@ -1356,7 +1358,7 @@ impl Ctx {
     }
     /// Bind `sym` to its caller-derived type — a plain binding, marked so the impossible-
     /// predicate lint leaves the body's guards alone (see `derived_locals`).
-    pub(super) fn bind_derived(&self, sym: Symbol, ty: Option<Ty>) -> Ctx {
+    pub(super) fn bind_derived(self, sym: Symbol, ty: Option<Ty>) -> Ctx {
         let mut c = self.bind(sym, ty);
         c.derived_locals.insert(sym);
         c
@@ -1457,7 +1459,7 @@ impl Ctx {
     /// declared for it, and remember it as a sig-typed param (so a guard that
     /// later narrows it to `never` is a provable dead clause). Returns the
     /// extended scope.
-    pub(super) fn bind_sig_param(&self, sym: Symbol, ty: Ty) -> Ctx {
+    pub(super) fn bind_sig_param(self, sym: Symbol, ty: Ty) -> Ctx {
         let mut c = self.bind(sym, Some(ty));
         c.sig_params.push(sym); // `bind` just removed any earlier `sym`
         c

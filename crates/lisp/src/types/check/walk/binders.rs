@@ -1188,7 +1188,7 @@ pub(in crate::types::check) fn derived_let_lambda(
     // the pre-bound (unknown) name instead, `(if … (step next) l)` was unknown, the arrow's
     // result unknown, and every caller of a recursive local helper read `any`.
     let self_arrow = Ty::arrow(Sig::new(vec![Ty::ANY; derived.len()], Ty::NEVER));
-    let body_scope = scope.bind(name, Some(self_arrow));
+    let body_scope = scope.clone().bind(name, Some(self_arrow));
     let ret = super::super::infer::callback_ret(heap, rhs, &derived, &body_scope);
     Some((derived, ret))
 }
@@ -1231,7 +1231,7 @@ pub(in crate::types::check) fn let_rhs_ty(
             // resolves the name to a GLOBAL of the same spelling: `(reduce xs '() step)`
             // under `(let (step (fn (a v) a)) …)` read the file's `step` — `conj` — and
             // the local's derivation came back holding a list.
-            let scope = scope.bind(name, None);
+            let scope = scope.clone().bind(name, None);
             derived_let_lambda(heap, name, binds[i + 1], &visible, &scope)
                 .and_then(|(tys, ret)| derived_let_lambda_arrow(&tys, &ret))
         }
