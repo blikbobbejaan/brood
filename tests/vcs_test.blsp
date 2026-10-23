@@ -5,6 +5,9 @@
 
 (defmodule vcs-test (:use vcs) (:use registry) (:use test))
 
+;; every fixture below is a `brood-vcs-` temp dir; the previous run's go at load (KI-30)
+(purge-stale-temp "brood-vcs-")
+
 (defn- git (dir & args)
   (os/cmd "git"
     (append ["-C"
