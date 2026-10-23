@@ -143,8 +143,10 @@ run-event (ctx event)                -> fan event hooks across active layers (fo
 close-context (ctx)                  -> :on-close fan + deactivate-all (the full close path)
 request-close (ctx name)             -> from an :on-close hook: ask the app to close companion `name`
 close-requests (ctx)                 -> the companions a closed context asked to take with it
-active-keymap (ctx)                  -> merge active layers' :keymap (head wins)
-layer-dispatch (ctx pending key fb)  -> active-keymap + keymap-step → [ctx' pending']
+active-keymap (ctx)                  -> merge active layers' :keymap (head wins) — for help text
+layer-binding (ctx key)              -> what `key` is bound to: the first layer that binds it (no merge)
+layer-resolve (ctx pending key)      -> keymap-resolve over the layers → [binding pending']
+layer-dispatch (ctx pending key fb)  -> layer-resolve + keymap-run → [ctx' pending']
 ```
 
 `push-layer`/`activate-layer` take a layer *reference*; `remove-layer`/
@@ -158,7 +160,8 @@ layer-dispatch (ctx pending key fb)  -> active-keymap + keymap-step → [ctx' pe
   `buffer-type-for` / `set-buffer-type` / `init-buffer-layers`). Filename matching
   is suffix or predicate, newest-rule-wins. `std/buffer` stays layer-agnostic.
 - ✅ **Phase 3 — scopes, focus/close lifecycle, async.** `compose-layers` /
-  `scope-keymap` / `scope-dispatch` (multi-scope dispatch, command runs on the app
+  `scope-keymap` / `scope-binding` / `scope-resolve` / `scope-dispatch` (multi-scope dispatch
+  — a keystroke asks the layers for its one key rather than merging them; command runs on the app
   model); `switch-focus` (`:on-blur`→`:on-focus`, dormancy not teardown);
   `deactivate-all` / `close-context` (`:on-close` async cleanup, then `:deactivate`).
   A big in-code **HOW TO USE** guide in `std/editor/layers.blsp` covers the whole flow incl.
