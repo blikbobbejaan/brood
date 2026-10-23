@@ -26,8 +26,8 @@
 
 use std::io::{self, Read};
 
-use chacha20poly1305::aead::Aead;
-use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
+use chacha20poly1305::aead::AeadInOut;
+use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce, Tag};
 
 use super::MAX_FRAME;
 use super::wire::{Frame, decode_frame};
@@ -71,21 +71,55 @@ impl SealKey {
 
     /// Seal one frame `payload` (the bare bytes from `wire::encode_payload`) into a
     /// ready-to-write `[u32 len][ciphertext+tag]` blob, advancing the nonce counter.
+    #[cfg(test)]
     pub(super) fn seal(&mut self, payload: &[u8]) -> io::Result<Vec<u8>> {
+        let mut out = Vec::new();
+        self.seal_into(payload, &mut out)?;
+        Ok(out)
+    }
+
+    /// [`seal`](Self::seal), APPENDED to `out` — the writer thread seals a run of queued
+    /// frames into one reused buffer and writes them together.
+    ///
+    /// Encrypted in place: the payload is copied once, into `out` after a reserved length
+    /// prefix, encrypted there, and the tag appended. The bytes are exactly what
+    /// `Aead::encrypt` + `wire::len_prefixed` produced (that `encrypt` is this same
+    /// in-place encryption with empty associated data and the tag after the ciphertext),
+    /// minus its two allocations and the second copy — so the wire format is unchanged.
+    /// On failure `out` is left as it was, so frames already sealed into it are intact.
+    pub(super) fn seal_into(&mut self, payload: &[u8], out: &mut Vec<u8>) -> io::Result<()> {
+        let start = out.len();
+        out.reserve(4 + payload.len() + TAG_LEN);
+        out.extend_from_slice(&[0u8; 4]);
+        out.extend_from_slice(payload);
         let nonce = nonce_bytes(self.counter);
-        let ct = self
+        let sealed = self
             .cipher
-            .encrypt(&Nonce::from(nonce), payload)
-            .map_err(|_| io::Error::other("frame encryption failed"))?;
-        self.counter = self
-            .counter
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("session nonce space exhausted"))?;
-        // `payload` was already capped at MAX_FRAME by `encode_payload`, so
-        // `ct.len()` (payload + 16) fits a u32 comfortably. The `[u32 len][…]`
-        // framing is shared with the plaintext path (`wire::len_prefixed`); only
-        // the body differs (ciphertext+tag here, plaintext there).
-        Ok(super::wire::len_prefixed(&ct))
+            .encrypt_inout_detached(&Nonce::from(nonce), b"", (&mut out[start + 4..]).into())
+            .map_err(|_| io::Error::other("frame encryption failed"))
+            .and_then(|tag| {
+                let counter = self
+                    .counter
+                    .checked_add(1)
+                    .ok_or_else(|| io::Error::other("session nonce space exhausted"))?;
+                Ok((tag, counter))
+            });
+        let (tag, counter) = match sealed {
+            Ok(sealed) => sealed,
+            Err(error) => {
+                out.truncate(start);
+                return Err(error);
+            }
+        };
+        self.counter = counter;
+        out.extend_from_slice(&tag);
+        // `payload` was already capped at MAX_FRAME by `encode_payload`, so the body
+        // (payload + 16) fits a u32 comfortably. The `[u32 len][…]` framing is shared with
+        // the plaintext path (`wire::len_prefixed`); only the body differs (ciphertext+tag
+        // here, plaintext there).
+        let body_len = (payload.len() + TAG_LEN) as u32;
+        out[start..start + 4].copy_from_slice(&body_len.to_be_bytes());
+        Ok(())
     }
 }
 
@@ -122,11 +156,16 @@ impl OpenKey {
                 format!("sealed frame length {len} out of range"),
             ));
         }
-        let ct = read_claimed(r, len)?;
+        let mut sealed = read_claimed(r, len)?;
         let nonce = nonce_bytes(self.counter);
-        let pt = self
-            .cipher
-            .decrypt(&Nonce::from(nonce), ct.as_slice())
+        // Decrypted IN PLACE (what `Aead::decrypt` does on a copy it allocates): the
+        // ciphertext is the buffer's head, the tag its last TAG_LEN bytes, and the
+        // plaintext then decodes straight out of the same buffer.
+        let body_len = len - TAG_LEN;
+        let (body, tag) = sealed.split_at_mut(body_len);
+        let tag = Tag::try_from(&*tag).expect("the range check leaves TAG_LEN bytes");
+        self.cipher
+            .decrypt_inout_detached(&Nonce::from(nonce), b"", body.into(), &tag)
             .map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -137,7 +176,8 @@ impl OpenKey {
             .counter
             .checked_add(1)
             .ok_or_else(|| io::Error::other("session nonce space exhausted"))?;
-        decode_frame(&mut std::io::Cursor::new(pt))
+        sealed.truncate(body_len);
+        decode_frame(&mut std::io::Cursor::new(sealed))
     }
 }
 

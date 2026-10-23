@@ -80,8 +80,8 @@ fn heartbeat_loop() {
     // `Arc::clone` (atomic incr), not a `Vec` copy. The payload is plaintext; each
     // link's writer seals it with that direction's next nonce (ADR-089), so the
     // same shared buffer yields distinct ciphertext per link — no nonce reuse.
-    let ping: Arc<[u8]> = match encode_payload(&Frame::Ping) {
-        Ok(b) => Arc::from(b),
+    let ping: Arc<Vec<u8>> = match encode_payload(&Frame::Ping) {
+        Ok(b) => Arc::new(b),
         Err(e) => {
             // The Ping frame has no variable-width fields, so this can't fail
             // in practice; if it ever does, abort the loop cleanly rather than
@@ -97,7 +97,7 @@ fn heartbeat_loop() {
         let now = now_millis();
         // Snapshot under the lock, then act without holding it (shutdown/send can block).
         // (sock, tx, last_seen_millis) per link.
-        type LinkSnapshot = (Arc<super::Stream>, SyncSender<Arc<[u8]>>, u64);
+        type LinkSnapshot = (Arc<super::Stream>, SyncSender<Arc<Vec<u8>>>, u64);
         let links: Vec<LinkSnapshot> = {
             let nodes = crate::core::sync::read(&NODES);
             nodes

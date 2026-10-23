@@ -142,6 +142,12 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// ceiling per `Conn` (the audit's alternative), not a bigger count.
 const WRITER_QUEUE_CAP: usize = 4096;
 
+/// How many sealed bytes the link writer gathers from its queue before one `write_all`:
+/// frames already queued behind the one it woke for join that write until the batch
+/// passes this (a single larger frame is written whole). A bound on what the writer holds
+/// off the queue, on top of `WRITER_QUEUE_CAP`, not a wait — a batch is never held open.
+const WRITE_BATCH_BYTES: usize = 256 * 1024;
+
 /// Minimum node-cookie length (bytes) accepted by [`node_listen`]. The cookie
 /// is the whole trust boundary (possession ⇒ remote eval), and the HMAC
 /// imposes no strength requirement of its own — an empty or few-byte cookie
@@ -318,10 +324,12 @@ struct Conn {
     addr: String,
     /// The writer thread's inbox (length-framed bytes). **Bounded**
     /// (`WRITER_QUEUE_CAP`): see [`Conn::enqueue`] — a stalled peer can't balloon
-    /// it into an OOM. Outbound frames carry an `Arc<[u8]>` so liveness probes
+    /// it into an OOM. Outbound frames carry an `Arc<Vec<u8>>` so liveness probes
     /// (one `ping` per tick, one `pong` per inbound `Ping`) reuse a single buffer
-    /// per link instead of cloning a `Vec<u8>` each time.
-    tx: SyncSender<Arc<[u8]>>,
+    /// per link instead of cloning a `Vec<u8>` each time — and an `Arc<Vec>`, not an
+    /// `Arc<[u8]>`, so wrapping a freshly encoded frame takes its buffer as it is
+    /// instead of copying it into a new allocation.
+    tx: SyncSender<Arc<Vec<u8>>>,
     /// A handle to the socket, for `shutdown` — the single teardown lever.
     sock: Arc<Stream>,
     /// Millis (on the `START` clock) of the last inbound frame. The heartbeat
@@ -341,7 +349,7 @@ impl Conn {
     /// `:noconnection`, while best-effort signals ignore it.
     /// The pieces [`enqueue_to`] needs, cloned so the caller can drop the `NODES`
     /// lock before enqueueing. Both clones are cheap (a channel handle and an `Arc`).
-    fn writer_handles(&self) -> (SyncSender<Arc<[u8]>>, Arc<Stream>) {
+    fn writer_handles(&self) -> (SyncSender<Arc<Vec<u8>>>, Arc<Stream>) {
         (self.tx.clone(), self.sock.clone())
     }
 }
@@ -353,7 +361,7 @@ impl Conn {
 /// delays every concurrent link registration and teardown for the syscall's
 /// duration — the rule [`broadcast_peer_table`] documents. So never call
 /// `Conn::enqueue` straight out of a `read(&NODES).get(..)`.
-fn enqueue_to(tx: &SyncSender<Arc<[u8]>>, sock: &Arc<Stream>, bytes: Arc<[u8]>) -> bool {
+fn enqueue_to(tx: &SyncSender<Arc<Vec<u8>>>, sock: &Arc<Stream>, bytes: Arc<Vec<u8>>) -> bool {
     match tx.try_send(bytes) {
         Ok(()) => true,
         Err(_) => {
@@ -677,8 +685,8 @@ pub(crate) fn spawn_or_get<E>(
 /// is `Exit`'s `reason`, and an oversized reason that can't be shipped is worth a
 /// diagnostic. A failed encode counts as not-sent.
 fn send_frame(target_node: Symbol, frame: &Frame) -> bool {
-    let bytes: Arc<[u8]> = match encode_payload(frame) {
-        Ok(b) => Arc::from(b),
+    let bytes: Arc<Vec<u8>> = match encode_payload(frame) {
+        Ok(b) => Arc::new(b),
         Err(e) => {
             eprintln!(
                 "dist: cannot encode control frame for {}: {}",
@@ -1082,8 +1090,8 @@ pub(crate) fn route(node: Symbol, target: Target, msg: Message) -> bool {
     // told about every local pid in the message, which is what lets it reply to one
     // (ADR-415).
     guest::note_outbound(node, &msg);
-    let bytes: Arc<[u8]> = match encode_payload(&Frame::Send { target, msg }) {
-        Ok(b) => Arc::from(b),
+    let bytes: Arc<Vec<u8>> = match encode_payload(&Frame::Send { target, msg }) {
+        Ok(b) => Arc::new(b),
         Err(e) => {
             eprintln!(
                 "dist: cannot encode message for {}: {}",
@@ -1708,7 +1716,7 @@ fn establish(authenticated: handshake::Authenticated, stream: Stream, role: Role
         Role::Responder => peer,
     };
     let sock = Arc::new(stream);
-    let (tx, rx) = mpsc::sync_channel::<Arc<[u8]>>(WRITER_QUEUE_CAP);
+    let (tx, rx) = mpsc::sync_channel::<Arc<Vec<u8>>>(WRITER_QUEUE_CAP);
     let last_seen = Arc::new(AtomicU64::new(now_millis()));
     let id = NEXT_LINK.fetch_add(1, Ordering::Relaxed);
     let link = Conn {
@@ -1804,13 +1812,14 @@ fn register_link(peer: Symbol, link: Conn) -> Option<bool> {
 }
 
 /// The link's writer thread: pull each plaintext frame payload off the channel, **seal**
-/// it, and write the ciphertext. A per-write timeout (`WRITE_TIMEOUT`) keeps a slowloris
+/// it (with whatever else is already queued, into one reused buffer), and write the
+/// ciphertext. A per-write timeout (`WRITE_TIMEOUT`) keeps a slowloris
 /// peer from pinning the writer and ballooning the queue; a timeout or a seal failure is
 /// treated like any I/O error — shut the socket down.
 fn spawn_link_writer(
     peer: Symbol,
     sock: Arc<Stream>,
-    queue: mpsc::Receiver<Arc<[u8]>>,
+    queue: mpsc::Receiver<Arc<Vec<u8>>>,
     mut seal: session::SealKey,
 ) {
     if let Err(error) = sock.set_write_timeout(Some(WRITE_TIMEOUT)) {
@@ -1821,13 +1830,32 @@ fn spawn_link_writer(
     }
     spawn_bg("dist-writer", move || {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-            for payload in queue {
-                match seal.seal(&payload) {
-                    Ok(framed) if (&*sock).write_all(&framed).is_ok() => {}
-                    _ => {
-                        let _ = sock.shutdown(Shutdown::Both);
-                        break;
+            // One buffer for the life of the link: each wake seals the frame it woke for
+            // and every frame already queued behind it (up to `WRITE_BATCH_BYTES`) into
+            // it, and writes them with one `write_all`. The byte stream is the one a
+            // write per frame produced — the frames in queue order, each sealed with the
+            // next nonce — in fewer syscalls; nothing waits for a batch to fill, since
+            // only what is already queued joins it.
+            let mut batch: Vec<u8> = Vec::new();
+            while let Ok(payload) = queue.recv() {
+                batch.clear();
+                let mut sealed = seal.seal_into(&payload, &mut batch).is_ok();
+                while sealed && batch.len() < WRITE_BATCH_BYTES {
+                    match queue.try_recv() {
+                        Ok(next) => sealed = seal.seal_into(&next, &mut batch).is_ok(),
+                        Err(_) => break,
                     }
+                }
+                // A seal failure leaves the frames before it intact in the batch; they
+                // are written before the link goes down, as they were one at a time.
+                let written = (&*sock).write_all(&batch).is_ok();
+                if !(sealed && written) {
+                    let _ = sock.shutdown(Shutdown::Both);
+                    break;
+                }
+                // One huge frame must not pin its buffer for the life of the link.
+                if batch.capacity() > 4 * WRITE_BATCH_BYTES {
+                    batch = Vec::new();
                 }
             }
         }));
@@ -1843,14 +1871,20 @@ fn spawn_link_reader(
     peer: Symbol,
     id: u64,
     sock: Arc<Stream>,
-    writer_queue: SyncSender<Arc<[u8]>>,
+    writer_queue: SyncSender<Arc<Vec<u8>>>,
     mut open: session::OpenKey,
     last_seen: Arc<AtomicU64>,
 ) {
     // One shared Pong buffer per reader; sending is an `Arc::clone`, not a copy.
-    let pong: Arc<[u8]> = Arc::from(encode_payload(&Frame::Pong).expect("encode Pong"));
+    let pong: Arc<Vec<u8>> = Arc::new(encode_payload(&Frame::Pong).expect("encode Pong"));
     spawn_bg("dist-reader", move || {
-        let mut reader: &Stream = &sock;
+        // Buffered: a frame is a 4-byte length read then a body read, so unbuffered it was
+        // two syscalls a frame at least. The buffer only gathers bytes the socket already
+        // has (a read returns what is there, it does not wait to fill), so a frame is
+        // handled — and `last_seen` refreshed — exactly when its last byte arrives, as
+        // before; the steady-state socket has no read timeout for it to interact with.
+        // Nothing else reads this socket after the handshake, so nothing is lost in it.
+        let mut reader = std::io::BufReader::new(&*sock);
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             while let Ok(frame) = open.open(&mut reader) {
                 last_seen.store(now_millis(), Ordering::Release);
@@ -1976,7 +2010,7 @@ fn broadcast_peer_table() {
     struct PeerSnap {
         name: Symbol,
         addr: String,
-        tx: SyncSender<Arc<[u8]>>,
+        tx: SyncSender<Arc<Vec<u8>>>,
         sock: Arc<Stream>,
     }
     let snaps: Vec<PeerSnap> = {
@@ -2003,7 +2037,7 @@ fn broadcast_peer_table() {
             continue;
         }
         if let Ok(bytes) = encode_payload(&Frame::Peers { peers })
-            && s.tx.try_send(Arc::from(bytes)).is_err()
+            && s.tx.try_send(Arc::new(bytes)).is_err()
         {
             let _ = s.sock.shutdown(Shutdown::Both);
         }
