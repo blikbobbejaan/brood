@@ -1284,6 +1284,24 @@ chain is at most as long as there are loads in flight."
                (count *features-loading*)))
     (and (not (nil? keys)) (every? keys (fn (other) (>= (compare key other) 0))))))
 
+;; How long a process that broke a cycle leaves its module to the others before it loads it
+;; itself: `*require-yield-checks*` looks, `*require-yield-ms*` apart.
+(def- *require-yield-ms* 20)
+(def- *require-yield-checks* 50)
+
+(defn- %require-after-break (key inferred? checks)
+  "Require `key` after breaking a cycle across processes: done when another process has
+loaded it, a wait for theirs when another claims it, and this process's own load only when
+nobody has taken it after `checks` looks — a cycle whose other end waits on a different key
+of this process's never asks for this one."
+  (cond
+    (%registry-member? '*features* key) key
+    (or (%registry-member? '*features-loading* key) (<= checks 0)) (%require-one key inferred? nil)
+    else
+      (do
+        (receive (after *require-yield-ms* nil))
+        (%require-after-break key inferred? (- checks 1)))))
+
 (defn- %require-holds-a-load? (me except)
   "True while `me` still holds the claim on a load in flight other than `except`'s."
   (any? (%map-pairs *features-loading*)
@@ -1499,9 +1517,12 @@ it waits for that load to finish (a half-evaluated module is never observable).
                         (if (and (includes? (error-message e) *require-cycle*)
                               (not (%require-holds-a-load? (self) key)))
                           :%cycle-broken (throw e)))))))
-            ;; The other end of the cycle can finish it now: require the module again, which
-            ;; waits for that load (or claims it, if nobody has yet).
-            (%require-one key inferred? nil)
+            ;; The other end of the cycle can finish it now — but only if this process does
+            ;; not take the claim straight back: re-claimed at once, it meets the same cycle
+            ;; again, breaks it again, and the one it was waiting for never gets the load (CI's
+            ;; contracts job: the breaker held `xcyc-a` again while the other still waited on
+            ;; it). So it waits until the module is loaded or someone else claims it.
+            (%require-after-break key inferred? *require-yield-checks*)
             (do
               ;; Marker cleared, then waiters released — and both AFTER `provide` (inside
               ;; `%require-force`). See the ordering note on `%require-await`:

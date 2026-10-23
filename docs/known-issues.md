@@ -96,6 +96,14 @@ The first cut let every member break it. CI's contracts job timed the guard out 
 `[:timeout :timeout]`: its two fixture processes start waiting on the same tick, so both backed
 out, both retried and met the same cycle again — a livelock. The tie-break is the second cut.
 
+The second cut timed out too, in the contracts job only. The guard's diagnostics (`855d4b53`)
+showed why: the breaker held `xcyc-a` again and was waiting on nothing, the other process was
+still waiting on `xcyc-a`, and neither module was provided. The breaker's retry had re-claimed
+its module the moment it released it, before the process it released could take it, so it met
+the same cycle and broke it again, over and over. The third cut (`%require-after-break`): a
+breaker leaves its module to the others — done when one loads it, a wait when one claims it —
+and loads it itself only when nobody has taken it after about a second.
+
 Guard: `tests/modules_test.blsp` "a require cycle split across two processes resolves, both
 modules whole" — two fixture modules that each pause after their claim, so the cycle forms on
 every run. To close: green in CI, and sabotage-verified (with the `%require-cycle?` branch
