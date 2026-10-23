@@ -1359,6 +1359,7 @@ fn setup_check_imports(heap: &mut Heap, header: Value) -> ImportScope {
         UseExcept(Symbol, Vec<Symbol>), // (:use mod :exclude [names]) — all public minus names
         Alias(Symbol, Symbol),          // (short-prefix-name, module)
         UseInternals(Symbol),           // (:use-internals mod) — ADR-146 grant
+        Shadow(Symbol),                 // (:shadow name …) — a declared root-macro shadow, ADR-423
     }
     let mut clauses: Vec<Clause> = Vec::new();
     {
@@ -1425,6 +1426,12 @@ fn setup_check_imports(heap: &mut Heap, header: Value) -> ImportScope {
                 // internals key the privacy walk consults.
                 clauses.push(Clause::Use(mod_sym, None, None));
                 clauses.push(Clause::UseInternals(mod_sym));
+            } else if value::symbol_is(*kw_sym, "shadow") {
+                for name in citems.iter().skip(1) {
+                    if let Value::Sym(name) = *name {
+                        clauses.push(Clause::Shadow(name));
+                    }
+                }
             } else if value::symbol_is(*kw_sym, "alias") {
                 let Some(&Value::Sym(mod_sym)) = citems.get(1) else {
                     continue;
@@ -1541,6 +1548,12 @@ fn setup_check_imports(heap: &mut Heap, header: Value) -> ImportScope {
                 let mod_sym = heap.root_module_name(mod_sym); // ADR-070, as in Clause::Use
                 let key = crate::eval::macros::internals_grant_key(&value::symbol_name(mod_sym));
                 heap.add_import(key, mod_sym);
+            }
+            Clause::Shadow(name) => {
+                // What the runtime clause's `%declare-shadow` records, so checking the module
+                // compiles it as loading does — without the shadow warning it declared away.
+                let key = crate::eval::macros::shadow_declared_key(&value::symbol_name(name));
+                heap.add_import(key, name);
             }
             Clause::Alias(short, mod_sym) => {
                 // Root the alias TARGET (ADR-070) so `short/name` resolves to `pkg/mod/name`;

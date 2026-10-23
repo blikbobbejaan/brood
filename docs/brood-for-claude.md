@@ -212,6 +212,9 @@ the prelude, the builtins and the embedded std modules are reserved. Your own gl
 and your packages stay fully redefinable, which is what hot reload is for. If a name
 you want is taken: pick another, shadow it locally (`(let (get …) …)` is fine), or
 define it in a `(defmodule your/mod …)` — that makes `your/mod/get`, which is yours.
+Inside that module your definition wins every bare call, even over a prelude **macro**
+(`(defn spy …)` → `(spy x)` calls yours; `/spy` reaches the macro). Defining a prelude
+macro's name warns at load unless the header says `(:shadow spy)` (ADR-423).
 The rule reserves shipped **functions**; a `defdyn` name is never reserved whatever it
 holds, and it is ambient (root) — so `(def *print-length* 3)` from any module rebinds the
 one root binding, and `(def *out* my-port)` still redirects output permanently. A plain

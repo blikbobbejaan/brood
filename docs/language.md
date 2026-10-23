@@ -3526,6 +3526,21 @@ unchanged.
 (def text/insert (fn …))         ; advice / hot reload works
 ```
 
+**A module's own definition wins over a root name — function or macro — inside that
+module** (ADR-423). `(defn spy (x) …)` in a module makes every bare `(spy …)` there call
+it, not expand the prelude's `spy` macro; `/spy` still reaches the root one. Because a
+root *macro* changing meaning is easy to miss, defining one's name prints a warning at
+load — `warning: \`m/spy\` shadows the prelude macro \`spy\` …` — unless the header
+declares the shadow: `(defmodule m (:shadow spy))`. Shadowing a root *function* is silent:
+modules owning `get`, `map` or `count` is the designed style (ADR-236).
+
+The same rule cannot let a module capture a *macro's* expansion. When a macro is defined,
+every call head in its quasiquote templates that names a root binding is written `/name`
+— `when-let` expands to `(let (v x) (/when v …))` — so a module's own `when` or `first`
+never captures what a prelude or library macro emits. Only call heads are escaped, and
+never one spelled like a binder of the same template; an argument naming a root function
+(`(map ~xs first)`) is written `/first` by hand.
+
 Import other namespaces' names with `(:use …)` clauses in the header. `(:use mod)`
 refers all of `mod`'s public names bare; `(:use mod :only [a b])` refers just
 those. A bare reference resolves **current namespace → imports → root**, so an

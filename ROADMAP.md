@@ -517,12 +517,10 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
 - [x] **Concurrency teaching note** — DONE 2026-10-16: `docs/brood-for-claude.md` "Parallelising
       a step-by-step simulation" (tiling + halo exchange, not a fan-out per generation), with
       `examples/life_bands.blsp` as the worked version, checked against the serial step.
-- [ ] **A module function named like a root macro is silently shadowed by the macro**
-      (found 2026-10-22). `(defmodule m) (defn- spy (x) …)` is accepted — the reserved-name
-      hint even promises "inside a defmodule … it is yours" — but every bare `(spy …)` in `m`
-      expands the prelude's `spy` macro. std leans on the current rule (`fuzzy` defines `match`
-      and uses the root `match` macro bare; `os`/`node` define `spawn`). A design call: warn at
-      such a definition, or let the module's own definition win and rename std's three.
+- [x] **A module function named like a root macro is silently shadowed by the macro** —
+      DONE 2026-10-23 (ADR-423): the module's own definition wins; macro templates pin their
+      call heads to root (`/when`) so no module captures an expansion; defining a root macro's
+      name warns unless declared `(:shadow name)`.
 - [ ] **Perf levers parked in `docs/compute-frontier.md`** — unboxed arrays (`matmul`), and a
       fast frame for the VM `dispatch` computed-head branch (`pipeline`).
 

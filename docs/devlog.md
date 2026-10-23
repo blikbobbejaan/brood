@@ -3291,3 +3291,11 @@ process that was already dead at once instead of after its 2 s timeout.
 no longer materialises the unchanged modules to write them again: 2.7 → 0.30 s and 720 → 265 MB
 on the 302 × 3k rig. `load-sources-cached` takes `:lazy` for that; check and test still load
 everything. ADR-419 amended.
+
+2026-10-23 (ADR-423, macro shadowing): a module's own definition now wins over a root macro
+inside that module — `(defn- spy …)` makes a bare `(spy …)` call it; `/spy` reaches the macro.
+What made that safe: when a macro is defined, its templates' call heads that name a root binding
+are written `/name` automatically, so a module's own `when` no longer captures `when-let`'s
+expansion (the reason the first attempt was reverted). Defining a root macro's name warns unless
+the header says `(:shadow name)`; fuzzy, os and node declare theirs. Breaking: `macroexpand`
+output shows `/when` etc.
