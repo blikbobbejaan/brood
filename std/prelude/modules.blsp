@@ -638,14 +638,13 @@ would put the merge on every boot. Filtered here, at read time, rather than when
 built, because the image may have been written by a different binary from the one reading it: an image is keyed on the stdlib\'s CONTENT, deliberately shared by `brood`,
 `nest` and `brood-lsp`, but those binaries do not bake in the same MODULES — a lean runtime
 has no dev-tools, and `project`\'s edges name `test`. Following an edge to a module this
-binary cannot load would fail the require outright."
+binary cannot load would fail the require outright. `%baked-module?` asks the binary\'s own
+module index per edge, so the filter builds no set of every baked-in name."
   (let (live (get *require-edges* key))
     (if live
       live
       (let (rec (get (or *std-require-edges* {}) key))
-        (when rec
-          (let (have (into #{} (map (reflect/builtin-modules) ->string)))
-            (%filter rec (fn (d) (contains? have (->string d))))))))))
+        (when rec (%filter rec %baked-module?))))))
 
 (def- *std-impls* nil)
 

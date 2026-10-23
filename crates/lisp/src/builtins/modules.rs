@@ -44,6 +44,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         builtin_module_present,
     );
     primitives.def(
+        "%baked-module?",
+        Arity::exact(1),
+        Sig::new(vec![any], bool_ty),
+        &[],
+        "",
+        baked_module_present,
+    );
+    primitives.def(
         "%builtin-module-file",
         Arity::exact(1),
         Sig::new(vec![sym.union(kw).union(string)], string.union(nil_ty)),
@@ -973,6 +981,24 @@ pub(super) fn builtin_module_present(args: &[Value], _: EnvId, heap: &mut Heap) 
         || crate::bundle::mounted()
             .as_ref()
             .is_some_and(|b| b.module_src(&name).is_some());
+    Ok(Value::Bool(present))
+}
+
+/// `(%baked-module? name)` — is `name` a std module baked into THIS binary? Exactly
+/// `(contains? (into #{} (map (reflect/builtin-modules) ->string)) (->string name))` for a
+/// symbol, keyword or string, answered from the embedded-module index instead of building
+/// that set; any other value names no module, so it answers false rather than raising.
+/// Unlike `%builtin-module?` a mounted release bundle's modules do not count: the question
+/// is what this binary was built with (`%std-edges-for` filters the stdlib image's edges by
+/// it, since the image may have been written by a binary that bakes in more).
+pub(super) fn baked_module_present(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let present = match arg(args, 0) {
+        Value::Sym(name) | Value::Keyword(name) => {
+            embedded_module(value::symbol_name_ref(name)).is_some()
+        }
+        Value::Str(id) => embedded_module(heap.string(id)).is_some(),
+        _ => false,
+    };
     Ok(Value::Bool(present))
 }
 
