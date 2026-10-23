@@ -372,7 +372,8 @@ pub fn macroexpand_1(heap: &mut Heap, form: Value, env: EnvId) -> Result<(Value,
     // A no-op for a bare head or an already-loaded one (ADR-227 follow-up).
     let mut form = form;
     let mut env = env;
-    if macro_head_id(heap, env, s).is_none() {
+    let mut head_macro = macro_head_id(heap, env, s);
+    if head_macro.is_none() {
         // The require LOADS a module — arbitrary eval, therefore a collection that
         // relocates `form` and the env chain. Root both across it and re-read: the
         // `(macroexpand-1 …)` / `(macroexpand …)` BUILTINS reach here with
@@ -390,9 +391,12 @@ pub fn macroexpand_1(heap: &mut Heap, form: Value, env: EnvId) -> Result<(Value,
         env = heap.env_root_at(eb);
         heap.truncate_roots(rb);
         heap.truncate_env_roots(eb);
-        r?;
+        // Look again only if a module was required: nothing else could bind the head.
+        if r? {
+            head_macro = macro_head_id(heap, env, s);
+        }
     }
-    let Some(mid) = macro_head_id(heap, env, s) else {
+    let Some(mid) = head_macro else {
         return Ok((form, false));
     };
     // Re-derive the tail from the (possibly relocated) form rather than reusing the

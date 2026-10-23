@@ -147,31 +147,34 @@ pub fn module_to_require(heap: &Heap, s: Symbol) -> Option<Symbol> {
 /// `require` (and loads a qualified function head early, harmlessly). A no-op when `s`
 /// is bare, already bound (module loaded), or an alias/root-escape. Cheap: only an
 /// unbound symbol with a `/` triggers a load.
-pub fn require_qualified_head(heap: &mut Heap, env: EnvId, s: Symbol) -> LispResult {
+///
+/// Answers whether it required a module: `false` means it bound nothing, so a macro-head
+/// lookup the caller made before it still stands.
+pub fn require_qualified_head(heap: &mut Heap, env: EnvId, s: Symbol) -> Result<bool, LispError> {
     // Already bound ⇒ its module is loaded (or it is a prelude/root name) — nothing to do.
     if heap.env_get(EnvId::GLOBAL, s).is_some() {
-        return Ok(Value::nil());
+        return Ok(false);
     }
     let rooted = heap.root_qualified_ref(s).unwrap_or(s);
     if rooted != s && heap.env_get(EnvId::GLOBAL, rooted).is_some() {
-        return Ok(Value::nil());
+        return Ok(false);
     }
     let Some(module) = module_to_require(heap, s) else {
-        return Ok(Value::nil());
+        return Ok(false);
     };
     // A reference to our own module's (forward-declared) name — it is mid-load, so never
     // re-require it (mirrors `record_qualified`'s self-namespace filter).
     if heap.compile_ns() == Some(module) {
-        return Ok(Value::nil());
+        return Ok(false);
     }
     // Lazy policy (ADR-335): a head an image vouches is a FUNCTION waits for its first call
     // — the miss path (`global_miss`) loads it then. Only a macro, or a head into a module
     // no image describes, must load before expansion.
     if lazy_loads() && heap.image_says_function(module, rooted) {
-        return Ok(Value::nil());
+        return Ok(false);
     }
     ensure_required(heap, env, module)?;
-    Ok(Value::nil())
+    Ok(true)
 }
 
 /// Record the module of a resolved qualified reference `qualified_name` for auto-require

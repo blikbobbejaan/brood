@@ -806,7 +806,7 @@ pub(super) fn resolve_sym(
     }
     // Own namespace first (a same-named local def shadows an import), then a
     // `(:use …)` import, then root/prelude fall-through (left bare).
-    let qsym = value::intern(&format!("{}/{}", ns_name, name));
+    let qsym = qualified_in(ns_name, s, name);
     if heap.ns_knows_name(s) || heap.env_get(value::EnvId::GLOBAL, qsym).is_some() {
         qsym
     } else if let Some(candidates) = heap.ambiguous_import_of(s) {
@@ -835,6 +835,32 @@ pub(super) fn resolve_sym(
     } else {
         s
     }
+}
+
+thread_local! {
+    /// `ns/bare` per bare symbol, for the namespace named first: every free bare reference
+    /// and every macro head asks [`resolve_sym`] for its own-namespace spelling, and one file
+    /// resolves under one namespace, so the spelling was formatted and re-interned per
+    /// reference. A different namespace clears it. Exact: the symbol is a function of the
+    /// two spellings, and an interned symbol is never freed.
+    static QUALIFIED_IN_NS: std::cell::RefCell<(String, crate::core::heap::SymbolMap<value::Symbol>)> =
+        std::cell::RefCell::new((String::new(), crate::core::heap::SymbolMap::default()));
+}
+
+/// The symbol spelled `ns_name/name`, `name` being `bare`'s spelling.
+fn qualified_in(ns_name: &str, bare: value::Symbol, name: &str) -> value::Symbol {
+    QUALIFIED_IN_NS.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        let (memo_ns, by_bare) = &mut *memo;
+        if memo_ns != ns_name {
+            memo_ns.clear();
+            memo_ns.push_str(ns_name);
+            by_bare.clear();
+        }
+        *by_bare
+            .entry(bare)
+            .or_insert_with(|| value::intern(&format!("{ns_name}/{name}")))
+    })
 }
 
 /// `/name` → `name`, everywhere in `form`, and nothing else. The root-namespace half of
