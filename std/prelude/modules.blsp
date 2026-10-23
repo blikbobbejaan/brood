@@ -416,7 +416,13 @@ one call site is inside `defmodule`'s template — see the note there."
 ;; is verified by `crates/lisp/src/types/check/protocol.rs`, which reads the clause
 ;; straight out of the header source. The loader's job is only to tolerate it — drop it
 ;; from this list and every protocol-implementing module fails to load.
-(def- %defmodule-clause-heads [:use :use-internals :alias :load :implements])
+(def- %defmodule-clause-heads [:use :use-internals :alias :load :implements :shadow])
+
+;; `(:shadow name …)` declares that this module defines a root MACRO's name on purpose
+;; (ADR-423): inside the module its own definition wins, and the declaration silences the
+;; warning that change of meaning otherwise prints. The macro stays reachable as `/name`.
+(defn- %defmodule-shadow-clause (clause)
+  (map (rest clause) (fn (name) (list '%declare-shadow (list 'quote name)))))
 
 ;; A header clause that is a bare string or symbol is almost never a typo'd clause — it is
 ;; the tail of a DOCSTRING that ended early, because someone wrote an unescaped `"` inside
@@ -445,7 +451,7 @@ one call site is inside `defmodule`'s template — see the note there."
       ": unrecognised header form "
       (pr-str clause)
       " — a `defmodule` header takes only (:use mod [:only [names]]), (:load mod …),"
-      " (:use-internals mod), (:alias mod [:as short]), and (:implements Protocol)."
+      " (:use-internals mod), (:alias mod [:as short]), (:shadow name …) and (:implements Protocol)."
       " Check the spelling;"
       " Clojure's `(:require …)` is not a Brood clause (`:use` both loads and refers)."
       (%defmodule-clause-hint clause))))
@@ -482,6 +488,7 @@ feature. Put it first. e.g. (defmodule gen \"A gen_server …\")."
        (%record-module-doc! root-key# ~doc)
        (%defmodule-provide root-key#)
        (%in-ns '~mod)
+       ~@(%defmodule-clause-forms clauses :shadow %defmodule-shadow-clause)
        ~@(%defmodule-clause-forms clauses :load %defmodule-load-clause)
        ~@(%defmodule-clause-forms clauses :use %defmodule-use-clause)
        ~@(%defmodule-clause-forms clauses :use-internals %defmodule-internals-clause)

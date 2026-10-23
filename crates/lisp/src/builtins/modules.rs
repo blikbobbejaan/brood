@@ -255,6 +255,16 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     );
     // `(:use-internals mod)` lowers to this — module privacy's @testable seam
     // (ADR-146): grant this file access to `mod`'s `--` names.
+    // `(:shadow name …)` lowers to this — the header's declaration that a definition of a
+    // root macro's name is deliberate (ADR-423), which silences the shadow warning.
+    primitives.def(
+        "%declare-shadow",
+        Arity::exact(1),
+        Sig::new(vec![sym], nil_ty),
+        &[],
+        "",
+        declare_shadow,
+    );
     primitives.def(
         "%grant-internals",
         Arity::exact(1),
@@ -1680,6 +1690,13 @@ pub(super) fn grant_internals(args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
 /// lifecycle as `%refer`. The `(:alias …)` header emits it. A second `short` for a
 /// different module is a loud error (the ambiguous-last-segment case — disambiguate
 /// with an explicit `:as`).
+pub(super) fn declare_shadow(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let name = expect_symbol(heap, "%declare-shadow", arg(args, 0))?;
+    let key = crate::eval::macros::shadow_declared_key(&value::symbol_name(name));
+    heap.add_import(key, name);
+    Ok(Value::nil())
+}
+
 pub(super) fn alias(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let module = expect_symbol(heap, "%alias", arg(args, 0))?;
     let short = expect_symbol(heap, "%alias", arg(args, 1))?;

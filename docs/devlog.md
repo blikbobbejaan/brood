@@ -3292,12 +3292,19 @@ no longer materialises the unchanged modules to write them again: 2.7 → 0.30 s
 on the 302 × 3k rig. `load-sources-cached` takes `:lazy` for that; check and test still load
 everything. ADR-419 amended.
 
+2026-10-23 (ADR-423, macro shadowing): a module's own definition now wins over a root macro
+inside that module — `(defn- spy …)` makes a bare `(spy …)` call it; `/spy` reaches the macro.
+What made that safe: when a macro is defined, its templates' call heads that name a root binding
+are written `/name` automatically, so a module's own `when` no longer captures `when-let`'s
+expansion (the reason the first attempt was reverted). Defining a root macro's name warns unless
+the header says `(:shadow name)`; fuzzy, os and node declare theirs. Breaking: `macroexpand`
+output shows `/when` etc.
+
 2026-10-23 (vcs is git's and the registry's): `std/vcs` names no VCS but git. mur's row and its
 client glue (`vcs/mur-program`, `vcs/use-mur-seat`, `vcs/mur-env`, `vcs/mur-files` and the rest)
 are gone from std: bedit already puts mur's row itself (its `murcore`), and nothing downstream
 called the std ones (unreleased, so no ledger rows). A row's hook may now be a function as well
 as a symbol — a package's module names are rooted under it, and a function calling its global
 by name is still late. `vcs` stays in std, self-contained, with a ROADMAP item to move it to a
-package if it ever should. Also fixed the two reds `a9423365` left: `vcs_test` purges its
-`brood-vcs-` fixtures (KI-30's gate), and `format_changed`'s fallback test reads the new
-"not in a version-controlled checkout" line.
+package if it ever should. Also fixed the other red `a9423365` left: `format_changed`'s
+fallback test reads the new "not in a version-controlled checkout" line.

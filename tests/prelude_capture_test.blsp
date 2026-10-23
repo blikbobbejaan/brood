@@ -159,4 +159,61 @@
                 (defn bound? (s) :CAPTURED)
                 (defonce zz 5)
                 zz")
-      5)))
+      5))
+
+  ;; ADR-423: a module's own definition wins over a root MACRO inside that module — so the
+  ;; templates above must not be capturable by one either. They are not written `/when` by
+  ;; hand: the definition-time pass escapes a template's call heads for every macro.
+  (test "a module defining its own `when` macro does not capture `when-let` or `cond`"
+    (assert=
+      (%load-string
+        "(defmodule capture-probe-when (:shadow when and))
+         (defmacro when (c & body) :CAPTURED)
+         (defmacro and (& xs) :CAPTURED)
+         [(when-let (x 5) x) (if-let (y 1) y 0) (cond (= 1 1) :ok else :no)]")
+      [5 1 :ok]))
+
+  (test "a module's own function wins a bare call over a root macro; /name reaches the macro"
+    (assert=
+      (%load-string
+        "(defmodule capture-probe-spy (:shadow spy))
+         (defn- spy (x) [:mine x])
+         [(spy 1) (/spy 3)]")
+      ;; the macro returns its expression's value; the module's function would give [:mine 3]
+      [[:mine 1] 3]))
+
+  ;; The same pass covers a MODULE's macro: its template's root heads are escaped too, so a
+  ;; consumer that defines `first` does not capture a library macro that calls it.
+  (test "a module macro's template is not captured by the module that uses it"
+    (assert=
+      (%load-string
+        "(defmodule capture-probe-lib)
+         (defmacro head-of (xs) `(first ~xs))
+         (defmodule capture-probe-user)
+         (defn first (xs) :CAPTURED)
+         (capture-probe-lib/head-of [7 8])")
+      7)))
+
+(describe "macro shadowing across processes"
+  ;; Every worker compiles its own module defining `when`, in parallel; each must see its own
+  ;; macro win in its module and the prelude's `when-let` stay uncaptured.
+  :isolated (test "parallel modules each own their shadow"
+    (let (me (self)
+          n 4)
+      (doseq (i (range n))
+        (spawn
+          (fn ()
+            (send me
+              [i
+                (%load-string
+                  (str "(defmodule capture-probe-par"
+                    i
+                    " (:shadow when))
+                              (defmacro when (c & body) [:own "
+                    i
+                    "])
+                              [(when true 1) (when-let (x "
+                    i ") x)]"))]))))
+      (let (got (fold (range n) {} (fn (acc _) (receive ([i v] (assoc acc i v))))))
+        (doseq (i (range n))
+          (assert= [[:own i] i] (get got i)))))))

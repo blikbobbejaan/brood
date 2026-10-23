@@ -161,6 +161,46 @@ pub(crate) fn internals_grant_key(mod_name: &str) -> value::Symbol {
     value::intern(&format!("/internals/{mod_name}"))
 }
 
+/// The import-table key under which `(:shadow name)` records that this file shadows the root
+/// macro `name` on purpose (ADR-423) — the same leading-`/` trick as [`internals_grant_key`].
+pub(crate) fn shadow_declared_key(name: &str) -> value::Symbol {
+    value::intern(&format!("/shadow/{name}"))
+}
+
+/// A module definition of a bare name the root binds to a MACRO: inside the module its own
+/// definition now wins (ADR-423), so every bare `(name …)` there stops expanding the macro —
+/// a change of meaning worth a word, unless the header declared it with `(:shadow name)`.
+/// Shadowing a root FUNCTION stays silent: modules owning `get`/`map`/`count` is the
+/// designed style (ADR-236). Once per definition per process; `BROOD_NO_SHADOW_WARN` mutes
+/// it, as it mutes the import-shadow warning.
+fn warn_macro_shadow(heap: &Heap, ns_name: &str, name: value::Symbol) {
+    let bare = value::symbol_name_ref(name);
+    if bare.contains('/')
+        || bare.starts_with('%')
+        || !matches!(
+            heap.env_get(value::EnvId::GLOBAL, name).map(|v| v.unpack()),
+            Some(ValueRef::Macro(_))
+        )
+        || heap.import_of(shadow_declared_key(bare)).is_some()
+        || std::env::var_os("BROOD_NO_SHADOW_WARN").is_some()
+    {
+        return;
+    }
+    static WARNED: std::sync::Mutex<Option<HashSet<String>>> = std::sync::Mutex::new(None);
+    let key = format!("{ns_name}/{bare}");
+    let first = WARNED
+        .lock()
+        .map(|mut w| w.get_or_insert_with(HashSet::new).insert(key.clone()))
+        .unwrap_or(true);
+    if first {
+        eprintln!(
+            "warning: `{key}` shadows the prelude macro `{bare}`: inside `{ns_name}` a bare \
+             `({bare} …)` now means this definition. Reach the macro as `/{bare}`; declare the \
+             shadow with (:shadow {bare}) in the defmodule header to silence this."
+        );
+    }
+}
+
 /// Enforce module privacy (ADR-146) over a resolved form: an error for any
 /// **evaluated** qualified reference `m/name` where `name` is recorded
 /// module-private in `m` (a `defn-`/`def-` definition) and `m` is neither the
@@ -590,7 +630,13 @@ pub fn resolve(heap: &mut Heap, form: Value) -> Value {
         // So root gets the escape rewrite and nothing else. It cannot use `resolve_sym`:
         // with an empty `ns_name` that function's qualifier would turn every free symbol
         // into `/name`, which is the bug inverted.
-        None => return strip_root_escapes(heap, form),
+        //
+        // A root `defmacro`'s templates get their call heads escaped first (ADR-423) — which
+        // the strip leaves alone, since it skips templates.
+        None => {
+            let form = escape_macro_definitions(heap, form);
+            return strip_root_escapes(heap, form);
+        }
     };
     // Bounded compile walk — block the safepoint so the partially-built output tree
     // and the Rust-local Vecs aren't relocated/swept mid-walk (resolve allocates a
@@ -598,7 +644,10 @@ pub fn resolve(heap: &mut Heap, form: Value) -> Value {
     let _gc_block = crate::process::GcBlockGuard::enter();
     let _macro_block = crate::process::MacroBlockGuard::enter();
     let ns_name = value::symbol_name_ref(ns);
-    resolve_walk(heap, form, ns_name, &[])
+    let resolved = resolve_walk(heap, form, ns_name, &[]);
+    // After resolution an own-namespace head is `ns/name` and an import its qualified name,
+    // so what a macro template still leaves bare and bound is a root name: pin it (ADR-423).
+    escape_macro_definitions(heap, resolved)
 }
 
 /// Resolve a single **reference** symbol `s` against the heap's current namespace
@@ -850,6 +899,36 @@ fn rewrite_root_escapes(heap: &mut Heap, form: Value) -> Value {
     })
 }
 
+thread_local! {
+    static TEMPLATE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Is the resolve walk inside a quasiquote template (and not back in code through a `~` hole)?
+/// The guard restores the previous depth on drop, so a hole can zero it for its extent.
+struct TemplateDepth(u32);
+
+impl TemplateDepth {
+    fn enter() -> Self {
+        Self::set(TEMPLATE_DEPTH.with(|d| d.get()) + 1)
+    }
+    /// A `~`/`~@` hole: macro-time code again, where `/name` resolves as anywhere else.
+    fn hole() -> Self {
+        Self::set(0)
+    }
+    fn set(n: u32) -> Self {
+        TemplateDepth(TEMPLATE_DEPTH.with(|d| d.replace(n)))
+    }
+    fn inside() -> bool {
+        TEMPLATE_DEPTH.with(|d| d.get() > 0)
+    }
+}
+
+impl Drop for TemplateDepth {
+    fn drop(&mut self) {
+        TEMPLATE_DEPTH.with(|d| d.set(self.0));
+    }
+}
+
 fn resolve_walk(heap: &mut Heap, form: Value, ns_name: &str, locals: &[value::Symbol]) -> Value {
     // Same deep-form stack safety as macroexpand_all_depth above.
     crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
@@ -864,6 +943,10 @@ fn resolve_walk_inner(
     locals: &[value::Symbol],
 ) -> Value {
     match form.unpack() {
+        // Inside a template a `/name` is the root escape the EXPANSION needs, resolved at the
+        // call site — stripping it here, at definition, would hand every caller a bare name
+        // to capture (ADR-423; the root half is `skips_as_data`).
+        ValueRef::Sym(s) if is_root_escape(s) && TemplateDepth::inside() => form,
         ValueRef::Sym(s) => Value::symbol(resolve_sym(heap, s, ns_name, locals)),
         ValueRef::Pair(_) => resolve_list(heap, form, ns_name, locals),
         ValueRef::Vector(id) => {
@@ -906,6 +989,7 @@ fn resolve_list(heap: &mut Heap, form: Value, ns_name: &str, locals: &[value::Sy
             return form; // pure data — never descend (ADR-034)
         }
         if value::symbol_is(h, kw::QUASIQUOTE) {
+            let _template = TemplateDepth::enter();
             // α (ADR-065 §7): descend the template so a macro's *free* references
             // qualify to the **defining** namespace — frozen here at macro-def time,
             // so the expansion resolves in any consumer. `~unquote`/`~@` contents
@@ -916,6 +1000,16 @@ fn resolve_list(heap: &mut Heap, form: Value, ns_name: &str, locals: &[value::Sy
             let mut out = Vec::with_capacity(items.len());
             out.push(items[0]); // the `quasiquote` head itself
             for &it in &items[1..] {
+                out.push(resolve_walk(heap, it, ns_name, locals));
+            }
+            return rebuild_list(heap, form, out);
+        }
+        if (value::symbol_is(h, kw::UNQUOTE) || value::symbol_is(h, kw::UNQUOTE_SPLICING))
+            && TemplateDepth::inside()
+        {
+            let _hole = TemplateDepth::hole();
+            let mut out = Vec::with_capacity(items.len());
+            for it in items {
                 out.push(resolve_walk(heap, it, ns_name, locals));
             }
             return rebuild_list(heap, form, out);
@@ -966,6 +1060,7 @@ fn resolve_def(
             // registering it would qualify the rest of the file's references to a
             // namespace-local name that is never defined.
             if !value::symbol_name_ref(name).contains('/') && !is_ambient(heap, name) {
+                warn_macro_shadow(heap, ns_name, name);
                 heap.add_ns_known_name(name);
             }
             out.push(Value::symbol(qualify_name(heap, ns_name, name)));

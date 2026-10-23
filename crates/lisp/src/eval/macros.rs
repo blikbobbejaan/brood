@@ -14,7 +14,8 @@
 //! evaluator as ordinary `list`/`append` operands.
 //!
 //! The compile pass's other jobs live in children: [`hygiene`] (template binders),
-//! [`resolve`] (namespace resolution and `compile`), [`pipeline`] and [`linmap`] (the
+//! [`resolve`] (namespace resolution and `compile`), [`template_escape`] (a macro
+//! template's call heads pinned to root, ADR-423), [`pipeline`] and [`linmap`] (the
 //! compile-time loop rewrites) and [`patterns`] (pattern-binder lowering).
 
 mod hygiene;
@@ -22,6 +23,7 @@ mod linmap;
 mod patterns;
 mod pipeline;
 mod resolve;
+mod template_escape;
 mod typed;
 
 use hygiene::*;
@@ -29,6 +31,7 @@ use linmap::*;
 pub(crate) use patterns::*;
 use pipeline::*;
 pub use resolve::*;
+use template_escape::*;
 use typed::*;
 pub(crate) use typed::{defn_param_types, typed_param_sig};
 
@@ -306,7 +309,24 @@ fn tagged(heap: &Heap, v: Value, name: &str) -> Option<Value> {
 /// call — both must agree on what "is a macro head" means.
 pub(crate) fn macro_head_id(heap: &Heap, env: EnvId, sym: value::Symbol) -> Option<ClosureId> {
     match heap.env_get(env, sym).map(|v| v.unpack()) {
-        Some(ValueRef::Macro(mid)) => Some(mid),
+        // A ROOT macro whose bare name this module defines or imports: the module's own
+        // name wins inside it (ADR-423), exactly as it does for a function — its macro
+        // expands, its function is called. `/name` still reaches the root macro, and the
+        // prelude's own templates emit `/name` (`template_escape`), so they are not captured.
+        Some(ValueRef::Macro(mid)) => match heap.compile_ns() {
+            Some(ns) if !value::symbol_name_ref(sym).contains('/') => {
+                let own = resolve_sym(heap, sym, value::symbol_name_ref(ns), &[]);
+                if own == sym {
+                    Some(mid)
+                } else {
+                    match heap.env_get(value::EnvId::GLOBAL, own).map(|v| v.unpack()) {
+                        Some(ValueRef::Macro(own_mid)) => Some(own_mid),
+                        _ => None,
+                    }
+                }
+            }
+            _ => Some(mid),
+        },
         // Directly bound to a non-macro (a local, or a non-macro global): it
         // shadows — never reinterpret it as an imported macro.
         Some(_) => None,

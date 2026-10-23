@@ -32,7 +32,8 @@ candidate, else `{:score :positions}` (`positions` are the matched char indices,
 highlighting). `filter` keeps the matches and sorts them best-first (ties: shorter
 candidate, then lexicographic); an empty query returns the candidates unchanged. `top` is
 `filter` stopping at the number of rows a UI can actually show, which is what makes
-ranking a whole project per keystroke affordable. `*fuzzy-scorer*` replaces the rules.")
+ranking a whole project per keystroke affordable. `*fuzzy-scorer*` replaces the rules."
+  (:shadow match))
 
 ;; ---- the rules --------------------------------------------------------------
 
