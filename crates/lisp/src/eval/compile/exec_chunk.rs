@@ -899,32 +899,38 @@ pub(crate) fn exec_chunk(
                 // native code installed — the VM→native direct call below owns that — and a
                 // staged head's callee value (below the args) is dropped by shifting the args
                 // down one slot, so the frame starts at `drop_base` either way.
-                if !*tail && let Some((ref farm, _, _)) = fast {
-                    #[cfg(feature = "jit")]
-                    let native = vm_direct_eligible(heap, farm, argc);
-                    #[cfg(not(feature = "jit"))]
-                    let native = false;
-                    if !native
-                        && farm.nrequired == argc
-                        && farm.noptional == 0
-                        && farm.rest_slot.is_none()
-                    {
-                        if drop_base + argc < n {
-                            for k in 0..argc {
-                                let v = heap.root_at(drop_base + 1 + k);
-                                heap.set_root_at(drop_base + k, v);
-                            }
-                            heap.truncate_roots(drop_base + argc);
+                //
+                // Whether the callee takes that direct call is asked ONCE, here: the in-place
+                // path (which must decline it) and the direct call below read one answer.
+                #[cfg(feature = "jit")]
+                let direct_native = !*tail
+                    && fast
+                        .as_ref()
+                        .is_some_and(|(farm, _, _)| vm_direct_eligible(heap, farm, argc));
+                #[cfg(not(feature = "jit"))]
+                let direct_native = false;
+                if !*tail
+                    && !direct_native
+                    && let Some((ref farm, _, _)) = fast
+                    && farm.nrequired == argc
+                    && farm.noptional == 0
+                    && farm.rest_slot.is_none()
+                {
+                    if drop_base + argc < n {
+                        for k in 0..argc {
+                            let v = heap.root_at(drop_base + 1 + k);
+                            heap.set_root_at(drop_base + k, v);
                         }
-                        // Move the IC's handle out rather than clone it (no refcount).
-                        let (arm, genv, bases) = fast.take().expect("matched Some above");
-                        return Ok(ChunkExit::CallInPlace {
-                            arm,
-                            argc,
-                            genv,
-                            bases,
-                        });
+                        heap.truncate_roots(drop_base + argc);
                     }
+                    // Move the IC's handle out rather than clone it (no refcount).
+                    let (arm, genv, bases) = fast.take().expect("matched Some above");
+                    return Ok(ChunkExit::CallInPlace {
+                        arm,
+                        argc,
+                        genv,
+                        bases,
+                    });
                 }
                 // VM→native DIRECT call (`docs/compute-frontier.md` §7.12). On the
                 // call-heavy rows the interpreter's dominant "call" is not a VM-level apply
@@ -948,11 +954,7 @@ pub(crate) fn exec_chunk(
                 // `drop_base`, and the frame is laid out FROM `drop_base` either way, which
                 // is where the result must land when the callee returns.
                 #[cfg(feature = "jit")]
-                if !*tail
-                    && fast
-                        .as_ref()
-                        .is_some_and(|(arm, _, _)| vm_direct_eligible(heap, arm, argc))
-                {
+                if direct_native {
                     // Every outcome below returns or continues, so the IC's handle is moved
                     // out rather than cloned (two atomic refcount writes a call).
                     let (arm, cenv, bases) = fast.take().expect("matched Some above");
