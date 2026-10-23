@@ -1015,12 +1015,19 @@ impl Heap {
             }
             (Str(x), Str(y)) => self.string(x).cmp(self.string(y)),
             // Symbols/keywords sort by spelling so it's stable and human-meaningful.
+            // Borrowed spellings (`symbol_name_ref`, no allocation) — a `sort` over keyword
+            // keys makes O(n log n) of these compares. The same id is the same spelling.
             (Sym(x), Sym(y)) | (Keyword(x), Keyword(y)) => {
-                crate::core::value::symbol_name(x).cmp(&crate::core::value::symbol_name(y))
+                if x == y {
+                    return Ordering::Equal;
+                }
+                crate::core::value::symbol_name_ref(x).cmp(crate::core::value::symbol_name_ref(y))
             }
+            // Element-wise over the borrowed slices: `value_cmp` takes `&self`, so nothing
+            // below can move or free either vector while they are borrowed.
             (Vector(x), Vector(y)) => {
-                let xs: Vec<Value> = self.vector(x).to_vec();
-                let ys: Vec<Value> = self.vector(y).to_vec();
+                let xs: &[Value] = self.vector(x);
+                let ys: &[Value] = self.vector(y);
                 for (xv, yv) in xs.iter().zip(ys.iter()) {
                     match self.value_cmp(*xv, *yv) {
                         Ordering::Equal => continue,
