@@ -1891,6 +1891,25 @@ impl Heap {
         Value::vector(VecId::local_gen(idx, self.local_epoch))
     }
 
+    /// Allocate a vector holding a copy of `items`. A vector of up to `INLINE_VEC_CAP`
+    /// elements is stored inline in its slab entry, so building one from a slice needs no
+    /// `Vec` at all — where `alloc_vector(items.to_vec())` mallocs a buffer only to copy
+    /// it inline and free it. A longer one is copied into its spill buffer once.
+    pub fn alloc_vector_from_slice(&mut self, items: &[Value]) -> Value {
+        let store = VecStore::from_flushed(items.len(), |i| items[i]);
+        let idx = alloc_slot!(self, vectors, store);
+        Value::vector(VecId::local_gen(idx, self.local_epoch))
+    }
+
+    /// Allocate a vector of the `len` operand-stack slots from `start` — the VM's vector
+    /// literal (`Inst::MakeVector`) — with no intermediate `Vec`: inline for a small one,
+    /// one exact-size spill buffer otherwise. The caller drops the operands after.
+    pub(crate) fn alloc_vector_from_roots(&mut self, start: usize, len: usize) -> Value {
+        let store = VecStore::from_flushed(len, |k| self.root_at(start + k));
+        let idx = alloc_slot!(self, vectors, store);
+        Value::vector(VecId::local_gen(idx, self.local_epoch))
+    }
+
     /// Allocate a 2-element vector directly from its elements — a bump-push of an
     /// inline [`VecStore`] with **no temporary `Vec`** (hence no `malloc`). The
     /// JIT's `MakeVector(2)` runtime helper (`brood_rt_make_vector2`) uses this

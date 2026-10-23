@@ -266,12 +266,15 @@ pub unsafe extern "C" fn brood_rt_make_vector_n(
 ) {
     unsafe {
         let h = &mut *heap;
-        let n = n as usize;
-        let mut items = Vec::with_capacity(n);
-        for i in 0..n {
-            items.push(std::ptr::read(elems.add(i)));
-        }
-        *out = h.alloc_vector(items);
+        // Read in place: a one-element literal is stored inline with no `Vec`, a longer
+        // one is copied once, into its spill buffer.
+        // An empty literal may stage nothing, so its pointer is never read.
+        let items: &[crate::core::value::Value] = if n > 0 {
+            std::slice::from_raw_parts(elems, n as usize)
+        } else {
+            &[]
+        };
+        *out = h.alloc_vector_from_slice(items);
     }
 }
 
@@ -293,15 +296,20 @@ pub unsafe extern "C" fn brood_rt_make_map_n(
 ) {
     unsafe {
         let h = &mut *heap;
-        let npairs = npairs as usize;
-        let mut pairs = Vec::with_capacity(npairs);
-        for i in 0..npairs {
-            pairs.push((
-                std::ptr::read(elems.add(2 * i)),
-                std::ptr::read(elems.add(2 * i + 1)),
-            ));
-        }
-        *out = h.map_from_pairs(pairs);
+        // The pairs are read straight out of the staged buffer (the JIT's stack slot, not
+        // the heap), so no throwaway `Vec` of them is built.
+        let staged: &[crate::core::value::Value] = if npairs > 0 {
+            std::slice::from_raw_parts(elems, 2 * npairs as usize)
+        } else {
+            &[]
+        };
+        *out = h.map_from_pair_iter(
+            staged
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&[key, value]| (key, value)),
+        );
     }
 }
 

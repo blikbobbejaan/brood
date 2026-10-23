@@ -1195,7 +1195,7 @@ pub(super) fn compare(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 // ---------- vector ----------
 
 pub(super) fn vector(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    Ok(heap.alloc_vector(args.to_vec()))
+    Ok(heap.alloc_vector_from_slice(args))
 }
 
 pub(super) fn vector_ref(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
@@ -1575,7 +1575,7 @@ fn as_set(v: Value) -> Value {
 /// `(%set a b c …)` — build a set from element args (the programmatic form of the
 /// `#{ }` literal). Dedups by structural equality; every op returns a fresh set.
 pub(super) fn set_construct(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    Ok(heap.set_from_elems(args.to_vec()))
+    Ok(heap.set_from_elem_iter(args.iter().copied()))
 }
 
 /// `(%set-add s x)` — a fresh set with `x` added (a set already holding `x` is

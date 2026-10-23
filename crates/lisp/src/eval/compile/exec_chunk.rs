@@ -374,26 +374,26 @@ pub(crate) fn exec_chunk(
                 }
             }
             Inst::MakeVector(nelem) => {
-                // Read the elements (already on the operand stack), truncate, then build.
+                // Build straight from the elements on the operand stack (inline for up
+                // to two, no temporary `Vec` either way), then drop them. Allocation
+                // never collects, so they stay valid while they are read.
                 let n = heap.roots_len();
                 let start = n - nelem;
-                let mut vals = Vec::with_capacity(*nelem);
-                for k in 0..*nelem {
-                    vals.push(heap.root_at(start + k));
-                }
+                let v = heap.alloc_vector_from_roots(start, *nelem);
                 heap.truncate_roots(start);
-                let v = heap.alloc_vector(vals);
                 heap.push_root(v);
             }
             Inst::MakeMap(npairs) => {
                 let n = heap.roots_len();
                 let start = n - 2 * npairs;
-                let mut pairs = Vec::with_capacity(*npairs);
-                for i in 0..*npairs {
-                    pairs.push((heap.root_at(start + 2 * i), heap.root_at(start + 2 * i + 1)));
-                }
+                // The pairs are copied off the operand stack (into an inline buffer for a
+                // small literal — no `malloc`) because the build mutates the heap that
+                // holds the stack.
+                let pairs: SmallVec<[(Value, Value); 8]> = (0..*npairs)
+                    .map(|i| (heap.root_at(start + 2 * i), heap.root_at(start + 2 * i + 1)))
+                    .collect();
                 heap.truncate_roots(start);
-                let v = heap.map_from_pairs(pairs);
+                let v = heap.map_from_pair_iter(pairs);
                 heap.push_root(v);
             }
             Inst::Prim1 {

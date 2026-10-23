@@ -648,6 +648,13 @@ impl Heap {
     /// reader path and `(hash-map …)`. Folds `assoc` over a fresh empty
     /// root — O(N log N) overall, in line with CHAMP's per-op cost.
     pub fn map_from_pairs(&mut self, pairs: Vec<(Value, Value)>) -> Value {
+        self.map_from_pair_iter(pairs)
+    }
+
+    /// [`map_from_pairs`](Self::map_from_pairs) over any source of pairs — for a caller
+    /// (a literal's staged operands, an inline buffer) that would otherwise build a
+    /// throwaway `Vec` only to hand it over.
+    pub fn map_from_pair_iter(&mut self, pairs: impl IntoIterator<Item = (Value, Value)>) -> Value {
         // GC-quiet in-place build: the fresh root is allocated at `watermark`, so
         // it and every node below it is build-owned and rewritten in place — no
         // per-`assoc` path-copy. This is purely an implementation detail of
@@ -688,6 +695,12 @@ impl Heap {
     /// fresh immutable value. Backs the `#{…}` reader literal, `set` construction,
     /// and `from_message` reconstruction.
     pub fn set_from_elems(&mut self, elems: Vec<Value>) -> Value {
+        self.set_from_elem_iter(elems)
+    }
+
+    /// [`set_from_elems`](Self::set_from_elems) over any source of elements (`%set`'s
+    /// argument slice, without copying it into a `Vec` first).
+    pub fn set_from_elem_iter(&mut self, elems: impl IntoIterator<Item = Value>) -> Value {
         let watermark = Some(self.local.maps.len());
         let mut current = match self.alloc_empty_map().unpack() {
             ValueRef::Map(id) => id,
