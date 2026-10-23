@@ -912,3 +912,30 @@ mod prelude_image_prune_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+mod builder_scope_tests {
+    use super::*;
+
+    /// The source boot compiles every prelude form on the BUILDER heap, whose global scope
+    /// is a frame, not the shared table. ADR-423's templates expand to `/when`-style heads,
+    /// and `compile` must expand them there: asked of `EnvId::GLOBAL`, `macro_head_id` missed
+    /// the builder's definitions, every prelude function using a prelude macro kept a raw
+    /// call, was deferred to the tree-walker for good, and loading any std module cost
+    /// +16M instructions (2026-10-23, found by the benchmark refresh). Asserted through
+    /// `compile`, the entry point the boot loop calls.
+    #[test]
+    fn the_builder_heap_expands_a_root_escaped_macro_head() {
+        let (mut heap, root) = builder_heap();
+        let def = syntax::reader::read_one(&mut heap, "(def mm (%make-macro (fn (x) x)))")
+            .expect("parse");
+        eval::eval(&mut heap, def, root).expect("define the macro in the builder frame");
+        let call = syntax::reader::read_one(&mut heap, "(/mm 5)").expect("parse");
+        let compiled = eval::macros::compile(&mut heap, call, root).expect("compile");
+        assert_eq!(
+            syntax::printer::print(&heap, compiled),
+            "5",
+            "`(/mm 5)` must expand at compile time on the builder heap"
+        );
+    }
+}

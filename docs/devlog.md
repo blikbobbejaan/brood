@@ -3382,3 +3382,15 @@ into two bodies did the same. One helper, `copy_form`, now copies whatever a rew
 and the walk gives a quote form cells of its own. Found by reading, not observed; the guards
 (`one_pair_one_position.rs`, a `linmap_soundness_test` case, `vm_body_identity_test.blsp`) were
 not run on this machine and still need running and sabotaging on the test machine.
+
+2026-10-23 (regression found by the benchmark refresh, fixed): ADR-423 (`f9de1ee5`) cost every
+program that loads a std module ~16M instructions at load, plus background JIT work — `reduce`
++20%, `pipeline` +11%, `base64` +9% in instruction counts; `make ab --floor` agreed. Bisected by
+instruction count (with the boot cache warmed per step: the first unwarmed bisect measured cold
+boots and named nonsense). Cause: the source boot compiles the prelude on the builder heap, whose
+global scope is a frame, and `macro_head_id`'s root-escape branch asked `EnvId::GLOBAL` — so
+every `/when`-style head ADR-423 put into a prelude function's expansion stayed unexpanded, and
+those closures were deferred to the tree-walker for good (and baked into the prelude image that
+way). It asks `heap.global()` now: loading `path` 108.6M → 93.6M (pre-ADR-423: 92.8M), runtime
+`<anon>` deferrals 20 → 1. Guard: `boot::builder_scope_tests` compiles `(/mm 5)` on a builder
+heap through `compile` (sabotage-verified: `(mm 5)` comes back unexpanded).

@@ -347,10 +347,13 @@ pub(crate) fn macro_head_id(heap: &Heap, env: EnvId, sym: value::Symbol) -> Opti
                 None if is_root_escape(sym) => value::intern(&value::symbol_name(sym)[1..]),
                 None => heap.import_of(sym).unwrap_or(sym),
             };
-            match (
-                q != sym,
-                heap.env_get(value::EnvId::GLOBAL, q).map(|v| v.unpack()),
-            ) {
+            // `heap.global()`, not `EnvId::GLOBAL`: during a source boot the prelude's globals
+            // live in the builder's frame (see `EnvId::GLOBAL`), and every prelude function
+            // whose body uses a prelude macro meets a `/when`-style head here (ADR-423). Asked
+            // of the table, it missed, so those heads stayed unexpanded, the closures were
+            // deferred to the tree-walker for good, and loading any std module paid for it
+            // (+16M instructions, and background JIT work on top).
+            match (q != sym, heap.env_get(heap.global(), q).map(|v| v.unpack())) {
                 (true, Some(ValueRef::Macro(mid))) => Some(mid),
                 _ => None,
             }
