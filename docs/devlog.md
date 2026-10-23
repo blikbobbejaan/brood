@@ -3279,3 +3279,15 @@ deterministic one existed. Gated here: whole-image doctest 0 failures (repo root
 local gate green; two executed examples that depended on the doctest process's own state
 (`eval-server/baseline-globals`, `release-holds-of`) became illustrations. `audit/exampleless`
 674 → 120, the rest being Rust builtins and generated record accessors.
+
+2026-10-22 (night, flake): CI on `f0da246d` caught `buffer_registry_test`'s "registry-stop ends
+every process" failing once (`(proc/info a)` not nil) and passing on retry. `stop-buffer` returned
+on the buffer's REPLY, which the process sends before leaving its loop, so "stopped" could read a
+process still alive. It now monitors the process and returns on its `[:down]` — and answers a
+process that was already dead at once instead of after its 2 s timeout.
+
+2026-10-22 (night, partial rebuild copies): `%image-write` copies an unchanged section's bytes
+(`[name [:copy offset length]]`, macro names from the old footer), so `nest run` after an edit
+no longer materialises the unchanged modules to write them again: 2.7 → 0.30 s and 720 → 265 MB
+on the 302 × 3k rig. `load-sources-cached` takes `:lazy` for that; check and test still load
+everything. ADR-419 amended.
