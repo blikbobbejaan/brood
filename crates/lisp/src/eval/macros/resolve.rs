@@ -1112,26 +1112,40 @@ fn resolve_walk_inner(
         ValueRef::Vector(id) => {
             let items = heap.vector(id).to_vec();
             let mut out = Vec::with_capacity(items.len());
-            for it in items {
+            for it in items.iter().copied() {
                 out.push(resolve_walk(heap, it, ns_name, locals));
+            }
+            if all_unchanged(&items, &out) {
+                return form;
             }
             heap.alloc_vector(out)
         }
         ValueRef::Map(id) => {
             let entries = heap.map_entries(id);
             let mut pairs = Vec::with_capacity(entries.len());
-            for (k, v) in entries {
+            for &(k, v) in &entries {
                 let k = resolve_walk(heap, k, ns_name, locals);
                 let v = resolve_walk(heap, v, ns_name, locals);
                 pairs.push((k, v));
+            }
+            let unchanged = entries.iter().zip(&pairs).all(
+                |(&(key_before, value_before), &(key_after, value_after))| {
+                    same_value(key_before, key_after) && same_value(value_before, value_after)
+                },
+            );
+            if unchanged {
+                return form;
             }
             heap.map_from_pairs(pairs)
         }
         ValueRef::Set(id) => {
             let items = heap.set_elems(id);
             let mut out = Vec::with_capacity(items.len());
-            for e in items {
+            for e in items.iter().copied() {
                 out.push(resolve_walk(heap, e, ns_name, locals));
+            }
+            if all_unchanged(&items, &out) {
+                return form;
             }
             heap.set_from_elems(out)
         }
@@ -1162,17 +1176,17 @@ fn resolve_list(heap: &mut Heap, form: Value, ns_name: &str, locals: &[value::Sy
             for &it in &items[1..] {
                 out.push(resolve_walk(heap, it, ns_name, locals));
             }
-            return rebuild_list(heap, form, out);
+            return reuse_or_rebuild(heap, form, &items, out);
         }
         if (value::symbol_is(h, kw::UNQUOTE) || value::symbol_is(h, kw::UNQUOTE_SPLICING))
             && TemplateDepth::inside()
         {
             let _hole = TemplateDepth::hole();
             let mut out = Vec::with_capacity(items.len());
-            for it in items {
+            for it in items.iter().copied() {
                 out.push(resolve_walk(heap, it, ns_name, locals));
             }
-            return rebuild_list(heap, form, out);
+            return reuse_or_rebuild(heap, form, &items, out);
         }
         if value::symbol_is(h, kw::DEF) || value::symbol_is(h, kw::DEFMACRO) {
             return resolve_def(heap, form, &items, ns_name, locals);
@@ -1189,10 +1203,10 @@ fn resolve_list(heap: &mut Heap, form: Value, ns_name: &str, locals: &[value::Sy
     }
     // Generic: resolve every element (the head too — a call head resolves).
     let mut out = Vec::with_capacity(items.len());
-    for it in items {
+    for it in items.iter().copied() {
         out.push(resolve_walk(heap, it, ns_name, locals));
     }
-    rebuild_list(heap, form, out)
+    reuse_or_rebuild(heap, form, &items, out)
 }
 
 /// `(def NAME value)` / `(defmacro NAME params body…)` — qualify NAME; resolve the
@@ -1226,7 +1240,7 @@ fn resolve_def(
             out.push(Value::symbol(qualify_name(heap, ns_name, name)));
         }
         Some(other) => out.push(other), // not a symbol — leave (eval will complain)
-        None => return rebuild_list(heap, form, out),
+        None => return reuse_or_rebuild(heap, form, items, out),
     }
     if is_defmacro {
         let params = items.get(2).copied().unwrap_or(Value::nil());
@@ -1241,7 +1255,7 @@ fn resolve_def(
             out.push(resolve_walk(heap, v, ns_name, locals));
         }
     }
-    rebuild_list(heap, form, out)
+    reuse_or_rebuild(heap, form, items, out)
 }
 
 /// `(fn …)` — single-arity `(params body…)` or multi-arity
@@ -1279,7 +1293,7 @@ fn resolve_fn(
             out.push(resolve_walk(heap, b, ns_name, &inner));
         }
     }
-    rebuild_list(heap, form, out)
+    reuse_or_rebuild(heap, form, items, out)
 }
 
 /// One `(params body…)` arity clause: params bind in the body.
@@ -1300,7 +1314,7 @@ fn resolve_arity_clause(
     for &b in &cparts[1..] {
         out.push(resolve_walk(heap, b, ns_name, &inner));
     }
-    rebuild_list(heap, clause, out)
+    reuse_or_rebuild(heap, clause, &cparts, out)
 }
 
 /// `(let/let*/letrec (s1 v1 …) body…)` — simple symbol binders post-expand
@@ -1338,14 +1352,18 @@ fn resolve_let(
         }
         i += 2;
     }
-    let new_bind_form = rebuild_seq_like(heap, items[1], new_binds);
+    let new_bind_form = if all_unchanged(&binds, &new_binds) {
+        items[1]
+    } else {
+        rebuild_seq_like(heap, items[1], new_binds)
+    };
     let mut out = Vec::with_capacity(items.len());
     out.push(items[0]);
     out.push(new_bind_form);
     for &b in items.get(2..).unwrap_or(&[]) {
         out.push(resolve_walk(heap, b, ns_name, &scope));
     }
-    rebuild_list(heap, form, out)
+    reuse_or_rebuild(heap, form, items, out)
 }
 
 /// `(match* :ctx valexpr (pattern body…) …)` — resolve `valexpr` and each clause
@@ -1381,9 +1399,9 @@ fn resolve_match(
         for &b in &cparts[1..] {
             cout.push(resolve_walk(heap, b, ns_name, &scope));
         }
-        out.push(rebuild_list(heap, clause, cout));
+        out.push(reuse_or_rebuild(heap, clause, &cparts, cout));
     }
-    rebuild_list(heap, form, out)
+    reuse_or_rebuild(heap, form, items, out)
 }
 
 /// Resolve every element of a list and rebuild (the fallback for binder forms whose
@@ -1399,7 +1417,7 @@ fn generic_resolve(
     for &it in items {
         out.push(resolve_walk(heap, it, ns_name, locals));
     }
-    rebuild_list(heap, form, out)
+    reuse_or_rebuild(heap, form, items, out)
 }
 
 /// Resolve the **default expressions** inside a param list, leaving every binder name
@@ -1425,7 +1443,7 @@ fn resolve_param_defaults(
     };
     let mut inner = locals.to_vec();
     let mut out = Vec::with_capacity(items.len());
-    for item in items {
+    for item in items.iter().copied() {
         match item.unpack() {
             // `(name default…)` — the binder stays, the defaults resolve.
             ValueRef::Pair(_) => {
@@ -1438,7 +1456,7 @@ fn resolve_param_defaults(
                             rebuilt.push(resolve_walk(heap, d, ns_name, &inner));
                         }
                         inner.push(binder);
-                        out.push(rebuild_list(heap, item, rebuilt));
+                        out.push(reuse_or_rebuild(heap, item, &parts, rebuilt));
                     }
                     _ => out.push(item),
                 }
@@ -1455,7 +1473,11 @@ fn resolve_param_defaults(
             _ => out.push(item),
         }
     }
-    rebuild_list(heap, params, out)
+    // A vector parameter list comes back a list, as it always has; only a list is reused.
+    if matches!(params.unpack(), ValueRef::Vector(_)) {
+        return rebuild_list(heap, params, out);
+    }
+    reuse_or_rebuild(heap, params, &items, out)
 }
 
 /// Collect parameter-binder symbols from a param list (mirrors `fn_params` /
@@ -1519,6 +1541,54 @@ pub(super) fn collect_all_syms(heap: &Heap, v: Value, out: &mut Vec<value::Symbo
         }
         _ => {}
     }
+}
+
+/// Is `after` — what the walk made of `before` — the very same value? A symbol by its
+/// interned id; a list, vector, map or set by its handle, which the walk hands back only
+/// when nothing inside changed. Anything else (a number, a string, a keyword) the walk
+/// returns as it is, so it is the same.
+fn same_value(before: Value, after: Value) -> bool {
+    match (before.unpack(), after.unpack()) {
+        (ValueRef::Sym(a), ValueRef::Sym(b)) => a == b,
+        (ValueRef::Pair(a), ValueRef::Pair(b)) => a.0 == b.0,
+        (ValueRef::Vector(a), ValueRef::Vector(b)) => a.0 == b.0,
+        (ValueRef::Map(a), ValueRef::Map(b)) => a.0 == b.0,
+        (ValueRef::Set(a), ValueRef::Set(b)) => a.0 == b.0,
+        (
+            ValueRef::Sym(_)
+            | ValueRef::Pair(_)
+            | ValueRef::Vector(_)
+            | ValueRef::Map(_)
+            | ValueRef::Set(_),
+            _,
+        ) => false,
+        _ => true,
+    }
+}
+
+/// Did the walk leave every item as it was? Equal length and each the same value.
+fn all_unchanged(before: &[Value], after: &[Value]) -> bool {
+    before.len() == after.len()
+        && before
+            .iter()
+            .zip(after)
+            .all(|(&item_before, &item_after)| same_value(item_before, item_after))
+}
+
+/// `form` itself when the walk changed none of its `items` (`out` is what it made of
+/// them, position by position), else a rebuilt list carrying `form`'s position.
+///
+/// Sound because the walk's input has **one pair in one position** (KI-288: the
+/// expansion walk rebuilds every list, and every rewrite after it copies what it
+/// duplicates), and `resolve` has no other input. Handing a pair back puts it exactly
+/// where it was, so the output keeps that property — a pair unchanged here is one the VM
+/// body cache, the closure-template cache and the position tables already knew at that
+/// one position, with the same contents.
+fn reuse_or_rebuild(heap: &mut Heap, form: Value, items: &[Value], out: Vec<Value>) -> Value {
+    if all_unchanged(items, &out) {
+        return form;
+    }
+    rebuild_list(heap, form, out)
 }
 
 /// Rebuild a binding container preserving list-vs-vector shape (and position).

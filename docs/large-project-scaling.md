@@ -361,14 +361,18 @@ the ids minted later, so where two warnings fire from one `(:use …)` their rel
 differ from before — as it already did between an imaged and a source boot (KI-166), and as
 any change that interns a different set of names does.
 
-Left as they were, deliberately: the expansion and resolve walks still rebuild unchanged
-lists — a fresh pair per occurrence is what keeps a spliced-twice macro argument from becoming
-one pair compiled in two lexical contexts under the VM body cache's AST-identity key. (This
-note first credited the walks with separating the range-fold fallback's copy of a body too;
-they cannot — the rewrites run after the expansion walk, and at root `resolve` hardly
-rebuilds. The rewrites now copy what they duplicate themselves, through `copy_form`, and the
-expansion walk gives a `quote` form cells of its own: KI-288. Only `resolve_walk` could now
-return an unchanged list as it is, since its input has one pair per position; the expansion
-walk cannot, for the spliced argument above.) An incremental module-prefix
-index was not built: the refer-all's import order (and so the order of its shadow warnings)
+Left as it was, deliberately: the expansion walk still rebuilds unchanged lists — a fresh
+pair per occurrence is what keeps a spliced-twice macro argument from becoming one pair
+compiled in two lexical contexts under the VM body cache's AST-identity key. (This note first
+credited the resolve walk with that too, and both walks with separating the range-fold
+fallback's copy of a body; they could not — the rewrites run after the expansion walk, and at
+root `resolve` hardly rebuilds. The rewrites now copy what they duplicate themselves, through
+`copy_form`, and the expansion walk gives a `quote` form cells of its own: KI-288.) With that,
+`resolve_walk` hands back a list, vector, map or set none of whose items it changed
+(`reuse_or_rebuild`): its only input is the expansion walk's output, one pair per position, and
+returning a pair puts it back where it was. In a module most of a form is unchanged by
+resolution — locals, prelude names, literals, quoted data — so most of its pairs, and their
+`form_pos` entries, are no longer copied a second time. Not measured.
+
+An incremental module-prefix index was not built: the refer-all's import order (and so the order of its shadow warnings)
 is the global table's hash order, which no secondary index reproduces.

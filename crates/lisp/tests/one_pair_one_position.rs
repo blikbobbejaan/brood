@@ -144,3 +144,43 @@ fn a_quoted_argument_spliced_into_two_bodies_is_two_forms() {
         "(quote tag) 2)",
     );
 }
+
+/// The same check on what a MODULE's code becomes: expanded and then resolved, through the
+/// whole compile pass. `resolve_walk` hands back a list none of whose items it changed, so in
+/// a module a pair the rewrites shared now reaches the compiler shared, exactly as at root —
+/// before, the walk's rebuilding of every list hid it there.
+fn assert_one_position_in_module(src: &str, fired: &str) {
+    let mut interp = Interp::new();
+    let forms = brood::syntax::reader::read_all(&mut interp.heap, src).expect("read");
+    let global = interp.heap.global();
+    let form = *forms.first().expect("one form");
+    interp.heap.set_compile_ns(Some(value::intern("rp")));
+    let compiled = brood::eval::macros::compile(&mut interp.heap, form, global).expect("compile");
+    let printed = interp.print(compiled);
+    assert!(
+        printed.contains(fired),
+        "expected `{fired}` in the compiled form of {src}:\n{printed}"
+    );
+    assert!(
+        printed.contains("rp/"),
+        "the form was not resolved into the module:\n{printed}"
+    );
+    let shared = shared_positions(&interp.heap, compiled);
+    assert!(
+        shared.is_empty(),
+        "one pair in two positions in the compiled form of {src}:\n  {}\ncompiled:\n{printed}",
+        shared.join("\n  ")
+    );
+}
+
+#[test]
+fn a_module_s_resolved_code_keeps_one_pair_in_one_position() {
+    assert_one_position_in_module(
+        "(def rp-range (fn (n k) (fold (range n) 0 (fn (acc i) (+ acc ((fn (y) (+ y k)) i))))))",
+        "rng-loop",
+    );
+    assert_one_position_in_module(
+        "(def rp-fold (fn (xs seed) (fold xs seed (fn (m x) 'tally (assoc m x (inc (get m x 0)))))))",
+        "%table-from-map",
+    );
+}

@@ -338,21 +338,28 @@ same context; only hashing the whole body would separate those, and the AST key 
 "return the original list when no child changed" optimisation** in the expansion walk: the
 walk's rebuilding is what gives each occurrence of a macro argument spliced twice its own
 cells (`` `(do ~f ~f) `` with `f` a `fn`, possibly in two scopes), so it would reopen case 3 for
-every unquoted form. The same in `resolve_walk` alone would be safe for this invariant (its only
-input is the walk's output, now one pair per position), but it is a perf change with nothing
-measured behind it here, so it is left for whoever can measure it.
+every unquoted form. The same in `resolve_walk` alone IS safe (its only input is the walk's output,
+now one pair per position, and a pair handed back is in the place it was), and it does it
+since 2026-10-23 (`reuse_or_rebuild`). That makes this fix load-bearing in modules too: before
+it, `resolve_walk`'s rebuilding of every list hid case 1 there.
 
 **Guard — written, not yet run.** `crates/lisp/tests/one_pair_one_position.rs`: five expansions
 (the range loop with a capturing inner `fn`, the fold literal and the defn split each opening
 with a quote, a fused pipeline, a macro splicing a quoted argument into two bodies), each
-asserting its rewrite fired and that no pair is reached twice outside quoted data.
+asserting its rewrite fired and that no pair is reached twice outside quoted data, plus
+`a_module_s_resolved_code_keeps_one_pair_in_one_position` (the range loop and the fold literal
+through the whole compile pass in a module, so after `resolve_walk`).
 `tests/linmap_soundness_test.blsp` "a leading quoted form is the fast copy's own, not the
 unrewritten one's" (both rewrites, both call orders) and `tests/vm_body_identity_test.blsp`
 (the macro splice, capture-free and capturing) assert the values. **To do on the test
 machine**: run them; then put back, one at a time, `step_body.extend_from_slice(body)` in the
 three loops, `return form` for the quote in `linmap_rewrite_form` / `linmap_rename_self`, and
 `return Ok(form)` for the walk's quote, confirm the matching cases go red (and the value tests
-under the VM), record the output here, and close this.
+under the VM), record the output here, and close this. Since `resolve_walk` reuses unchanged
+lists, the range-loop and fold-literal sabotages must ALSO turn the module case red — the
+range loop is the one that proves the reuse is covered, since it was invisible in a module
+while `resolve_walk` rebuilt everything (with `reuse_or_rebuild` made an unconditional
+`rebuild_list`, that module assertion must go green again under the same sabotage).
 
 ## Index — status per issue
 
