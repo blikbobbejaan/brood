@@ -464,7 +464,7 @@ pub(super) fn evaluates_args(heap: &Heap, ctx: &Ctx, s: Symbol) -> bool {
         // isn't a call we should reason about either.
         Some(_) => false,
         // Not in the heap: only the curated stdlib closures count as known callables.
-        None => curated_sig(s).is_some(),
+        None => has_curated_sig(s),
     }
 }
 

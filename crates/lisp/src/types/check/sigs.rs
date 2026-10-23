@@ -334,6 +334,12 @@ pub(super) fn curated_sig(sym: Symbol) -> Option<Sig> {
     CURATED_SIGS.get(&sym).cloned()
 }
 
+/// Does the curated table carry a signature for `sym`? [`curated_sig`] without cloning the
+/// `Sig` it would hand back, for the callers that only ask whether one exists.
+pub(super) fn has_curated_sig(sym: Symbol) -> bool {
+    CURATED_SIGS.contains_key(&sym)
+}
+
 thread_local! {
     /// Symbols whose signature is currently being inferred **on this thread** — a
     /// re-entry guard so the return-type inference (which runs [`expr_ty`], hence

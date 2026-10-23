@@ -1135,7 +1135,7 @@ pub(super) fn check_let(
                 // leftover. (`_`-prefixing can't express it — that changes the
                 // name being shadowed.)
                 let shadows_global = is_globally_bound(heap, name)
-                    || curated_sig(name).is_some()
+                    || has_curated_sig(name)
                     || ctx.is_file_global(name);
                 if !nm.starts_with('_') && !is_gensym && !shadows_global {
                     // letrec: also scan preceding elements (mutual recursion).

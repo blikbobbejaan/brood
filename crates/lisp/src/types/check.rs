@@ -138,7 +138,7 @@ pub(crate) use sigs::cover_name_of;
 /// image's footer and of inference, so its module is never loaded on its account. For
 /// `tests/curated_names_load_nothing.rs`.
 pub fn is_curated(name: &str) -> bool {
-    sigs::curated_sig(value::intern(name)).is_some()
+    sigs::has_curated_sig(value::intern(name))
 }
 
 /// Every name with a curated signature — for `tests/curated_sigs_exist.rs`, which holds each
@@ -338,7 +338,7 @@ pub fn materialise_referenced_modules(heap: &mut Heap) {
             if crate::eval::derive::image_sigs_enabled()
                 && (heap.env_get(global_env, name).is_some()
                     || crate::eval::derive::image_sig_text(heap, name).is_some()
-                    || sigs::curated_sig(name).is_some())
+                    || sigs::has_curated_sig(name))
             {
                 continue;
             }
@@ -698,7 +698,7 @@ fn lint_fn_pattern_clauses(heap: &Heap, items: &[Value], out: &mut Vec<(Option<P
             // not accidentally name a binder after a builtin, so a shadow left unused is a
             // deliberate scope-isolation test, and `_`-prefixing cannot express it (that
             // changes the name being shadowed).
-            if sigs::is_globally_bound(heap, b) || sigs::curated_sig(b).is_some() {
+            if sigs::is_globally_bound(heap, b) || sigs::has_curated_sig(b) {
                 continue;
             }
             if !body.iter().any(|&f| walk::sym_appears_in(heap, f, b)) {

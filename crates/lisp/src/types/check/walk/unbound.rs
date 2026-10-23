@@ -115,7 +115,7 @@ pub(in crate::types::check) fn is_unbound(heap: &Heap, ctx: &Ctx, s: Symbol) -> 
     // stdlib image's footer names it and carries its signature (ADR-370).
     if ctx.is_local(s)
         || is_globally_bound(heap, s)
-        || curated_sig(s).is_some()
+        || has_curated_sig(s)
         || crate::eval::derive::image_sig_arity(heap, s).is_some()
     {
         return false;

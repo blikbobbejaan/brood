@@ -14,8 +14,8 @@ use super::guards::{
 };
 use super::infer::{expr_ty, global_value_ty};
 use super::sigs::{
-    arity_of, arity_str, combinator_args, curated_sig, declared_heap_overload, declared_heap_sig,
-    declared_heap_value_ty, infer_overload_of, is_globally_bound, sig_of,
+    arity_of, arity_str, combinator_args, declared_heap_overload, declared_heap_sig,
+    declared_heap_value_ty, has_curated_sig, infer_overload_of, is_globally_bound, sig_of,
 };
 use crate::core::heap::{Heap, SymbolMap};
 use crate::core::keywords as kw;
