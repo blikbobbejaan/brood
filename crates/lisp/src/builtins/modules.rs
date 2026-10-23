@@ -1596,20 +1596,24 @@ pub(super) fn refer(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
             // this count can answer that: `referred` is 0 both when the globals are missing
             // (the bug) and when the caller excluded every one of them (perfectly healthy).
             let mut public_seen = 0usize;
-            for g in heap.global_symbols() {
-                let name = value::symbol_name(g);
-                if let Some(bare) = name.strip_prefix(&prefix) {
-                    // `g` is a live enumerated global under `mod/`, so `is_private`
-                    // (the recorded fact) is exact — the module is loaded here.
-                    if !bare.is_empty() && !bare.contains('/') && !heap.is_private(g) {
-                        let bare_sym = value::intern(bare);
-                        public_seen += 1;
-                        if excluded.contains(&bare_sym) {
-                            continue;
-                        }
-                        refer_add(heap, bare_sym, g, &mod_name)?;
-                        referred += 1;
+            // The direct `mod/name` globals, filtered on the borrowed spelling under the
+            // table's lock (no per-global copy) and in the table's order, as before.
+            let direct = heap.global_symbols_where(|name| {
+                name.strip_prefix(prefix.as_str())
+                    .is_some_and(|bare| !bare.is_empty() && !bare.contains('/'))
+            });
+            for g in direct {
+                // `g` is a live enumerated global under `mod/`, so `is_private`
+                // (the recorded fact) is exact — the module is loaded here.
+                if !heap.is_private(g) {
+                    let bare = &value::symbol_name_ref(g)[prefix.len()..];
+                    let bare_sym = value::intern(bare);
+                    public_seen += 1;
+                    if excluded.contains(&bare_sym) {
+                        continue;
                     }
+                    refer_add(heap, bare_sym, g, &mod_name)?;
+                    referred += 1;
                 }
             }
             // KI-120 diagnostic. A refer-all of a baked-in std/editor module that imports

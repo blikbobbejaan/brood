@@ -1592,6 +1592,21 @@ impl Heap {
         self.runtime.globals_read().keys().copied().collect()
     }
 
+    /// The bound symbols whose spelling satisfies `keep`, in the table's iteration order —
+    /// the same order [`Heap::global_symbols`] yields them in. For the module-prefix scans
+    /// (`%refer`'s refer-all, the checker's module walk): the test reads each name as a
+    /// borrowed `&str` under the read lock, so a scan that keeps a few dozen of ten
+    /// thousand globals neither copies the whole key set nor allocates a spelling per
+    /// global. `keep` must not touch the global table (it runs under its lock).
+    pub fn global_symbols_where(&self, mut keep: impl FnMut(&'static str) -> bool) -> Vec<Symbol> {
+        self.runtime
+            .globals_read()
+            .keys()
+            .copied()
+            .filter(|global| keep(crate::core::value::symbol_name_ref(*global)))
+            .collect()
+    }
+
     /// The public exports of module `prefix` (a `mod/` segment, trailing slash included) as
     /// `(bare, qualified)` symbol pairs — the set `(:use mod)` refers. Public = a *direct*
     /// `mod/name` global whose bare tail is non-empty and is not private
@@ -1609,16 +1624,21 @@ impl Heap {
             let mut map: std::collections::HashMap<String, Vec<(Symbol, Symbol)>> =
                 std::collections::HashMap::new();
             for g in self.global_symbols() {
-                let name = crate::core::value::symbol_name(g);
+                let name = crate::core::value::symbol_name_ref(g);
                 if let Some(slash) = name.rfind('/') {
                     let bare = &name[slash + 1..];
                     // `g` is a live enumerated global, so `is_private` (the recorded
                     // fact) is exact here; the module is definitionally loaded.
                     if !bare.is_empty() && !self.is_private(g) {
                         let bare_sym = crate::core::value::intern(bare);
-                        map.entry(name[..=slash].to_string())
-                            .or_default()
-                            .push((bare_sym, g));
+                        let module_prefix = &name[..=slash];
+                        // An owned key once per module, not once per global.
+                        match map.get_mut(module_prefix) {
+                            Some(exports) => exports.push((bare_sym, g)),
+                            None => {
+                                map.insert(module_prefix.to_string(), vec![(bare_sym, g)]);
+                            }
+                        }
                     }
                 }
             }
@@ -1650,8 +1670,10 @@ impl Heap {
         }
         let mut set = std::collections::HashSet::new();
         for sym in self.global_symbols() {
-            let name = crate::core::value::symbol_name(sym);
-            if let Some(slash) = name.rfind('/') {
+            let name = crate::core::value::symbol_name_ref(sym);
+            if let Some(slash) = name.rfind('/')
+                && !set.contains(&name[..=slash])
+            {
                 set.insert(name[..=slash].to_string());
             }
         }

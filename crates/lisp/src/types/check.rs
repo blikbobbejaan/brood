@@ -299,11 +299,9 @@ pub fn materialise_referenced_modules(heap: &mut Heap) {
         let mut wanted: HashSet<Symbol> = HashSet::new();
         let mut names: HashSet<Symbol> = HashSet::new();
         let global_env = heap.global();
-        for g in heap.global_symbols() {
-            let name = value::symbol_name(g);
-            if !prefixes.iter().any(|p| name.starts_with(p.as_str())) {
-                continue;
-            }
+        let members =
+            heap.global_symbols_where(|name| prefixes.iter().any(|p| name.starts_with(p.as_str())));
+        for g in members {
             let Some(Value::Fn(cid)) = heap.env_get(global_env, g) else {
                 continue;
             };
