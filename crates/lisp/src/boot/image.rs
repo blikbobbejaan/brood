@@ -832,7 +832,7 @@ pub(crate) fn image_index(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
             return Ok(Value::Nil);
         };
         let key = heap.alloc_string(&name);
-        let span = heap.alloc_vector(vec![Value::int(offset as i64), Value::int(length as i64)]);
+        let span = heap.alloc_vector2(Value::int(offset as i64), Value::int(length as i64));
         pairs.push((key, span));
     }
     // Re-establish the `defdyn` dynamic-var marks recorded after the directory (v5): an imaged

@@ -234,7 +234,7 @@ pub(super) fn scan_source_extract(args: &[Value], _: EnvId, heap: &mut Heap) -> 
             // itself is clean, so privacy is read from the def form, not the name.
             if head == "defn-" || head == "def-" {
                 let bv = heap.alloc_string(name);
-                privs.push(heap.alloc_vector(vec![bv, qv]));
+                privs.push(heap.alloc_vector2(bv, qv));
             }
         }
     }
@@ -263,7 +263,7 @@ pub(super) fn cst_to_value(heap: &mut Heap, node: &cst::Node, src: &str) -> Valu
         Symbol | Keyword | Int | Float | Decimal | Ratio | Str | Bool | Nil | Whitespace
         | Comment | Error => {
             let text = heap.alloc_string(node.text(src));
-            heap.alloc_vector(vec![tag, text])
+            heap.alloc_vector2(tag, text)
         }
         // Reader-macro wrappers: [kind child]. The single structural child is
         // the wrapped form; any leading whitespace child is dropped (the wrapper
@@ -278,7 +278,7 @@ pub(super) fn cst_to_value(heap: &mut Heap, node: &cst::Node, src: &str) -> Valu
                 .next()
                 .map(|c| cst_to_value(heap, c, src))
                 .unwrap_or(Value::nil());
-            heap.alloc_vector(vec![tag, child])
+            heap.alloc_vector2(tag, child)
         }
         // Containers: [kind [child …]]. Children include trivia (whitespace +
         // comments) so the formatter can preserve blank-line + comment intent.
@@ -289,7 +289,7 @@ pub(super) fn cst_to_value(heap: &mut Heap, node: &cst::Node, src: &str) -> Valu
                 .map(|c| cst_to_value(heap, c, src))
                 .collect();
             let kids_vec = heap.alloc_vector(kids);
-            heap.alloc_vector(vec![tag, kids_vec])
+            heap.alloc_vector2(tag, kids_vec)
         }
     }
 }

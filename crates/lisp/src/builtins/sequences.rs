@@ -585,7 +585,7 @@ pub(super) fn first(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
         // A map seqs as its `[k v]` pairs — the same view `seq`/`map`/`fold`/`last`
         // already take, so `first`/`rest` accept what every other seq op does.
         Value::Map(id) => match heap.map_first_entry(id) {
-            Some((k, val)) => Ok(heap.alloc_vector(vec![k, val])),
+            Some((k, val)) => Ok(heap.alloc_vector2(k, val)),
             None => Ok(Value::nil()),
         },
         Value::Nil => Ok(Value::nil()),
@@ -645,12 +645,8 @@ pub(super) fn rest(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
         // The tail of a map is a plain list of its remaining `[k v]` pairs — the
         // set arm's reasoning, over the map's entry view (see `first`).
         Value::Map(id) => {
-            let entries: Vec<(Value, Value)> = heap.map_entries(id).into_iter().skip(1).collect();
-            let pairs: Vec<Value> = entries
-                .into_iter()
-                .map(|(k, val)| heap.alloc_vector(vec![k, val]))
-                .collect();
-            Ok(heap.list(pairs))
+            let entries = heap.map_entries(id);
+            Ok(entry_pair_list(heap, entries.get(1..).unwrap_or(&[])))
         }
         Value::Nil => Ok(Value::nil()),
         _ => Err(LispError::wrong_type(
@@ -689,10 +685,7 @@ fn record_counted(heap: &mut Heap, v: Value) -> Result<Option<Value>, LispError>
     let Some(Value::Map(impls)) = heap.env_get(genv, intern("*impls*")) else {
         return Ok(None);
     };
-    let key = heap.alloc_vector(vec![
-        Value::Sym(intern("Counted")),
-        Value::Sym(intern("->count")),
-    ]);
+    let key = heap.alloc_vector2(Value::Sym(intern("Counted")), Value::Sym(intern("->count")));
     let Some(Value::Map(methods)) = heap.map_get(impls, key) else {
         return Ok(None);
     };
@@ -822,7 +815,7 @@ pub(super) fn seqview_parts(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
     match arg(args, 0) {
         Value::SeqView(id) => {
             let (source, xform) = heap.seqview_parts(id);
-            Ok(heap.alloc_vector(vec![source, xform]))
+            Ok(heap.alloc_vector2(source, xform))
         }
         v => Err(LispError::wrong_type(heap, "%seqview-parts", "seq-view", v)),
     }
@@ -1537,11 +1530,21 @@ pub(super) fn map_dissoc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
 pub(super) fn map_pairs(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let id = expect_map(heap, "%map-pairs", arg(args, 0))?;
     let entries = heap.map_entries(id); // copy out, releasing the borrow before we alloc
-    let pairs: Vec<Value> = entries
-        .into_iter()
-        .map(|(k, v)| heap.alloc_vector(vec![k, v]))
-        .collect();
-    Ok(heap.list(pairs))
+    Ok(entry_pair_list(heap, &entries))
+}
+
+/// A list of `[k v]` vectors over `entries`, in their order. Built back to front so each
+/// pair conses straight onto the list — no second `Vec` of the vectors to hand to
+/// `Heap::list` — and each 2-vector is an inline slab entry ([`Heap::alloc_vector2`]), not
+/// a `vec!` buffer copied in and freed. Allocation never collects inside a native, so the
+/// handles built so far stay valid.
+fn entry_pair_list(heap: &mut Heap, entries: &[(Value, Value)]) -> Value {
+    let mut list = Value::nil();
+    for &(key, value) in entries.iter().rev() {
+        let pair = heap.alloc_vector2(key, value);
+        list = heap.alloc_pair(pair, list);
+    }
+    list
 }
 
 /// `(%map-count m)` — the number of entries, O(1). The CHAMP root node tracks

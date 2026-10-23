@@ -680,7 +680,7 @@ pub(super) fn span_runs(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
             // slice past `chars.len()` would panic the host — never let it.
             let seg: String = chars[lo.min(n)..hi.min(n)].iter().collect();
             let sv = heap.alloc_string(&seg);
-            heap.alloc_vector(vec![sv, f])
+            heap.alloc_vector2(sv, f)
         })
         .collect();
     Ok(heap.list_from_slice(&out))

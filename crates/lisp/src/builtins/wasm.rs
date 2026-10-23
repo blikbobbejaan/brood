@@ -87,7 +87,7 @@ pub(super) fn wasm_exports(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
     let mut out = Vec::with_capacity(entries.len());
     for (name, arity) in entries {
         let n = heap.alloc_string(&name);
-        out.push(heap.alloc_vector(vec![n, Value::Int(arity as i64)]));
+        out.push(heap.alloc_vector2(n, Value::Int(arity as i64)));
     }
     Ok(heap.alloc_vector(out))
 }

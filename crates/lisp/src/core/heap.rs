@@ -1966,7 +1966,14 @@ impl Heap {
     /// vector slab exactly like [`Heap::alloc_range`], but its backing holds heap
     /// values (not just ints), so GC promote/flush/verify recurse into them.
     pub fn alloc_seqview(&mut self, source: Value, xform: Value) -> Value {
-        let idx = alloc_slot!(self, vectors, VecStore::from_vec(vec![source, xform]));
+        let idx = alloc_slot!(
+            self,
+            vectors,
+            VecStore::Inline {
+                len: 2,
+                items: [source, xform],
+            }
+        );
         Value::seqview(VecId::local_gen(idx, self.local_epoch))
     }
 

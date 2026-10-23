@@ -240,7 +240,7 @@ pub(super) fn ed25519_keygen(_args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
     let public = signing.verifying_key().to_bytes();
     let public_value = bytes_to_value(public, heap);
     let private_value = bytes_to_value(seed, heap);
-    Ok(heap.alloc_vector(vec![public_value, private_value]))
+    Ok(heap.alloc_vector2(public_value, private_value))
 }
 
 /// `(%ed25519-sign private-bytes message-bytes)` — the 64-byte ed25519 signature of

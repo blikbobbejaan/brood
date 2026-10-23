@@ -209,7 +209,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
 /// capture a test's source line *before* the form expands.
 pub(super) fn form_pos(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
     match heap.form_pos_only(arg(args, 0)) {
-        Some(p) => Ok(heap.alloc_vector(vec![Value::int(p.line as i64), Value::int(p.col as i64)])),
+        Some(p) => Ok(heap.alloc_vector2(Value::int(p.line as i64), Value::int(p.col as i64))),
         None => Ok(Value::nil()),
     }
 }
@@ -426,7 +426,7 @@ pub(super) fn references_in_source(args: &[Value], _env: EnvId, heap: &mut Heap)
         .into_iter()
         .map(|span| {
             let (line, col) = line_col(&src, &starts, span.start as usize);
-            heap.alloc_vector(vec![Value::int(line as i64), Value::int(col as i64)])
+            heap.alloc_vector2(Value::int(line as i64), Value::int(col as i64))
         })
         .collect();
     Ok(heap.list(occ))

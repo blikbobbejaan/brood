@@ -177,7 +177,7 @@ pub(super) fn tls_self_signed(args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
         Ok((cert, key)) => {
             let c = heap.alloc_string(&cert);
             let k = heap.alloc_string(&key);
-            Ok(heap.alloc_vector(vec![c, k]))
+            Ok(heap.alloc_vector2(c, k))
         }
         Err(e) => Err(LispError::runtime(format!("%tls-self-signed: {}", e))),
     }

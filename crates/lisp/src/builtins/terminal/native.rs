@@ -114,7 +114,7 @@ pub fn restore_terminal_on_exit() {
 /// `(term-size)` — the terminal size as `[cols rows]` (character cells).
 pub(in crate::builtins) fn term_size(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let (cols, rows) = crossterm::terminal::size().map_err(term_err)?;
-    Ok(heap.alloc_vector(vec![Value::int(cols as i64), Value::int(rows as i64)]))
+    Ok(heap.alloc_vector2(Value::int(cols as i64), Value::int(rows as i64)))
 }
 
 /// `(term-poll ms)` — wait up to `ms` ms for a key; return it (a 1-char string,
@@ -843,7 +843,7 @@ pub(in crate::builtins) fn gui_open(args: &[Value], _: EnvId, heap: &mut Heap) -
 pub(in crate::builtins) fn gui_size_px(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let id = gui_window_id(heap, "%gui-size-px", arg(args, 0))?;
     let (w, h) = crate::host::gui::size_px(id).map_err(LispError::runtime)?;
-    Ok(heap.alloc_vector(vec![Value::int(w as i64), Value::int(h as i64)]))
+    Ok(heap.alloc_vector2(Value::int(w as i64), Value::int(h as i64)))
 }
 
 /// `(%gui-texture id tex rgba w h)` — upload `rgba` (`w*h*4` bytes, row-major straight
@@ -1133,7 +1133,7 @@ pub(in crate::builtins) fn gui_maximize(args: &[Value], _: EnvId, heap: &mut Hea
 pub(in crate::builtins) fn gui_size(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let id = gui_window_id(heap, "%gui-size", arg(args, 0))?;
     let (cols, rows) = crate::host::gui::size(id).map_err(LispError::runtime)?;
-    Ok(heap.alloc_vector(vec![Value::int(cols as i64), Value::int(rows as i64)]))
+    Ok(heap.alloc_vector2(Value::int(cols as i64), Value::int(rows as i64)))
 }
 
 pub(in crate::builtins) fn gui_cell_size(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
@@ -1143,7 +1143,7 @@ pub(in crate::builtins) fn gui_cell_size(args: &[Value], _: EnvId, heap: &mut He
         v => Some(num_to_f64(heap, "%gui-cell-size", v)? as f32),
     };
     let (cell_w, cell_h) = crate::host::gui::cell_size(id, px).map_err(LispError::runtime)?;
-    Ok(heap.alloc_vector(vec![Value::int(cell_w as i64), Value::int(cell_h as i64)]))
+    Ok(heap.alloc_vector2(Value::int(cell_w as i64), Value::int(cell_h as i64)))
 }
 
 /// A held `gui::Key` as the same Brood value `gui-open` delivers for that press —

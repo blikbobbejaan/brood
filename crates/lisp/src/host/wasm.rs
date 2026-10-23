@@ -659,7 +659,7 @@ fn lift(heap: &mut Heap, who: &str, v: &Val) -> LispResult {
                 None => heap.alloc_vector(vec![tag]),
                 Some(inner) => {
                     let p = lift(heap, who, inner)?;
-                    heap.alloc_vector(vec![tag, p])
+                    heap.alloc_vector2(tag, p)
                 }
             }
         }
