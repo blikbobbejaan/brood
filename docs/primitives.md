@@ -209,7 +209,7 @@ arg silently becoming `nil`.
 | | `demonitor-node` | 1 | Cancel this process's node monitor for node `name` (undo monitor-node); a no-op if none is registered. Returns nil. |
 | | `node/grant-guest` | 2 | accept peers that authenticate with a SECOND cookie as guests (ADR-415): their link reaches only the grant's `:names` and the pids this node has sent them, and a message carrying a function is dropped; `:as` names who the guest is. A credential to hand a collaborator instead of the machine cookie |
 | | `node/revoke-guest` | 1 | stop accepting a guest cookie from new links; true when it was granted |
-| | `node/peer-grant` | 1 | the grant a connected peer (a node name, or a pid on it) authenticated with — `{:names [...] :as ...}` — or nil for a full peer. How a server knows who it is talking to instead of trusting the client |
+| | `node/peer-grant` | 1 | the grant a connected peer (a node name, or a pid on it) authenticated with — `{:names [...] :as ... :claimed ...}` — or nil for a full peer (`:claimed` is the node name a guest gave itself; its name here is one the host minted, ADR-425). How a server knows who it is talking to instead of trusting the client |
 
 **Why this set is irreducible:** every entry needs Rust — raw number ops, heap
 construct/inspect, the type-tag *reflection* (`type-of`), I/O, value→text

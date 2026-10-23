@@ -115,7 +115,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], map_ty.union(nil_ty)),
         &["peer"],
-        "The grant a connected peer authenticated with — `{:names [...] :as ...}` — or nil for a full peer or an unknown one. `peer` is a node name or a pid on that node.",
+        "The grant a connected peer authenticated with — `{:names [...] :as ... :claimed ...}`, `:claimed` being the node name the guest gave itself (its name here is one this node minted) — or nil for a full peer or an unknown one. `peer` is a node name or a pid on that node.",
         node_peer_grant);
 }
 
@@ -287,15 +287,17 @@ pub(super) fn node_revoke_guest(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
 }
 
 /// `(%node-peer-grant peer)` — the grant a connected peer (a node name, or a pid on that
-/// node) authenticated with, as `{:names [...] :as ...}`, or nil for a full peer.
+/// node) authenticated with, as `{:names [...] :as ... :claimed ...}`, or nil for a full peer.
+/// `:claimed` is the node name the guest gave itself, which is never its name here (ADR-425).
 pub(super) fn node_peer_grant(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let node = match arg(args, 0) {
         Value::Pid { node, .. } => node,
         other => expect_node_name(heap, "%node-peer-grant", other)?,
     };
-    let Some(grant) = crate::dist::peer_grant(node) else {
+    let Some(link) = crate::dist::peer_grant(node) else {
         return Ok(Value::nil());
     };
+    let grant = link.grant();
     let mut names: Vec<Value> = grant.names.iter().copied().map(Value::Keyword).collect();
     names.sort_by(|a, b| {
         let name_of = |v: &Value| match v {
@@ -312,5 +314,9 @@ pub(super) fn node_peer_grant(args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
     Ok(heap.map_from_pairs(vec![
         (Value::keyword(value::intern("names")), names),
         (Value::keyword(value::intern("as")), as_value),
+        (
+            Value::keyword(value::intern("claimed")),
+            Value::keyword(link.claimed()),
+        ),
     ]))
 }

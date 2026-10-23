@@ -248,8 +248,10 @@ connected under it stays connected until `disconnect`.
   (%node-revoke-guest cookie))
 
 (defn peer-grant (peer:any -> (or nil map))
-  "The grant a connected peer authenticated with — `{:names [...] :as ...}` — or nil for
-a full peer (or none). `peer` is a node name or a pid on that node.
+  "The grant a connected peer authenticated with — `{:names [...] :as ... :claimed ...}` —
+or nil for a full peer (or none). `peer` is a node name or a pid on that node. A guest
+is known here by a name this node minted (`guest~…`, ADR-425), never the one it gave
+itself; `:claimed` is that one, for showing a person.
 
     (node/peer-grant :nobody@nowhere)   → nil"
   (%node-peer-grant peer))

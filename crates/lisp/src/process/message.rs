@@ -231,6 +231,35 @@ impl Message {
         }
     }
 
+    /// [`Message::for_each_child`], mutably: the same children, for a walk that rewrites a
+    /// message in place (a guest link renaming the pids of its own node, ADR-425).
+    pub(crate) fn for_each_child_mut<'a>(&'a mut self, mut visit: impl FnMut(&'a mut Message)) {
+        match self {
+            Message::List(items, _)
+            | Message::Dotted(items)
+            | Message::Vector(items)
+            | Message::Set(items) => items.iter_mut().for_each(visit),
+            Message::Map(entries) | Message::Failure(entries) => {
+                for (key, value) in entries {
+                    visit(key);
+                    visit(value);
+                }
+            }
+            Message::Closure(closure) => {
+                for (_, value) in &mut closure.captured {
+                    visit(value);
+                }
+                for arm in &mut closure.arms {
+                    for (_, default) in &mut arm.optionals {
+                        visit(default);
+                    }
+                    arm.body.iter_mut().for_each(&mut visit);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn nests(&self) -> bool {
         matches!(
             self,

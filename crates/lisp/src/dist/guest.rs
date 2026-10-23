@@ -20,8 +20,18 @@
 //! delivering frames it read before the name moved on. A per-frame lookup by name let
 //! those frames be judged by whichever link held the name THEN, so a guest's buffered
 //! frames ran with a full peer's privileges.
+//!
+//! And the NAME belongs to the host (ADR-425). What a guest writes in its `Hello` is a claim
+//! the cookie does not vouch for, so it is never a node name here: the link is registered
+//! under a name this node mints ([`GuestLink::name`], `guest~<n>.<incarnation>~<claim>`),
+//! in a namespace no full link may use. A guest therefore cannot be registered under any
+//! full peer's name — connected, down, or one that has never linked here — nor under
+//! another guest's, on this node or any other. The guest never learns the minted name: the
+//! link translates pids of its node between the two spellings in both directions
+//! ([`GuestLink::translate_inbound`] / [`GuestLink::translate_outbound`]), so an unchanged client works.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
 use crate::core::value::{self, Symbol};
@@ -49,19 +59,81 @@ static GRANTS: LazyLock<RwLock<Vec<Arc<Grant>>>> = LazyLock::new(|| RwLock::new(
 pub(crate) struct GuestLink {
     grant: Arc<Grant>,
     reachable: Mutex<HashSet<u64>>,
+    /// The node name the guest gave in its `Hello` — its own spelling of itself, which its
+    /// pids carry on the wire. Never a key of `NODES`.
+    claimed: Symbol,
+    /// The node name this node minted for the link ([`mint_name`]): its `NODES` key, the
+    /// node of its pids here, what `(nodes)` lists.
+    name: Symbol,
+}
+
+/// The prefix of every guest link's node name, and of no full peer's (ADR-425):
+/// `node/start` refuses it, and a full link claiming it is refused at registration.
+pub(crate) const NAME_PREFIX: &str = "guest~";
+
+/// Whether `name` is in the guest namespace — a name only a host mints, for a guest link.
+pub(crate) fn is_guest_name(name: Symbol) -> bool {
+    value::symbol_name(name).starts_with(NAME_PREFIX)
+}
+
+/// Source of the per-life serial in a minted guest name.
+static NEXT_GUEST_NAME: AtomicU64 = AtomicU64::new(0);
+
+/// A fresh guest node name for a link that claimed `claimed`:
+/// `guest~<serial>.<this node's incarnation>~<claimed>`. The serial makes it unique on this
+/// node's life, the incarnation (random per runtime) unique across nodes and lives, so a
+/// pid of it that travels elsewhere names no link there; the claim rides along only so a
+/// person reading `(nodes)` can tell who it is.
+fn mint_name(claimed: Symbol, incarnation: u64) -> Symbol {
+    let serial = NEXT_GUEST_NAME.fetch_add(1, Ordering::Relaxed);
+    value::intern(&format!(
+        "{NAME_PREFIX}{serial}.{incarnation:016x}~{}",
+        value::symbol_name(claimed)
+    ))
 }
 
 impl GuestLink {
-    pub(super) fn new(grant: Arc<Grant>) -> Self {
+    /// The standing of a link that authenticated with `grant` and claimed to be `claimed`,
+    /// under a freshly minted name.
+    pub(super) fn new(grant: Arc<Grant>, claimed: Symbol) -> Self {
         GuestLink {
             grant,
             reachable: Mutex::new(HashSet::new()),
+            claimed,
+            name: mint_name(claimed, super::local_incarnation()),
         }
     }
 
     /// The grant this link authenticated with.
     pub(crate) fn grant(&self) -> &Arc<Grant> {
         &self.grant
+    }
+
+    /// The node name this node gave the link — the one it is registered under.
+    pub(crate) fn name(&self) -> Symbol {
+        self.name
+    }
+
+    /// The node name the guest claimed for itself.
+    pub(crate) fn claimed(&self) -> Symbol {
+        self.claimed
+    }
+
+    /// A frame read from the guest, already admitted: its pids of the guest's own node,
+    /// spelled as the guest spells itself, become pids of the minted name, so a reply to
+    /// one routes back over this link. A pid naming any other node is left as it is.
+    pub(super) fn translate_inbound(&self, frame: &mut Frame) {
+        if let Some(msg) = frame_message(frame) {
+            rename_pids(msg, self.claimed, self.name);
+        }
+    }
+
+    /// A frame about to go out to the guest: pids of the minted name go back to the
+    /// guest's own spelling, so it recognises its own processes.
+    pub(super) fn translate_outbound(&self, frame: &mut Frame) {
+        if let Some(msg) = frame_message(frame) {
+            rename_pids(msg, self.name, self.claimed);
+        }
     }
 
     /// A message is about to go out over this link: every local pid in it becomes
@@ -171,6 +243,32 @@ pub(super) fn carries_code(msg: &Message) -> bool {
     false
 }
 
+/// The message a frame carries, if any — a `Send`'s payload, a `Down`'s or an `Exit`'s
+/// reason — for the renaming at the guest's edge.
+fn frame_message(frame: &mut Frame) -> Option<&mut Message> {
+    match frame {
+        Frame::Send { msg, .. } => Some(msg),
+        Frame::Down { reason, .. } | Frame::Exit { reason, .. } => Some(reason),
+        _ => None,
+    }
+}
+
+/// Rewrite every pid of node `from` in `msg` to a pid of node `to`, in place. An explicit
+/// stack, so a deeply nested message costs no native stack.
+fn rename_pids(msg: &mut Message, from: Symbol, to: Symbol) {
+    let mut stack = vec![msg];
+    while let Some(next) = stack.pop() {
+        match next {
+            Message::Pid { node, .. } => {
+                if *node == from {
+                    *node = to;
+                }
+            }
+            other => other.for_each_child_mut(|child| stack.push(child)),
+        }
+    }
+}
+
 /// Every pid of THIS node in `msg`, added to `out`.
 fn local_pids(msg: &Message, out: &mut HashSet<u64>) {
     let mut stack = vec![msg];
@@ -238,11 +336,14 @@ mod tests {
     #[test]
     fn a_guest_reaches_its_names_and_the_pids_it_was_sent_and_nothing_else() {
         let peer = value::intern("guest-test@nowhere");
-        let link = GuestLink::new(Arc::new(Grant {
-            cookie: "unit-test-guest-cookie".to_string(),
-            names: HashSet::from([value::intern("docs")]),
-            as_name: Some("alice".to_string()),
-        }));
+        let link = GuestLink::new(
+            Arc::new(Grant {
+                cookie: "unit-test-guest-cookie".to_string(),
+                names: HashSet::from([value::intern("docs")]),
+                as_name: Some("alice".to_string()),
+            }),
+            peer,
+        );
         let guest = Some(&link);
         let send = |target, msg| Frame::Send { target, msg };
         assert!(admit(
@@ -284,6 +385,80 @@ mod tests {
         assert!(
             admit(peer, None, &send(Target::Pid(99), keyword("hi"))),
             "a full link is unfiltered"
+        );
+    }
+
+    /// ADR-425: a guest link's name is minted here, in a namespace no full peer may use,
+    /// and the pids of the guest's node cross the link in its own spelling one way and the
+    /// minted one the other — while a pid of any other node, the claimed name's real owner
+    /// among them, is never touched.
+    #[test]
+    fn a_guest_link_is_named_by_the_host_and_its_pids_are_translated_at_the_edge() {
+        let claimed = value::intern("full-peer-elsewhere@cluster");
+        let grant = Arc::new(Grant {
+            cookie: "unit-test-guest-cookie".to_string(),
+            names: HashSet::new(),
+            as_name: None,
+        });
+        let link = GuestLink::new(Arc::clone(&grant), claimed);
+        let again = GuestLink::new(grant, claimed);
+        assert_ne!(
+            link.name(),
+            claimed,
+            "a guest is never registered under its claim"
+        );
+        assert!(is_guest_name(link.name()));
+        assert!(!is_guest_name(claimed));
+        assert_ne!(
+            link.name(),
+            again.name(),
+            "two guests claiming one name get two names"
+        );
+        assert_eq!(link.claimed(), claimed);
+
+        let pid = |node, id| Message::Pid { node, id };
+        let third = value::intern("third-node@cluster");
+        let mut inbound = Frame::Send {
+            target: Target::Pid(1),
+            msg: Message::Vector(vec![
+                pid(claimed, 5),
+                Message::Map(vec![(keyword("from"), pid(third, 6))]),
+            ]),
+        };
+        link.translate_inbound(&mut inbound);
+        let Frame::Send { msg, .. } = &inbound else {
+            unreachable!()
+        };
+        let Message::Vector(items) = msg else {
+            unreachable!()
+        };
+        assert!(
+            matches!(items[0], Message::Pid { node, id: 5 } if node == link.name()),
+            "the guest's own pid becomes a pid of its minted name"
+        );
+        assert!(
+            matches!(&items[1], Message::Map(pairs)
+                if matches!(pairs[0].1, Message::Pid { node, id: 6 } if node == third)),
+            "a pid of another node is left alone"
+        );
+
+        let mut outbound = Frame::Down {
+            watcher_pid: 1,
+            mref: 2,
+            target_pid: 3,
+            reason: Message::List(vec![pid(link.name(), 5), pid(claimed, 7)], None),
+        };
+        link.translate_outbound(&mut outbound);
+        let Frame::Down {
+            reason: Message::List(items, _),
+            ..
+        } = &outbound
+        else {
+            unreachable!()
+        };
+        assert!(
+            matches!(items[0], Message::Pid { node, id: 5 } if node == claimed),
+            "a pid of the minted name reaches the guest in its own spelling"
         );
     }
 }
