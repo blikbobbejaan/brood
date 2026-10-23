@@ -57,8 +57,15 @@ pub fn print(heap: &Heap, v: Value) -> String {
 
 pub fn display(heap: &Heap, v: Value) -> String {
     let mut out = String::new();
-    write_value(&mut out, heap, v, false, 0);
+    display_into(&mut out, heap, v);
     out
+}
+
+/// [`display`] appended to `out` — for a caller assembling one string from several
+/// values (`str`, `string/join`), which would otherwise build, copy and drop a `String`
+/// per value (a full copy of every string argument).
+pub fn display_into(out: &mut String, heap: &Heap, v: Value) {
+    write_value(out, heap, v, false, 0);
 }
 
 fn write_value(out: &mut String, heap: &Heap, v: Value, readable: bool, depth: u32) {
@@ -74,7 +81,10 @@ fn write_value(out: &mut String, heap: &Heap, v: Value, readable: bool, depth: u
     match v.unpack() {
         ValueRef::Nil => out.push_str("nil"),
         ValueRef::Bool(b) => out.push_str(if b { "true" } else { "false" }),
-        ValueRef::Int(n) => out.push_str(&n.to_string()),
+        // Formatted straight into `out` — no temporary `String` per integer.
+        ValueRef::Int(n) => {
+            let _ = std::fmt::Write::write_fmt(out, format_args!("{n}"));
+        }
         // A bignum prints as its decimal string, exactly like an `Int`.
         ValueRef::BigInt(id) => out.push_str(&heap.bigint(id).to_string()),
         // A decimal prints as its canonical decimal string with the `M` suffix so

@@ -188,9 +188,17 @@ pub(super) fn eprint(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult 
 /// `print`/`println` — which route the result through the dynamic `*out*` port —
 /// hand a non-stdout sink (a buffer, a process) the exact text stdout would show.
 pub(super) fn render(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
+    // One buffer for every display form (no per-argument `String`, no join copy), handed
+    // to the heap without another copy.
     let args = realize_seqviews(heap, env, args)?;
-    let parts: Vec<String> = args.iter().map(|&a| printer::display(heap, a)).collect();
-    Ok(heap.alloc_string(&parts.join(" ")))
+    let mut text = String::new();
+    for (index, &value) in args.iter().enumerate() {
+        if index > 0 {
+            text.push(' ');
+        }
+        printer::display_into(&mut text, heap, value);
+    }
+    Ok(heap.alloc_string_owned(text))
 }
 
 /// `(%write-out s)` — write the ready string `s` to the current stdout sink: the

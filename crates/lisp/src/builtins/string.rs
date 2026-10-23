@@ -346,12 +346,14 @@ fn expect_str_arg<'h>(heap: &'h Heap, who: &str, v: Value) -> Result<StrArg<'h>,
 // ---------- value <-> text and I/O ----------
 
 pub(super) fn str_concat(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
+    // Borrowed unless a seq-view needed realising; every display form is written into
+    // the one buffer, which the heap then takes over without copying it.
     let args = realize_seqviews(heap, env, args)?;
     let mut s = String::new();
-    for &a in &args {
-        s.push_str(&printer::display(heap, a));
+    for &a in args.iter() {
+        printer::display_into(&mut s, heap, a);
     }
-    Ok(heap.alloc_string(&s))
+    Ok(heap.alloc_string_owned(s))
 }
 
 /// `(%string-join sep coll)` — the native fast path behind `join` for a string
@@ -363,8 +365,9 @@ pub(super) fn str_concat(args: &[Value], env: EnvId, heap: &mut Heap) -> LispRes
 /// prelude `join`: display form per element, separator only between adjacent
 /// elements, so a single-element collection has no trailing separator.
 pub(super) fn string_join(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let sep = match arg(args, 0) {
-        s @ Value::Str(_) => printer::display(heap, s),
+    let sep: &str = match arg(args, 0) {
+        // A string displays as its raw text, so the separator is read in place.
+        Value::Str(id) => heap.string(id),
         v => return Err(LispError::wrong_type(heap, "%string-join", "string", v)),
     };
     // Streaming fast path for a lazy int range (`(string/join (range n) ",")`): format
@@ -379,7 +382,7 @@ pub(super) fn string_join(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
         let mut i = lo;
         while if step > 0 { i < hi } else { i > hi } {
             if !first {
-                s.push_str(&sep);
+                s.push_str(sep);
             }
             first = false;
             let _ = write!(s, "{i}");
@@ -388,7 +391,7 @@ pub(super) fn string_join(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
                 None => break,
             };
         }
-        return Ok(heap.alloc_string(&s));
+        return Ok(heap.alloc_string_owned(s));
     }
     let items = heap.seq_items(arg(args, 1))?;
     // Rough pre-size (separators + a small per-element allowance) to avoid most
@@ -396,11 +399,11 @@ pub(super) fn string_join(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     let mut s = String::with_capacity(sep.len() * items.len().saturating_sub(1) + items.len() * 8);
     for (i, &item) in items.iter().enumerate() {
         if i > 0 {
-            s.push_str(&sep);
+            s.push_str(sep);
         }
-        s.push_str(&printer::display(heap, item));
+        printer::display_into(&mut s, heap, item);
     }
-    Ok(heap.alloc_string(&s))
+    Ok(heap.alloc_string_owned(s))
 }
 
 pub(super) fn pr_str(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {

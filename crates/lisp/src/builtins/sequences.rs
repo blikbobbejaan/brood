@@ -458,18 +458,18 @@ pub(super) fn cons(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     Ok(heap.alloc_pair(a, b))
 }
 
-/// Realise any lazy seq-view among `args`, returning a fresh vec with views
+/// Realise any lazy seq-view among `args`, returning the arguments with views
 /// replaced by their realised lists (non-view args untouched). For the
 /// stringifiers/printers, whose `&Heap` printer can't run a transducer. Fast path:
-/// no view ⇒ a plain copy, no eval. Rooting: each `realize_seqview` can collect,
+/// no view ⇒ `args` itself, borrowed — no copy, no eval. Rooting: each `realize_seqview` can collect,
 /// so every input and every already-realised result is kept on the root stack.
-pub(super) fn realize_seqviews(
+pub(super) fn realize_seqviews<'a>(
     heap: &mut Heap,
     env: EnvId,
-    args: &[Value],
-) -> Result<Vec<Value>, LispError> {
+    args: &'a [Value],
+) -> Result<std::borrow::Cow<'a, [Value]>, LispError> {
     if !args.iter().any(|a| matches!(a, Value::SeqView(_))) {
-        return Ok(args.to_vec());
+        return Ok(std::borrow::Cow::Borrowed(args));
     }
     heap.root_scope(|heap| {
         let in_roots: Vec<_> = args.iter().map(|&a| heap.root(a)).collect();
@@ -483,7 +483,9 @@ pub(super) fn realize_seqviews(
             };
             out_roots.push(heap.root(v));
         }
-        Ok(out_roots.iter().map(|r| heap.read_root(*r)).collect())
+        Ok(std::borrow::Cow::Owned(
+            out_roots.iter().map(|r| heap.read_root(*r)).collect(),
+        ))
     })
 }
 
