@@ -395,9 +395,7 @@ fn template_names_come_from_the_scaffolders_own_list() {
     let got = complete_in(&proj.path, &["new", "--template", ""]);
     got.assert_never_fails("templates");
     let lines = got.lines();
-    for t in [
-        "default", "tui-loop", "gen", "editor", "gui", "hatch", "web-api",
-    ] {
+    for t in ["default", "tui-loop", "gen", "editor", "gui"] {
         assert!(lines.contains(&t), "missing template {t} in {lines:?}");
     }
     // Prefix filtering applies here too.

@@ -3309,6 +3309,16 @@ by name is still late. `vcs` stays in std, self-contained, with a ROADMAP item t
 package if it ever should. Also fixed the other red `a9423365` left: `format_changed`'s
 fallback test reads the new "not in a version-controlled checkout" line.
 
+2026-10-23 (package templates, ADR-424): std no longer carries a framework's starter projects.
+`nest new --template hatch|web-api` (~250 lines of Hatch-specific string concatenation, plus a
+table of sibling `:path` checkouts a fresh machine did not have) moved to hatch as plain files
+(`templates/app`, `templates/api`), declared by a new manifest key, `:templates`. `nest new NAME
+--from SOURCE` takes a path, git URL or registry name, reads the manifest as data and copies the
+files, filling `{{name}}` and `{{package}}` — the second is the dependency that reaches the
+package the way `--from` named it, which is what retired the sibling-checkout problem. Also:
+the eval server's own node is `eval-sandbox-…` rather than `bedit-sandbox-…`. Tests not run on
+this machine; the new `scaffold_quality` cases (a fixture package's template formats, tests and
+runs; an undeclared template writes nothing; `--template hatch` points at `--from`) run in CI.
 2026-10-23 (robustness pass): closing the gaps the last two days left.
 - **Partial image rebuild:** `partial_image.rs` gains a chain of four copied images followed by a
   whole-project load (`--check-boot`), and four concurrent `nest run`s after an edit, three

@@ -143,6 +143,32 @@ shape stays forward-compatible):
 - `:dir SUBDIR` — the dep's source lives in `SUBDIR/` of the repo, not at the root.
 - `:features [a b]` — pass build-feature flags through to the dep.
 
+### Project templates a package provides (ADR-424)
+
+A package may ship starter projects for `nest new`. Its manifest declares them:
+
+```clojure
+:templates
+  {"app" {:dir "templates/app"                 ; plain files, copied as they are
+          :about "A web app with a database."  ; one line, for a listing
+          :next ["nest run --main db-setup" "nest run"]}}   ; printed after `nest new`
+```
+
+`nest new NAME --from SOURCE [--template app]` fetches the package — SOURCE is a path, a git
+URL (`url#ref`, else its HEAD, pinned to the commit read) or a registry name — and copies the
+files under `:dir` into the new project, filling two placeholders in every file: `{{name}}`, the
+project's name, and `{{package}}`, the dependency entry that reaches the package the way
+`--from` named it (`[hatch :path "/abs/hatch"]`, `[hatch :git URL :ref …]`,
+`[hatch :version "^0.29.0"]`). So a template's `project.blsp` writes
+`:dependencies [{{package}} …]` and depends on its own framework without guessing where it
+lives. `--template` may be left out when the package declares one template, or one called
+`default`.
+
+A template is DATA: nothing in the package is evaluated at scaffold time, and the manifest is
+read, not loaded. Keep `:dir` outside `:source-paths` so the package's own `nest check` and
+`nest format` never read the placeholders. hatch's `app` and `api` were built into std until
+this; they live in hatch now (`nest new shop --from hatch --template app`).
+
 ## Lock file
 
 `project.lock.blsp` is **generated**, **committed**, and **read-only** to
@@ -397,6 +423,7 @@ Each is a one-liner from the Rust shell into Brood policy:
 | `nest add <name> :tarball URL :sha256 HEX` | Tarball-dep variant of `add` (v2). |
 | `nest remove <name>`                     | Strip from `:dependencies`, drop `_deps/<name>/`, re-resolve the lock. |
 | `nest tree`                              | Print the resolved dep tree (root → direct → transitive). |
+| `nest new NAME --from SOURCE`           | Scaffold from a template the package at SOURCE (path, git URL or registry name) declares in `:templates`; `--template` picks one (ADR-424). |
 | `nest publish [<base-url>]`              | Build a source tarball and POST it (token-authed) to the hosted registry; releases are immutable (ADR-147/211). Signs the checksum when a signing key exists (ADR-212). |
 | `nest publish --source-url URL`          | Publish an **external** release instead: fetch URL once to compute its checksum, then POST metadata only. The registry records the URL; downloaders re-verify the bytes they fetch from it (ADR-211). |
 | `nest search <term> [<base-url>]`        | Search the registry by name/description via its JSON API (ADR-147/211). |

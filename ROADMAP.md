@@ -2904,6 +2904,9 @@ both, but the untrusted path is necessarily thinner; document the gap. Versioned
   ADR-092), the `tree-sitter-brood` parser, and `brood-vscode` all ship; ⬜ **publish
   it** (editor bindings/CI) and file the ⬜ **`github/linguist` PR** (gated on `.blsp`
   adoption across many repos). Today a `.gitattributes` Clojure stopgap.
+- ✅ **A package's own `nest new` templates** (2026-10-23, ADR-424) — `:templates` in a
+  manifest, `nest new NAME --from SOURCE`; hatch's two starters moved out of std into hatch.
+  ⬜ Later, if wanted: a listing of a package's templates (today only the error names them).
 - ⬜ **Move `std/vcs` out of std, if we need to** (noted 2026-10-23). `vcs` (where a checkout
   is, its files, the work's changed files, a file's base text, the tree's id) is in std for
   now because `nest format --changed` asks it and git is near-universal. It is kept
