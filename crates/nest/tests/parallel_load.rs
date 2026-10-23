@@ -1,7 +1,7 @@
-//! The parallel cold load (2026-10-23): a cold `nest run` of a project with many modules loads
-//! them in a pool of processes, each `require-one`ing modules off a queue. It must build the
-//! SAME project as the sequential walk — `BROOD_LOAD_SEQUENTIAL=1` is the control arm — so
-//! every case runs both and compares:
+//! The parallel cold load (ADR-426, opt-in with `BROOD_LOAD_PARALLEL=1` since 2026-10-24): a
+//! cold `nest run` of a project with many modules loads them in a pool of processes, each
+//! `require-one`ing modules off a queue. It must build the SAME project as the sequential walk
+//! — the default, and the control arm here — so every case runs both and compares:
 //!
 //! - the program's answer, over modules that depend on each other through `(:use …)`, a
 //!   macro whose expansion names another module, a registry another module reads, and a
@@ -79,9 +79,9 @@ fn nest(dir: &Path, args: &[&str], sequential: bool) -> Output {
         .current_dir(dir)
         .env("BROOD_NO_CRASH_REPORT", "1");
     if sequential {
-        cmd.env("BROOD_LOAD_SEQUENTIAL", "1");
+        cmd.env_remove("BROOD_LOAD_PARALLEL");
     } else {
-        cmd.env_remove("BROOD_LOAD_SEQUENTIAL");
+        cmd.env("BROOD_LOAD_PARALLEL", "1");
     }
     cmd.output().expect("spawn nest")
 }
@@ -148,8 +148,14 @@ fn a_parallel_cold_load_builds_what_the_sequential_one_does() {
 fn a_module_that_throws_at_load_fails_the_parallel_build() {
     let dir = fixture("throws");
     std::fs::write(
-        dir.join("src/m11.blsp"),
-        "(defmodule m11 (:use m10))\n(def here true)\n(error \"boom at load\")\n(defn v () 0)\n",
+        // the LAST module of the chain: nothing depends on it, so no waiter retries its load
+        // (a failing load deep in a chain is slow on both paths — ROADMAP)
+        dir.join(format!("src/m{}.blsp", MODULES - 1)),
+        format!(
+            "(defmodule m{} (:use m{}))\n(def here true)\n(error \"boom at load\")\n(defn v () 0)\n",
+            MODULES - 1,
+            MODULES - 2
+        ),
     )
     .unwrap();
     let out = nest(&dir, &["run", "--no-check"], false);

@@ -495,7 +495,10 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
       persistent-map garbage in the lints, sequential 1.15 → 0.81 GB, parallel 1.75 → 1.5 GB);
       an edit reloads only the edited modules and their dependents (ADR-419: 13.2 → 2.7 s on
       the 302 × 3k rig; with unchanged sections copied, `nest run` after an edit 0.30 s). A COLD
-      build loads in a pool of processes since 2026-10-23 (ADR-426: 8.5 s → 2.1 s).
+      build CAN load in a pool of processes (ADR-426: 8.5 s → 2.1 s) — opt-in
+      (`BROOD_LOAD_PARALLEL=1`) since bedit's pool-built image differed (89 of 116 sections;
+      mdpreview red on a warm run). **Open:** find which bedit value differs and why (load-order
+      dependence is the hypothesis), then make it the default.
 - [x] **Inline `sig` signatures** — DONE 2026-10-22 (ADR-420) as typed parameters,
       `(defn area (w:number h:number -> number) …)`: the planned `((x int) -> int)` collided
       with list patterns and `&optional` defaults. `_` marks an open position, and a missing

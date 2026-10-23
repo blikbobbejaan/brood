@@ -3447,3 +3447,12 @@ Rust builtins' doc strings carry illustrations (seven run as executed examples);
 now GENERATES an illustration in each constructor and accessor docstring, so every record —
 std's and every future one — is covered; the ability ops take theirs from the ability's
 docstring. Whole-image doctest 0 failures.
+
+2026-10-24 (ADR-426 made opt-in): CI's downstream bedit job went red after the parallel load —
+bedit's pool-built image differed from a sequential one in 89 of 116 module sections, and 14 of
+`mdpreview_test`'s 19 failed on a warm run (reproduced locally on bedit's pinned commit; the
+sequential build passes). The rig and every record had agreed — the rig's modules read nothing
+at load. Hypothesis: load-order dependence (a module computing load-time values from state other
+modules write). The pool is `BROOD_LOAD_PARALLEL=1` until that is pinned; the default build is
+exactly the pre-ADR-426 sequential walk again. The throwing-module test's failing module moved
+to the end of the chain (CI timed it out: a failure deep in a chain is slow — ROADMAP).

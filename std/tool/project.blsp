@@ -735,7 +735,12 @@ only; `tests/` files come from [[collect-tests]].
 ;; Is this walk COLD and big enough for the pool? `entries` are `[file feature]`.
 (defn- project-load-parallel? (entries before)
   (let (modules (seq/filter entries second))
-    (and (nil? (os/env "BROOD_LOAD_SEQUENTIAL"))
+    ;; OPT-IN (`BROOD_LOAD_PARALLEL=1`) since 2026-10-24: a module may compute load-time
+    ;; values from state other modules write (a registry read at load), and the walk's order
+    ;; is something existing code depends on — bedit's image built in the pool differed in 89
+    ;; of 116 module sections and its markdown-preview tests went red on a warm run. Until
+    ;; that is understood, the pool is a choice, not the default.
+    (and (= (os/env "BROOD_LOAD_PARALLEL") "1")
       (>= (count modules) *load-min-parallel*)
       (not (any? modules (fn (e) (contains? before (second e))))))))
 
@@ -761,7 +766,7 @@ only; `tests/` files come from [[collect-tests]].
           (error "loading " file ": " e))))))
 
 (defn load-sources (root & opts)
-  "Load every source file under `root`'s source paths, attributing each file's load-time requires to the root section (KI-37). `:skip-loaded` skips files whose feature is already loaded. A cold walk of many modules loads them in parallel (`BROOD_LOAD_SEQUENTIAL=1` pins it to one process).
+  "Load every source file under `root`'s source paths, attributing each file's load-time requires to the root section (KI-37). `:skip-loaded` skips files whose feature is already loaded. A cold walk of many modules can load them in parallel, opt-in with `BROOD_LOAD_PARALLEL=1` (ADR-426).
 
     (project/load-sources \"/path/to/proj\" :skip-loaded)   ;=> nil — every source file under the source paths loaded"
   (let (skip-all? (includes? opts :skip-loaded)
