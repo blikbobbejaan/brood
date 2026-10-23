@@ -834,12 +834,43 @@ impl Heap {
         }
     }
 
+    /// Allocate a string by copying `s`. A builtin that has just built a fresh `String`
+    /// should hand it over with [`alloc_string_owned`](Self::alloc_string_owned) instead:
+    /// this copies it again (twice over the shared threshold — once here, once into the
+    /// blob) and recounts its chars.
     pub fn alloc_string(&mut self, s: &str) -> Value {
         let entry = if s.len() >= SHARED_BLOB_THRESHOLD {
             LocalString::shared(SharedBlob::from_text(s))
         } else {
             LocalString::inline(s.to_string())
         };
+        self.alloc_string_entry(entry)
+    }
+
+    /// Allocate a string that takes ownership of `s` — its buffer becomes the slab entry
+    /// (or the shared blob, at [`SHARED_BLOB_THRESHOLD`] bytes and over) with no copy.
+    pub fn alloc_string_owned(&mut self, s: String) -> Value {
+        let entry = if s.len() >= SHARED_BLOB_THRESHOLD {
+            LocalString::shared(SharedBlob::from_owned_text(s))
+        } else {
+            LocalString::inline(s)
+        };
+        self.alloc_string_entry(entry)
+    }
+
+    /// [`alloc_string_owned`](Self::alloc_string_owned) when the caller already knows `s`
+    /// holds `chars` Unicode scalars — a slice cut by char range, a rope's `len_chars` —
+    /// so the O(n) recount is skipped too. The count must be exact (debug builds check).
+    pub fn alloc_string_counted(&mut self, s: String, chars: usize) -> Value {
+        let entry = if s.len() >= SHARED_BLOB_THRESHOLD {
+            LocalString::shared_counted(SharedBlob::from_owned_text(s), chars)
+        } else {
+            LocalString::inline_counted(s, chars)
+        };
+        self.alloc_string_entry(entry)
+    }
+
+    fn alloc_string_entry(&mut self, entry: LocalString) -> Value {
         let idx = alloc_slot!(self, strings, entry);
         Value::str_(StrId::local_gen(idx, self.local_epoch))
     }

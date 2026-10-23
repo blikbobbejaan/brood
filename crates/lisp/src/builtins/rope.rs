@@ -142,7 +142,9 @@ pub(super) fn string_to_rope(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
 /// `(rope->string r)` — the full text of rope `r` as a string.
 pub(super) fn rope_to_string(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let r = expect_rope_ref(heap, "%rope->string", arg(args, 0))?;
-    Ok(heap.alloc_string(&r.to_string()))
+    let chars = r.len_chars();
+    let text = r.to_string();
+    Ok(heap.alloc_string_counted(text, chars))
 }
 
 /// `(rope-length r)` — the number of characters in `r`.
@@ -196,7 +198,7 @@ pub(super) fn rope_slice(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
         return Err(rope_oob("%rope-slice", "range end", end, len));
     }
     let s = r.slice(start as usize..end as usize).to_string();
-    Ok(heap.alloc_string(&s))
+    Ok(heap.alloc_string_counted(s, (end - start) as usize))
 }
 
 /// `(rope-line r n)` — the text of line `n` (0-based), including its trailing
@@ -208,8 +210,10 @@ pub(super) fn rope_line(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
     if n < 0 || n as usize >= lines {
         return Err(rope_oob("%rope-line", "line", n, lines.saturating_sub(1)));
     }
-    let s = r.line(n as usize).to_string();
-    Ok(heap.alloc_string(&s))
+    let line = r.line(n as usize);
+    let chars = line.len_chars();
+    let s = line.to_string();
+    Ok(heap.alloc_string_counted(s, chars))
 }
 
 /// `(rope-char->line r idx)` — the 0-based line index containing character `idx`.

@@ -1238,7 +1238,7 @@ pub(super) fn prim_decimal_to_string(args: &[Value], _: EnvId, heap: &mut Heap) 
             ));
         }
     };
-    Ok(heap.alloc_string(&s))
+    Ok(heap.alloc_string_owned(s))
 }
 
 /// `(decimal/->float d)` — `d` as an (inexact) `f64`.

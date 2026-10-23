@@ -50,6 +50,15 @@ impl SharedBlob {
         })
     }
 
+    /// A text blob that takes ownership of `text` — the buffer becomes the blob (via
+    /// `into_boxed_str`, which reallocates only to drop spare capacity) instead of being
+    /// copied, as [`from_text`](Self::from_text) must copy a borrowed `&str`.
+    pub fn from_owned_text(text: String) -> Arc<Self> {
+        Arc::new(SharedBlob {
+            contents: Contents::Text(text.into_boxed_str()),
+        })
+    }
+
     pub fn as_bytes(&self) -> &[u8] {
         match &self.contents {
             Contents::Text(text) => text.as_bytes(),

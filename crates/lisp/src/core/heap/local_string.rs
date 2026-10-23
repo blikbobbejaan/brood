@@ -141,6 +141,15 @@ impl Default for LocalString {
 impl LocalString {
     pub(super) fn inline(s: String) -> Self {
         let chars = s.chars().count();
+        Self::inline_counted(s, chars)
+    }
+
+    /// [`inline`](Self::inline) when the caller already knows `s` holds `chars` Unicode
+    /// scalars (a slice taken by char range, a rope's `len_chars`) — skips the O(n)
+    /// recount. A wrong count would corrupt every char-indexed op on the string, so debug
+    /// builds check it.
+    pub(super) fn inline_counted(s: String, chars: usize) -> Self {
+        debug_assert_eq!(chars, s.chars().count(), "inline_counted: wrong char count");
         LocalString {
             data: StrData::Inline(s),
             chars,
@@ -156,6 +165,17 @@ impl LocalString {
             .expect("a string slot was handed a raw-bytes blob")
             .chars()
             .count();
+        Self::shared_counted(blob, chars)
+    }
+
+    /// [`shared`](Self::shared) with the char count supplied, as
+    /// [`inline_counted`](Self::inline_counted) is to `inline` (debug builds check it).
+    pub(super) fn shared_counted(blob: Arc<SharedBlob>, chars: usize) -> Self {
+        debug_assert_eq!(
+            Some(chars),
+            blob.as_str().map(|text| text.chars().count()),
+            "shared_counted: wrong char count, or a raw-bytes blob"
+        );
         LocalString {
             data: StrData::Shared(blob),
             chars,

@@ -409,7 +409,7 @@ pub(super) fn pr_str(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult 
         other => other,
     };
     let s = printer::print(heap, v);
-    Ok(heap.alloc_string(&s))
+    Ok(heap.alloc_string_owned(s))
 }
 
 /// `(symbol x)` — the symbol whose spelling is `x`. Accepts a string (intern as
@@ -467,7 +467,7 @@ pub(super) fn substring(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
     // `chars().count()` or a `chars().skip()` walk, each O(whole string).
     let string_value = arg(args, 0);
     let start = expect_int(heap, "string/substring", arg(args, 1))?;
-    let substring: String = {
+    let (substring, substring_chars): (String, usize) = {
         let shared_heap: &Heap = heap;
         let string = expect_str_arg(shared_heap, "string/substring", string_value)?;
         let length = string.chars as i64;
@@ -483,9 +483,14 @@ pub(super) fn substring(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
         }
         let start_byte = string.char_to_byte(shared_heap, start as usize);
         let end_byte = string.char_to_byte(shared_heap, end as usize);
-        string.s[start_byte..end_byte].to_string()
+        (
+            string.s[start_byte..end_byte].to_string(),
+            (end - start) as usize,
+        )
     };
-    Ok(heap.alloc_string(&substring))
+    // The slice was cut by char range, so its count is known: hand the buffer over and
+    // skip the recount `alloc_string` would do (and its second copy).
+    Ok(heap.alloc_string_counted(substring, substring_chars))
 }
 
 /// Shared body of `string-span` / `string-span-until`: from char `start`, count the
@@ -724,7 +729,7 @@ pub(super) fn str_splice_diff(args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
     let start = old[..prefix].chars().count() as i64;
     let end = start + old[prefix..old_bytes.len() - suffix].chars().count() as i64;
     let replacement_text = new[prefix..new_bytes.len() - suffix].to_string();
-    let replacement = heap.alloc_string(&replacement_text);
+    let replacement = heap.alloc_string_owned(replacement_text);
     Ok(heap.alloc_vector(vec![Value::int(start), Value::int(end), replacement]))
 }
 
@@ -742,7 +747,7 @@ pub(super) fn string_split(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
     };
     let out: Vec<Value> = if sep.is_empty() {
         s.chars()
-            .map(|c| heap.alloc_string(&c.to_string()))
+            .map(|c| heap.alloc_string_counted(c.to_string(), 1))
             .collect()
     } else {
         s.split(sep.as_str())
@@ -834,7 +839,7 @@ pub(super) fn codepoints_to_string(args: &[Value], _: EnvId, heap: &mut Heap) ->
             }
         }
     }
-    Ok(heap.alloc_string(&out))
+    Ok(heap.alloc_string_owned(out))
 }
 
 /// The int in `v`, or `v` itself when it is not one — the error carries the offender so
@@ -941,7 +946,7 @@ pub(super) fn grapheme_at(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
         s.graphemes(true).nth(i as usize).map(|g| g.to_string())
     };
     match found {
-        Some(g) => Ok(heap.alloc_string(&g)),
+        Some(g) => Ok(heap.alloc_string_owned(g)),
         None => Ok(default),
     }
 }
@@ -968,7 +973,7 @@ pub(super) fn substring_graphemes(args: &[Value], _: EnvId, heap: &mut Heap) -> 
             None => s.graphemes(true).skip(start).collect(),
         }
     };
-    Ok(heap.alloc_string(&out))
+    Ok(heap.alloc_string_owned(out))
 }
 
 /// `(string/normalize s form)` — `s` in Unicode normalisation `form`, one of the
@@ -1005,7 +1010,7 @@ pub(super) fn string_normalize(args: &[Value], _: EnvId, heap: &mut Heap) -> Lis
             )));
         }
     };
-    Ok(heap.alloc_string(&out))
+    Ok(heap.alloc_string_owned(out))
 }
 
 /// `(math/->fixed x n)` — x rendered with exactly `n` digits after the decimal point
@@ -1037,7 +1042,7 @@ pub(super) fn to_fixed(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
         .with_code(crate::error::error_codes::INDEX_OUT_OF_RANGE));
     }
     let s = format!("{:.*}", n as usize, x);
-    Ok(heap.alloc_string(&s))
+    Ok(heap.alloc_string_owned(s))
 }
 
 /// `(string/upper s)` — `s` with every character upper-cased. Case folding is
@@ -1045,13 +1050,13 @@ pub(super) fn to_fixed(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
 /// rather than being expressible in Brood.
 pub(super) fn upper(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let s = expect_string_ref(heap, "string/upper", arg(args, 0))?;
-    Ok(heap.alloc_string(&s.to_uppercase()))
+    Ok(heap.alloc_string_owned(s.to_uppercase()))
 }
 
 /// `(string/lower s)` — `s` with every character lower-cased (Unicode-aware, like `upper`).
 pub(super) fn lower(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let s = expect_string_ref(heap, "string/lower", arg(args, 0))?;
-    Ok(heap.alloc_string(&s.to_lowercase()))
+    Ok(heap.alloc_string_owned(s.to_lowercase()))
 }
 
 pub(super) fn char_to_int(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
@@ -1090,10 +1095,10 @@ pub(super) fn utf8_bytes_to_string(args: &[Value], _: EnvId, heap: &mut Heap) ->
     // Accepts a `bytes` value, or (leniently) a vector or list of byte ints.
     let bytes = super::bytes::collect_bytes("utf8-bytes->string", arg(args, 0), heap)?;
     if args.get(1).is_some_and(|lossy| crate::eval::truthy(*lossy)) {
-        return Ok(heap.alloc_string(&String::from_utf8_lossy(&bytes)));
+        return Ok(heap.alloc_string_owned(String::from_utf8_lossy(&bytes).into_owned()));
     }
     match String::from_utf8(bytes) {
-        Ok(s) => Ok(heap.alloc_string(&s)),
+        Ok(s) => Ok(heap.alloc_string_owned(s)),
         Err(e) => Err(LispError::runtime(format!(
             "%utf8-bytes->string: invalid UTF-8: {}",
             e
