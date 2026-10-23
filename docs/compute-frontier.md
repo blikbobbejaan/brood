@@ -1653,6 +1653,9 @@ before it ships. Ranked by expected value.
    mirror already returns `Copy` data for exactly this reason (its doc prices the RMW at
    "~30M times" on `fib`); the interpreter path needs the same probe-by-pointer variant,
    cloning only when a real `Step` is handed out. `make ab-vm` territory.
+   > **Shipped 2026-10-23 (`0210c242`), not measured — needs `make ab-vm` on the test
+   > machine.** The unstaged self-tail already used `vm_call_ic_self`; the staged one now asks
+   > it first too (identity-checked against the staged callee), falling back to the probe.
 5. **Cheap allocation deletions, all confirmed in source**: `value_cmp` allocates two
    `String`s per symbol/keyword comparison (`symbol_name` where `symbol_name_ref`'s own
    doc says compare with it; `equality.rs`) and `to_vec()`s both vectors per vector
@@ -1670,6 +1673,20 @@ before it ships. Ranked by expected value.
    `live_vm_arms` stack and take-and-reinserts the entire positions table — both
    patterns the LOCAL collector already removed, with the reasoning written beside them
    (`gc_runtime.rs` vs `gc.rs`).
+
+   > **Status 2026-10-23 — shipped, none measured; each needs `make ab` / `make ab-vm` on the
+   > test machine:**
+   > - `value_cmp` borrows spellings and vector slices — `d42b0b62`.
+   > - `dispatch_identity` / `map_get_inline` read a once-interned `__id__` — `8af3243a`.
+   > - `table` string keys compare in place; `put` copies the key only to insert — `9d5922c4`.
+   > - `MakeMap` (and `brood_rt_make_map_n`) builds without a throwaway `Vec` — `4c077028`.
+   > - `reset_frame_keep_captures` replaced by a reset straight from the operands — `4306567e`.
+   > - `dispatch`'s `name == "apply"` is a `NativeFn::is_apply` flag; a native callee goes
+   >   straight to `call_native` — `0e84f2ec`.
+   > - `promote_list` loads the code generation once; RUNTIME compaction walks
+   >   `live_vm_arms` in place — `7a78d3d0`.
+   > - Still open: `copy_cross_heap`'s temp `Vec` under the mailbox lock (`message.rs`), and
+   >   the RUNTIME positions-table take-and-reinsert.
 6. **Message-path latency (scheduler side)**: `dirty_block()` — a whole-worker-queue
    drain that can spawn an OS thread — runs *before* the `wake_pending` early-out in
    `wait_for_message`, under the mailbox state lock; and `trim_on_park` (a full
