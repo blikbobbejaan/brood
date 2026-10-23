@@ -2897,7 +2897,7 @@ fn a_guest_link_reaches_what_it_was_given_and_ships_no_code() {
 (node/grant-guest "guest-cookie-0123456789" {{:names [:echo] :as "alice"}})
 (defn serve ()
   (receive
-    ([:hi from] (do (send from [:pong (self) (node/peer-grant from) (nodes) from]) (serve)))
+    ([:hi from] (do (send from [:pong (self) (node/peer-grant from) (node/list) from]) (serve)))
     ([:ping from] (do (send from [:pong-by-pid]) (serve)))
     ([:run f reply] (do (send reply [:ran (f)]) (serve)))
     (_ (serve))))

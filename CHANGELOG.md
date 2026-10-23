@@ -32,7 +32,7 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   takes the commits not yet upstream as well as the uncommitted edits — diffed from where
   the branch left its upstream, so commits that landed there since are not counted.
 - A guest link's node name is now its host's to mint (ADR-425): whatever a guest calls itself,
-  the host registers it as `guest~<n>.<incarnation>~<claim>` — what `(nodes)` lists and what
+  the host registers it as `guest~<n>.<incarnation>~<claim>` — what `(node/list)` lists and what
   its pids carry there — and translates its pids at the link, so guest clients need no change.
   `node/peer-grant` adds `:claimed`, the name the guest gave itself. `node/start` refuses a
   name starting `guest~`, and a peer claiming one is refused as a full link.

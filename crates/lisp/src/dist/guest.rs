@@ -63,7 +63,7 @@ pub(crate) struct GuestLink {
     /// pids carry on the wire. Never a key of `NODES`.
     claimed: Symbol,
     /// The node name this node minted for the link ([`mint_name`]): its `NODES` key, the
-    /// node of its pids here, what `(nodes)` lists.
+    /// node of its pids here, what `(node/list)` lists.
     name: Symbol,
 }
 
@@ -83,7 +83,7 @@ static NEXT_GUEST_NAME: AtomicU64 = AtomicU64::new(0);
 /// `guest~<serial>.<this node's incarnation>~<claimed>`. The serial makes it unique on this
 /// node's life, the incarnation (random per runtime) unique across nodes and lives, so a
 /// pid of it that travels elsewhere names no link there; the claim rides along only so a
-/// person reading `(nodes)` can tell who it is.
+/// person reading `(node/list)` can tell who it is.
 fn mint_name(claimed: Symbol, incarnation: u64) -> Symbol {
     let serial = NEXT_GUEST_NAME.fetch_add(1, Ordering::Relaxed);
     value::intern(&format!(

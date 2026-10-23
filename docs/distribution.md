@@ -455,7 +455,7 @@ cookie argument) gets a guest link:
   client's name;
 - its NODE name is the host's choice too (ADR-425): whatever the guest called itself, the
   host registers the link as `guest~<n>.<host incarnation>~<claim>` — that is what
-  `(nodes)` lists and what the guest's pids carry here — and translates the guest's pids
+  `(node/list)` lists and what the guest's pids carry here — and translates the guest's pids
   between the two spellings at the link, so the guest needs no change and never sees it.
   No full node may use a `guest~` name (`node/start` refuses one), so a guest can never
   stand in for a full peer, connected or not. `peer-grant`'s `:claimed` is the name the

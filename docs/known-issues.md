@@ -172,7 +172,7 @@ Each with the sabotage beside it:
 - `dist::guest::tests::a_guest_link_is_named_by_the_host_and_its_pids_are_translated_at_the_edge`
   — sabotage: make `rename_pids` return at once — red at "becomes a pid of its minted name".
 - distribution `a_guest_link_reaches_what_it_was_given_and_ships_no_code` — now also checks
-  the host's `(nodes)` shows `guest~`, `:claimed` is the client's, and the client's own pid
+  the host's `(node/list)` shows `guest~`, `:claimed` is the client's, and the client's own pid
   comes back as its own. Sabotage: delete `guest.translate_inbound(&mut frame)` in
   `handle_inbound_frame` — the host's reply to the client's pid has no route and the client
   fails with "no reply by name".
@@ -204,7 +204,10 @@ is red on `e9e1af8b` WITHOUT any sabotage, on both tries, every time:
 The host script ADR-425 added calls `(nodes)`, which is unbound there, so the host dies before
 it replies; the `translate_inbound` sabotage reads "no reply by name" too, and proves nothing
 until the script is fixed. (It looped 10/10 green on `7ed008cf`, before ADR-425 extended it.)
-This entry stays open on that one guard.
+The script now calls `(node/list)`, the name `(nodes)` has in std (fixed the same day). This
+entry stays open on that one guard until it is green without the sabotage AND red under the
+`translate_inbound` one — red at "no reply by name" with NO `unbound symbol` in the host's
+stderr, since that message alone is what the broken script printed too.
 
 The first fix's guards, before ADR-425 replaced them, were verified the same way on `7ed008cf`:
 `guest_may_take` returning `true` turned `a_guest_cannot_take_a_full_peers_name` red ("a guest
