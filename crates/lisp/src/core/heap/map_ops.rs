@@ -760,6 +760,26 @@ impl Heap {
         }
     }
 
+    /// [`fold_entries`](Self::fold_entries) that can stop: the walk ends at the first
+    /// `Err`, which it returns. Same order as `map_entries`, read straight off the trie —
+    /// for a caller that would otherwise copy every entry into a `Vec` only to walk it
+    /// with `?` (the message copier, under the L1 mailbox lock).
+    pub fn try_fold_entries<E, F>(&self, id: MapId, f: &mut F) -> Result<(), E>
+    where
+        F: FnMut(Value, Value) -> Result<(), E>,
+    {
+        let node = self.map_node(id);
+        for &(k, v) in &node.data {
+            f(k, v)?;
+        }
+        if !node.is_collision {
+            for &child in &node.children {
+                self.try_fold_entries(child, f)?;
+            }
+        }
+        Ok(())
+    }
+
     /// The map's **first** entry in the same traversal order `map_entries` uses,
     /// or `None` when empty. O(depth), allocating nothing — `(first m)` must not
     /// copy every entry out just to take the head (which is what calling

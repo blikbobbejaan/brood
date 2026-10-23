@@ -763,11 +763,13 @@ fn copy_value_inner<T: CopyTarget>(
         Value::Failure(id) => target.failure(src, id, depth)?,
         Value::Set(id) => {
             target.reserve(src.map_size(id) as i64)?;
-            let elements = src.set_elems(id);
-            let mut out = Vec::with_capacity(elements.len());
-            for element in elements {
+            // Off the trie, as a map's entries are (`copy_entries`): the values are all
+            // `true` and dropped.
+            let mut out = Vec::with_capacity(src.map_size(id));
+            src.try_fold_entries(id, &mut |element, _| {
                 out.push(copy_value(target, src, element, depth + 1)?);
-            }
+                Ok(())
+            })?;
             target.set(out)
         }
         Value::Fn(id) => target.closure(src, v, id, depth)?,
@@ -808,21 +810,22 @@ fn copy_value_inner<T: CopyTarget>(
     })
 }
 
-/// A map's (or a failure's) entries, each key and value copied.
+/// A map's (or a failure's) entries, each key and value copied. Walked straight off the
+/// source trie ([`Heap::try_fold_entries`]), so the only `Vec` is the copies' own.
 fn copy_entries<T: CopyTarget>(
     target: &mut T,
     src: &Heap,
     id: MapId,
     depth: u32,
 ) -> Result<Vec<(T::Out, T::Out)>, T::Decline> {
-    let entries = src.map_entries(id);
-    let mut out = Vec::with_capacity(entries.len());
-    for (key, value) in entries {
+    let mut out = Vec::with_capacity(src.map_size(id));
+    src.try_fold_entries(id, &mut |key, value| {
         out.push((
             copy_value(target, src, key, depth + 1)?,
             copy_value(target, src, value, depth + 1)?,
         ));
-    }
+        Ok(())
+    })?;
     Ok(out)
 }
 
