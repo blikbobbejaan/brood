@@ -249,6 +249,11 @@ incremental search rides on.
 
 ;; ---- whitespace: trimming & blank test --------------------------------------
 
+;; The four characters `whitespace?` names, as one set for the native `string/span` —
+;; which skips a run of them in Rust, where walking `char-at` allocated a one-character
+;; string per step.
+(def- whitespace-chars " \t\n\r")
+
 (defn- whitespace? (c) (or (= c " ") (= c "\t") (= c "\n") (= c "\r")))
 
 (defn blank? (s:string -> bool)
@@ -256,26 +261,25 @@ incremental search rides on.
 
     (string/blank? \"  \")   → true
     (string/blank? \" a \")  → false"
-  (= (triml s) ""))
+  (= (string/span s 0 whitespace-chars) (string/length s)))
 
-(defn- triml-from (s i n)
-  (if (and (< i n) (whitespace? (char-at s i))) (triml-from s (inc i) n) (string/substring s i n)))
 (defn triml (s:string -> string)
   "Remove leading whitespace from `s`.
 
     (string/triml \"  a\")   → \"a\""
-  (triml-from s 0 (string/length s)))
+  (let (start (string/span s 0 whitespace-chars))
+    (if (= start 0) s (string/substring s start (string/length s)))))
 
-(defn- trimr-to (s:string n:int -> string)
+(defn- trimr-to (s:string n:int end:int -> string)
   (if (and (> n 0) (whitespace? (char-at s (dec n))))
-    (trimr-to s (dec n))
-    (string/substring s 0 n)))
+    (trimr-to s (dec n) end)
+    (if (= n end) s (string/substring s 0 n))))
 
 (defn trimr (s:string -> string)
   "Remove trailing whitespace from `s`.
 
     (string/trimr \"a  \")   → \"a\""
-  (trimr-to s (string/length s)))
+  (let (end (string/length s)) (trimr-to s end end)))
 
 (defn trim (s:string -> string)
   "Remove leading and trailing whitespace from `s`.
@@ -496,10 +500,14 @@ things in the same image is a name worth spending to fix.
   (format-loop template 0 (string/length template) args ""))
 
 (defn- format-loop (template i n args acc)
-  (cond
-    (>= i n) acc
-    (= (string/char-at template i) "%") (format-spec template (inc i) n args acc)
-    else (format-loop template (inc i) n args (str acc (string/char-at template i)))))
+  ;; The literal run up to the next `%` is copied in one piece (`string/span-until` finds
+  ;; it natively), rather than one `char-at` and one `str` per character — which made the
+  ;; output quadratic in the template's length.
+  (let (j (string/span-until template i "%"))
+    (cond
+      (> j i) (format-loop template j n args (str acc (string/substring template i j)))
+      (>= i n) acc
+      else (format-spec template (inc i) n args acc))))
 
 (defn- format-spec (template i n args acc)
   ;; called with `i` pointing one past the `%`
