@@ -335,6 +335,11 @@ struct Conn {
     /// Millis (on the `START` clock) of the last inbound frame. The heartbeat
     /// thread reads this to decide liveness; the reader writes it.
     last_seen: Arc<AtomicU64>,
+    /// `Some` for a GUEST link (ADR-415): its grant and the pids it has been given, the
+    /// same `Arc` the link's reader filters every frame through. Fixed at `establish` for
+    /// this one connection, so whichever link holds the peer's NAME later cannot change
+    /// what this link's frames may do (KI-286).
+    guest: Option<Arc<guest::GuestLink>>,
 }
 
 impl Conn {
@@ -961,6 +966,16 @@ fn nodedown_msg(name: Symbol) -> Message {
     ])
 }
 
+/// The grant the link now registered for `peer` authenticated with (ADR-415), or `None`
+/// for a full link or no link — for `(node/peer-grant node)`. Asked of the registered
+/// link, so it answers for the connection that is up, never one that has gone.
+pub(crate) fn peer_grant(peer: Symbol) -> Option<Arc<guest::Grant>> {
+    crate::core::sync::read(&NODES)
+        .get(&peer)
+        .and_then(|conn| conn.guest.as_ref())
+        .map(|guest| Arc::clone(guest.grant()))
+}
+
 /// Connected peer node names (for `(nodes)`).
 pub(crate) fn connected_nodes() -> Vec<Symbol> {
     crate::core::sync::read(&NODES).keys().copied().collect()
@@ -1086,10 +1101,21 @@ pub(crate) fn route(node: Symbol, target: Target, msg: Message) -> bool {
         process::deliver(id, msg);
         return true;
     }
-    // Remote: encode a Send frame and hand it to the peer's writer thread. A guest peer is
-    // told about every local pid in the message, which is what lets it reply to one
-    // (ADR-415).
-    guest::note_outbound(node, &msg);
+    // Remote: encode a Send frame and hand it to the peer's writer thread. Snapshot the
+    // writer handles (and a guest link's standing), then release NODES before enqueueing —
+    // see [`enqueue_to`] for why the shutdown syscall must not run under the lock.
+    let link = crate::core::sync::read(&NODES)
+        .get(&node)
+        .map(|conn| (conn.writer_handles(), conn.guest.clone()));
+    let Some(((tx, sock), guest)) = link else {
+        return false;
+    };
+    // A guest link is told about every local pid in the message, which is what lets it
+    // reply to one (ADR-415) — noted on the link the message goes out on, before it is
+    // queued there.
+    if let Some(guest) = &guest {
+        guest.note_outbound(&msg);
+    }
     let bytes: Arc<Vec<u8>> = match encode_payload(&Frame::Send { target, msg }) {
         Ok(b) => Arc::new(b),
         Err(e) => {
@@ -1101,18 +1127,8 @@ pub(crate) fn route(node: Symbol, target: Target, msg: Message) -> bool {
             return true; // a link exists; the payload was the problem
         }
     };
-    // Snapshot the writer handles, then release NODES before enqueueing — see
-    // [`enqueue_to`] for why the shutdown syscall must not run under the lock.
-    let handles = crate::core::sync::read(&NODES)
-        .get(&node)
-        .map(Conn::writer_handles);
-    match handles {
-        Some((tx, sock)) => {
-            let _ = enqueue_to(&tx, &sock, bytes); // severs the link if the writer is gone/stalled
-            true
-        }
-        None => false,
-    }
+    let _ = enqueue_to(&tx, &sock, bytes); // severs the link if the writer is gone/stalled
+    true
 }
 
 // ----- connection lifecycle --------------------------------------------------
@@ -1719,6 +1735,14 @@ fn establish(authenticated: handshake::Authenticated, stream: Stream, role: Role
     let (tx, rx) = mpsc::sync_channel::<Arc<Vec<u8>>>(WRITER_QUEUE_CAP);
     let last_seen = Arc::new(AtomicU64::new(now_millis()));
     let id = NEXT_LINK.fetch_add(1, Ordering::Relaxed);
+    // A guest link's every frame is filtered (ADR-415), through a standing that belongs
+    // to THIS connection: the `Conn` and the reader share it, so it is in place before
+    // the link is visible in `NODES`, it goes when the link goes, and no other link under
+    // the same name — a full peer's that reclaims it, a later guest's — can change what
+    // this link's reader admits, even for frames it is still draining after the name has
+    // moved on (KI-286).
+    let guest = grant.map(|grant| Arc::new(guest::GuestLink::new(grant)));
+    let guest_link = guest.is_some();
     let link = Conn {
         id,
         connector,
@@ -1727,19 +1751,13 @@ fn establish(authenticated: handshake::Authenticated, stream: Stream, role: Role
         tx: tx.clone(),
         sock: Arc::clone(&sock),
         last_seen: Arc::clone(&last_seen),
+        guest: guest.clone(),
     };
     let Some(was_new) = register_link(peer, link) else {
         // We lost the tie-break: close our socket, register and spawn nothing.
         let _ = sock.shutdown(Shutdown::Both);
         return;
     };
-    // A guest's every frame is filtered from here on (ADR-415). A full link under the same
-    // name clears whatever an earlier guest link left, so a grant never outlives its link.
-    let guest_link = grant.is_some();
-    match grant {
-        Some(grant) => guest::register(peer, grant),
-        None => guest::forget(peer),
-    }
 
     ensure_heartbeat();
 
@@ -1748,7 +1766,7 @@ fn establish(authenticated: handshake::Authenticated, stream: Stream, role: Role
     // receive cipher, so neither shares crypto state.
     let Session { send, recv } = session;
     spawn_link_writer(peer, Arc::clone(&sock), rx, send);
-    spawn_link_reader(peer, id, sock, tx, recv, last_seen);
+    spawn_link_reader(peer, id, sock, tx, recv, last_seen, guest);
 
     // A brand-new peer just joined: tell the cluster (ADR-088) — one broadcast sends the
     // newcomer our other peers and tells our peers about the newcomer. Skipped for a
@@ -1874,6 +1892,7 @@ fn spawn_link_reader(
     writer_queue: SyncSender<Arc<Vec<u8>>>,
     mut open: session::OpenKey,
     last_seen: Arc<AtomicU64>,
+    guest: Option<Arc<guest::GuestLink>>,
 ) {
     // One shared Pong buffer per reader; sending is an `Arc::clone`, not a copy.
     let pong: Arc<Vec<u8>> = Arc::new(encode_payload(&Frame::Pong).expect("encode Pong"));
@@ -1897,7 +1916,7 @@ fn spawn_link_reader(
                         break;
                     }
                 } else {
-                    handle_inbound_frame(peer, frame);
+                    handle_inbound_frame(peer, guest.as_deref(), frame);
                 }
             }
         }));
@@ -1910,10 +1929,13 @@ fn spawn_link_reader(
 /// is keyed to it, never to wire-supplied data, so a malicious peer can't claim to be
 /// node X and inject `[:down …]` / link-exit deliveries to processes coupled with X.
 /// (These frames carry no `from_node` field at all — see the security note on `Frame`.)
-fn handle_inbound_frame(peer: Symbol, frame: Frame) {
+///
+/// `guest` is the standing of the link the frame was READ from, as `establish` gave it to
+/// that link's reader — never looked up by `peer`, which another link may hold by now.
+fn handle_inbound_frame(peer: Symbol, guest: Option<&guest::GuestLink>, frame: Frame) {
     // A guest link acts only on frames that reach what it was given and carry no code
-    // (ADR-415); a full peer's pass untouched.
-    if !guest::admit(peer, &frame) {
+    // (ADR-415); a full link's pass untouched.
+    if !guest::admit(peer, guest, &frame) {
         return;
     }
     match frame {
@@ -2018,7 +2040,7 @@ fn broadcast_peer_table() {
         nodes
             .iter()
             // a guest is neither told about the cluster nor introduced to it (ADR-415)
-            .filter(|(name, _)| !guest::is_guest(**name))
+            .filter(|(_, conn)| conn.guest.is_none())
             .map(|(&name, c)| PeerSnap {
                 name,
                 addr: c.addr.clone(),
@@ -2109,7 +2131,6 @@ fn drop_link(peer: Symbol, id: u64) {
     };
     if removed {
         forget_dial_routes(peer);
-        guest::forget(peer);
         fire_nodedown(peer);
     }
 }
@@ -2346,6 +2367,119 @@ mod tests {
         crate::core::sync::read(&NODES)
             .get(&peer)
             .map(|link| (link.id, link.incarnation))
+    }
+
+    /// The same, for a GUEST link (ADR-415) authenticated with a grant that names nothing.
+    fn authenticated_as_guest(peer: Symbol, incarnation: u64) -> handshake::Authenticated {
+        handshake::Authenticated {
+            grant: Some(Arc::new(guest::Grant {
+                cookie: "unit-test-guest-cookie".to_string(),
+                names: HashSet::new(),
+                as_name: None,
+            })),
+            ..authenticated_as(peer, incarnation)
+        }
+    }
+
+    /// The guest standing of the link now registered for `peer`, if it is a guest link.
+    fn registered_guest(peer: Symbol) -> Option<Arc<guest::GuestLink>> {
+        crate::core::sync::read(&NODES)
+            .get(&peer)
+            .and_then(|link| link.guest.clone())
+    }
+
+    /// KI-286: a guest link's reader can still be delivering frames it read before the
+    /// peer's NAME passed to another link — a full peer's that reclaimed it, or no link
+    /// at all after `node/disconnect` (each shuts the guest's socket, and the reader
+    /// drains what its buffer and the kernel already hold). Those frames are the guest's.
+    /// When the filter was keyed by name, the reclaim emptied the name's guest entry and
+    /// they were admitted as a full peer's — a `:remote-spawn` carrying a closure among
+    /// them. The reader hands each frame to `handle_inbound_frame` with ITS link's
+    /// standing; that must refuse it whoever holds the name, while the same frame from a
+    /// full link is delivered.
+    #[test]
+    fn a_guest_links_frames_stay_a_guests_after_a_full_link_takes_its_name() {
+        let me = process::self_pid();
+        let peer = value::intern("reclaimed-guest-peer@test");
+        let probe = value::intern("ki-286-probe@test");
+        assert!(matches!(register(probe, me), Registration::Bound));
+        let to_probe = || Frame::Send {
+            target: Target::Name(probe),
+            msg: Message::Keyword(value::intern("ki-286")),
+        };
+
+        let (guest_stream, _guest_far_end) = stream_pair();
+        establish(
+            authenticated_as_guest(peer, 1),
+            guest_stream,
+            Role::Responder,
+        );
+        let guest_standing =
+            registered_guest(peer).expect("a guest link carries its standing from establish");
+
+        // A full link under the same name, the peer's next life: the guest link is
+        // retired, and its reader is left draining what it had already read.
+        let (full_stream, _full_far_end) = stream_pair();
+        establish(authenticated_as(peer, 2), full_stream, Role::Responder);
+        assert!(
+            registered_link(peer).is_some() && registered_guest(peer).is_none(),
+            "the name is a full link's now"
+        );
+        handle_inbound_frame(peer, Some(&guest_standing), to_probe());
+        assert_eq!(
+            process::mailbox_len(me),
+            Some(0),
+            "a guest link's frame was admitted with the privileges of the full link that took its name"
+        );
+
+        // And with no link under the name at all.
+        assert!(disconnect(peer));
+        handle_inbound_frame(peer, Some(&guest_standing), to_probe());
+        assert_eq!(
+            process::mailbox_len(me),
+            Some(0),
+            "a guest link's frame was admitted once its name had no link"
+        );
+
+        // The control: the same frame from a full link is delivered.
+        handle_inbound_frame(peer, None, to_probe());
+        assert_eq!(process::mailbox_len(me), Some(1));
+        assert!(unregister(probe));
+    }
+
+    /// KI-286's other half: a local pid sent to a peer becomes reachable by the LINK the
+    /// message went out on. A pid sent after a full link took the name went to that full
+    /// link, so the retired guest link — still draining — must not be able to reach it.
+    #[test]
+    fn a_pid_sent_to_a_peer_is_reachable_only_by_the_link_it_went_out_on() {
+        let peer = value::intern("introduced-guest-peer@test");
+        let local_pid = |id| Message::Pid { node: *NONODE, id };
+        let to_pid = |id| Frame::Send {
+            target: Target::Pid(id),
+            msg: Message::Keyword(value::intern("ki-286")),
+        };
+
+        let (guest_stream, _guest_far_end) = stream_pair();
+        establish(
+            authenticated_as_guest(peer, 1),
+            guest_stream,
+            Role::Responder,
+        );
+        let guest_standing = registered_guest(peer).expect("the guest link registers");
+        assert!(route(peer, Target::Pid(1), local_pid(77)));
+        assert!(
+            guest::admit(peer, Some(&guest_standing), &to_pid(77)),
+            "a pid sent over the guest link is reachable by it"
+        );
+
+        let (full_stream, _full_far_end) = stream_pair();
+        establish(authenticated_as(peer, 2), full_stream, Role::Responder);
+        assert!(route(peer, Target::Pid(1), local_pid(78)));
+        assert!(
+            !guest::admit(peer, Some(&guest_standing), &to_pid(78)),
+            "a pid sent over the full link that took the name reached the retired guest link"
+        );
+        assert!(disconnect(peer));
     }
 
     /// A peer that restarted (its old host vanished without a FIN, so the old link is

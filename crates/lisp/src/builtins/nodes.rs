@@ -293,7 +293,7 @@ pub(super) fn node_peer_grant(args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
         Value::Pid { node, .. } => node,
         other => expect_node_name(heap, "%node-peer-grant", other)?,
     };
-    let Some(grant) = crate::dist::guest::grant_of(node) else {
+    let Some(grant) = crate::dist::peer_grant(node) else {
         return Ok(Value::nil());
     };
     let mut names: Vec<Value> = grant.names.iter().copied().map(Value::Keyword).collect();

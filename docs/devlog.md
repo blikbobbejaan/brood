@@ -3351,3 +3351,13 @@ runs; an undeclared template writes nothing; `--template hatch` points at `--fro
 - `EnvId::GLOBAL`'s doc says it is not the global scope during a source boot. Aliasing it inside
   `env_get` was tried and broke the source boot (some of the 122 sites rely on the miss), so
   the trap is documented rather than removed.
+
+2026-10-23 (KI-286, guest standing is the link's): a review found the guest filter (ADR-415)
+keyed by node name and looked up per frame, so a guest's reader still draining frames it had
+read — after a full link reclaimed the name, after `node/disconnect`, or after a second
+connection of the guest's own retired the first and closed — admitted them as a full peer's.
+The standing (`guest::GuestLink`: grant + reachable pids) is now made once in `establish`, held
+by the link's `Conn` and handed to its reader; `GUESTS` and `GUEST_COUNT` are gone, and `route`
+notes pids on the link it enqueues on. Found by reading, never observed; the guards are written
+but not run or sabotage-verified here — that is the test machine's. Open, not fixed: a guest can
+claim a connected full peer's name and take its link.

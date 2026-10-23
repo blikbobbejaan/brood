@@ -4,17 +4,24 @@
 //! A grant is a second cookie with limits — the registered names a guest may send to, and
 //! an optional identity (`:as`) a server reads instead of trusting the client's claim. The
 //! handshake's responder tries the node cookie, then each grant (`handshake.rs`); a link
-//! that matched a grant is registered here, and every frame from it passes [`admit`].
+//! that matched a grant carries a [`GuestLink`] from the moment it is registered, and every
+//! frame its reader reads passes [`admit`] against that same `GuestLink`.
 //!
 //! What a guest can reach is the grant's names plus the local pids this node has SENT to
-//! it ([`note_outbound`]) — a capability by introduction: a pid on this node is a small
-//! sequential integer, so being able to name one proves nothing, but having been told it
-//! does. What a guest can carry is data: a message holding a closure, a native function or
-//! a shared function handle is dropped whole, since a closure crossing the wire is code the
-//! receiver may run (ADR-033).
+//! it ([`GuestLink::note_outbound`]) — a capability by introduction: a pid on this node is
+//! a small sequential integer, so being able to name one proves nothing, but having been
+//! told it does. What a guest can carry is data: a message holding a closure, a native
+//! function or a shared function handle is dropped whole, since a closure crossing the
+//! wire is code the receiver may run (ADR-033).
+//!
+//! The standing belongs to the LINK, not to the peer's name (KI-286). A name is what the
+//! peer claimed in its `Hello`, and several links can hold it over time — a guest's, a
+//! full peer's that reclaims it, a second guest's — while a link's reader is still
+//! delivering frames it read before the name moved on. A per-frame lookup by name let
+//! those frames be judged by whichever link held the name THEN, so a guest's buffered
+//! frames ran with a full peer's privileges.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::HashSet;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
 use crate::core::value::{self, Symbol};
@@ -34,33 +41,38 @@ pub(crate) struct Grant {
 /// Every grant this node will accept, newest last.
 static GRANTS: LazyLock<RwLock<Vec<Arc<Grant>>>> = LazyLock::new(|| RwLock::new(Vec::new()));
 
-/// What one connected guest may reach: its grant, and the local pids it has been given.
-struct GuestPeer {
+/// One guest link's standing: the grant it authenticated with, and the local pids it has
+/// been given. Made once, in `establish`, for the one connection that authenticated with
+/// the grant; the link's `Conn` and its reader hold the same `Arc`, so it is gone with the
+/// link and nothing else — another link under the same name, a `forget` — can change what
+/// that link's frames may do.
+pub(crate) struct GuestLink {
     grant: Arc<Grant>,
-    reachable: HashSet<u64>,
+    reachable: Mutex<HashSet<u64>>,
 }
 
-/// The connected guests, by their authenticated node name. A full peer is never here.
-static GUESTS: LazyLock<Mutex<HashMap<Symbol, GuestPeer>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+impl GuestLink {
+    pub(super) fn new(grant: Arc<Grant>) -> Self {
+        GuestLink {
+            grant,
+            reachable: Mutex::new(HashSet::new()),
+        }
+    }
 
-/// `GUESTS.len()`, republished under the `GUESTS` lock by every write to it, so the
-/// per-frame filters ([`note_outbound`], [`admit`]) skip the lock and the lookup on a
-/// node with no guests — every frame of every link, on almost every node.
-///
-/// A zero read stands for the lookup that would have missed, and is exact where it
-/// guards anything. A guest link's frames are filtered only on its own reader thread,
-/// which `establish` spawns AFTER [`register`] stored the count: the spawn orders that
-/// store before every load on the thread, so a guest's frame never reads a zero older
-/// than its own grant. A sender's `note_outbound` racing a guest's registration from
-/// another thread reads either side of it, as its lock acquisition landed either side
-/// of the insert (the link is in `NODES` before it is a guest at all, so that window
-/// predates this count).
-static GUEST_COUNT: AtomicUsize = AtomicUsize::new(0);
+    /// The grant this link authenticated with.
+    pub(crate) fn grant(&self) -> &Arc<Grant> {
+        &self.grant
+    }
 
-/// Whether any guest is connected — see [`GUEST_COUNT`].
-fn any_guests() -> bool {
-    GUEST_COUNT.load(Ordering::Acquire) != 0
+    /// A message is about to go out over this link: every local pid in it becomes
+    /// reachable by the guest — it has been told about them.
+    pub(super) fn note_outbound(&self, msg: &Message) {
+        local_pids(msg, &mut crate::core::sync::lock(&self.reachable));
+    }
+
+    fn reaches_pid(&self, id: u64) -> bool {
+        crate::core::sync::lock(&self.reachable).contains(&id)
+    }
 }
 
 /// Register (or replace) a grant for `cookie`.
@@ -88,67 +100,21 @@ pub(super) fn grants() -> Vec<Arc<Grant>> {
     crate::core::sync::read(&GRANTS).clone()
 }
 
-/// Record that `peer` authenticated with `grant` — every frame from it is now filtered.
-pub(super) fn register(peer: Symbol, grant: Arc<Grant>) {
-    let mut guests = crate::core::sync::lock(&GUESTS);
-    guests.insert(
-        peer,
-        GuestPeer {
-            grant,
-            reachable: HashSet::new(),
-        },
-    );
-    GUEST_COUNT.store(guests.len(), Ordering::Release);
-}
-
-/// `peer`'s link is gone; so is what it was given.
-pub(super) fn forget(peer: Symbol) {
-    let mut guests = crate::core::sync::lock(&GUESTS);
-    guests.remove(&peer);
-    GUEST_COUNT.store(guests.len(), Ordering::Release);
-}
-
-/// Whether `peer` is a guest.
-pub(super) fn is_guest(peer: Symbol) -> bool {
-    crate::core::sync::lock(&GUESTS).contains_key(&peer)
-}
-
-/// The grant `peer` authenticated with, or `None` for a full peer.
-pub(crate) fn grant_of(peer: Symbol) -> Option<Arc<Grant>> {
-    crate::core::sync::lock(&GUESTS)
-        .get(&peer)
-        .map(|guest| Arc::clone(&guest.grant))
-}
-
-/// A message is about to go to `peer`: if it is a guest, every local pid in it becomes
-/// reachable by that guest — it has been told about them.
-pub(super) fn note_outbound(peer: Symbol, msg: &Message) {
-    if !any_guests() {
-        return;
-    }
-    let mut guests = crate::core::sync::lock(&GUESTS);
-    if let Some(guest) = guests.get_mut(&peer) {
-        local_pids(msg, &mut guest.reachable);
-    }
-}
-
-/// Whether a frame from `peer` may be acted on. A full peer's always may; a guest's only
-/// if it reaches what the guest was given and carries no code.
-pub(super) fn admit(peer: Symbol, frame: &Frame) -> bool {
-    if !any_guests() {
-        return true; // no guest is connected, so `peer` is a full one
-    }
-    let guests = crate::core::sync::lock(&GUESTS);
-    let Some(guest) = guests.get(&peer) else {
+/// Whether a frame read from a link to `peer` may be acted on. `guest` is THAT link's
+/// standing, captured when the link was established — `None` for a full link, whose
+/// frames always may; a guest link's only if they reach what it was given and carry no
+/// code. `peer` only names the link in the warning.
+pub(super) fn admit(peer: Symbol, guest: Option<&GuestLink>, frame: &Frame) -> bool {
+    let Some(guest) = guest else {
         return true;
     };
     let reaches = |target: &Target| match target {
         Target::Name(name) => guest.grant.names.contains(name),
-        Target::Pid(id) => guest.reachable.contains(id),
+        Target::Pid(id) => guest.reaches_pid(*id),
     };
     let admitted = match frame {
         Frame::Send { target, msg } => reaches(target) && !carries_code(msg),
-        Frame::Monitor { target, .. } => guest.reachable.contains(target),
+        Frame::Monitor { target, .. } => guest.reaches_pid(*target),
         Frame::MonitorName { name, .. } => guest.grant.names.contains(name),
         // Dropping a monitor it holds, or being told one of ITS monitors fired, couples
         // nothing new.
@@ -272,38 +238,37 @@ mod tests {
     #[test]
     fn a_guest_reaches_its_names_and_the_pids_it_was_sent_and_nothing_else() {
         let peer = value::intern("guest-test@nowhere");
-        register(
-            peer,
-            Arc::new(Grant {
-                cookie: "unit-test-guest-cookie".to_string(),
-                names: HashSet::from([value::intern("docs")]),
-                as_name: Some("alice".to_string()),
-            }),
-        );
+        let link = GuestLink::new(Arc::new(Grant {
+            cookie: "unit-test-guest-cookie".to_string(),
+            names: HashSet::from([value::intern("docs")]),
+            as_name: Some("alice".to_string()),
+        }));
+        let guest = Some(&link);
         let send = |target, msg| Frame::Send { target, msg };
         assert!(admit(
             peer,
+            guest,
             &send(Target::Name(value::intern("docs")), keyword("hi"))
         ));
         assert!(!admit(
             peer,
+            guest,
             &send(Target::Name(value::intern("remote-spawn")), keyword("hi"))
         ));
-        assert!(!admit(peer, &send(Target::Pid(42), keyword("hi"))));
-        note_outbound(
-            peer,
-            &Message::Pid {
-                node: *super::super::NONODE,
-                id: 42,
-            },
-        );
-        assert!(admit(peer, &send(Target::Pid(42), keyword("hi"))));
+        assert!(!admit(peer, guest, &send(Target::Pid(42), keyword("hi"))));
+        link.note_outbound(&Message::Pid {
+            node: *super::super::NONODE,
+            id: 42,
+        });
+        assert!(admit(peer, guest, &send(Target::Pid(42), keyword("hi"))));
         assert!(!admit(
             peer,
+            guest,
             &send(Target::Pid(42), Message::Native(value::intern("os/cmd")))
         ));
         assert!(!admit(
             peer,
+            guest,
             &Frame::Exit {
                 from_pid: 1,
                 to_pid: 42,
@@ -312,13 +277,13 @@ mod tests {
             }
         ));
         assert_eq!(
-            grant_of(peer).and_then(|g| g.as_name.clone()),
-            Some("alice".to_string())
+            link.grant().as_name.as_deref(),
+            Some("alice"),
+            "the link carries who it is"
         );
-        forget(peer);
         assert!(
-            admit(peer, &send(Target::Pid(99), keyword("hi"))),
-            "a full peer is unfiltered"
+            admit(peer, None, &send(Target::Pid(99), keyword("hi"))),
+            "a full link is unfiltered"
         );
     }
 }

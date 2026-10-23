@@ -68,6 +68,98 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 
 (An open entry's `## KI-N` section goes here until it is resolved.)
 
+## KI-286 — a guest link's frames could be admitted as a full peer's once its name moved to another link ⚠️ OPEN 2026-10-23
+
+**Open until the guard is verified — the fix is in, the guard has not run.** Found by reading
+the code (a review of ADR-415, 2026-10-23); never observed in the wild, and no test or
+program was run to show it. The fix and its guard are committed, but neither has run: this
+desktop runs no tests, so the guard is **not yet sabotage-verified** and must be on the test
+machine before this closes (see Guard).
+
+**Symptom.** None observed. What it would look like: a host that granted a guest
+(`node/grant-guest`) runs a frame from that guest which ADR-415 says a guest may never send —
+a `node/spawn` (a `Send` to `:remote-spawn` carrying a closure), an `Exit`, a `Link`, a
+message to a name outside the grant — with no `dist: refused … from guest …` line on stderr,
+in the moments after another link under the guest's node name came up or went away. In the
+worst case that is the guest running code on the host.
+
+**Cause.** The guest filter was keyed by the peer's node NAME, looked up per frame, while
+the frames come from a LINK. `establish` did `guest::register(peer, grant)` for a guest link
+and `guest::forget(peer)` for a full one, and `drop_link` did `guest::forget(peer)` for
+whichever link it removed; every frame the reader read went through `guest::admit(peer,
+frame)`, which looked `peer` up in `GUESTS` and returned `true` — a full peer — on a miss.
+But a name is only what the peer claimed in its `Hello`, several links can hold it over
+time, and a link's reader keeps delivering frames it has already read after the name has
+moved on: the frame between `open` and `handle_inbound_frame`, the `BufReader`'s buffer (up
+to 8 KiB of frames, added on this branch), and — on Linux, which does not discard queued
+data on `shutdown(SHUT_RD)` — whatever the kernel receive queue holds. Three ways the name
+moved under a still-draining guest reader:
+
+1. **A full link took the name** — a new incarnation (`retire_previous_incarnation` shuts
+   the guest's socket) or a winning duplicate (`register_link` evicts it); then `establish`'s
+   `guest::forget(peer)` emptied the entry.
+2. **`node/disconnect`** — the documented way to end a guest (`guest::revoke`'s doc) —
+   runs `drop_link` from the caller's thread, which `forget`s the entry before the guest's
+   reader has drained.
+3. **The guest alone, with nothing else on the node:** guest link G1 under name N
+   pipelines frames; a second connection G2 with the same cookie, the same name and a new
+   incarnation retires G1 (`guest::register` replaces the entry), then closes, and G2's
+   reader's `drop_link` (G2's id is the registered one) `forget`s N. G1's remaining frames
+   then pass `admit` as a full peer's.
+
+The `GUEST_COUNT` fast path (`25b35b61`) did not add a mechanism — a zero count and a
+missing entry both answered "full" — but its comment's ordering argument ("a guest's frame
+never reads a zero older than its own grant") only covered a zero from BEFORE the guest
+registered; the zero that matters is a newer one, written by a `forget` for some other link
+of the same name. The same name keying put the reachable pids on the name too:
+`note_outbound(node, msg)` added a pid sent over a full link to whatever guest entry the
+name had, and a pid sent over the guest link to nothing once the entry was gone. And
+`establish` registered the guest AFTER the link was in `NODES`, so a send in that gap
+introduced nothing (harmless, but the same shape).
+
+**Why it survived.** Every guest test had one link per name. The distribution test
+(`a_guest_link_reaches_what_it_was_given_and_ships_no_code`) runs one guest link start to
+finish; the unit test in `guest.rs` called `forget` and then ASSERTED the name was
+unfiltered ("a full peer is unfiltered") — the name-keyed model was the specification, so
+the question of which link a frame came from never arose. The window is a reader draining
+after its socket was shut down, which no test drives and no ordinary run hits by chance:
+the guest has to have frames in flight at the moment the name moves.
+
+**Fix.** The standing belongs to the link (`guest::GuestLink`: the grant and the reachable
+pids). `establish` makes it once, for the one connection that authenticated with the grant,
+and it rides in that link's `Conn::guest` and is handed to that link's reader;
+`handle_inbound_frame(peer, guest, frame)` filters every frame through the standing of the
+link it was READ from, never a lookup by `peer`. `route` takes the standing from the same
+`Conn` it enqueues on, so a pid becomes reachable by exactly the link it went out on.
+`GUESTS`, `GUEST_COUNT`, `register` / `forget` / `is_guest` are gone: nothing keyed by the
+name is left to flip, a full link's per-frame check is an `Option` test (cheaper than the
+atomic load it replaces), and the standing is in place before the link is visible in
+`NODES`. `node/peer-grant` and the mesh's "never gossip a guest" read the registered link's
+`Conn::guest` (`dist::peer_grant`).
+
+Not in this fix, and worth its own entry: **a guest may claim the node name of a connected
+full peer.** The handshake trusts the `Hello`'s name for a guest as for a full peer, so a
+guest that names itself after a full peer, with a new incarnation, retires that peer's link
+(`register_link`) and from then on receives what this node sends to that name — and the
+pids in it become reachable by the guest. This fix stops the guest from gaining the full
+peer's privileges on its inbound frames; it does not stop the name being taken.
+
+**Guard.** `dist::tests::a_guest_links_frames_stay_a_guests_after_a_full_link_takes_its_name`
+— a guest link, then a full link under the same name (the guest's retired), then
+`node/disconnect`: a `Send` to a registered probe handed to `handle_inbound_frame` with the
+guest link's standing is refused after each, and the same frame from a full link is
+delivered. `dist::tests::a_pid_sent_to_a_peer_is_reachable_only_by_the_link_it_went_out_on`
+— a pid routed after the full link took the name is not reachable by the retired guest link.
+`guest::tests::a_guest_reaches_its_names_and_the_pids_it_was_sent_and_nothing_else` was
+rewritten over a `GuestLink`. **Not yet run and not yet sabotage-verified** — on the test
+machine: run the three, then sabotage `handle_inbound_frame` to ignore its `guest` argument
+and look the name up instead (`crate::core::sync::read(&NODES).get(&peer).and_then(|c|
+c.guest.clone())`) and confirm the first goes red at its first assertion; and sabotage
+`route` to note the pids on a standing other than its `Conn`'s and confirm the second goes
+red; then the distribution tests' guest case, looped. Record the red output here before
+closing. The guard drives the decision the reader makes, not the reader thread: a reader
+draining after its socket is shut is not deterministic enough to assert on.
+
 ## KI-281 — a JIT fast-link test never published in 90 s, once (watch)
 
 **Watching, 2026-10-18 — not reproducible on demand; diagnostic armed.** CI's tree-walker job on
@@ -116,6 +208,7 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
+| KI-286 | **a guest link's frames could be admitted as a full peer's once its node name moved to another link** — the guest filter (ADR-415) was keyed by name and looked up per frame, so a full link reclaiming the name, `node/disconnect`, or a second connection by the guest itself emptied the entry while the guest's reader was still draining frames it had read, and those passed unfiltered (a `node/spawn` closure among them). Found by reading; never observed | ⚠️ **OPEN 2026-10-23** — fixed in code (the standing is the link's: `GuestLink` on `Conn`, handed to its reader at `establish`; `GUESTS` / `GUEST_COUNT` gone), guards written but **not yet run or sabotage-verified** — on the test machine before this closes. Not fixed: a guest may claim a connected full peer's name and take its link |
 | KI-285 | **a loader waiting on its header's dependency still blocked its worker**, and the prefetch that fixed it broke CI's contracts job | ✅ **FIXED 2026-10-21** — the CI break was a tier-up pre-load starting an unrelated load inside a module load; it now declines until the load is over, and the prefetch is restored. Guards: `tier_up_loads.rs` (red without the decline), `lazy_load_wait_parks` (un-ignored) |
 | KI-284 | **a worker BUSY under a native frame still counted as live, so as many processes looping under `reflect/eval-string` as there were workers starved every other process** — the in-language suite sat 30 minutes on two cores (v0.42.2 too), and on an oversubscribed `make test` one `fuzzy` test hit its 600 s timeout and the clean-up failed 343 more as `unbound symbol` | ✅ **FIXED 2026-10-21** — a nested run that spends its quantum with work waiting takes its worker out of the pool until it returns (`cpu_dirty_enter`, the CPU twin of `dirty_block`). Guard: `blocking_native::a_process_runs_while_every_worker_loops_under_a_native_frame` (`BROOD_J=2`, two spinners, every tier; red without the guard) |
 | KI-283 | **a function the linear-map rewrite built on a table leaked that table on every call** — a plain tally called ~25 000 times exhausted a 16 GB `ulimit -v` (`table: cannot reserve a 512 KB dense slot chunk`); a dropped table also kept its registry slot and chunk reservations for good | ✅ **FIXED 2026-10-21** — the rewrite frees its table, tables die with their creating process (ADR-418), and a dropped table's slot is reused under a generation-checked handle. Guard: `table_address_space.rs` (three reuse cases, `VmSize`-metered, each red under its sabotage) |
