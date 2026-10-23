@@ -521,8 +521,16 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
       DONE 2026-10-23 (ADR-423): the module's own definition wins; macro templates pin their
       call heads to root (`/when`) so no module captures an expansion; defining a root macro's
       name warns unless declared `(:shadow name)`.
+- [ ] **A failing module load is slow** (found 2026-10-23, ADR-426's "Left"): a 13-deep
+      require chain whose bottom module throws takes 3.4 s and 6.5 s CPU to report under plain
+      `brood` (a successful one 0.13 s) — the prelude's arms are JIT-compiled ~27 times, once
+      per level of the failing chain. Not the epoch bump alone (a successful load bumps it as
+      often); find what the failure path re-runs. Every build error pays it.
 - [ ] **Perf levers parked in `docs/compute-frontier.md`** — unboxed arrays (`matmul`), and a
-      fast frame for the VM `dispatch` computed-head branch (`pipeline`).
+      fast frame for the VM `dispatch` computed-head branch (`pipeline`). Re-profiled 2026-10-23 at the
+      benchmark's default size: `pipeline` is dominated by fixed costs (macroexpansion, JIT
+      compilation, position lookups), not the computed-head branch — the lever pays only at
+      large N, so it stays parked.
 
 > Numbers below **re-measured 2026-08-29** with `scripts/stdlib-audit.blsp` rather than
 > carried forward. Three of this list's claims had gone stale in the reader's favour — an
