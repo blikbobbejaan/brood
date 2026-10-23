@@ -1212,9 +1212,10 @@ that does not parse is reported and skipped, never rewritten.
   (fold coll {} (fn (m x) (assoc m x true))))
 
 ;; The .blsp files under the project that the work in progress touches — git's
-;; uncommitted and unpushed edits, or a mur change's files (`vcs/changed`, whichever
-;; checkout the project is in) — intersected with the project's own file set so a
-;; stray .blsp elsewhere in the checkout (or one the work deleted) is ignored.
+;; uncommitted and unpushed edits, or what another registered VCS counts as the work
+;; (`vcs/changed`, whichever checkout the project is in) — intersected with the
+;; project's own file set so a stray .blsp elsewhere in the checkout (or one the
+;; work deleted) is ignored.
 ;; Returns `:not-a-repo` when the project is in no checkout; otherwise a list
 ;; (possibly empty — nothing changed) of the changed .blsp paths, absolute.
 (defn- format-changed-blsp (root)
@@ -1229,7 +1230,7 @@ that does not parse is reported and skipped, never rewritten.
 
 (defn project-changed ()
   "Format only the .blsp files the work in progress changed under the current project —
-git's uncommitted and unpushed edits, or a mur change's files (`vcs/changed`): the
+git's uncommitted and unpushed edits, or another VCS's change (`vcs/changed`): the
 narrower scope of `nest format` (`--changed`). Falls back to the whole project outside a
 checkout. Returns the number of files rewritten.
 
@@ -1237,7 +1238,7 @@ checkout. Returns the number of files rewritten.
   (let (root (format-require-root) changed (format-changed-blsp root))
     (if (keyword? changed)
       (do
-        (io/puts "format: not in a git or mur checkout — formatting the whole project.")
+        (io/puts "format: not in a version-controlled checkout — formatting the whole project.")
         (project))
       (let (counts (format-apply changed 0 0)
             rewrote (first counts)

@@ -1,9 +1,12 @@
 ;; std/vcs.blsp — which version control a directory lives in, and the questions every tool
-;; asks of it. git is asked for real (CI has it); mur is not installed there, so its row is
-;; checked for where its working copy is found and that an absent client answers nil, and a
-;; backend registered by a test stands in for "a package adds a VCS".
+;; asks of it. git is asked for real (CI has it); a backend registered by a test stands in for
+;; "a package adds a VCS" (bedit puts mur's). Each test registers its own kind and marker,
+;; since the tests run at once and the registry is shared.
 
 (defmodule vcs-test (:use vcs) (:use registry) (:use test))
+
+;; Drop any fixtures a prior run left in /tmp (at load, before any test runs).
+(purge-stale-temp "brood-vcs-")
 
 (defn- git (dir & args)
   (os/cmd "git"
@@ -37,11 +40,13 @@
       (file/mkdir dir)
       (file/mkdir (path/join dir ".git"))
       (file/mkdir (path/join dir "inner"))
-      (file/mkdir (path/join dir "inner/.mur"))
+      (file/mkdir (path/join dir "inner/.nestedvcs"))
       (file/mkdir (path/join dir "inner/deep"))
-      (assert= (locate (path/join dir "inner/deep")) {:kind :mur :root (path/join dir "inner")})
+      (registry/put! :vcs/backends :nested {:rank 30 :marker ".nestedvcs"})
+      (assert= (locate (path/join dir "inner/deep")) {:kind :nested :root (path/join dir "inner")})
       (assert= (kind dir) :git)
-      (assert= (root (path/join dir "inner")) (path/join dir "inner"))))
+      (assert= (root (path/join dir "inner")) (path/join dir "inner"))
+      (registry/remove! :vcs/backends :nested)))
   (test "a .git FILE (a worktree, a submodule) marks a checkout too"
     (let (dir (temp-dir "brood-vcs-worktree-"))
       (file/mkdir dir)
@@ -51,8 +56,15 @@
     (let (dir (temp-dir "brood-vcs-both-"))
       (file/mkdir dir)
       (file/mkdir (path/join dir ".git"))
-      (file/mkdir (path/join dir ".mur"))
-      (assert= (kind dir) (first (first (backends)))))))
+      (file/mkdir (path/join dir ".aheadvcs"))
+      (file/mkdir (path/join dir ".behindvcs"))
+      ;; one ranked before git, one after: the directory is the first one's
+      (registry/put! :vcs/backends :ahead {:rank 10 :marker ".aheadvcs"})
+      (registry/put! :vcs/backends :behind {:rank 40 :marker ".behindvcs"})
+      (assert= (kind dir) :ahead)
+      (registry/remove! :vcs/backends :ahead)
+      (assert= (kind dir) :git)
+      (registry/remove! :vcs/backends :behind))))
 
 (describe "vcs over git"
   (test "files: tracked and new, not ignored, not deleted"
@@ -86,19 +98,6 @@
           (file/spit (path/join dir "a.txt") "edited\n")
           (is (:dirty? (id dir))))))))
 
-(describe "vcs over mur"
-  (test "a mur working copy is found by its .mur directory"
-    (let (dir (temp-dir "brood-vcs-mur-"))
-      (file/mkdir dir)
-      (file/mkdir (path/join dir ".mur"))
-      (file/mkdir (path/join dir "src"))
-      (assert= (locate (path/join dir "src")) {:kind :mur :root dir})
-      ;; with no client installed, every answer is nil rather than an error
-      (when (nil? (mur-program))
-        (assert= (files dir) nil)
-        (assert= (base-text (path/join dir "src/a.txt")) nil)
-        (assert= (id dir) nil)))))
-
 (defn fake-files (root) (list (str "listed-under-" (path/basename root))))
 (defn fake-base-text (root path) (str "before:" (path/basename path)))
 
@@ -118,14 +117,30 @@
       ;; a question the row does not answer is nil, not an error
       (assert= (changed dir) nil)
       (registry/remove! :vcs/backends :fake)
-      (assert= (kind dir) nil))))
-
-(describe "vcs: which seat mur speaks as"
-  (test "named once, every mur command carries it; cleared, mur chooses"
-    (use-mur-seat "an-editor")
-    (assert= (mur-env) {"MUR_RUNNER" "an-editor"})
-    (use-mur-seat nil)
-    (assert= (mur-env) {})))
+      (assert= (kind dir) nil)))
+  (test "a hook may be a function — a package's way to call its own globals late"
+    ;; a package's module names are rooted under the package, so a quoted symbol in its row
+    ;; would not name its global; a function that calls it does
+    (let (dir (temp-dir "brood-vcs-fn-"))
+      (file/mkdir dir)
+      (file/mkdir (path/join dir ".fnvcs"))
+      (registry/put! :vcs/backends
+        :by-fn {:rank 30
+         :marker ".fnvcs"
+         :files (fn (root) (fake-files root))
+         :changed (fn (root) (list "changed-in" (path/basename root)))
+         :base-text (fn (root path) (fake-base-text root path))
+         :id (fn (root) {:id "fn-id" :dirty? false})})
+      (assert= (files dir) (list (str "listed-under-" (path/basename dir))))
+      (assert= (changed dir) (list "changed-in" (path/basename dir)))
+      (assert= (base-text (path/join dir "y.txt")) "before:y.txt")
+      (assert= (id dir) {:id "fn-id" :dirty? false})
+      ;; the row is shared: a process that did not register it asks through the same hooks
+      (let (me (self))
+        (spawn (send me [:asked (files dir) (id dir)]))
+        (assert= (receive ([:asked fs i] [fs i]) (after *test-wait-ms* :timeout))
+          [(list (str "listed-under-" (path/basename dir))) {:id "fn-id" :dirty? false}]))
+      (registry/remove! :vcs/backends :by-fn))))
 
 (describe "vcs/changed over git: this branch's work, not the upstream's"
   (test "commits that landed upstream after the branch left it are not counted"

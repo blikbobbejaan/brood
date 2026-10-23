@@ -2906,6 +2906,16 @@ both, but the untrusted path is necessarily thinner; document the gap. Versioned
   ADR-092), the `tree-sitter-brood` parser, and `brood-vscode` all ship; ⬜ **publish
   it** (editor bindings/CI) and file the ⬜ **`github/linguist` PR** (gated on `.blsp`
   adoption across many repos). Today a `.gitattributes` Clojure stopgap.
+- ⬜ **Move `std/vcs` out of std, if we need to** (noted 2026-10-23). `vcs` (where a checkout
+  is, its files, the work's changed files, a file's base text, the tree's id) is in std for
+  now because `nest format --changed` asks it and git is near-universal. It is kept
+  self-contained so it can leave: it knows only git, every other VCS is a row a package puts
+  in `:vcs/backends` (bedit puts mur's), a row's hooks may be functions so a package's row
+  needs nothing from std, and its one std caller (`format-changed-blsp` in `std/format.blsp`)
+  already treats nil as "no checkout". To move it: publish it as a package, delete
+  `std/vcs.blsp`, `tests/vcs_test.blsp` and its `embedded_module!` row, have `nest format
+  --changed` fall back or take the package, put the `vcs/*` names in the rename ledger, and
+  give bedit the dependency.
 
 ---
 

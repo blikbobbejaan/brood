@@ -124,8 +124,8 @@ fn format_changed_falls_back_outside_a_git_repo() {
     write(&root.join("src/a.blsp"), "(defn   a   () 1)\n");
     let out = nest_format_changed(root);
     assert!(
-        out.contains("not a git repository"),
-        "outside a git repo it should fall back to the whole project, got:\n{out}"
+        out.contains("not in a version-controlled checkout"),
+        "outside any checkout it should fall back to the whole project, got:\n{out}"
     );
     assert_eq!(
         std::fs::read_to_string(root.join("src/a.blsp")).unwrap(),
