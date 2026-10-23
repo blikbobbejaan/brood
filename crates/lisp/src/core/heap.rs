@@ -342,31 +342,36 @@ pub enum ImportEntry {
 }
 
 /// The per-file `(:use …)` import table: bare name → [`ImportEntry`], plus whether any key
-/// may be a module ALIAS. An `(:alias mod :as short)` rides this table under the
-/// slash-suffixed key `short/`, so the resolver and the privacy check would otherwise format
-/// and intern `prefix/` for every qualified reference to ask a question whose answer is
-/// almost always "no alias". The fact lives in the table, not beside it, so every
-/// save/restore that swaps the table (`Heap::set_imports`) carries it along unchanged.
+/// may be a module ALIAS or an internals GRANT. An `(:alias mod :as short)` rides this table
+/// under the slash-suffixed key `short/`, and a `(:use-internals mod)` under
+/// `/internals/mod`, so the resolver and the privacy check would otherwise format and intern
+/// one of those keys for every qualified reference to ask a question whose answer is almost
+/// always "none". The facts live in the table, not beside it, so every save/restore that
+/// swaps the table (`Heap::set_imports`) carries them along unchanged.
 ///
-/// `may_alias` is a superset: it is set by any key spelled with a trailing `/`, which every
+/// Both are supersets: `may_alias` is set by any key spelled with a trailing `/`, which every
 /// alias key has (a `(:shadow /)` key, `/shadow//`, sets it too — the cost of that is only
-/// the lookup it would have skipped). Entries are never removed from a table, so the flag
-/// never has to clear; a fresh table starts false.
+/// the lookup it would have skipped), and `may_grant` by any key spelled `/internals/…`.
+/// Entries are never removed from a table, so neither flag has to clear; a fresh table
+/// starts with both false.
 #[derive(Clone, Debug, Default)]
 pub struct ImportTable {
     entries: HashMap<Symbol, ImportEntry>,
     may_alias: bool,
+    may_grant: bool,
 }
 
 impl ImportTable {
-    /// Is `key` spelled the way an alias key is (`short/`)?
-    fn alias_shaped(key: Symbol) -> bool {
-        crate::core::value::symbol_name_ref(key).ends_with('/')
+    /// Note what `key`'s spelling says it might be.
+    fn note_key(&mut self, key: Symbol) {
+        let spelled = crate::core::value::symbol_name_ref(key);
+        self.may_alias |= spelled.ends_with('/');
+        self.may_grant |= spelled.starts_with("/internals/");
     }
 
     /// Add or replace `key`'s entry.
     pub fn insert(&mut self, key: Symbol, entry: ImportEntry) {
-        self.may_alias |= Self::alias_shaped(key);
+        self.note_key(key);
         self.entries.insert(key, entry);
     }
 
@@ -377,7 +382,7 @@ impl ImportTable {
 
     /// `key`'s entry, inserted as `default` when it has none.
     pub fn entry_or_insert(&mut self, key: Symbol, default: ImportEntry) -> &mut ImportEntry {
-        self.may_alias |= Self::alias_shaped(key);
+        self.note_key(key);
         self.entries.entry(key).or_insert(default)
     }
 
@@ -389,6 +394,11 @@ impl ImportTable {
     /// Could any key be a module alias? False means no `prefix/` lookup can hit.
     pub fn may_have_aliases(&self) -> bool {
         self.may_alias
+    }
+
+    /// Could any key be an internals grant? False means no `/internals/…` lookup can hit.
+    pub fn may_grant_internals(&self) -> bool {
+        self.may_grant
     }
 }
 

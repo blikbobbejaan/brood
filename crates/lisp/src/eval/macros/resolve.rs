@@ -259,8 +259,13 @@ fn enforce_private_refs(
                 } else {
                     None
                 };
-                let real_m: String = match alias_target {
-                    Some(target) => value::symbol_name(target),
+                // The real module, and — when it is already a symbol — the reference's
+                // resolved spelling `module/bare`. Unaliased and unrooted, that is `s`
+                // itself; rooted, it is the rooted symbol (`prefix/m/bare`, whose last
+                // segment is `bare`); only an alias has to spell it, and does so below,
+                // once the cheap exits have passed.
+                let (module, known_resolved): (&str, Option<value::Symbol>) = match alias_target {
+                    Some(target) => (value::symbol_name_ref(target), None),
                     // Not an alias: root it (ADR-070). `cur_ns` is the ROOTED namespace
                     // (`%in-ns` roots what `(defmodule tutor)` declares, so inside project
                     // `bedit` it is `bedit/tutor`), so an intra-project reference must root
@@ -270,24 +275,33 @@ fn enforce_private_refs(
                     // walk sees the pre-rewrite form, hence the rooting here as well.
                     None => match heap.root_qualified_ref(s) {
                         Some(rooted) => {
-                            let rooted = value::symbol_name(rooted);
-                            rooted[..rooted.rfind('/').unwrap_or(rooted.len())].to_string()
+                            let spelled = value::symbol_name_ref(rooted);
+                            (
+                                &spelled[..spelled.rfind('/').unwrap_or(spelled.len())],
+                                Some(rooted),
+                            )
                         }
-                        None => m.to_string(),
+                        None => (m, Some(s)),
                     },
                 };
-                let m = real_m.as_str();
+                let m = module;
                 // A reference to the current module, or one this file was granted
                 // internals for, is never a foreign-private access — exit before the
-                // record lookup (also the cheap common case, no `is_private` call).
-                if m.is_empty() || m == cur_ns || heap.import_of(internals_grant_key(m)).is_some() {
+                // record lookup (also the cheap common case, no `is_private` call). A file
+                // with no grant skips spelling the grant key.
+                if m.is_empty()
+                    || m == cur_ns
+                    || (heap.imports_may_grant_internals()
+                        && heap.import_of(internals_grant_key(m)).is_some())
+                {
                     return Ok(());
                 }
                 // Foreign module: privacy is the recorded fact (ADR-146). The name is
                 // spelled identically public-or-private, so consult the record for the
                 // resolved `m/name`. An unloaded `m` has no record → not rejected here
                 // (it becomes a normal unbound reference at eval).
-                let resolved = value::intern(&format!("{m}/{bare}"));
+                let resolved =
+                    known_resolved.unwrap_or_else(|| value::intern(&format!("{m}/{bare}")));
                 if heap.is_private(resolved) {
                     let mut e = LispError::runtime(format!(
                         "`{m}/{bare}` is module-private to `{m}` (ADR-146). Call it from \

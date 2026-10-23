@@ -447,6 +447,12 @@ impl Heap {
         self.cold().is_some_and(|c| c.imports.may_have_aliases())
     }
 
+    /// Could the current file's import table hold a `(:use-internals …)` grant? False
+    /// means no grant lookup can hit. See [`ImportTable`].
+    pub fn imports_may_grant_internals(&self) -> bool {
+        self.cold().is_some_and(|c| c.imports.may_grant_internals())
+    }
+
     /// The candidate qualified names a bare name is `(:use …)`-imported to from **more
     /// than one** module — `Some(sorted candidates)` iff the name is ambiguous, else
     /// `None`. Used by the resolver to raise a use-site clash error (ADR-235).
