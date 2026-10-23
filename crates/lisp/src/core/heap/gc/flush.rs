@@ -1,10 +1,20 @@
 //! The copy machinery the minor and major collections share: the forwarding tables and
 //! the `flush_*` deep copy of the live LOCAL graph into destination slabs. Free functions
-//! so the recursion borrows the source `&Slabs` immutably and the destination mutably
-//! without tangling with the `Heap`'s `&mut self`. Cycles (`letrec` env↔closure) terminate
-//! via the forwarding table: a placeholder slot is reserved and `source → destination`
-//! recorded before recursing, so a second hit returns the placeholder. A copy never reuses
-//! a slot index — it relocates and drops — which is what keeps a stale handle detectable.
+//! so the recursion borrows the source and destination `Slabs` without tangling with the
+//! `Heap`'s `&mut self`. Cycles (`letrec` env↔closure) terminate via the forwarding table:
+//! a placeholder slot is reserved and `source → destination` recorded before recursing, so
+//! a second hit returns the placeholder. A copy never reuses a slot index — it relocates
+//! and drops — which is what keeps a stale handle detectable.
+//!
+//! **The source is owned by the collection** (a minor `mem::take`s the nursery, a major
+//! takes the old generation) and dropped wholesale after it, so the source is borrowed
+//! `&mut` and a survivor that owns a buffer — a string, a bignum, a spilled vector, a
+//! closure — is MOVED out of its source slot rather than deep-copied. Sound because the
+//! forwarding table is consulted before any source slot is read, so each slot is read
+//! exactly once, on its first visit; every later reach of it — from the roots, from
+//! `flush_nursery_old_refs`, from the remembered set — answers from the table and never
+//! sees the emptied slot. Nothing reads a source slot's contents after the flush
+//! (`with_capacity_like` reads capacities, the live counts read the destination).
 
 use super::*;
 
@@ -207,7 +217,7 @@ macro_rules! flush_bound {
 }
 
 pub(super) fn flush_value(
-    old: &Slabs,
+    old: &mut Slabs,
     new: &mut Slabs,
     forward: &mut FlushForward,
     v: Value,
@@ -221,7 +231,7 @@ pub(super) fn flush_value(
 }
 
 pub(super) fn flush_value_grown(
-    old: &Slabs,
+    old: &mut Slabs,
     new: &mut Slabs,
     forward: &mut FlushForward,
     v: Value,
@@ -282,7 +292,7 @@ pub(super) fn flush_value_grown(
 }
 
 pub(super) fn flush_pair(
-    old: &Slabs,
+    old: &mut Slabs,
     new: &mut Slabs,
     forward: &mut FlushForward,
     id: PairId,
@@ -336,7 +346,7 @@ pub(super) fn flush_pair(
 }
 
 pub(super) fn flush_vector(
-    old: &Slabs,
+    old: &mut Slabs,
     new: &mut Slabs,
     forward: &mut FlushForward,
     id: VecId,
@@ -347,39 +357,69 @@ pub(super) fn flush_vector(
     }
     // Reserve the destination slot and record the forwarding *before* flushing
     // elements (so shared/repeated references to this vector resolve to the
-    // placeholder), then build the survivor in place — inlining without a temp
-    // `Vec` for the common small case (`from_flushed`). The source slab is read
-    // element-by-element (`Value` is `Copy`), keeping `old`'s borrow immutable
-    // while `new`/`forward` are borrowed mutably by `flush_value`.
+    // placeholder). The survivor is moved out of its source slot (see the module doc):
+    // a spilled vector rewrites its elements in its own buffer and is re-wrapped
+    // (`VecStore::spill` re-derives the cached pointer, which the buffer keeps), so it
+    // costs no allocation and no copy; an inline one is rebuilt in place.
     let src_idx = flush_bound!(old.vectors, id, forward, "vector");
-    let n = old.vectors[src_idx].len();
+    let source = std::mem::replace(
+        &mut old.vectors[src_idx],
+        VecStore::Inline {
+            len: 0,
+            items: [Value::nil(); INLINE_VEC_CAP],
+        },
+    );
     let new_idx = new.vectors.len();
     new.vectors.push(VecStore::Inline {
         len: 0,
         items: [Value::nil(); INLINE_VEC_CAP],
     });
     forward.vectors.set(key, new_idx as u32);
-    let store = VecStore::from_flushed(n, |i| {
-        let x = old.vectors[src_idx][i];
-        flush_value(old, new, forward, x)
-    });
+    let store = match source {
+        VecStore::Spill { mut vec, .. } => {
+            for i in 0..vec.len() {
+                let x = vec[i];
+                vec[i] = flush_value(old, new, forward, x);
+            }
+            VecStore::spill(vec)
+        }
+        inline => {
+            let items = inline.as_slice();
+            VecStore::from_flushed(items.len(), |i| flush_value(old, new, forward, items[i]))
+        }
+    };
     new.vectors[new_idx] = store;
     forward.mint_vector(new_idx)
 }
 
-/// Flush one LOCAL **leaf** — a value with nothing inside it to forward: clone it into the
+/// [`flush_leaf!`]'s `take`: move the leaf out, leaving its default in the source slot.
+fn take_leaf<T: Default>(slot: &mut T) -> T {
+    std::mem::take(slot)
+}
+
+/// [`flush_leaf!`]'s `clone`, for a leaf with no default (an `Arc`, so a refcount bump).
+fn clone_leaf<T: Clone>(slot: &mut T) -> T {
+    slot.clone()
+}
+
+/// Flush one LOCAL **leaf** — a value with nothing inside it to forward: move it into the
 /// new slab on the first visit, answer from the forwarding map on every later one. The
 /// LOCAL twin of `gc_runtime`'s `flush_rt_leaf!`.
 ///
-/// Each clone is cheap or byte-free: a string entry keeps its cached char length, and a
-/// Shared one bumps its blob's `Arc` (the source slab's drop takes it back, so a survivor
-/// keeps its `SharedBlob` identity); bytes bump their `Arc<SharedBlob>`; a rope's clone is
-/// an `Arc`-node bump; a bigint, decimal or ratio copies its digits (the source slab drops
-/// after the collection).
+/// `take` leaves its default in the source slot (see the module doc: the slot is never
+/// read again), so a string keeps its buffer, its cached char length and — for a Shared
+/// one — its `SharedBlob` identity, and a bigint, decimal or ratio its digits, with no
+/// copy. `clone` is for a leaf with no default: bytes bump their `Arc<SharedBlob>`.
 macro_rules! flush_leaf {
-    ($name:ident, $slab:ident, $id:ty, $mint:ident, $what:literal) => {
+    ($name:ident, $slab:ident, $id:ty, $mint:ident, $what:literal, take) => {
+        flush_leaf!(@body $name, $slab, $id, $mint, $what, take_leaf);
+    };
+    ($name:ident, $slab:ident, $id:ty, $mint:ident, $what:literal, clone) => {
+        flush_leaf!(@body $name, $slab, $id, $mint, $what, clone_leaf);
+    };
+    (@body $name:ident, $slab:ident, $id:ty, $mint:ident, $what:literal, $extract:ident) => {
         pub(super) fn $name(
-            old: &Slabs,
+            old: &mut Slabs,
             new: &mut Slabs,
             forward: &mut FlushForward,
             id: $id,
@@ -388,7 +428,8 @@ macro_rules! flush_leaf {
             if let Some(new_idx) = forward.$slab.lookup(key) {
                 return forward.$mint(new_idx as usize);
             }
-            let leaf = old.$slab[flush_bound!(old.$slab, id, forward, $what)].clone();
+            let source_index = flush_bound!(old.$slab, id, forward, $what);
+            let leaf = ($extract)(&mut old.$slab[source_index]);
             let new_idx = new.$slab.len();
             new.$slab.push(leaf);
             forward.$slab.set(key, new_idx as u32);
@@ -397,15 +438,22 @@ macro_rules! flush_leaf {
     };
 }
 
-flush_leaf!(flush_string, strings, StrId, mint_string, "string");
-flush_leaf!(flush_bigint, bigints, BigIntId, mint_bigint, "bigint");
-flush_leaf!(flush_decimal, decimals, DecimalId, mint_decimal, "decimal");
-flush_leaf!(flush_ratio, ratios, RatioId, mint_ratio, "ratio");
-flush_leaf!(flush_bytes, bytes, BytesId, mint_bytes, "bytes");
-flush_leaf!(flush_rope, ropes, RopeId, mint_rope, "rope");
+flush_leaf!(flush_string, strings, StrId, mint_string, "string", take);
+flush_leaf!(flush_bigint, bigints, BigIntId, mint_bigint, "bigint", take);
+flush_leaf!(
+    flush_decimal,
+    decimals,
+    DecimalId,
+    mint_decimal,
+    "decimal",
+    take
+);
+flush_leaf!(flush_ratio, ratios, RatioId, mint_ratio, "ratio", take);
+flush_leaf!(flush_bytes, bytes, BytesId, mint_bytes, "bytes", clone);
+flush_leaf!(flush_rope, ropes, RopeId, mint_rope, "rope", take);
 
 pub(super) fn flush_map(
-    old: &Slabs,
+    old: &mut Slabs,
     new: &mut Slabs,
     forward: &mut FlushForward,
     id: MapId,
@@ -472,7 +520,7 @@ pub(super) fn flush_map(
 }
 
 pub(super) fn flush_closure(
-    old: &Slabs,
+    old: &mut Slabs,
     new: &mut Slabs,
     forward: &mut FlushForward,
     id: ClosureId,
@@ -481,30 +529,47 @@ pub(super) fn flush_closure(
     if let Some(new_idx) = forward.closures.lookup(key) {
         return forward.mint_closure(new_idx as usize);
     }
-    let cl = old.closures[flush_bound!(old.closures, id, forward, "closure")].clone();
+    // Moved out of its source slot (see the module doc), so its name, docstring and arms
+    // come along without a clone.
+    let source_index = flush_bound!(old.closures, id, forward, "closure");
+    let mut cl = std::mem::take(&mut old.closures[source_index]);
     let new_idx = new.closures.len();
     new.closures.push(Closure::default());
     forward.closures.set(key, new_idx as u32);
-    let arms = cl
-        .arms
-        .iter()
-        .map(|arm| ClosureArm {
-            params: arm.params.clone(),
-            optionals: arm
-                .optionals
-                .iter()
-                .map(|&(s, d)| (s, flush_value(old, new, forward, d)))
-                .collect(),
-            rest: arm.rest,
-            body: arm
-                .body
-                .iter()
-                .map(|&f| flush_value(old, new, forward, f))
-                .collect(),
-            // Region-independent (symbol head + index map) — carry it verbatim.
-            passthrough: arm.passthrough.clone(),
-        })
-        .collect();
+    // A uniquely held arms list is rewritten in place. A shared one (the template cache's)
+    // is rebuilt into a fresh list, exactly as every closure's was before.
+    if let Some(arms) = std::sync::Arc::get_mut(&mut cl.arms) {
+        for arm in arms.iter_mut() {
+            for (_, default) in arm.optionals.iter_mut() {
+                *default = flush_value(old, new, forward, *default);
+            }
+            for form in arm.body.iter_mut() {
+                *form = flush_value(old, new, forward, *form);
+            }
+        }
+    } else {
+        cl.arms = cl
+            .arms
+            .iter()
+            .map(|arm| ClosureArm {
+                params: arm.params.clone(),
+                optionals: arm
+                    .optionals
+                    .iter()
+                    .map(|&(s, d)| (s, flush_value(old, new, forward, d)))
+                    .collect(),
+                rest: arm.rest,
+                body: arm
+                    .body
+                    .iter()
+                    .map(|&f| flush_value(old, new, forward, f))
+                    .collect(),
+                // Region-independent (symbol head + index map) — carry it verbatim.
+                passthrough: arm.passthrough.clone(),
+            })
+            .collect();
+    }
+    let arms = cl.arms;
     let env = cl.env.map(|e| flush_env(old, new, forward, e));
     new.closures[new_idx] = Closure {
         name: cl.name,
@@ -519,7 +584,7 @@ pub(super) fn flush_closure(
 }
 
 pub(super) fn flush_env(
-    old: &Slabs,
+    old: &mut Slabs,
     new: &mut Slabs,
     forward: &mut FlushForward,
     env: EnvId,
@@ -568,7 +633,7 @@ pub(super) fn flush_env(
 /// referrer, and the next major will then reclaim the briefly-retained old object.
 pub(super) fn flush_nursery_old_refs(
     nursery: &mut Slabs,
-    old_src: &Slabs,
+    old_src: &mut Slabs,
     dest: &mut Slabs,
     forward: &mut FlushForward,
 ) {

@@ -186,7 +186,7 @@ impl Heap {
     /// `&mut self` for the stacks doesn't alias it.
     fn flush_roots(
         &mut self,
-        source: &Slabs,
+        source: &mut Slabs,
         dest: &mut Slabs,
         forward: &mut FlushForward,
         value_roots: &mut [Value],
@@ -244,7 +244,7 @@ impl Heap {
         let before_young = self.local_live_count();
         let old_before = self.old_live_count();
         self.local_epoch = self.local_epoch.wrapping_add(1);
-        let young = std::mem::take(&mut self.local);
+        let mut young = std::mem::take(&mut self.local);
         // Tenure: append survivors to the old gen (take it out, append, put back).
         // Flip: survivors go to a fresh nursery that becomes the new `local`.
         let (mut dest, epoch, dest_old) = if tenure {
@@ -263,7 +263,7 @@ impl Heap {
         forward.epoch = epoch;
         forward.src_old = false; // copy nursery objects
         forward.dest_old = dest_old;
-        self.flush_roots(&young, &mut dest, &mut forward, value_roots, env_roots);
+        self.flush_roots(&mut young, &mut dest, &mut forward, value_roots, env_roots);
         let t_roots = web_time::Instant::now();
         // Write barrier: an old frame that gained a young binding (`env_define`
         // after a mid-bind tenure) holds an OLD->YOUNG edge not reachable from the
@@ -283,7 +283,7 @@ impl Heap {
                 } else {
                     self.old().envs[e.index()].vars[i]
                 };
-                let nv = flush_value(&young, &mut dest, &mut forward, v);
+                let nv = flush_value(&mut young, &mut dest, &mut forward, v);
                 if tenure {
                     dest.envs[e.index()].vars[i] = (s, nv);
                 } else {
@@ -407,13 +407,19 @@ impl Heap {
     fn major_collect(&mut self, value_roots: &mut [Value], env_roots: &mut [EnvId]) {
         let before_old = self.old_live_count();
         self.old_epoch = self.old_epoch.wrapping_add(1);
-        let old_src = self.old.take().map(|b| *b).unwrap_or_default();
+        let mut old_src = self.old.take().map(|b| *b).unwrap_or_default();
         let mut dest = Slabs::default();
         let mut forward = FlushForward::for_source(&old_src);
         forward.epoch = self.old_epoch;
         forward.src_old = true; // copy old-gen objects
         forward.dest_old = true; // into the fresh old space
-        self.flush_roots(&old_src, &mut dest, &mut forward, value_roots, env_roots);
+        self.flush_roots(
+            &mut old_src,
+            &mut dest,
+            &mut forward,
+            value_roots,
+            env_roots,
+        );
         // If the preceding minor was a flip (not a tenure) the nursery is
         // non-empty.  `flush_roots` updated handles in `self.roots` and
         // `self.env_roots`, but OLD handles *inside* nursery objects were
@@ -421,7 +427,7 @@ impl Heap {
         // `forward.copies`, which is false for nursery objects during a major).
         // Rewrite those stale OLD handles in-place now, while `old_src` is
         // still live.
-        flush_nursery_old_refs(&mut self.local, &old_src, &mut dest, &mut forward);
+        flush_nursery_old_refs(&mut self.local, &mut old_src, &mut dest, &mut forward);
         // Write barrier across a major. After a *tenure* minor `remembered` is
         // empty (the minor cleared it). But `collect()` can run a major right
         // after a *flip* minor, and a flip RETAINS `remembered` — old EnvIds for
