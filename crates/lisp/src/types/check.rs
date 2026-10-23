@@ -891,7 +891,7 @@ fn lint_duplicate_defs_in_inner(
     seen: &mut HashMap<Symbol, Option<Pos>>,
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
-    let Ok(items) = heap.list_to_vec(form) else {
+    let Some(items) = heap.list_items(form) else {
         return;
     };
     let Some(&Value::Sym(head)) = items.first() else {
@@ -1045,7 +1045,7 @@ fn collect_register_sig_forms(heap: &mut Heap, form: Value, out: &mut Vec<Value>
 }
 
 fn collect_register_sig_forms_inner(heap: &mut Heap, form: Value, out: &mut Vec<Value>) {
-    let Ok(items) = heap.list_to_vec(form) else {
+    let Some(items) = heap.list_items(form) else {
         return;
     };
     let Some(&Value::Sym(head)) = items.first() else {

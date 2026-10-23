@@ -475,6 +475,11 @@ pub fn macroexpand_all(heap: &mut Heap, form: Value, env: EnvId) -> LispResult {
     // `fold`/`reduce` fuses into one literal (§7); a tally through a `fold`/`reduce` literal
     // builds in place (ADR-360 §6); a `fold`/`reduce` over a literal `(range …)` with a
     // literal `fn` becomes a counted `letrec` loop (§7).
+    // All three fire only under a four-item `fold`/`reduce` call: one walk answers "none
+    // here" for the three, which is nearly every top-level form.
+    if !form_has_fold_call(heap, expanded) {
+        return Ok(expanded);
+    }
     let fused = pipeline_fuse_rewrite(heap, expanded);
     let tallied = linmap_fold_rewrite(heap, fused);
     Ok(range_fold_rewrite(heap, tallied))
@@ -606,9 +611,9 @@ fn macroexpand_all_depth_step_inner(
     let form = macroexpand(heap, form, env)?;
     match form.unpack() {
         ValueRef::Pair(_) => {
-            let items = match heap.list_to_vec(form) {
-                Ok(items) => items,
-                Err(_) => return Ok(form), // improper list: leave it be
+            let items = match heap.list_items(form) {
+                Some(items) => items,
+                None => return Ok(form), // improper list: leave it be
             };
             if let Some(ValueRef::Sym(head)) = items.first().copied().map(|v| v.unpack()) {
                 // quote/quasiquote contents are data, not calls to expand.

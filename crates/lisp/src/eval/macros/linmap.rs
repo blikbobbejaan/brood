@@ -37,7 +37,7 @@ pub(super) fn linmap_split_def(heap: &mut Heap, items: &[Value]) -> Option<Value
         ValueRef::Sym(s) => s,
         _ => return None,
     };
-    let fn_items = heap.list_to_vec(items[2]).ok()?;
+    let fn_items = heap.list_items(items[2])?;
     if fn_items.len() < 3
         || !matches!(fn_items[0].unpack(), ValueRef::Sym(s) if value::symbol_is(s, kw::FN))
     {
@@ -150,6 +150,10 @@ pub(super) fn linmap_split_def(heap: &mut Heap, items: &[Value]) -> Option<Value
 /// to a probe of the literal alone.
 const LINMAP_FOLD_HEADS: [&str; 8] = ["fold", "reduce", "get", "assoc", "+", "-", "inc", "dec"];
 
+/// [`LINMAP_FOLD_HEADS`] interned, once per process (symbols are process-global).
+static LINMAP_FOLD_NAMES: std::sync::LazyLock<Vec<value::Symbol>> =
+    std::sync::LazyLock::new(|| LINMAP_FOLD_HEADS.iter().map(|n| value::intern(n)).collect());
+
 /// Does `form` bind any of `names` — a `let`/`letrec` target, a `fn` parameter (single or
 /// multi-clause)? Post-expansion, so binders are plain symbols. Quoted data is skipped.
 pub(super) fn form_binds_any(
@@ -161,7 +165,7 @@ pub(super) fn form_binds_any(
     if depth > 256 {
         return true; // too deep to prove clean — decline
     }
-    let Ok(items) = heap.list_to_vec(form) else {
+    let Some(items) = heap.list_items(form) else {
         return false;
     };
     let Some(&head) = items.first() else {
@@ -224,8 +228,7 @@ pub(super) fn form_binds_any(
 /// the walk does not enter `(%lint-allow :generated …)`, and the table-bound copy no longer
 /// has the shape (its accumulator's ops are table ops, which the probe treats as escapes).
 pub(super) fn linmap_fold_rewrite(heap: &mut Heap, form: Value) -> Value {
-    let names: Vec<value::Symbol> = LINMAP_FOLD_HEADS.iter().map(|n| value::intern(n)).collect();
-    if !form_has_fold_literal(heap, form) || form_binds_any(heap, form, &names, 0) {
+    if !form_has_fold_literal(heap, form) || form_binds_any(heap, form, &LINMAP_FOLD_NAMES, 0) {
         return form;
     }
     pipeline_walk(heap, form, 0, &linmap_fold_call)
@@ -237,7 +240,7 @@ fn form_has_fold_literal(heap: &Heap, form: Value) -> bool {
     form_has_call(heap, form, 0, &|head, items| {
         is_fold_head(head)
             && items.len() == 4
-            && matches!(heap.list_to_vec(items[3]).ok().and_then(|f| f.first().map(|v| v.unpack())),
+            && matches!(heap.list_items(items[3]).and_then(|f| f.first().map(|v| v.unpack())),
                 Some(ValueRef::Sym(f)) if value::symbol_is(f, kw::FN))
     })
 }
@@ -251,7 +254,7 @@ fn linmap_fold_call(heap: &mut Heap, form: Value, items: &[Value]) -> Option<Val
     if !is_fold_head(h) || items.len() != 4 {
         return None;
     }
-    let fn_items = heap.list_to_vec(items[3]).ok()?;
+    let fn_items = heap.list_items(items[3])?;
     if fn_items.len() < 3
         || !matches!(fn_items[0].unpack(), ValueRef::Sym(s) if value::symbol_is(s, kw::FN))
         || fn_is_arity_multi_clause(heap, &fn_items)
@@ -332,8 +335,8 @@ fn linmap_fold_call(heap: &mut Heap, form: Value, items: &[Value]) -> Option<Val
 /// left alone, as in `linmap_rewrite_form`.
 fn linmap_rename_self(heap: &mut Heap, form: Value, name: value::Symbol, slow: Value) -> Value {
     let items = match form.unpack() {
-        ValueRef::Pair(_) => match heap.list_to_vec(form) {
-            Ok(v) if !v.is_empty() => v,
+        ValueRef::Pair(_) => match heap.list_items(form) {
+            Some(v) if !v.is_empty() => v,
             _ => return form,
         },
         _ => return form,
@@ -371,7 +374,7 @@ fn linmap_fused_addend(
 ) -> Option<(Value, bool)> {
     let same_key = |k: Value| heap.equal(key, k);
     let is_get_key_0 = |form: Value| {
-        let Ok(g) = heap.list_to_vec(form) else {
+        let Some(g) = heap.list_items(form) else {
             return false;
         };
         g.len() == 4
@@ -380,7 +383,7 @@ fn linmap_fused_addend(
             && same_key(g[2])
             && matches!(g[3].unpack(), ValueRef::Int(0))
     };
-    let items = heap.list_to_vec(value).ok()?;
+    let items = heap.list_items(value)?;
     let ValueRef::Sym(h) = items.first()?.unpack() else {
         return None;
     };
@@ -416,13 +419,13 @@ pub(super) fn form_has_quasiquote(heap: &Heap, form: Value, depth: usize) -> boo
     if depth > 64 {
         return true; // too deep to prove clean — decline the split
     }
-    match heap.list_to_vec(form) {
-        Ok(items) => items.iter().enumerate().any(|(i, &it)| {
+    match heap.list_items(form) {
+        Some(items) => items.iter().enumerate().any(|(i, &it)| {
             (i == 0
                 && matches!(it.unpack(), ValueRef::Sym(s) if value::symbol_is(s, kw::QUASIQUOTE)))
                 || form_has_quasiquote(heap, it, depth + 1)
         }),
-        Err(_) => false,
+        None => false,
     }
 }
 
@@ -440,8 +443,8 @@ fn linmap_rewrite_form(
     acc: value::Symbol,
 ) -> Value {
     let items = match form.unpack() {
-        ValueRef::Pair(_) => match heap.list_to_vec(form) {
-            Ok(v) if !v.is_empty() => v,
+        ValueRef::Pair(_) => match heap.list_items(form) {
+            Some(v) if !v.is_empty() => v,
             _ => return form,
         },
         _ => return form, // atom: symbols (incl. a bare `acc` return) pass through

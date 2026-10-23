@@ -132,9 +132,9 @@ fn hyg_walk_inner(heap: &mut Heap, v: Value, scope: &[(value::Symbol, value::Sym
 }
 
 fn hyg_list(heap: &mut Heap, form: Value, scope: &[(value::Symbol, value::Symbol)]) -> Value {
-    let items = match heap.list_to_vec(form) {
-        Ok(i) => i,
-        Err(_) => return form, // improper list — leave verbatim
+    let items = match heap.list_items(form) {
+        Some(i) => i,
+        None => return form, // improper list — leave verbatim
     };
     if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack()) {
         // Data / holes — never descend for renaming: `quote` is data;
@@ -290,8 +290,8 @@ fn hyg_arity_clause(
     clause: Value,
     scope: &[(value::Symbol, value::Symbol)],
 ) -> Value {
-    let cparts = match heap.list_to_vec(clause) {
-        Ok(c) if !c.is_empty() => c,
+    let cparts = match heap.list_items(clause) {
+        Some(c) if !c.is_empty() => c,
         _ => return clause,
     };
     let mut inner = scope.to_vec();
@@ -335,9 +335,9 @@ pub(super) fn template_introduces_binder(heap: &Heap, v: Value) -> bool {
 fn template_introduces_binder_inner(heap: &Heap, v: Value) -> bool {
     match v.unpack() {
         ValueRef::Pair(_) => {
-            let items = match heap.list_to_vec(v) {
-                Ok(i) => i,
-                Err(_) => return false,
+            let items = match heap.list_items(v) {
+                Some(i) => i,
+                None => return false,
             };
             if let Some(ValueRef::Sym(h)) = items.first().map(|x| x.unpack()) {
                 if value::symbol_is(h, kw::QUOTE)
@@ -391,8 +391,7 @@ fn fn_has_renamable_param(heap: &Heap, items: &[Value]) -> bool {
     let clauses = &parts[clause_start..];
     if !clauses.is_empty() && clauses.iter().all(|&f| is_arity_clause(heap, f)) {
         clauses.iter().any(|&c| {
-            heap.list_to_vec(c)
-                .ok()
+            heap.list_items(c)
                 .and_then(|cp| cp.first().copied())
                 .is_some_and(|params| param_list_has_renamable(heap, params))
         })

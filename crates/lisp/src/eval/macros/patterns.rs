@@ -142,8 +142,7 @@ pub(crate) fn is_arity_clause(heap: &Heap, f: Value) -> bool {
 /// the native arity path binds by argument count and cannot, so it would silently
 /// ignore the guard. See [`lower_fn`] (ADR-226).
 pub(crate) fn clause_has_when_guard(heap: &Heap, clause: Value) -> bool {
-    heap.list_to_vec(clause)
-        .ok()
+    heap.list_items(clause)
         .and_then(|parts| parts.get(1).copied())
         .is_some_and(
             |v| matches!(v.unpack(), ValueRef::Keyword(s) if value::symbol_name_ref(s) == "when"),
@@ -157,9 +156,9 @@ pub(crate) fn clause_has_when_guard(heap: &Heap, clause: Value) -> bool {
 /// macro expanded lazily within its defining form); an ordinary `fn` returns
 /// `false` here and takes the normal `make_closure` path.
 pub(crate) fn fn_needs_lowering(heap: &Heap, fn_form: Value) -> bool {
-    let items = match heap.list_to_vec(fn_form) {
-        Ok(items) => items,
-        Err(_) => return false,
+    let items = match heap.list_items(fn_form) {
+        Some(items) => items,
+        None => return false,
     };
     let forms = &items[1..];
     // Peel a leading docstring (matches `lower_fn`), so a multi-clause fn with a

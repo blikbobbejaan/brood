@@ -52,14 +52,17 @@ const PIPELINE_HEADS: [&str; 21] = [
     "type-of",
 ];
 
-fn pipeline_names() -> Vec<value::Symbol> {
-    PIPELINE_HEADS.iter().map(|n| value::intern(n)).collect()
+/// [`PIPELINE_HEADS`] interned, once per process (symbols are process-global).
+fn pipeline_names() -> &'static [value::Symbol] {
+    static NAMES: std::sync::LazyLock<Vec<value::Symbol>> =
+        std::sync::LazyLock::new(|| PIPELINE_HEADS.iter().map(|n| value::intern(n)).collect());
+    &NAMES
 }
 
 /// Is `form` a call `(head …)` of one of `names` with exactly `argc` arguments? Returns the
 /// items.
 fn call_of(heap: &Heap, form: Value, names: &[&str], argc: usize) -> Option<Vec<Value>> {
-    let items = heap.list_to_vec(form).ok()?;
+    let items = heap.list_items(form)?;
     let ValueRef::Sym(h) = items.first()?.unpack() else {
         return None;
     };
@@ -69,7 +72,7 @@ fn call_of(heap: &Heap, form: Value, names: &[&str], argc: usize) -> Option<Vec<
 /// A single-clause literal `(fn (p…) body…)` with plain params, no docstring and no
 /// quasiquote: `(params, body forms)`.
 fn plain_fn_literal(heap: &Heap, form: Value) -> Option<(Vec<value::Symbol>, Vec<Value>)> {
-    let items = heap.list_to_vec(form).ok()?;
+    let items = heap.list_items(form)?;
     if items.len() < 3
         || !matches!(items[0].unpack(), ValueRef::Sym(s) if value::symbol_is(s, kw::FN))
         || fn_is_arity_multi_clause(heap, &items)
@@ -104,7 +107,7 @@ fn substitute_symbol(heap: &mut Heap, form: Value, from: value::Symbol, to: Valu
     match form.unpack() {
         ValueRef::Sym(s) if s == from => to,
         ValueRef::Pair(_) => {
-            let Ok(items) = heap.list_to_vec(form) else {
+            let Some(items) = heap.list_items(form) else {
                 return form;
             };
             if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack())
@@ -155,7 +158,7 @@ fn form_has_quote(heap: &Heap, form: Value, depth: usize) -> bool {
     if depth > 256 {
         return true;
     }
-    let Ok(items) = heap.list_to_vec(form) else {
+    let Some(items) = heap.list_items(form) else {
         return false;
     };
     if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack())
@@ -221,7 +224,7 @@ pub(super) fn form_has_call(
     if depth > 256 {
         return false;
     }
-    let Ok(items) = heap.list_to_vec(form) else {
+    let Some(items) = heap.list_items(form) else {
         return false;
     };
     if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack()) {
@@ -235,6 +238,15 @@ pub(super) fn form_has_call(
     items
         .iter()
         .any(|&it| form_has_call(heap, it, depth + 1, is_target))
+}
+
+/// Is there a four-item `fold`/`reduce` call anywhere in `form`, outside quoted data? Every
+/// source rewrite fires only under one — each pre-check below asks this and more — so a form
+/// without one is answered for all three by a single walk.
+pub(super) fn form_has_fold_call(heap: &Heap, form: Value) -> bool {
+    form_has_call(heap, form, 0, &|head, items| {
+        is_fold_head(head) && items.len() == 4
+    })
 }
 
 /// Does `form` hold a stage chain under a `fold`/`reduce`? The cheap pre-check.
@@ -251,7 +263,7 @@ pub(super) fn pipeline_fuse_rewrite(heap: &mut Heap, form: Value) -> Value {
     if !crate::diagnostics::debug_flags::linmap() {
         return form;
     }
-    if !form_has_pipeline(heap, form) || form_binds_any(heap, form, &pipeline_names(), 0) {
+    if !form_has_pipeline(heap, form) || form_binds_any(heap, form, pipeline_names(), 0) {
         return form;
     }
     pipeline_walk(heap, form, 0, &|heap, form, items| {
@@ -271,8 +283,8 @@ pub(super) fn pipeline_walk(
     if depth > 256 {
         return form;
     }
-    let items = match heap.list_to_vec(form) {
-        Ok(v) if !v.is_empty() => v,
+    let items = match heap.list_items(form) {
+        Some(v) if !v.is_empty() => v,
         _ => return form,
     };
     if let ValueRef::Sym(h) = items[0].unpack() {
@@ -432,7 +444,7 @@ pub(super) fn range_fold_rewrite(heap: &mut Heap, form: Value) -> Value {
     if !crate::diagnostics::debug_flags::linmap() {
         return form;
     }
-    if !form_has_range_fold(heap, form) || form_binds_any(heap, form, &pipeline_names(), 0) {
+    if !form_has_range_fold(heap, form) || form_binds_any(heap, form, pipeline_names(), 0) {
         return form;
     }
     pipeline_walk(heap, form, 0, &|heap, form, items| {
@@ -635,12 +647,12 @@ fn form_atoms(heap: &Heap, form: Value, depth: usize) -> usize {
     if depth > 256 {
         return usize::MAX / 2;
     }
-    match heap.list_to_vec(form) {
-        Ok(items) => items
+    match heap.list_items(form) {
+        Some(items) => items
             .iter()
             .map(|&it| form_atoms(heap, it, depth + 1))
             .sum(),
-        Err(_) => 1,
+        None => 1,
     }
 }
 

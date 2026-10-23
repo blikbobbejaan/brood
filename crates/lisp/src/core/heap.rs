@@ -2321,6 +2321,25 @@ impl Heap {
         }
     }
 
+    /// The items of a proper list (`nil` gives none), or `None` for an atom or an improper
+    /// (dotted) list. [`Heap::list_to_vec`] without the error: for a walker that asks "is this
+    /// a list?" of every node, an atom answered with a boxed error was an allocation per leaf.
+    pub fn list_items(&self, v: Value) -> Option<Vec<Value>> {
+        let mut out = Vec::new();
+        let mut cur = v;
+        loop {
+            match cur.unpack() {
+                ValueRef::Nil => return Some(out),
+                ValueRef::Pair(p) => {
+                    let (head, tail) = self.pair(p);
+                    out.push(head);
+                    cur = tail;
+                }
+                _ => return None,
+            }
+        }
+    }
+
     /// The items of a vector or proper list, or `None` for anything else (unlike
     /// [`Heap::seq_items`], which also accepts ranges and sets).
     pub fn list_or_vector_items(&self, v: Value) -> Option<Vec<Value>> {

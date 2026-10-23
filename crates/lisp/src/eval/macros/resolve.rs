@@ -416,7 +416,7 @@ fn expand_qq_rec(heap: &mut Heap, form: Value, depth: u32) -> (Value, bool) {
     if depth >= MAX_DEPTH {
         return (form, false);
     }
-    // A VECTOR literal is an atom to `list_to_vec`, but its elements are
+    // A VECTOR literal is an atom to `list_items`, but its elements are
     // unevaluated forms — so a quasiquote nested inside one (`[a b \`(do ~@xs)]`,
     // the shape `%receive-split` returns) must be walked too: a raw `quasiquote`
     // special form surviving into the arm defers the WHOLE arm to the tree-walker,
@@ -436,9 +436,9 @@ fn expand_qq_rec(heap: &mut Heap, form: Value, depth: u32) -> (Value, bool) {
             (form, false)
         };
     }
-    let items = match heap.list_to_vec(form) {
-        Ok(i) => i,
-        Err(_) => return (form, false), // atom / improper list — nothing to walk
+    let items = match heap.list_items(form) {
+        Some(i) => i,
+        None => return (form, false), // atom / improper list — nothing to walk
     };
     if items.is_empty() {
         return (form, false);
@@ -509,7 +509,7 @@ pub fn file_modules(heap: &Heap, forms: &[Value]) -> Vec<Symbol> {
 
 /// If `form` is a top-level `(defmodule NAME …)`, its `NAME`; else `None`.
 pub(crate) fn defmodule_form_name(heap: &Heap, form: Value) -> Option<Symbol> {
-    let items = heap.list_to_vec(form).ok()?;
+    let items = heap.list_items(form)?;
     match (items.first()?.unpack(), items.get(1).map(|v| v.unpack())) {
         (ValueRef::Sym(h), Some(ValueRef::Sym(name))) if value::symbol_is(h, kw::DEFMODULE) => {
             Some(name)
@@ -568,9 +568,9 @@ fn scan_def_form(
     names: &mut HashSet<Symbol>,
     ambient: &mut HashSet<Symbol>,
 ) {
-    let items = match heap.list_to_vec(form) {
-        Ok(i) => i,
-        Err(_) => return,
+    let items = match heap.list_items(form) {
+        Some(i) => i,
+        None => return,
     };
     let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack()) else {
         return;
@@ -1002,9 +1002,9 @@ fn resolve_walk_inner(
 }
 
 fn resolve_list(heap: &mut Heap, form: Value, ns_name: &str, locals: &[value::Symbol]) -> Value {
-    let items = match heap.list_to_vec(form) {
-        Ok(i) => i,
-        Err(_) => return form, // improper list — leave verbatim
+    let items = match heap.list_items(form) {
+        Some(i) => i,
+        None => return form, // improper list — leave verbatim
     };
     if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack()) {
         if value::symbol_is(h, kw::QUOTE) {
@@ -1151,8 +1151,8 @@ fn resolve_arity_clause(
     ns_name: &str,
     locals: &[value::Symbol],
 ) -> Value {
-    let cparts = match heap.list_to_vec(clause) {
-        Ok(c) if !c.is_empty() => c,
+    let cparts = match heap.list_items(clause) {
+        Some(c) if !c.is_empty() => c,
         _ => return clause,
     };
     let mut inner = locals.to_vec();
@@ -1229,8 +1229,8 @@ fn resolve_match(
     out.push(items[1]); // :ctx keyword
     out.push(resolve_walk(heap, items[2], ns_name, locals)); // value expression
     for &clause in &items[3..] {
-        let cparts = match heap.list_to_vec(clause) {
-            Ok(c) if c.len() >= 2 => c,
+        let cparts = match heap.list_items(clause) {
+            Some(c) if c.len() >= 2 => c,
             _ => {
                 out.push(clause);
                 continue;
@@ -1357,7 +1357,7 @@ pub(super) fn collect_all_syms(heap: &Heap, v: Value, out: &mut Vec<value::Symbo
     match v.unpack() {
         ValueRef::Sym(s) => out.push(s),
         ValueRef::Pair(_) => {
-            if let Ok(items) = heap.list_to_vec(v) {
+            if let Some(items) = heap.list_items(v) {
                 for it in items {
                     collect_all_syms(heap, it, out);
                 }

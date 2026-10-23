@@ -170,7 +170,7 @@ pub(crate) fn typed_param_sig(heap: &mut Heap, params: Value) -> Option<Value> {
 /// typed definition to what they hold a `(sig …)` to: the declaration check reports an
 /// unreadable type here exactly as in a `sig` (ADR-259).
 pub(crate) fn defn_param_types(heap: &Heap, form: Value) -> Option<(Symbol, Vec<(String, Value)>)> {
-    let items = heap.list_to_vec(form).ok()?;
+    let items = heap.list_items(form)?;
     let ValueRef::Sym(head) = items.first()?.unpack() else {
         return None;
     };
@@ -184,7 +184,7 @@ pub(crate) fn defn_param_types(heap: &Heap, form: Value) -> Option<(Symbol, Vec<
     if !matches!(params.unpack(), ValueRef::Pair(_)) {
         return None;
     }
-    let list = heap.list_to_vec(params).ok()?;
+    let list = heap.list_items(params)?;
     let mut out = Vec::new();
     let mut i = 0;
     while i < list.len() {
@@ -196,10 +196,7 @@ pub(crate) fn defn_param_types(heap: &Heap, form: Value) -> Option<(Symbol, Vec<
             break;
         }
         let slot_head = match p.unpack() {
-            ValueRef::Pair(_) => heap
-                .list_to_vec(p)
-                .ok()
-                .and_then(|slot| slot.first().copied()),
+            ValueRef::Pair(_) => heap.list_items(p).and_then(|slot| slot.first().copied()),
             _ => Some(p),
         };
         match slot_head.and_then(typed_name) {

@@ -291,7 +291,7 @@ fn scan_refs(heap: &Heap, form: Value) {
             }
         }
         ValueRef::Pair(_) => {
-            let Ok(items) = heap.list_to_vec(form) else {
+            let Some(items) = heap.list_items(form) else {
                 return;
             };
             if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack()) {

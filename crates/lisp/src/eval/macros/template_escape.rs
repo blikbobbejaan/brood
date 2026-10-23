@@ -146,7 +146,7 @@ fn escapes(heap: &Heap, s: Symbol, binders: &HashSet<Symbol>) -> bool {
 fn escape_template(heap: &mut Heap, form: Value, binders: &HashSet<Symbol>) -> Value {
     crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || match form.unpack() {
         ValueRef::Pair(_) => {
-            let Ok(items) = heap.list_to_vec(form) else {
+            let Some(items) = heap.list_items(form) else {
                 return form; // improper (dotted) list: leave verbatim
             };
             if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack()) {
@@ -192,7 +192,7 @@ fn escape_template(heap: &mut Heap, form: Value, binders: &HashSet<Symbol>) -> V
 pub(super) fn escape_macro_code(heap: &mut Heap, form: Value) -> Value {
     crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || match form.unpack() {
         ValueRef::Pair(_) => {
-            let Ok(items) = heap.list_to_vec(form) else {
+            let Some(items) = heap.list_items(form) else {
                 return form;
             };
             if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack()) {
@@ -271,7 +271,7 @@ fn escape_definitions_in(heap: &mut Heap, form: Value) -> Value {
         let ValueRef::Pair(_) = form.unpack() else {
             return form;
         };
-        let Ok(items) = heap.list_to_vec(form) else {
+        let Some(items) = heap.list_items(form) else {
             return form;
         };
         match items.first().map(|v| v.unpack()) {
