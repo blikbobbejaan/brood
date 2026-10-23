@@ -1742,6 +1742,50 @@ before it ships. Ranked by expected value.
 The same audit's correctness findings are KI-91–97; the mailbox slot-table scan (item of
 the same family as 5) was already fixed with KI-92 (`MsgRoots.free`).
 
+#### The 2026-10-23 perf work, A/B'd — INDICATIVE, a GitHub runner (2026-10-23)
+
+**Indicative only.** One shared `ubuntu-latest` runner (4 vCPU), not a benchmark box
+(benchmarking.md §1); one session, so `--floor` bounds the noise within it and nothing
+across runs (benchmarking.md §7). It answers "did the batch regress anything large" and nothing smaller.
+
+`make ab BASE=32e71066 ARGS="--floor"` and `make ab-vm BASE=32e71066` — `32e71066` is the
+commit just before the batch (`54ce653c` … `977a1e64`, the `perf(…)` commits above and in
+§7.3's 2026-10-23 list), HEAD is `7ed008cf`. best-of-7, compute rows pinned to cpu2,
+stdimage `:live` on both arms. The **control** is the same two sweeps with `32e71066`
+rebuilt in a worktree of its own against the baseline binary (`ab-bench.sh -a <base>
+--allow-same`, same Makefile and harness), run right after in the same job, so the runner's
+own noise is on the page. Run [39950556262](https://github.com/broodlang/brood/actions/runs/39950556262),
+artifact `ab-reports`.
+
+| row (default tier) | base | HEAD | delta | floor | control (base vs base) |
+|---|---|---|---|---|---|
+| fib | 113 ms | 113 ms | +0.0% | 0.9% | −0.9% |
+| pfib | 586 | 590 | +0.7% | 0.7% | +0.3% |
+| bintree | 127 | 126 | −0.8% | 1.6% | +0.8% |
+| nqueens | 130 | 129 | −0.8% | 0.0% | +1.5% |
+| nbody | 266 | 251 | −5.6% | 4.9% | −3.1% |
+| sieve | 74 | 73 | −1.4% | 0.0% | −2.7% |
+| loop | 94 | 94 | +0.0% | 1.1% | +3.2% |
+| collatz | 142 | 130 | −8.5% | 9.2% | +1.6% |
+| primes | 86 | 88 | +2.3% | 1.2% | +0.0% |
+| json | 149 | 146 | −2.0% | 0.0% | −1.4% |
+| sort | 143 | 139 | −2.8% | 0.7% | −0.7% |
+
+| row (tier 1, `make ab-vm`) | base | HEAD | delta | floor | control |
+|---|---|---|---|---|---|
+| pfib | 19259 ms | 19087 ms | −0.9% | 0.0% | −0.3% |
+| spawn-live | 2235 | 2199 | −1.6% | 0.4% | +0.4% |
+| fib | 3754 | 3893 | **+3.7%** | 1.5% | +0.8% |
+| collatz | 4379 | 3926 | **−10.3%** | 0.0% | −1.6% |
+
+Read: every default-tier row is inside the verdict's `max(5%, 2 × floor)` and the control's
+own ±3% spread — no regression, and no win this rig can claim (`nbody` −5.6% and `collatz`
+−8.5% sit on floors of 4.9% and 9.2%). At tier 1, `collatz` −10.3% is the one delta clear of
+both its floor and the control (the script's verdict: improved); `fib` +3.7% is under the 5%
+line but more than twice its floor and four times the control's +0.8% — the one row to
+re-measure on a quiet box (a kept baseline binary, `taskset`-pinned best-of-15 base, base,
+new at `BROOD_TIER=1` — benchmarking.md §6) before calling the VM call path flat.
+
 
 ### 7.9 `row-sum`'s `call-mediated-boxed` bail — CLOSED 2026-09-20: the float-slot clause is removed
 

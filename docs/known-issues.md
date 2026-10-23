@@ -70,9 +70,10 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 
 ## KI-287 — a guest could take a full peer's node name, and with it the peer's link and traffic ⚠️ OPEN 2026-10-23
 
-**Open until the guards are verified — the fix is in, the guards have not run.** Found by
-reading the code while fixing KI-286 (2026-10-23); never observed, and nothing was run to show
-it. This desktop runs no tests, so the guards are **not yet sabotage-verified** (see Guard).
+**Open on one guard.** Found by reading the code while fixing KI-286 (2026-10-23); never
+observed. Every unit guard ran and was sabotage-verified on GitHub Actions on 2026-10-23; the
+distribution guard is red on `main` without its sabotage — ADR-425's host script calls an
+unbound `nodes` — so it is not verified until that is fixed (see Guard).
 
 **Symptom.** None observed. What it would look like: a full peer's link to a node that
 granted a guest drops (its watchers get `[:nodedown]`) the moment a guest attaches, and
@@ -143,9 +144,10 @@ routes to the guest. Closing that needs names a guest cannot spell — a guest n
 names the host assigns — which is a protocol change, for an ADR. (It turned out not to need a
 protocol change: ADR-425 mints the name and translates at the link, above.)
 
-**Guard (ADR-425's; the first fix's two tests were rewritten into these).** All written on a
-desktop that runs no tests: **not yet run and not yet sabotage-verified**. On the test machine,
-run each and then the sabotage beside it, and record the red output here before closing:
+**Guard (ADR-425's; the first fix's two tests were rewritten into these).** Written on a
+desktop that runs no tests; run and sabotaged on GitHub Actions 2026-10-23 — every unit guard
+verified, the distribution guard not (it is red without its sabotage; see after the list).
+Each with the sabotage beside it:
 
 - `dist::tests::a_guest_is_never_registered_under_the_name_it_claims` — a guest claiming a
   connected full peer's name, a down one's, and one that has NEVER linked here is registered
@@ -175,96 +177,46 @@ run each and then the sabotage beside it, and record the red output here before 
   `handle_inbound_frame` — the host's reply to the client's pid has no route and the client
   fails with "no reply by name".
 
-## KI-286 — a guest link's frames could be admitted as a full peer's once its name moved to another link ⚠️ OPEN 2026-10-23
+**Sabotage runs, 2026-10-23, on GitHub Actions** (a throwaway branch, one patch per job, the
+job passing only if the guard went red; a control job with no patch). On `e9e1af8b`, every
+UNIT guard above went red under its sabotage and green without it:
 
-**Open until the guard is verified — the fix is in, the guard has not run.** Found by reading
-the code (a review of ADR-415, 2026-10-23); never observed in the wild, and no test or
-program was run to show it. The fix and its guard are committed, but neither has run: this
-desktop runs no tests, so the guard is **not yet sabotage-verified** and must be on the test
-machine before this closes (see Guard).
+| sabotage | red at |
+|---|---|
+| `establish` registers a guest under its claim (test profile, `debug_assert` on) | both `a_guest_is_never_registered_under_the_name_it_claims` and `guests_and_a_full_link_claiming_one_name_are_separate_links` panic at `dist.rs:1842`: "a guest link's minted name was already registered" |
+| the same, `CARGO_PROFILE_TEST_DEBUG_ASSERTIONS=false` | "assertion `left == right` failed: a guest claiming a full peer's name displaced its link" (`dist.rs:2595`); "a second guest claiming a name retired the first, or was refused" (`dist.rs:2674`) |
+| `linked_peer_for`'s address search without `link.guest.is_none() &&` | "a dial reused a guest's link as the peer it was looking for" (`dist.rs:2683`) |
+| `register_link`'s guest-namespace refusal off | "a full link registered under a name in the guest namespace" (`dist.rs:2715`) |
+| `node_listen`'s guest-namespace refusal off | "node/start took a name in the guest namespace" (`dist.rs:2725`) |
+| `route` without `translate_outbound` | "a guest was sent its own pid under the name the host minted for it" (`dist.rs:2768`) |
+| `rename_pids` returns at once | "the guest's own pid becomes a pid of its minted name" (`guest.rs:439`) |
 
-**Symptom.** None observed. What it would look like: a host that granted a guest
-(`node/grant-guest`) runs a frame from that guest which ADR-415 says a guest may never send —
-a `node/spawn` (a `Send` to `:remote-spawn` carrying a closure), an `Exit`, a `Link`, a
-message to a name outside the grant — with no `dist: refused … from guest …` line on stderr,
-in the moments after another link under the guest's node name came up or went away. In the
-worst case that is the guest running code on the host.
+**Not verified: the distribution guard.** `a_guest_link_reaches_what_it_was_given_and_ships_no_code`
+is red on `e9e1af8b` WITHOUT any sabotage, on both tries, every time:
 
-**Cause.** The guest filter was keyed by the peer's node NAME, looked up per frame, while
-the frames come from a LINK. `establish` did `guest::register(peer, grant)` for a guest link
-and `guest::forget(peer)` for a full one, and `drop_link` did `guest::forget(peer)` for
-whichever link it removed; every frame the reader read went through `guest::admit(peer,
-frame)`, which looked `peer` up in `GUESTS` and returned `true` — a full peer — on a miss.
-But a name is only what the peer claimed in its `Hello`, several links can hold it over
-time, and a link's reader keeps delivering frames it has already read after the name has
-moved on: the frame between `open` and `handle_inbound_frame`, the `BufReader`'s buffer (up
-to 8 KiB of frames, added on this branch), and — on Linux, which does not discard queued
-data on `shutdown(SHUT_RD)` — whatever the kernel receive queue holds. Three ways the name
-moved under a still-draining guest reader:
+```
+--- guest stderr ---
+/tmp/brood-dist-guest-9802/client.blsp:5:74: error: no reply by name
+--- host stderr ---
+/tmp/brood-dist-guest-9802/server.blsp:9:69: unbound error: unbound symbol: nodes
+```
 
-1. **A full link took the name** — a new incarnation (`retire_previous_incarnation` shuts
-   the guest's socket) or a winning duplicate (`register_link` evicts it); then `establish`'s
-   `guest::forget(peer)` emptied the entry.
-2. **`node/disconnect`** — the documented way to end a guest (`guest::revoke`'s doc) —
-   runs `drop_link` from the caller's thread, which `forget`s the entry before the guest's
-   reader has drained.
-3. **The guest alone, with nothing else on the node:** guest link G1 under name N
-   pipelines frames; a second connection G2 with the same cookie, the same name and a new
-   incarnation retires G1 (`guest::register` replaces the entry), then closes, and G2's
-   reader's `drop_link` (G2's id is the registered one) `forget`s N. G1's remaining frames
-   then pass `admit` as a full peer's.
+The host script ADR-425 added calls `(nodes)`, which is unbound there, so the host dies before
+it replies; the `translate_inbound` sabotage reads "no reply by name" too, and proves nothing
+until the script is fixed. (It looped 10/10 green on `7ed008cf`, before ADR-425 extended it.)
+This entry stays open on that one guard.
 
-The `GUEST_COUNT` fast path (`25b35b61`) did not add a mechanism — a zero count and a
-missing entry both answered "full" — but its comment's ordering argument ("a guest's frame
-never reads a zero older than its own grant") only covered a zero from BEFORE the guest
-registered; the zero that matters is a newer one, written by a `forget` for some other link
-of the same name. The same name keying put the reachable pids on the name too:
-`note_outbound(node, msg)` added a pid sent over a full link to whatever guest entry the
-name had, and a pid sent over the guest link to nothing once the entry was gone. And
-`establish` registered the guest AFTER the link was in `NODES`, so a send in that gap
-introduced nothing (harmless, but the same shape).
+The first fix's guards, before ADR-425 replaced them, were verified the same way on `7ed008cf`:
+`guest_may_take` returning `true` turned `a_guest_cannot_take_a_full_peers_name` red ("a guest
+claiming a full peer's name displaced its link"); dropping `register_link`'s
+`existing.guest.is_some() && link.guest.is_none()` disjunct turned
+`a_full_link_displaces_a_guest_holding_its_name_whatever_the_tie_break` red ("a full link lost a
+duplicate tie-break to a guest holding its name"); dropping `linked_peer_for`'s
+`link.guest.is_none()` filter turned it red at "a dial reused a guest's link as the peer it was
+looking for".
 
-**Why it survived.** Every guest test had one link per name. The distribution test
-(`a_guest_link_reaches_what_it_was_given_and_ships_no_code`) runs one guest link start to
-finish; the unit test in `guest.rs` called `forget` and then ASSERTED the name was
-unfiltered ("a full peer is unfiltered") — the name-keyed model was the specification, so
-the question of which link a frame came from never arose. The window is a reader draining
-after its socket was shut down, which no test drives and no ordinary run hits by chance:
-the guest has to have frames in flight at the moment the name moves.
-
-**Fix.** The standing belongs to the link (`guest::GuestLink`: the grant and the reachable
-pids). `establish` makes it once, for the one connection that authenticated with the grant,
-and it rides in that link's `Conn::guest` and is handed to that link's reader;
-`handle_inbound_frame(peer, guest, frame)` filters every frame through the standing of the
-link it was READ from, never a lookup by `peer`. `route` takes the standing from the same
-`Conn` it enqueues on, so a pid becomes reachable by exactly the link it went out on.
-`GUESTS`, `GUEST_COUNT`, `register` / `forget` / `is_guest` are gone: nothing keyed by the
-name is left to flip, a full link's per-frame check is an `Option` test (cheaper than the
-atomic load it replaces), and the standing is in place before the link is visible in
-`NODES`. `node/peer-grant` and the mesh's "never gossip a guest" read the registered link's
-`Conn::guest` (`dist::peer_grant`).
-
-Not in this fix: a guest could take a full peer's node name — its own entry, **KI-287**.
-
-**Guard.** `dist::tests::a_guest_links_frames_stay_a_guests_whoever_holds_its_claimed_name`
-(renamed by ADR-425, which registers a guest under a name the host mints, so a full link
-under the guest's CLAIMED name no longer retires it) — a guest link, then a full link under
-the name it claimed, then `node/disconnect` of the guest link: a `Send` to a registered probe
-handed to `handle_inbound_frame` with the guest link's standing is refused after each, and
-the same frame from a full link is delivered.
-`dist::tests::a_pid_sent_to_a_peer_is_reachable_only_by_the_link_it_went_out_on` — a pid
-routed to the full peer whose name the guest claimed is not reachable by the guest link.
-`guest::tests::a_guest_reaches_its_names_and_the_pids_it_was_sent_and_nothing_else` was
-rewritten over a `GuestLink`. **Not yet run and not yet sabotage-verified** — on the test
-machine: run the three, then sabotage `handle_inbound_frame` to ignore its `guest` argument
-and look the name up instead (`crate::core::sync::read(&NODES).get(&peer).and_then(|c|
-c.guest.clone())`) and confirm the first goes red at "admitted once it had no link" (since
-ADR-425 the lookup still finds the guest while its link is up, so the first assertion holds
-under this sabotage); and sabotage `route` to note the pids on a standing other than its
-`Conn`'s and confirm the second goes red; then the distribution tests' guest case, looped.
-Record the red output here before closing. The guard drives the decision the reader makes,
-not the reader thread: a reader draining after its socket is shut is not deterministic
-enough to assert on.
+Runs: [39950556262](https://github.com/broodlang/brood/actions/runs/39950556262) (`7ed008cf`),
+[39954644031](https://github.com/broodlang/brood/actions/runs/39954644031) (`e9e1af8b`).
 
 ## KI-281 — a JIT fast-link test never published in 90 s, once (watch)
 
@@ -308,108 +260,15 @@ Armed: the helper's failure now reports the run count, what was published, and e
 arm's JIT state (uncompiled / `BAILED` / native, calls, deopts, entry deopts), so the next
 occurrence says whether an arm never compiled, latched, or kept deopting.
 
-## KI-288 — two closures sharing one first body form ran one compiled body ⚠️ OPEN 2026-10-23
-
-**Open: the fix is in, its guards are written, and none of them has been run or
-sabotage-verified** (the machine it was written on runs no tests). Close it when they have.
-
-**Symptom.** Found by reading the VM body cache, not observed, so there is no verbatim error
-yet. What the code predicts, for a fold literal whose body opens with a quoted form:
-
-```lisp
-(defn lm-fold-tagged (xs seed)
-  (fold xs seed (fn (m x) (quote tally) (assoc m x (inc (get m x 0))))))
-(lm-fold-tagged (list :a :a) {})       ; {:a 2} — the table-built copy is compiled
-(lm-fold-tagged (list :a :a) {:r r})   ; r a rope: the unrewritten copy runs the table-built body
-```
-
-The second call runs `(do (%table-add m x 1) m)` on a map, so a table op's wrong-type error;
-in the other order the table-built copy runs the map ops on its table. With no rewrite at all,
-`` (defmacro both (q) `[(fn (x) ~q (+ x 1)) (fn (x) ~q (+ x 2))]) `` gives two closures of which
-the second, called after the first, answers `(+ x 1)`. Only on the VM: `BROOD_TIER=0` compiles
-nothing and is right.
-
-**Cause.** `compile/closure.rs` `cache_key` keys a compiled closure on the identity of its first
-arm's first body form (`VmCacheKey::Body`), and `compile_closure_timed` bakes the names of the
-FIRST instance's enclosing scope into it (`env_chain_names`, whose doc states the assumption:
-every instance of one `fn` form binds the same names). Both are sound only if a pair is in one
-code position. Three things put one pair in two:
-
-1. **The counted range loop** (`pipeline.rs` `counted_range_loop`, and the parked vector and list
-   loops) put the fold literal's body forms into the loop as they were, beside the fallback
-   `fold` that keeps the literal. Every `fn` inside the body was one pair built in two scopes.
-   **Harmless today, by luck**: the scopes differ only in the rewrite's gensyms, which the body
-   cannot name, and `capture_value` falls back to a by-name lookup, so a missing gensym reads
-   nil and nothing reads it. The rewrites run after the expansion walk, and at root little
-   rebuilds after them (`resolve` there only strips `/name` escapes, from a form that holds one;
-   `expand_static_quasiquotes` returns a quasiquote-free tree as it is), so the sharing reached
-   the compiler; in a module `resolve_walk` rebuilt every list and hid it.
-2. **The linear-map rewrites** (`linmap.rs`: the fold literal's table-built copy, and the defn
-   split's inner loop beside its unrewritten copy) rebuild every list but returned a
-   `(quote …)` as it was — also an improper list and a vector literal. A body that opens with a
-   quoted form gave the two copies the same first body form: two different closures, one cache
-   entry. `resolve` skips quoted forms whole, so modules were affected too.
-3. **The expansion walk** returned a `quote` / `quasiquote` form as it was, so a macro that
-   splices one quoted argument as the first body form of two closures did the same with no
-   rewrite involved.
-
-**Why it survived.** Every value test of the rewrites (`linmap_soundness_test`,
-`pipeline_fusion_test`) uses a literal whose first body form is a call, which the rewrites
-rebuild; `linmap_idiom.rs` pins what the expansion contains, never that it shares nothing. The
-reader gives each position its own pair, so code nobody rewrote or spliced could not show it.
-And the range-loop case, the one the rewrites were built around, is harmless, so nothing went
-wrong where anyone looked. The 2026-10-23 scaling note credited the walk's rebuilding with
-keeping the range loop's copy apart — true only in a module, since the rewrites run after the
-walk.
-
-**Fix.** One helper, `copy_form` (`eval/macros.rs`): a structural copy of a code tree, each new
-pair carrying its original's form record, vector / map / set literals rebuilt, a `(quote X)`
-given new cells while `X` stays shared (data is never compiled, and its identity is what the
-quote evaluates to). Every rewrite that places a sub-form a second time copies it: the three
-counted loops copy the body; the linear-map rewrites copy a quote, an improper list, a literal
-and the parameter lists they reuse. The expansion walk copies a `quote` / `quasiquote` form and
-an improper list instead of returning it, and copies the binder positions it leaves opaque. So
-every pair in `macroexpand_all`'s output is in one code position, by construction.
-
-Not done, deliberately: (a) **widening the cache key** to the compile context (enclosing names,
-self-name, module). It would separate case 1, but cases 2 and 3 are different closures in the
-same context; only hashing the whole body would separate those, and the AST key exists so one
-`fn` form compiles once across creations and processes, which the invariant keeps. (b) **The
-"return the original list when no child changed" optimisation** in the expansion walk: the
-walk's rebuilding is what gives each occurrence of a macro argument spliced twice its own
-cells (`` `(do ~f ~f) `` with `f` a `fn`, possibly in two scopes), so it would reopen case 3 for
-every unquoted form. The same in `resolve_walk` alone IS safe (its only input is the walk's output,
-now one pair per position, and a pair handed back is in the place it was), and it does it
-since 2026-10-23 (`reuse_or_rebuild`). That makes this fix load-bearing in modules too: before
-it, `resolve_walk`'s rebuilding of every list hid case 1 there.
-
-**Guard — written, not yet run.** `crates/lisp/tests/one_pair_one_position.rs`: five expansions
-(the range loop with a capturing inner `fn`, the fold literal and the defn split each opening
-with a quote, a fused pipeline, a macro splicing a quoted argument into two bodies), each
-asserting its rewrite fired and that no pair is reached twice outside quoted data, plus
-`a_module_s_resolved_code_keeps_one_pair_in_one_position` (the range loop and the fold literal
-through the whole compile pass in a module, so after `resolve_walk`).
-`tests/linmap_soundness_test.blsp` "a leading quoted form is the fast copy's own, not the
-unrewritten one's" (both rewrites, both call orders) and `tests/vm_body_identity_test.blsp`
-(the macro splice, capture-free and capturing) assert the values. **To do on the test
-machine**: run them; then put back, one at a time, `step_body.extend_from_slice(body)` in the
-three loops, `return form` for the quote in `linmap_rewrite_form` / `linmap_rename_self`, and
-`return Ok(form)` for the walk's quote, confirm the matching cases go red (and the value tests
-under the VM), record the output here, and close this. Since `resolve_walk` reuses unchanged
-lists, the range-loop and fold-literal sabotages must ALSO turn the module case red — the
-range loop is the one that proves the reuse is covered, since it was invisible in a module
-while `resolve_walk` rebuilt everything (with `reuse_or_rebuild` made an unconditional
-`rebuild_list`, that module assertion must go green again under the same sabotage).
-
 ## Index — status per issue
 
 Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](archive/known-issues-closed.md).
 
 | # | What | Status |
 |---|---|---|
-| KI-288 | **two closures sharing one first body form ran one compiled body** — the VM keys a compiled closure on that form, and the linear-map rewrites (a body opening with a quoted form) and a macro splicing one quoted argument into two bodies gave two closures the same one; the range loop shared its whole body, harmlessly | ⚠️ **OPEN 2026-10-23** — fix landed (`copy_form`: one pair, one position), guards written but not yet run or sabotage-verified |
-| KI-287 | **a guest could take a full peer's node name, and with it the peer's link and traffic** — a guest's name is only its `Hello` claim, so naming itself after a connected full peer with a new incarnation retired that peer's link, and the guest then received what was sent to the peer and could reach the pids in it; a same-incarnation duplicate kept the guest against the real peer, and a dial reused the guest's link. Found by reading; never observed | ⚠️ **OPEN 2026-10-23** — fixed in code, twice: first by refusing a guest a name a full link holds or has held here, then by construction (ADR-425): a guest link is registered under a `guest~` name its host mints, which no full node may use, and its pids are translated at the link — which also closes the case the first fix left open, a full peer elsewhere in the cluster that has never linked here. Guards written but **not yet run or sabotage-verified** |
-| KI-286 | **a guest link's frames could be admitted as a full peer's once its node name moved to another link** — the guest filter (ADR-415) was keyed by name and looked up per frame, so a full link reclaiming the name, `node/disconnect`, or a second connection by the guest itself emptied the entry while the guest's reader was still draining frames it had read, and those passed unfiltered (a `node/spawn` closure among them). Found by reading; never observed | ⚠️ **OPEN 2026-10-23** — fixed in code (the standing is the link's: `GuestLink` on `Conn`, handed to its reader at `establish`; `GUESTS` / `GUEST_COUNT` gone), guards written but **not yet run or sabotage-verified** — on the test machine before this closes. The name hijack beside it is KI-287 |
+| KI-288 | **two closures sharing one first body form ran one compiled body** — the VM keys a compiled closure on that form, and the linear-map rewrites (a body opening with a quoted form) and a macro splicing one quoted argument into two bodies gave two closures the same one; the range loop shared its whole body, harmlessly | ✅ **FIXED 2026-10-23** — every guard sabotage-verified on GitHub Actions (the three loops, the linear-map quote and the walk's quote each red where predicted; with `resolve_walk` rebuilding everything the module case's range-loop assertion goes green, as claimed). Was: ⚠️ OPEN 2026-10-23 — fix landed (`copy_form`: one pair, one position), guards written but not yet run or sabotage-verified |
+| KI-287 | **a guest could take a full peer's node name, and with it the peer's link and traffic** — a guest's name is only its `Hello` claim, so naming itself after a connected full peer with a new incarnation retired that peer's link, and the guest then received what was sent to the peer and could reach the pids in it; a same-incarnation duplicate kept the guest against the real peer, and a dial reused the guest's link. Found by reading; never observed | ⚠️ **OPEN 2026-10-23** — fixed in code, twice: first by refusing a guest a name a full link holds or has held here, then by construction (ADR-425): a guest link is registered under a `guest~` name its host mints, which no full node may use, and its pids are translated at the link — which also closes the case the first fix left open, a full peer elsewhere in the cluster that has never linked here. Every unit guard sabotage-verified on GitHub Actions 2026-10-23; **open on the distribution guard**, which is red on main without its sabotage (ADR-425's host script calls an unbound `nodes`) |
+| KI-286 | **a guest link's frames could be admitted as a full peer's once its node name moved to another link** — the guest filter (ADR-415) was keyed by name and looked up per frame, so a full link reclaiming the name, `node/disconnect`, or a second connection by the guest itself emptied the entry while the guest's reader was still draining frames it had read, and those passed unfiltered (a `node/spawn` closure among them). Found by reading; never observed | ✅ **FIXED 2026-10-23** — both guards sabotage-verified on GitHub Actions, on the fix and again after ADR-425 (the name-lookup sabotage red at "admitted once it had no link", the name-keyed `route` red at the pid reaching the guest). Was: ⚠️ OPEN 2026-10-23 — fixed in code (the standing is the link's: `GuestLink` on `Conn`, handed to its reader at `establish`; `GUESTS` / `GUEST_COUNT` gone), guards written but **not yet run or sabotage-verified** — on the test machine before this closes. The name hijack beside it is KI-287 |
 | KI-285 | **a loader waiting on its header's dependency still blocked its worker**, and the prefetch that fixed it broke CI's contracts job | ✅ **FIXED 2026-10-21** — the CI break was a tier-up pre-load starting an unrelated load inside a module load; it now declines until the load is over, and the prefetch is restored. Guards: `tier_up_loads.rs` (red without the decline), `lazy_load_wait_parks` (un-ignored) |
 | KI-284 | **a worker BUSY under a native frame still counted as live, so as many processes looping under `reflect/eval-string` as there were workers starved every other process** — the in-language suite sat 30 minutes on two cores (v0.42.2 too), and on an oversubscribed `make test` one `fuzzy` test hit its 600 s timeout and the clean-up failed 343 more as `unbound symbol` | ✅ **FIXED 2026-10-21** — a nested run that spends its quantum with work waiting takes its worker out of the pool until it returns (`cpu_dirty_enter`, the CPU twin of `dirty_block`). Guard: `blocking_native::a_process_runs_while_every_worker_loops_under_a_native_frame` (`BROOD_J=2`, two spinners, every tier; red without the guard) |
 | KI-283 | **a function the linear-map rewrite built on a table leaked that table on every call** — a plain tally called ~25 000 times exhausted a 16 GB `ulimit -v` (`table: cannot reserve a 512 KB dense slot chunk`); a dropped table also kept its registry slot and chunk reservations for good | ✅ **FIXED 2026-10-21** — the rewrite frees its table, tables die with their creating process (ADR-418), and a dropped table's slot is reused under a generation-checked handle. Guard: `table_address_space.rs` (three reuse cases, `VmSize`-metered, each red under its sabotage) |

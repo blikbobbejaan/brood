@@ -3414,3 +3414,15 @@ module any dependency declares (`main` excepted), naming both, so `nest check`/`
 the way the release would. No sibling project trips it today (scanned against each `_deps/`).
 `docs/packages.md` § Namespace collisions rewritten — it still said namespaces were not rooted.
 Tests not run on this machine; two cases in `tests/package_test.blsp` run in CI.
+
+2026-10-23 (KI-286 / KI-287 / KI-288 guards sabotage-verified, on GitHub Actions): this desktop
+runs no tests, so a throwaway branch carried one patch per sabotage and a workflow whose jobs
+passed only if the guard went red, beside a control job with no patch. Every listed sabotage
+went red where the entries said, on `7ed008cf` and again on `e9e1af8b` after ADR-425; KI-286
+and KI-288 are closed with the red output in their sections. KI-287 stays open on one guard:
+the distribution case ADR-425 extended is red on main without any sabotage — its host script
+calls an unbound `nodes` — so its sabotage proves nothing yet. Not predicted, recorded: the
+fused-pipeline case of `one_pair_one_position.rs` is red under none of KI-288's sabotages. The
+same run A/B'd the day's perf batch against `32e71066` with a base-vs-base control,
+indicative only (a shared runner): nothing regressed at the default tier; at tier 1 `collatz`
+−10.3% and `fib` +3.7% (floor 1.5%, control +0.8%) — compute-frontier.md §7.8's addendum.

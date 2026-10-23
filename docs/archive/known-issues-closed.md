@@ -14480,3 +14480,270 @@ that is (the test's child; the builder is safe only because the `stdimage` modul
 with the tier-up decline in, a fresh probe file under `BROOD_CONTRACTS=1` still read `seq`/`map`
 names only in `editor/lineedit`'s set. Both probes now run only `require-one` and the native
 `reflect/global-names` inside the window, the set arithmetic after it.
+
+## KI-286 — a guest link's frames could be admitted as a full peer's once its name moved to another link ✅ FIXED 2026-10-23
+
+**Closed 2026-10-23: the guards ran green and each went red under its sabotage, on GitHub
+Actions** (the desktop the fix was written on runs no tests) — the observed output is under
+Guard. Found by reading the code (a review of ADR-415, 2026-10-23); never observed in the
+wild.
+
+**Symptom.** None observed. What it would look like: a host that granted a guest
+(`node/grant-guest`) runs a frame from that guest which ADR-415 says a guest may never send —
+a `node/spawn` (a `Send` to `:remote-spawn` carrying a closure), an `Exit`, a `Link`, a
+message to a name outside the grant — with no `dist: refused … from guest …` line on stderr,
+in the moments after another link under the guest's node name came up or went away. In the
+worst case that is the guest running code on the host.
+
+**Cause.** The guest filter was keyed by the peer's node NAME, looked up per frame, while
+the frames come from a LINK. `establish` did `guest::register(peer, grant)` for a guest link
+and `guest::forget(peer)` for a full one, and `drop_link` did `guest::forget(peer)` for
+whichever link it removed; every frame the reader read went through `guest::admit(peer,
+frame)`, which looked `peer` up in `GUESTS` and returned `true` — a full peer — on a miss.
+But a name is only what the peer claimed in its `Hello`, several links can hold it over
+time, and a link's reader keeps delivering frames it has already read after the name has
+moved on: the frame between `open` and `handle_inbound_frame`, the `BufReader`'s buffer (up
+to 8 KiB of frames, added on this branch), and — on Linux, which does not discard queued
+data on `shutdown(SHUT_RD)` — whatever the kernel receive queue holds. Three ways the name
+moved under a still-draining guest reader:
+
+1. **A full link took the name** — a new incarnation (`retire_previous_incarnation` shuts
+   the guest's socket) or a winning duplicate (`register_link` evicts it); then `establish`'s
+   `guest::forget(peer)` emptied the entry.
+2. **`node/disconnect`** — the documented way to end a guest (`guest::revoke`'s doc) —
+   runs `drop_link` from the caller's thread, which `forget`s the entry before the guest's
+   reader has drained.
+3. **The guest alone, with nothing else on the node:** guest link G1 under name N
+   pipelines frames; a second connection G2 with the same cookie, the same name and a new
+   incarnation retires G1 (`guest::register` replaces the entry), then closes, and G2's
+   reader's `drop_link` (G2's id is the registered one) `forget`s N. G1's remaining frames
+   then pass `admit` as a full peer's.
+
+The `GUEST_COUNT` fast path (`25b35b61`) did not add a mechanism — a zero count and a
+missing entry both answered "full" — but its comment's ordering argument ("a guest's frame
+never reads a zero older than its own grant") only covered a zero from BEFORE the guest
+registered; the zero that matters is a newer one, written by a `forget` for some other link
+of the same name. The same name keying put the reachable pids on the name too:
+`note_outbound(node, msg)` added a pid sent over a full link to whatever guest entry the
+name had, and a pid sent over the guest link to nothing once the entry was gone. And
+`establish` registered the guest AFTER the link was in `NODES`, so a send in that gap
+introduced nothing (harmless, but the same shape).
+
+**Why it survived.** Every guest test had one link per name. The distribution test
+(`a_guest_link_reaches_what_it_was_given_and_ships_no_code`) runs one guest link start to
+finish; the unit test in `guest.rs` called `forget` and then ASSERTED the name was
+unfiltered ("a full peer is unfiltered") — the name-keyed model was the specification, so
+the question of which link a frame came from never arose. The window is a reader draining
+after its socket was shut down, which no test drives and no ordinary run hits by chance:
+the guest has to have frames in flight at the moment the name moves.
+
+**Fix.** The standing belongs to the link (`guest::GuestLink`: the grant and the reachable
+pids). `establish` makes it once, for the one connection that authenticated with the grant,
+and it rides in that link's `Conn::guest` and is handed to that link's reader;
+`handle_inbound_frame(peer, guest, frame)` filters every frame through the standing of the
+link it was READ from, never a lookup by `peer`. `route` takes the standing from the same
+`Conn` it enqueues on, so a pid becomes reachable by exactly the link it went out on.
+`GUESTS`, `GUEST_COUNT`, `register` / `forget` / `is_guest` are gone: nothing keyed by the
+name is left to flip, a full link's per-frame check is an `Option` test (cheaper than the
+atomic load it replaces), and the standing is in place before the link is visible in
+`NODES`. `node/peer-grant` and the mesh's "never gossip a guest" read the registered link's
+`Conn::guest` (`dist::peer_grant`).
+
+Not in this fix: a guest could take a full peer's node name — its own entry, **KI-287**.
+
+**Guard.** `dist::tests::a_guest_links_frames_stay_a_guests_whoever_holds_its_claimed_name`
+(renamed by ADR-425, which registers a guest under a name the host mints, so a full link
+under the guest's CLAIMED name no longer retires it) — a guest link, then a full link under
+the name it claimed, then `node/disconnect` of the guest link: a `Send` to a registered probe
+handed to `handle_inbound_frame` with the guest link's standing is refused after each, and
+the same frame from a full link is delivered.
+`dist::tests::a_pid_sent_to_a_peer_is_reachable_only_by_the_link_it_went_out_on` — a pid
+routed to the full peer whose name the guest claimed is not reachable by the guest link.
+`guest::tests::a_guest_reaches_its_names_and_the_pids_it_was_sent_and_nothing_else` was
+rewritten over a `GuestLink`. The guard drives the decision the reader makes, not the reader
+thread: a reader draining after its socket is shut is not deterministic enough to assert on.
+
+**Sabotage-verified 2026-10-23, on GitHub Actions** (a throwaway branch whose workflow applied
+one patch per job and passed only if the guard went red; a control job with no patch ran the
+same cases green). Twice: on `7ed008cf`, the fix as first committed, and again on `e9e1af8b`,
+after ADR-425 renamed the first guard and moved the guest to a minted name.
+
+- `handle_inbound_frame` made to ignore its `guest` argument and look the name up
+  (`crate::core::sync::read(&NODES).get(&peer).and_then(|c| c.guest.clone())`). On
+  `7ed008cf` the first guard went red at its first assertion:
+  ```
+  panicked at crates/lisp/src/dist.rs:2499:9:
+  assertion `left == right` failed: a guest link's frame was admitted with the privileges of the full link that took its name
+  ```
+  On `e9e1af8b` (the guest now under its minted name, which the lookup still finds while its
+  link is up) the first assertion held, as the entry predicted, and the second went red:
+  ```
+  panicked at crates/lisp/src/dist.rs:2529:9:
+  assertion `left == right` failed: a guest link's frame was admitted once it had no link
+  ```
+- `route` made to note the pids on a standing kept per NAME (the last guest standing seen
+  under the name a guest claimed) instead of its `Conn`'s — the old name-keyed model,
+  reinstated. Red on both commits:
+  ```
+  panicked at crates/lisp/src/dist.rs:2553:9:
+  a pid sent over the full link that took the name reached the retired guest link
+  ```
+  and, on `e9e1af8b` (`dist.rs:2575:9`), "a pid sent over the full link under the guest's
+  claimed name reached the guest".
+- Control: the three cases green on both commits; the distribution guest case
+  (`a_guest_link_reaches_what_it_was_given_and_ships_no_code`) looped **10/10 green on
+  `7ed008cf`**. On `e9e1af8b` that case is red WITHOUT any sabotage — ADR-425 extended it,
+  and its host script calls an unbound `nodes` — which is KI-287's guard, not this one's;
+  it is recorded there.
+
+Runs: [39950556262](https://github.com/broodlang/brood/actions/runs/39950556262) (`7ed008cf`),
+[39954644031](https://github.com/broodlang/brood/actions/runs/39954644031) and
+[39956116487](https://github.com/broodlang/brood/actions/runs/39956116487) (`e9e1af8b`; the
+second re-ran the `route` sabotage, whose first patch had landed in `send_frame` and did not
+compile).
+
+## KI-288 — two closures sharing one first body form ran one compiled body ✅ FIXED 2026-10-23
+
+**Closed 2026-10-23: the guards ran green and went red under each sabotage, on GitHub
+Actions** (the machine the fix was written on runs no tests) — the observed output is under
+Guard.
+
+**Symptom.** Found by reading the VM body cache, not observed, so there is no verbatim error
+yet. What the code predicts, for a fold literal whose body opens with a quoted form:
+
+```lisp
+(defn lm-fold-tagged (xs seed)
+  (fold xs seed (fn (m x) (quote tally) (assoc m x (inc (get m x 0))))))
+(lm-fold-tagged (list :a :a) {})       ; {:a 2} — the table-built copy is compiled
+(lm-fold-tagged (list :a :a) {:r r})   ; r a rope: the unrewritten copy runs the table-built body
+```
+
+The second call runs `(do (%table-add m x 1) m)` on a map, so a table op's wrong-type error;
+in the other order the table-built copy runs the map ops on its table. With no rewrite at all,
+`` (defmacro both (q) `[(fn (x) ~q (+ x 1)) (fn (x) ~q (+ x 2))]) `` gives two closures of which
+the second, called after the first, answers `(+ x 1)`. Only on the VM: `BROOD_TIER=0` compiles
+nothing and is right.
+
+What the bug looks like, verbatim, from the sabotage runs below (the fix reverted, the VM's
+default tier and tier 1 alike): the fold literal,
+
+```
+tests/linmap_soundness_test.blsp:266: test failed: LINMAP wrapper-split soundness › a leading quoted form is the fast copy's own, not the unrewritten one's
+    uncaught error: {… :message %table-add: expected table, got map ({:r #<rope :chars 1 :lines 1>}), :line 144, :code E0030, :kind :type …}
+```
+
+and the macro splice, the first closure running the second's body:
+
+```
+tests/vm_body_identity_test.blsp:27: test failed: two closures sharing a spliced quoted first form › each runs its own body when they capture a local
+    assert: (assert= 13 ((first pair) 10))
+    actual: 13
+    expect: 30
+```
+
+(`assert=` prints its first argument as `actual`; the call returned 30, `(* x k)`.)
+
+**Cause.** `compile/closure.rs` `cache_key` keys a compiled closure on the identity of its first
+arm's first body form (`VmCacheKey::Body`), and `compile_closure_timed` bakes the names of the
+FIRST instance's enclosing scope into it (`env_chain_names`, whose doc states the assumption:
+every instance of one `fn` form binds the same names). Both are sound only if a pair is in one
+code position. Three things put one pair in two:
+
+1. **The counted range loop** (`pipeline.rs` `counted_range_loop`, and the parked vector and list
+   loops) put the fold literal's body forms into the loop as they were, beside the fallback
+   `fold` that keeps the literal. Every `fn` inside the body was one pair built in two scopes.
+   **Harmless today, by luck**: the scopes differ only in the rewrite's gensyms, which the body
+   cannot name, and `capture_value` falls back to a by-name lookup, so a missing gensym reads
+   nil and nothing reads it. The rewrites run after the expansion walk, and at root little
+   rebuilds after them (`resolve` there only strips `/name` escapes, from a form that holds one;
+   `expand_static_quasiquotes` returns a quasiquote-free tree as it is), so the sharing reached
+   the compiler; in a module `resolve_walk` rebuilt every list and hid it.
+2. **The linear-map rewrites** (`linmap.rs`: the fold literal's table-built copy, and the defn
+   split's inner loop beside its unrewritten copy) rebuild every list but returned a
+   `(quote …)` as it was — also an improper list and a vector literal. A body that opens with a
+   quoted form gave the two copies the same first body form: two different closures, one cache
+   entry. `resolve` skips quoted forms whole, so modules were affected too.
+3. **The expansion walk** returned a `quote` / `quasiquote` form as it was, so a macro that
+   splices one quoted argument as the first body form of two closures did the same with no
+   rewrite involved.
+
+**Why it survived.** Every value test of the rewrites (`linmap_soundness_test`,
+`pipeline_fusion_test`) uses a literal whose first body form is a call, which the rewrites
+rebuild; `linmap_idiom.rs` pins what the expansion contains, never that it shares nothing. The
+reader gives each position its own pair, so code nobody rewrote or spliced could not show it.
+And the range-loop case, the one the rewrites were built around, is harmless, so nothing went
+wrong where anyone looked. The 2026-10-23 scaling note credited the walk's rebuilding with
+keeping the range loop's copy apart — true only in a module, since the rewrites run after the
+walk.
+
+**Fix.** One helper, `copy_form` (`eval/macros.rs`): a structural copy of a code tree, each new
+pair carrying its original's form record, vector / map / set literals rebuilt, a `(quote X)`
+given new cells while `X` stays shared (data is never compiled, and its identity is what the
+quote evaluates to). Every rewrite that places a sub-form a second time copies it: the three
+counted loops copy the body; the linear-map rewrites copy a quote, an improper list, a literal
+and the parameter lists they reuse. The expansion walk copies a `quote` / `quasiquote` form and
+an improper list instead of returning it, and copies the binder positions it leaves opaque. So
+every pair in `macroexpand_all`'s output is in one code position, by construction.
+
+Not done, deliberately: (a) **widening the cache key** to the compile context (enclosing names,
+self-name, module). It would separate case 1, but cases 2 and 3 are different closures in the
+same context; only hashing the whole body would separate those, and the AST key exists so one
+`fn` form compiles once across creations and processes, which the invariant keeps. (b) **The
+"return the original list when no child changed" optimisation** in the expansion walk: the
+walk's rebuilding is what gives each occurrence of a macro argument spliced twice its own
+cells (`` `(do ~f ~f) `` with `f` a `fn`, possibly in two scopes), so it would reopen case 3 for
+every unquoted form. The same in `resolve_walk` alone IS safe (its only input is the walk's output,
+now one pair per position, and a pair handed back is in the place it was), and it does it
+since 2026-10-23 (`reuse_or_rebuild`). That makes this fix load-bearing in modules too: before
+it, `resolve_walk`'s rebuilding of every list hid case 1 there.
+
+**Guard.** `crates/lisp/tests/one_pair_one_position.rs`: five expansions
+(the range loop with a capturing inner `fn`, the fold literal and the defn split each opening
+with a quote, a fused pipeline, a macro splicing a quoted argument into two bodies), each
+asserting its rewrite fired and that no pair is reached twice outside quoted data, plus
+`a_module_s_resolved_code_keeps_one_pair_in_one_position` (the range loop and the fold literal
+through the whole compile pass in a module, so after `resolve_walk`).
+`tests/linmap_soundness_test.blsp` "a leading quoted form is the fast copy's own, not the
+unrewritten one's" (both rewrites, both call orders) and `tests/vm_body_identity_test.blsp`
+(the macro splice, capture-free and capturing) assert the values.
+
+**Sabotage-verified 2026-10-23, on GitHub Actions**, twice — on `7ed008cf` (the fix) and on
+`e9e1af8b` (after `d4ef2521` touched the expansion walk) — with the same verdicts both times.
+One patch per job, the job passing only if the named cases went red; a control job with no
+patch ran all six cases and both `.blsp` files green.
+
+- **(a) the three counted loops** put back to `step_body.extend_from_slice(body)`: red —
+  `the_counted_range_loop_copies_the_body_it_runs`, `the_fold_literal_s_fast_copy_has_its_own_leading_quote`
+  (its table-built copy runs through the range loop, sharing `(quote tally)` and
+  `(do (%table-add m x 1) m)`), and the module case at its range-loop assertion:
+  ```
+  one pair in two positions in the expansion of (def rp-range (fn (n k) (fold (range n) 0 (fn (acc i) (+ acc ((fn (y) (+ y k)) i)))))):
+    (+ acc ((fn (y) (+ y k)) i))
+  one pair in two positions in the compiled form of (def rp-range …):
+    (+ acc ((fn (y) (+ y k)) i))
+  ```
+  The value tests stayed green, as the entry predicted for this case (harmless at run time).
+- **(b) the linear-map quote** put back to `return form` in `linmap_rewrite_form` and
+  `linmap_rename_self`: red — the fold-literal and split-loop cases and the module case at its
+  fold-literal assertion (`one pair in two positions in the compiled form of (def rp-fold …):
+  (quote tally)`), and `linmap_soundness_test.blsp` at line 266 with the `%table-add` error
+  quoted under Symptom, at the default tier and at tier 1.
+- **(c) the walk's quote** put back to `return Ok(form)`: red —
+  `a_quoted_argument_spliced_into_two_bodies_is_two_forms` (`one pair in two positions in the
+  expansion of (def rp-fns (rp-both 'tag)): (quote tag)`) and `vm_body_identity_test.blsp`'s
+  capturing case (quoted under Symptom); every other structural case stayed green.
+- **(d) the inverse:** sabotage (a) with `reuse_or_rebuild` made an unconditional
+  `rebuild_list`. The module case's range-loop assertion went GREEN — the panic moved to its
+  second assertion, the fold literal, whose shared pair is a quote `resolve_walk` skips whole
+  (`one pair in two positions in the compiled form of (def rp-fold …): (quote tally)`); the
+  root range-loop case stayed red. So the reuse is what made the module case able to see (a),
+  as claimed.
+
+Two things the runs showed that the entry did not predict, recorded rather than fixed:
+`a_fused_pipeline_s_loop_copies_its_body` stayed green under all three sabotages, so none of
+them exercises what it pins and it is a shape pin, not a sabotage-verified guard; and
+`vm_body_identity_test.blsp`'s capture-free case stayed green under (c) — only the capturing
+one sees the splice at run time (the structural case sees both).
+
+Runs: [39950556262](https://github.com/broodlang/brood/actions/runs/39950556262) (`7ed008cf`),
+[39954644031](https://github.com/broodlang/brood/actions/runs/39954644031) (`e9e1af8b`).
