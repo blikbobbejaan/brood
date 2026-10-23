@@ -477,7 +477,9 @@ it actually used, and how much of that was garbage collection (pause ms / collec
 
 (defn- ui-trace (phase ms detail &optional (cost nil))
   "One `ui-run: <phase>=<ms> cpu=<ms> gc=<ms>/<n> <detail>` line to stderr when
-`BROOD_UI_TRACE=1`; nil otherwise (and the caller pays nothing but the two clock reads).
+`BROOD_UI_TRACE=1`; nil otherwise. Its arguments are evaluated either way, so a caller
+whose `detail` costs anything to build gates the call on `ui-timed`'s `cost` (non-nil only
+when tracing), as `ui-fold` does.
 
 The cost figures are what tell a slow turn's causes apart. `update=25ms cpu=24ms` did that
 much work; `update=25ms cpu=2ms` spent 23 ms WAITING for a CPU — behind other processes or
@@ -501,7 +503,10 @@ throwing `update` is logged (`ui-log-error`) and drops that one input, returning
                                    (try
                                      (update model input cols rows)
                                      (catch e (ui-log-error "update" e) model)))))
-    (ui-trace "update" ms (ui-abbrev (pr-str input)) cost)
+    ;; `cost` is non-nil exactly when tracing is on, and it gates the `pr-str`: printing
+    ;; every input to throw it away cost O(its size) per event — a paste, a git status
+    ;; reply, a diagnostics batch — with tracing off.
+    (when (not (nil? cost)) (ui-trace "update" ms (ui-abbrev (pr-str input)) cost))
     next))
 
 (defn- ui-drain-input (model update display cols rows fuel)
