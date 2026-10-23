@@ -232,6 +232,7 @@ fn rule_heads_are_bound() {
         "only",
         "use",
         "use-internals",
+        "shadow",
         "generated",
         "duplicate-def",
         "record",
