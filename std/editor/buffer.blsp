@@ -778,23 +778,6 @@ leaves the buffer unmodified.
 ;; Granularity is the LINE (that is the unit a line diff — and the user's "these
 ;; lines" — speaks in); a whole-buffer region reproduces a plain undo exactly.
 
-(defn- undo-common-prefix (a:string b:string i:int -> int)
-  ;; how many leading chars `a` and `b` share — bounds the char diff to what changed
-  (if (or (>= i (string/length a))
-        (>= i (string/length b))
-        (not (= (string/char-at a i) (string/char-at b i))))
-    i
-    (undo-common-prefix a b (inc i))))
-
-(defn- undo-common-suffix (a:string b:string lo:int k:int -> int)
-  ;; how many trailing chars they share, never eating into the shared prefix `lo`
-  (let (la (string/length a) lb (string/length b))
-    (if (or (>= k (- la lo))
-          (>= k (- lb lo))
-          (not (= (string/char-at a (- la k 1)) (string/char-at b (- lb k 1)))))
-      k
-      (undo-common-suffix a b lo (inc k)))))
-
 (def *undo-region-char-budget* 4000)
 ;; The largest changed SPAN (in chars) a region undo will diff character-by-character.
 ;; The LCS diff is O(n²) in time and space, so an unbounded char diff on a huge rewrite
@@ -803,7 +786,8 @@ leaves the buffer unmodified.
 ;; in practice — it exists so the pathological case degrades instead of freezing.
 
 (defn- undo-hunk-chars (hunk tag)
-  (apply str (seq/keep hunk (fn (op) (let ([t c] op) (when (= t tag) c))))))
+  ;; `hunk` is gathered newest-first (a `cons` per op), so it is read back reversed
+  (apply str (seq/keep (reverse hunk) (fn (op) (let ([t c] op) (when (= t tag) c))))))
 
 (defn- undo-flush-chunk (hunk n lo hi out)
   ;; One CHUNK — a run of consecutive changed characters — is one change, and Emacs's
@@ -830,12 +814,15 @@ exactly what you get.
 
 Cheap despite being character-level: the shared prefix and suffix are trimmed first, so
 the diff only ever runs over the span that actually changed."
-  (let (pre (undo-common-prefix old new 0)
-        suf (undo-common-suffix old new pre 0)
-        o-mid (string/substring old pre (- (string/length old) suf))
-        n-mid (string/substring new pre (- (string/length new) suf))
+  ;; The trim is `%str-splice-diff`'s one native pass: `old[pre, old-end)` became `n-mid`,
+  ;; and the shared prefix and suffix around them are the same chars a char-by-char walk
+  ;; would find — without a `char-at` per step on both sides.
+  (let ([pre old-end n-mid] (%str-splice-diff old new)
+        o-mid (string/substring old pre old-end)
         head (string/substring new 0 pre)
-        tail (string/substring new (- (string/length new) suf) (string/length new)))
+        tail (string/substring new
+               (+ (string/length head) (string/length n-mid))
+               (string/length new)))
     (cond
       ;; nothing changed
       (and (= o-mid "") (= n-mid "")) new
@@ -855,12 +842,12 @@ the diff only ever runs over the span that actually changed."
                       (if (= tag :keep)
                         (let ([n2 out2] (undo-flush-chunk hunk n lo hi out))
                           [(inc n2) (cons c out2) '()])
-                        [n out (append hunk (list op))]))))
+                        [n out (cons op hunk)]))))
               [n out hunk] r
               [_ out2] (undo-flush-chunk hunk n lo hi out))
           (str head (apply str (reverse out2)) tail)))))
 
-(defn- undo-region-candidate (buf lo hi snaps depth)
+(defn- undo-region-candidate (text lo hi snaps depth)
   ;; The nearest snapshot whose changes actually touch the region: `[undone-text tail]`,
   ;; where `tail` is the history BELOW the snapshot we used. Walking back matters because
   ;; the most recent edit may have been somewhere else entirely and "undo my selection"
@@ -868,19 +855,18 @@ the diff only ever runs over the span that actually changed."
   ;; returning the tail is what lets a repeat peel the NEXT change off the same lines
   ;; instead of bouncing against the entry this undo just pushed. nil when nothing in
   ;; reach touched the region.
-  (let (text (buffer-text buf))
-    (cond
-      (or (empty? snaps) (<= depth 0)) nil
-      ;; A snapshot a region undo itself pushed is not a candidate: it holds the text we
-      ;; just came from, so taking it would REDO the change instead of peeling the next
-      ;; one off. Skipping it is what makes repeated calls walk backwards.
-      (get (first snaps) :region-undo) (undo-region-candidate buf lo hi (rest snaps) (dec depth))
-      else
-        (let (old (text/->string (get (first snaps) :rope))
-              undone (undo-region-restore old text lo hi))
-          (if (= undone text)
-            (undo-region-candidate buf lo hi (rest snaps) (dec depth))
-            [undone (rest snaps)])))))
+  (cond
+    (or (empty? snaps) (<= depth 0)) nil
+    ;; A snapshot a region undo itself pushed is not a candidate: it holds the text we
+    ;; just came from, so taking it would REDO the change instead of peeling the next
+    ;; one off. Skipping it is what makes repeated calls walk backwards.
+    (get (first snaps) :region-undo) (undo-region-candidate text lo hi (rest snaps) (dec depth))
+    else
+      (let (old (text/->string (get (first snaps) :rope))
+            undone (undo-region-restore old text lo hi))
+        (if (= undone text)
+          (undo-region-candidate text lo hi (rest snaps) (dec depth))
+          [undone (rest snaps)]))))
 
 (def *undo-region-search-depth* 200)
 ;; How far back a region undo will look for a change that touched the region. Bounded
@@ -901,7 +887,7 @@ whole thing back.
     (if (or (nil? bounds) (empty? (or (get buf :undo) ())))
       buf
       (let ([lo hi] bounds
-            found (undo-region-candidate buf
+            found (undo-region-candidate (buffer-text buf)
                     lo
                     hi
                     (get buf :undo)
@@ -1185,16 +1171,27 @@ ranges.
 ;; then). Gravity is left: an insert exactly AT a marker leaves it put, so text typed at one
 ;; cursor lands after another user's cursor sitting at the same spot.
 
+;; Both shifts assoc only the markers that MOVE, starting from `markers` itself: an edit
+;; after every marker — most keystrokes — returns the same map, where rebuilding every
+;; entry through `update-vals` cost a fresh map per keystroke in any buffer with markers.
+(defn- buffer-markers-shift (markers moved-to)
+  (fold markers
+    markers
+    (fn (acc entry)
+      (let ([id pos] entry
+            moved (moved-to pos))
+        (if (= moved pos) acc (assoc acc id moved))))))
+
 (defn- buffer-markers-insert (markers p n)
   "Shift `markers` for an insert of `n` chars at `p`: a marker strictly after `p` moves
 right by `n` (left-gravity — a marker exactly at `p` stays put)."
-  (update-vals markers (fn (pos) (if (> pos p) (+ pos n) pos))))
+  (buffer-markers-shift markers (fn (pos) (if (> pos p) (+ pos n) pos))))
 
 (defn- buffer-markers-delete (markers lo hi)
   "Shift `markers` for a delete of `[lo, hi)`: a marker at/before `lo` is unchanged, one
 inside the range collapses to `lo`, one at/after `hi` moves left by the deleted width."
   (let (d (- hi lo))
-    (update-vals markers (fn (pos) (cond (<= pos lo) pos (< pos hi) lo else (- pos d))))))
+    (buffer-markers-shift markers (fn (pos) (cond (<= pos lo) pos (< pos hi) lo else (- pos d))))))
 
 (defn- buffer-adjust-markers (buf:buffer kind:keyword a:int b:int -> buffer)
   "Return `buf` with its markers shifted for an edit — `:insert` (a=pos, b=len) or `:delete`
