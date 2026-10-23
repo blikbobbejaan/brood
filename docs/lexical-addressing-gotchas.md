@@ -76,6 +76,22 @@ did this in `heap.rs::env_get_indexed`.
   correctness rests on coordinates being derived from the same structure that
   builds the frame, plus the suite + `BROOD_GC_STRESS` gate.
 
+### 4b. One pair, one position (KI-288)
+
+The body cache is keyed on the **identity of a closure's first body form**
+(`VmCacheKey::Body`), and the capture slots are derived from the first instance's
+enclosing names (`env_chain_names`). Both assume a pair sits in exactly one code
+position. Anything that puts one pair in two — a source rewrite keeping a fallback beside
+its fast copy, a macro splicing one argument twice — makes two closures (or one closure in
+two scopes) one cache entry, and the second runs the first's compiled body.
+
+- **The defence:** every pass that places a sub-form a second time copies it with
+  `copy_form` (`eval/macros.rs`), and the expansion walk returns fresh cells for every list,
+  `quote` forms included. Keep it that way: a new rewrite that reuses a sub-form copies it,
+  and a walk that returns an unchanged list as it is must run where its input already has
+  one pair per position (not the expansion walk — its rebuilding is what separates a
+  spliced-twice macro argument).
+
 ### 5. Benchmark finding (confirmation, not work)
 
 A *list-form* coordinate (a rewritten `Value`) regressed **shallow** locals — the

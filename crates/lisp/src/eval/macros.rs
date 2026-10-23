@@ -617,12 +617,16 @@ fn macroexpand_all_depth_step_inner(
         ValueRef::Pair(_) => {
             let items = match heap.list_items(form) {
                 Some(items) => items,
-                None => return Ok(form), // improper list: leave it be
+                // An improper list: nothing to expand, but a cell of its own (`copy_form`).
+                None => return Ok(copy_form(heap, form)),
             };
             if let Some(ValueRef::Sym(head)) = items.first().copied().map(|v| v.unpack()) {
-                // quote/quasiquote contents are data, not calls to expand.
+                // quote/quasiquote contents are data, not calls to expand. The form still
+                // gets cells of its own, as every list this walk returns does: a macro that
+                // splices one quoted argument into two `fn` bodies would otherwise hand
+                // both the same first body form (`copy_form`).
                 if value::symbol_is(head, kw::QUOTE) || value::symbol_is(head, kw::QUASIQUOTE) {
-                    return Ok(form);
+                    return Ok(copy_form(heap, form));
                 }
                 // (`fn` is the only spelling — no `lambda` alias, ADR-162.)
                 let s = head;
@@ -873,6 +877,72 @@ fn rebuild_list(heap: &mut Heap, original: Value, items: Vec<Value>) -> Value {
     new_list
 }
 
+/// A fresh copy of the code tree `form`: every pair new, each carrying its original's form
+/// record (position and synthetic mark), every vector, map and set literal rebuilt. A
+/// `(quote X)` gets new cells of its own while `X`, the datum, is shared — data has no
+/// position and is never compiled, and its identity is what the quote evaluates to.
+///
+/// **One pair, one position.** The compiling VM keys a compiled closure on the identity of
+/// its first body form (`VmCacheKey::Body`), and `env_chain_names` bakes the enclosing
+/// names into it on the assumption that every instance of one `fn` form is built in one
+/// lexical scope. So a pair placed in two code positions is one closure compiled once for
+/// both — and when the two positions are different closures (a rewrite's fast copy and
+/// its fallback sharing a leading `'tag`), each runs the other's body. Every pass that
+/// places a sub-form in more than one position copies it through here.
+fn copy_form(heap: &mut Heap, form: Value) -> Value {
+    crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || copy_form_grown(heap, form))
+}
+
+fn copy_form_grown(heap: &mut Heap, form: Value) -> Value {
+    match form.unpack() {
+        ValueRef::Pair(_) => {
+            let mut items = Vec::new();
+            let mut cursor = form;
+            while let ValueRef::Pair(p) = cursor.unpack() {
+                let (head, tail) = heap.pair(p);
+                items.push(head);
+                cursor = tail;
+            }
+            let quoted = matches!(items.first().map(|v| v.unpack()),
+                Some(ValueRef::Sym(s)) if value::symbol_is(s, kw::QUOTE));
+            if !quoted {
+                for item in items.iter_mut() {
+                    *item = copy_form(heap, *item);
+                }
+            }
+            // `cursor` is the tail past the last pair: nil, or a dotted atom.
+            let copied = heap.list_with_tail(items, cursor);
+            heap.copy_form_pos(form, copied);
+            copied
+        }
+        ValueRef::Vector(id) => {
+            let items = heap.vector(id).to_vec();
+            let copied: Vec<Value> = items
+                .into_iter()
+                .map(|item| copy_form(heap, item))
+                .collect();
+            heap.alloc_vector(copied)
+        }
+        ValueRef::Map(id) => {
+            let entries = heap.map_entries(id);
+            let copied: Vec<(Value, Value)> = entries
+                .into_iter()
+                .map(|(key, entry)| (copy_form(heap, key), copy_form(heap, entry)))
+                .collect();
+            heap.map_from_pairs(copied)
+        }
+        ValueRef::Set(id) => {
+            let elements = heap.set_elems(id);
+            let copied: Vec<Value> = elements
+                .into_iter()
+                .map(|element| copy_form(heap, element))
+                .collect();
+            heap.set_from_elems(copied)
+        }
+        _ => form,
+    }
+}
+
 /// Rebuild a form expanding only `items[start..]` (the call's body/argument tail),
 /// leaving `items[..start]` opaque. Used to skip binding positions — a fn/defmacro
 /// parameter list — so a name there is never mistaken for a macro call.
@@ -885,7 +955,11 @@ fn expand_tail(
     depth: u32,
 ) -> LispResult {
     let start = start.min(items.len());
-    let mut out = items[..start].to_vec();
+    // Opaque, but copied: a binding position is still one position (`copy_form`).
+    let mut out: Vec<Value> = items[..start]
+        .iter()
+        .map(|&item| copy_form(heap, item))
+        .collect();
     for &item in &items[start..] {
         out.push(macroexpand_all_depth(heap, item, env, depth)?);
     }
@@ -925,7 +999,7 @@ fn expand_fn_clauses(
     for &clause in &items[i..] {
         match heap.list_or_vector_items(clause) {
             Some(parts) if !parts.is_empty() => {
-                let mut co = vec![parts[0]]; // param list: opaque
+                let mut co = vec![copy_form(heap, parts[0])]; // param list: opaque, copied
                 for &b in &parts[1..] {
                     co.push(macroexpand_all_depth(heap, b, env, depth)?);
                 }
@@ -957,7 +1031,7 @@ fn expand_let(
                 nb.push(if i % 2 == 1 {
                     macroexpand_all_depth(heap, x, env, depth)?
                 } else {
-                    x
+                    copy_form(heap, x)
                 });
             }
             match bindings.unpack() {

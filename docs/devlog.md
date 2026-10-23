@@ -3370,3 +3370,15 @@ identity, the session cookie serves many generated names), so the rule lives in
 `register_link`: a guest is refused a name a full link holds or ever held here
 (`FULL_PEER_NAMES`) or another grant's guest holds; a full link always displaces a guest; a
 dial and the mesh ignore guest links. Guards written, not run here.
+
+2026-10-23 (one pair, one position, KI-288): an audit of the VM body cache — it keys a compiled
+closure on the identity of its first body form — found three ways one pair reached two code
+positions. The counted range loop put the fold literal's body in the loop uncopied beside the
+fallback `fold` (harmless: the two scopes differ only in gensyms); the linear-map rewrites
+rebuilt every list but returned a `(quote …)` as it was, so a body opening with `'tag` gave the
+table-built copy and the unrewritten one the same cache entry (each then runs the other's body);
+and the expansion walk returned quote forms as they were, so a macro splicing one quoted argument
+into two bodies did the same. One helper, `copy_form`, now copies whatever a rewrite places twice,
+and the walk gives a quote form cells of its own. Found by reading, not observed; the guards
+(`one_pair_one_position.rs`, a `linmap_soundness_test` case, `vm_body_identity_test.blsp`) were
+not run on this machine and still need running and sabotaging on the test machine.

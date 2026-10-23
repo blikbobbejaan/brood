@@ -501,7 +501,11 @@ fn counted_range_loop(
         i,
     ]);
     let mut step_body = vec![value::sym(kw::LET), rebind];
-    step_body.extend_from_slice(body);
+    // A copy of the literal's body: the fallback `fold` keeps the original (`copy_form`).
+    for &form in body {
+        let copied = copy_form(heap, form);
+        step_body.push(copied);
+    }
     let step_form = heap.list(step_body);
     let recur = heap.list(vec![loop_name, next_i, step_form]);
     let branch = heap.list(vec![value::sym(kw::IF), done, acc, recur]);
@@ -541,7 +545,11 @@ fn counted_vector_loop(
         elem,
     ]);
     let mut step_body = vec![value::sym(kw::LET), rebind];
-    step_body.extend_from_slice(body);
+    // A copy of the literal's body: the fallback `fold` keeps the original (`copy_form`).
+    for &form in body {
+        let copied = copy_form(heap, form);
+        step_body.push(copied);
+    }
     let step_form = heap.list(step_body);
     let recur = heap.list(vec![loop_name, next_i, step_form]);
     let branch = heap.list(vec![value::sym(kw::IF), done, acc, recur]);
@@ -580,7 +588,11 @@ fn list_loop(
         elem,
     ]);
     let mut step_body = vec![value::sym(kw::LET), rebind];
-    step_body.extend_from_slice(body);
+    // A copy of the literal's body: the fallback `fold` keeps the original (`copy_form`).
+    for &form in body {
+        let copied = copy_form(heap, form);
+        step_body.push(copied);
+    }
     let step_form = heap.list(step_body);
     let recur = heap.list(vec![loop_name, next_xs, step_form]);
     let inner = heap.list(vec![value::sym(kw::IF), done, acc, recur]);

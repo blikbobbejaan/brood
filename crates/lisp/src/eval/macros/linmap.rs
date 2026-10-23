@@ -79,7 +79,10 @@ pub(super) fn linmap_split_def(heap: &mut Heap, items: &[Value]) -> Option<Value
         .iter()
         .map(|&f| linmap_rewrite_form(heap, f, name_sym, inner_val, params[idx]))
         .collect();
-    let mut inner_fn = vec![value::sym(kw::FN), param_form];
+    // The slow copy keeps the parameter list as written; the inner loop and the wrapper
+    // each get their own (`copy_form`).
+    let inner_params = copy_form(heap, param_form);
+    let mut inner_fn = vec![value::sym(kw::FN), inner_params];
     inner_fn.extend(inner_body);
     let inner_fn = heap.list(inner_fn);
     let inner_def = heap.list(vec![value::sym(kw::DEF), inner_val, inner_fn]);
@@ -138,7 +141,8 @@ pub(super) fn linmap_split_def(heap: &mut Heap, items: &[Value]) -> Option<Value
     let choose = heap.list(vec![value::sym(kw::IF), t_val, snap, slow_call]);
     let seed_bind = heap.list(vec![t_val, seed]);
     let wrapper_body = heap.list(vec![value::sym(kw::LET), seed_bind, choose]);
-    let wrapper_fn = heap.list(vec![value::sym(kw::FN), param_form, wrapper_body]);
+    let wrapper_params = copy_form(heap, param_form);
+    let wrapper_fn = heap.list(vec![value::sym(kw::FN), wrapper_params, wrapper_body]);
     let wrapper_def = heap.list(vec![value::sym(kw::DEF), items[1], wrapper_fn]);
     Some(heap.list(vec![value::sym(kw::DO), slow_def, inner_def, wrapper_def]))
 }
@@ -296,7 +300,9 @@ fn linmap_fold_call(heap: &mut Heap, form: Value, items: &[Value]) -> Option<Val
         .iter()
         .map(|&f| linmap_rewrite_form(heap, f, no_name_sym, no_name, acc))
         .collect();
-    let mut fast_fn = vec![value::sym(kw::FN), param_form];
+    // The unrewritten literal keeps its parameter list; the fast one gets a copy.
+    let fast_params = copy_form(heap, param_form);
+    let mut fast_fn = vec![value::sym(kw::FN), fast_params];
     fast_fn.extend(fast_body);
     let fast_fn = rebuild_list(heap, items[3], fast_fn);
 
@@ -337,13 +343,15 @@ fn linmap_rename_self(heap: &mut Heap, form: Value, name: value::Symbol, slow: V
     let items = match form.unpack() {
         ValueRef::Pair(_) => match heap.list_items(form) {
             Some(v) if !v.is_empty() => v,
-            _ => return form,
+            _ => return copy_form(heap, form),
         },
-        _ => return form,
+        // A literal (a vector of code) is copied too: the rewritten loop holds the other
+        // copy of this body, and a form is in one position (`copy_form`).
+        _ => return copy_form(heap, form),
     };
     if let ValueRef::Sym(h) = items[0].unpack() {
         if value::symbol_is(h, kw::QUOTE) {
-            return form;
+            return copy_form(heap, form);
         }
         if h == name {
             let mut c = vec![slow];
@@ -445,9 +453,11 @@ fn linmap_rewrite_form(
     let items = match form.unpack() {
         ValueRef::Pair(_) => match heap.list_items(form) {
             Some(v) if !v.is_empty() => v,
-            _ => return form,
+            _ => return copy_form(heap, form),
         },
-        _ => return form, // atom: symbols (incl. a bare `acc` return) pass through
+        // An atom: symbols (incl. a bare `acc` return) pass through; a vector, map or set
+        // literal is copied, since the unrewritten copy holds the original (`copy_form`).
+        _ => return copy_form(heap, form),
     };
     if let ValueRef::Sym(h) = items[0].unpack() {
         let second_is_acc =
@@ -511,8 +521,9 @@ fn linmap_rewrite_form(
         // `(table-get acc 1)`. The probe cannot catch this: a quoted form compiles to a
         // single `Node::Const`, so the linearity analysis sees no `acc` use at all and
         // passes, while the source rewrite walks straight through the quote.
+        // Copied, not returned: the unrewritten copy holds this very form (`copy_form`).
         if value::symbol_is(h, kw::QUOTE) {
-            return form;
+            return copy_form(heap, form);
         }
     }
     let out: Vec<Value> = items

@@ -268,12 +268,99 @@ Armed: the helper's failure now reports the run count, what was published, and e
 arm's JIT state (uncompiled / `BAILED` / native, calls, deopts, entry deopts), so the next
 occurrence says whether an arm never compiled, latched, or kept deopting.
 
+## KI-288 — two closures sharing one first body form ran one compiled body ⚠️ OPEN 2026-10-23
+
+**Open: the fix is in, its guards are written, and none of them has been run or
+sabotage-verified** (the machine it was written on runs no tests). Close it when they have.
+
+**Symptom.** Found by reading the VM body cache, not observed, so there is no verbatim error
+yet. What the code predicts, for a fold literal whose body opens with a quoted form:
+
+```lisp
+(defn lm-fold-tagged (xs seed)
+  (fold xs seed (fn (m x) (quote tally) (assoc m x (inc (get m x 0))))))
+(lm-fold-tagged (list :a :a) {})       ; {:a 2} — the table-built copy is compiled
+(lm-fold-tagged (list :a :a) {:r r})   ; r a rope: the unrewritten copy runs the table-built body
+```
+
+The second call runs `(do (%table-add m x 1) m)` on a map, so a table op's wrong-type error;
+in the other order the table-built copy runs the map ops on its table. With no rewrite at all,
+`` (defmacro both (q) `[(fn (x) ~q (+ x 1)) (fn (x) ~q (+ x 2))]) `` gives two closures of which
+the second, called after the first, answers `(+ x 1)`. Only on the VM: `BROOD_TIER=0` compiles
+nothing and is right.
+
+**Cause.** `compile/closure.rs` `cache_key` keys a compiled closure on the identity of its first
+arm's first body form (`VmCacheKey::Body`), and `compile_closure_timed` bakes the names of the
+FIRST instance's enclosing scope into it (`env_chain_names`, whose doc states the assumption:
+every instance of one `fn` form binds the same names). Both are sound only if a pair is in one
+code position. Three things put one pair in two:
+
+1. **The counted range loop** (`pipeline.rs` `counted_range_loop`, and the parked vector and list
+   loops) put the fold literal's body forms into the loop as they were, beside the fallback
+   `fold` that keeps the literal. Every `fn` inside the body was one pair built in two scopes.
+   **Harmless today, by luck**: the scopes differ only in the rewrite's gensyms, which the body
+   cannot name, and `capture_value` falls back to a by-name lookup, so a missing gensym reads
+   nil and nothing reads it. The rewrites run after the expansion walk, and at root little
+   rebuilds after them (`resolve` there only strips `/name` escapes, from a form that holds one;
+   `expand_static_quasiquotes` returns a quasiquote-free tree as it is), so the sharing reached
+   the compiler; in a module `resolve_walk` rebuilt every list and hid it.
+2. **The linear-map rewrites** (`linmap.rs`: the fold literal's table-built copy, and the defn
+   split's inner loop beside its unrewritten copy) rebuild every list but returned a
+   `(quote …)` as it was — also an improper list and a vector literal. A body that opens with a
+   quoted form gave the two copies the same first body form: two different closures, one cache
+   entry. `resolve` skips quoted forms whole, so modules were affected too.
+3. **The expansion walk** returned a `quote` / `quasiquote` form as it was, so a macro that
+   splices one quoted argument as the first body form of two closures did the same with no
+   rewrite involved.
+
+**Why it survived.** Every value test of the rewrites (`linmap_soundness_test`,
+`pipeline_fusion_test`) uses a literal whose first body form is a call, which the rewrites
+rebuild; `linmap_idiom.rs` pins what the expansion contains, never that it shares nothing. The
+reader gives each position its own pair, so code nobody rewrote or spliced could not show it.
+And the range-loop case, the one the rewrites were built around, is harmless, so nothing went
+wrong where anyone looked. The 2026-10-23 scaling note credited the walk's rebuilding with
+keeping the range loop's copy apart — true only in a module, since the rewrites run after the
+walk.
+
+**Fix.** One helper, `copy_form` (`eval/macros.rs`): a structural copy of a code tree, each new
+pair carrying its original's form record, vector / map / set literals rebuilt, a `(quote X)`
+given new cells while `X` stays shared (data is never compiled, and its identity is what the
+quote evaluates to). Every rewrite that places a sub-form a second time copies it: the three
+counted loops copy the body; the linear-map rewrites copy a quote, an improper list, a literal
+and the parameter lists they reuse. The expansion walk copies a `quote` / `quasiquote` form and
+an improper list instead of returning it, and copies the binder positions it leaves opaque. So
+every pair in `macroexpand_all`'s output is in one code position, by construction.
+
+Not done, deliberately: (a) **widening the cache key** to the compile context (enclosing names,
+self-name, module). It would separate case 1, but cases 2 and 3 are different closures in the
+same context; only hashing the whole body would separate those, and the AST key exists so one
+`fn` form compiles once across creations and processes, which the invariant keeps. (b) **The
+"return the original list when no child changed" optimisation** in the expansion walk: the
+walk's rebuilding is what gives each occurrence of a macro argument spliced twice its own
+cells (`` `(do ~f ~f) `` with `f` a `fn`, possibly in two scopes), so it would reopen case 3 for
+every unquoted form. The same in `resolve_walk` alone would be safe for this invariant (its only
+input is the walk's output, now one pair per position), but it is a perf change with nothing
+measured behind it here, so it is left for whoever can measure it.
+
+**Guard — written, not yet run.** `crates/lisp/tests/one_pair_one_position.rs`: five expansions
+(the range loop with a capturing inner `fn`, the fold literal and the defn split each opening
+with a quote, a fused pipeline, a macro splicing a quoted argument into two bodies), each
+asserting its rewrite fired and that no pair is reached twice outside quoted data.
+`tests/linmap_soundness_test.blsp` "a leading quoted form is the fast copy's own, not the
+unrewritten one's" (both rewrites, both call orders) and `tests/vm_body_identity_test.blsp`
+(the macro splice, capture-free and capturing) assert the values. **To do on the test
+machine**: run them; then put back, one at a time, `step_body.extend_from_slice(body)` in the
+three loops, `return form` for the quote in `linmap_rewrite_form` / `linmap_rename_self`, and
+`return Ok(form)` for the walk's quote, confirm the matching cases go red (and the value tests
+under the VM), record the output here, and close this.
+
 ## Index — status per issue
 
 Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](archive/known-issues-closed.md).
 
 | # | What | Status |
 |---|---|---|
+| KI-288 | **two closures sharing one first body form ran one compiled body** — the VM keys a compiled closure on that form, and the linear-map rewrites (a body opening with a quoted form) and a macro splicing one quoted argument into two bodies gave two closures the same one; the range loop shared its whole body, harmlessly | ⚠️ **OPEN 2026-10-23** — fix landed (`copy_form`: one pair, one position), guards written but not yet run or sabotage-verified |
 | KI-287 | **a guest could take a full peer's node name, and with it the peer's link and traffic** — a guest's name is only its `Hello` claim, so naming itself after a connected full peer with a new incarnation retired that peer's link, and the guest then received what was sent to the peer and could reach the pids in it; a same-incarnation duplicate kept the guest against the real peer, and a dial reused the guest's link. Found by reading; never observed | ⚠️ **OPEN 2026-10-23** — fixed in code (`register_link` refuses a guest a name a full link holds or has held, or another grant's guest holds; a full link always displaces a guest; dials and the mesh count only full links), guards written but **not yet run or sabotage-verified**. Left open by design: a name that is a full peer's elsewhere in the cluster and has never linked here |
 | KI-286 | **a guest link's frames could be admitted as a full peer's once its node name moved to another link** — the guest filter (ADR-415) was keyed by name and looked up per frame, so a full link reclaiming the name, `node/disconnect`, or a second connection by the guest itself emptied the entry while the guest's reader was still draining frames it had read, and those passed unfiltered (a `node/spawn` closure among them). Found by reading; never observed | ⚠️ **OPEN 2026-10-23** — fixed in code (the standing is the link's: `GuestLink` on `Conn`, handed to its reader at `establish`; `GUESTS` / `GUEST_COUNT` gone), guards written but **not yet run or sabotage-verified** — on the test machine before this closes. The name hijack beside it is KI-287 |
 | KI-285 | **a loader waiting on its header's dependency still blocked its worker**, and the prefetch that fixed it broke CI's contracts job | ✅ **FIXED 2026-10-21** — the CI break was a tier-up pre-load starting an unrelated load inside a module load; it now declines until the load is over, and the prefetch is restored. Guards: `tier_up_loads.rs` (red without the decline), `lazy_load_wait_parks` (un-ignored) |

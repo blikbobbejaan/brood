@@ -135,6 +135,17 @@
   (defn lm-fold-shadowed (xs)
     (let (fold (fn (c i f) :mine)) (fold xs {} (fn (m x) (assoc m x (inc (get m x 0))))))))
 
+;; 6. (2026-10-23, KI-288) A body that OPENS with a quoted form. Both rewrites rebuilt every list
+;; but returned a `(quote …)` as it was, so the in-place copy and the unrewritten one had the
+;; same first body form — and the VM keys a compiled closure on that form, so whichever copy
+;; ran first was compiled for both: the other then ran table ops on a map (or map ops on the
+;; table). The seeds alternate a plain map with a rope one to run both copies, in both orders.
+(defn lm-fold-tagged (xs seed)
+  (fold xs seed (fn (m x) (quote tally) (assoc m x (inc (get m x 0))))))
+(defn lm-tagged (xs m)
+  (quote tally)
+  (if (empty? xs) m (lm-tagged (rest xs) (assoc m (first xs) (inc (get m (first xs) 0))))))
+
 ;; Quoted data alongside a qualifying accumulator fold.
 (defn lm-quoted (xs acc)
   (if (empty? xs)
@@ -250,6 +261,15 @@
     (assert= {:a 1} (lm-fold-reset [:a :b :reset :a]))
     (assert= {:q 1 :a 1} (lm-fold-global [:a :reset :a]))
     (assert= {:q 1} lm-reset-base))
+
+  (test "a leading quoted form is the fast copy's own, not the unrewritten one's"
+    (let (r (text/from-string "x"))
+      (assert= {:a 2} (lm-fold-tagged (list :a :a) {}))
+      (assert= {:r r :a 2} (lm-fold-tagged (list :a :a) {:r r}))
+      (assert= {:a 2} (lm-fold-tagged (list :a :a) {}))
+      (assert= {:r r :a 2} (lm-tagged (list :a :a) {:r r}))
+      (assert= {:a 2} (lm-tagged (list :a :a) {}))
+      (assert= {:r r :a 2} (lm-tagged (list :a :a) {:r r}))))
 
   (test "quoted data is left alone by the source rewrite"
     (let (out (lm-quoted '(:a) {}))

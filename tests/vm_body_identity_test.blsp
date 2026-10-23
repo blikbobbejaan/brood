@@ -1,0 +1,30 @@
+;; One pair, one position (KI-288). The compiling VM keys a compiled closure on the identity
+;; of its first body form (`VmCacheKey::Body`), so two closures sharing that form are one
+;; cache entry: whichever is called first is compiled, and the other runs its body. The
+;; expansion walk rebuilt every list it returned EXCEPT a `quote` form, so a macro splicing
+;; one quoted argument as the first body form of two closures handed both the same pair.
+;; `crates/lisp/tests/one_pair_one_position.rs` pins the expansion; this pins the values.
+;;
+;; A file of its own: a macro called in the file that defines it makes the checker give up
+;; on the file's caller-derived parameters, which a larger file should not pay for.
+
+(defmodule vm-body-identity-test (:use test))
+
+(defmacro both-tagged (q) `[(fn (x) ~q (+ x 1)) (fn (x) ~q (+ x 2))])
+(def tagged-pair (both-tagged (quote tag)))
+
+;; The same splice, the closures built inside a function call so they capture a local.
+(defmacro both-tagged-capturing (q k) `[(fn (x) ~q (+ x ~k)) (fn (x) ~q (* x ~k))])
+(defn tagged-capturing (k) (both-tagged-capturing (quote tag) k))
+
+(describe "two closures sharing a spliced quoted first form"
+  (test "each runs its own body, called in either order"
+    (assert= 11 ((first tagged-pair) 10))
+    (assert= 12 ((nth tagged-pair 1) 10))
+    (assert= 11 ((first tagged-pair) 10)))
+
+  (test "each runs its own body when they capture a local"
+    (let (pair (tagged-capturing 3))
+      (assert= 30 ((nth pair 1) 10))
+      (assert= 13 ((first pair) 10))
+      (assert= 30 ((nth pair 1) 10)))))
