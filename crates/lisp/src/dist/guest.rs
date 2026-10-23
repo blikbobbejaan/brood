@@ -14,6 +14,7 @@
 //! receiver may run (ADR-033).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
 use crate::core::value::{self, Symbol};
@@ -43,6 +44,25 @@ struct GuestPeer {
 static GUESTS: LazyLock<Mutex<HashMap<Symbol, GuestPeer>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// `GUESTS.len()`, republished under the `GUESTS` lock by every write to it, so the
+/// per-frame filters ([`note_outbound`], [`admit`]) skip the lock and the lookup on a
+/// node with no guests — every frame of every link, on almost every node.
+///
+/// A zero read stands for the lookup that would have missed, and is exact where it
+/// guards anything. A guest link's frames are filtered only on its own reader thread,
+/// which `establish` spawns AFTER [`register`] stored the count: the spawn orders that
+/// store before every load on the thread, so a guest's frame never reads a zero older
+/// than its own grant. A sender's `note_outbound` racing a guest's registration from
+/// another thread reads either side of it, as its lock acquisition landed either side
+/// of the insert (the link is in `NODES` before it is a guest at all, so that window
+/// predates this count).
+static GUEST_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether any guest is connected — see [`GUEST_COUNT`].
+fn any_guests() -> bool {
+    GUEST_COUNT.load(Ordering::Acquire) != 0
+}
+
 /// Register (or replace) a grant for `cookie`.
 pub(crate) fn grant(cookie: String, names: HashSet<Symbol>, as_name: Option<String>) {
     let mut grants = crate::core::sync::write(&GRANTS);
@@ -70,18 +90,22 @@ pub(super) fn grants() -> Vec<Arc<Grant>> {
 
 /// Record that `peer` authenticated with `grant` — every frame from it is now filtered.
 pub(super) fn register(peer: Symbol, grant: Arc<Grant>) {
-    crate::core::sync::lock(&GUESTS).insert(
+    let mut guests = crate::core::sync::lock(&GUESTS);
+    guests.insert(
         peer,
         GuestPeer {
             grant,
             reachable: HashSet::new(),
         },
     );
+    GUEST_COUNT.store(guests.len(), Ordering::Release);
 }
 
 /// `peer`'s link is gone; so is what it was given.
 pub(super) fn forget(peer: Symbol) {
-    crate::core::sync::lock(&GUESTS).remove(&peer);
+    let mut guests = crate::core::sync::lock(&GUESTS);
+    guests.remove(&peer);
+    GUEST_COUNT.store(guests.len(), Ordering::Release);
 }
 
 /// Whether `peer` is a guest.
@@ -99,6 +123,9 @@ pub(crate) fn grant_of(peer: Symbol) -> Option<Arc<Grant>> {
 /// A message is about to go to `peer`: if it is a guest, every local pid in it becomes
 /// reachable by that guest — it has been told about them.
 pub(super) fn note_outbound(peer: Symbol, msg: &Message) {
+    if !any_guests() {
+        return;
+    }
     let mut guests = crate::core::sync::lock(&GUESTS);
     if let Some(guest) = guests.get_mut(&peer) {
         local_pids(msg, &mut guest.reachable);
@@ -108,6 +135,9 @@ pub(super) fn note_outbound(peer: Symbol, msg: &Message) {
 /// Whether a frame from `peer` may be acted on. A full peer's always may; a guest's only
 /// if it reaches what the guest was given and carries no code.
 pub(super) fn admit(peer: Symbol, frame: &Frame) -> bool {
+    if !any_guests() {
+        return true; // no guest is connected, so `peer` is a full one
+    }
     let guests = crate::core::sync::lock(&GUESTS);
     let Some(guest) = guests.get(&peer) else {
         return true;
