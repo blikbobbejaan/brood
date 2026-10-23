@@ -483,7 +483,7 @@ pub const FLAGS: &[DebugFlag] = &[
     f(
         "BROOD_LOAD_PARALLEL",
         ENGINE,
-        "opt IN to the parallel cold load (ADR-426): a cold project build loads its modules across a pool of processes instead of in walk order in this one. Off by default — a module computing load-time values from state other modules write can build differently (bedit did)",
+        "opt IN to the parallel cold load (ADR-426): a cold project build loads its modules across a pool of processes instead of in walk order in this one. EXPERIMENTAL: a module computing load-time values from state other modules write can build differently, and cross-module require cycles can deadlock the pool (bedit did both)",
     ),
     f(
         "BROOD_NO_CHECK_CACHE",

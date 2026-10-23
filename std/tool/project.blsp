@@ -745,7 +745,8 @@ only; `tests/` files come from [[collect-tests]].
     ;; values from state other modules write (a registry read at load), and the walk's order
     ;; is something existing code depends on — bedit's image built in the pool differed in 89
     ;; of 116 module sections and its markdown-preview tests went red on a warm run. Until
-    ;; that is understood, the pool is a choice, not the default.
+    ;; that is understood, the pool is a choice, not the default. It can also DEADLOCK on a
+    ;; require cycle that spans two workers (bedit hung 2 runs in 4) — experimental only.
     (and (= (os/env "BROOD_LOAD_PARALLEL") "1")
       (>= (count modules) *load-min-parallel*)
       (not (any? modules (fn (e) (contains? before (second e))))))))

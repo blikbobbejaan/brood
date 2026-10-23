@@ -3467,3 +3467,9 @@ at load. Hypothesis: load-order dependence (a module computing load-time values 
 modules write). The pool is `BROOD_LOAD_PARALLEL=1` until that is pinned; the default build is
 exactly the pre-ADR-426 sequential walk again. The throwing-module test's failing module moved
 to the end of the chain (CI timed it out: a failure deep in a chain is slow — ROADMAP).
+
+2026-10-24 (ADR-426, the second finding): the parallel pool also DEADLOCKS — a parallel build of
+bedit hung in 2 runs of 4. Cross-process require cycles: in one process a module requiring
+itself back mid-load proceeds; across workers each holds one claim and parks on the other's.
+The flag is marked experimental; the design that could make the pool safe (schedule by the
+header require graph, one worker per strongly-connected component) is recorded in the ADR.

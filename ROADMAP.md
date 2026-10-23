@@ -497,8 +497,10 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
       the 302 × 3k rig; with unchanged sections copied, `nest run` after an edit 0.30 s). A COLD
       build CAN load in a pool of processes (ADR-426: 8.5 s → 2.1 s) — opt-in
       (`BROOD_LOAD_PARALLEL=1`) since bedit's pool-built image differed (89 of 116 sections;
-      mdpreview red on a warm run). **Open:** find which bedit value differs and why (load-order
-      dependence is the hypothesis), then make it the default.
+      mdpreview red on a warm run). **Open, and bigger than first thought:** the pool also
+      DEADLOCKS on cross-process require cycles (bedit hung 2 runs in 4). Next design: schedule
+      by the header require graph — one worker per strongly-connected component, a component
+      only after its dependencies (ADR-426's amendment).
 - [x] **Inline `sig` signatures** — DONE 2026-10-22 (ADR-420) as typed parameters,
       `(defn area (w:number h:number -> number) …)`: the planned `((x int) -> int)` collided
       with list patterns and `&optional` defaults. `_` marks an open position, and a missing
