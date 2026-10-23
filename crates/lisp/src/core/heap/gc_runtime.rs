@@ -1318,8 +1318,9 @@ impl Heap {
         // walk above can't reach. Rewrite them in place with the SAME `forward`, so a
         // literal shared with an already-evacuated global maps to the same new index,
         // and a literal reachable ONLY from a live arm is evacuated here on first
-        // sight. Clone the registry (cheap `Arc` bumps) to drop the `&self` borrow
-        // before the `&old_code`/`&mut forward` closure. This is what lets the safepoint
+        // sight. The closure borrows only locals (`old_code` was swapped out of `self`), so
+        // the registry is walked in place — no `Vec<Arc<_>>` clone, so no atomic increment
+        // and decrement per active frame, as the probe walk already does. This is what lets the safepoint
         // compact even while the VM is mid-call (no deferral, region stays bounded).
         //
         // **Visit each DISTINCT arm once** — the same reason the probe walk above dedupes,
@@ -1331,9 +1332,8 @@ impl Heap {
         // which is exactly why it went unnoticed: a compaction landing on a deep process just
         // took much longer than it needed to. That is the KI-14 shape, in the sibling walk
         // that never got the fix.
-        let live_arms = self.live_vm_arms.clone();
         let mut seen_arms: HashSet<*const crate::eval::compile::CompiledArm> = HashSet::new();
-        for arm in &live_arms {
+        for arm in self.live_vm_arms.iter() {
             if !seen_arms.insert(Arc::as_ptr(arm.arc())) {
                 continue;
             }

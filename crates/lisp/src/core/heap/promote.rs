@@ -282,9 +282,12 @@ impl Heap {
         // One read of the current generation for the whole spine: the caller holds the
         // `promote_lock` read guard, so aging cannot flip it underneath us — and the
         // position key must name the same generation as the handle we mint.
+        // The generation's slabs are loaded once too, under the same guarantee — not one
+        // `arc-swap` guard acquisition per cons cell.
         let cur_gen = self.runtime.cur_gen();
+        let code = self.runtime.cur_code();
         for (i, (src, head)) in nodes.into_iter().enumerate().rev() {
-            let idx = self.runtime.cur_code().pairs.push((head, acc));
+            let idx = code.pairs.push((head, acc));
             if let Some(entry) = self
                 .cold()
                 .and_then(|c| c.form_pos.get(&form_pos_key(src)).cloned())
