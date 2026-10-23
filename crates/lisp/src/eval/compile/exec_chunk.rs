@@ -742,9 +742,13 @@ pub(crate) fn exec_chunk(
                 // call path (which never needs them) has declined.
                 let mut argv: SmallVec<[Value; 4]>;
                 let mut fast: Option<(Arc<ArmHandle>, EnvId, (u32, u32))> = None;
-                // Set by the unstaged IC path when `vm_call_ic_self` proved this tail call
-                // targets THIS arm in THIS env — `fast` then stays `None` (no clone).
+                // Set by either IC path when `vm_call_ic_self` proved this tail call targets
+                // THIS arm in THIS env — `fast` then stays `None` (no clone). Asked only when
+                // the inline self-tail reset below can take the call (no optional or rest
+                // parameters): a hit it could not take would leave `fast` empty and send the
+                // call through `dispatch` instead of straight to the arm.
                 let mut self_tail = false;
+                let self_tail_probe = *tail && arm.noptional == 0 && arm.rest_slot.is_none();
                 // KI-19: a *staged* head was resolved before the args (it sits below them),
                 // so the callee is that value — not a fresh resolution, which would observe
                 // a `def` an argument performed. The call-site IC is still consulted for the
@@ -759,7 +763,26 @@ pub(crate) fn exec_chunk(
                         && heap.is_global(cur_env)
                     {
                         let epoch = heap.global_epoch();
-                        if let Some((cached, payload)) =
+                        // A self-tail call first asks the non-cloning question the unstaged
+                        // path asks (`vm_call_ic_self`): is the IC's arm THIS arm in THIS
+                        // env? Its cached callee must still be the staged value itself —
+                        // the same identity test as below — and then the inline self-tail
+                        // reset takes the call with `fast` left `None`: no `Arc` increment
+                        // and decrement per loop iteration for a handle it would drop.
+                        let self_hit = if self_tail_probe {
+                            heap.vm_call_ic_self(*site, *sym, argc as u32, epoch, arm, cur_env)
+                        } else {
+                            None
+                        };
+                        if let Some(cached) = self_hit
+                            && matches!(
+                                (cached.unpack(), v.unpack()),
+                                (ValueRef::Fn(a), ValueRef::Fn(b)) if a == b
+                            )
+                        {
+                            crate::perf_bump!(call_ic_hit);
+                            self_tail = true;
+                        } else if let Some((cached, payload)) =
                             heap.vm_call_ic_probe(*site, *sym, argc as u32, epoch)
                         {
                             // Identity, not equality: the IC's cached arm is only valid
@@ -775,7 +798,7 @@ pub(crate) fn exec_chunk(
                             }
                         }
                     }
-                    if fast.is_none() {
+                    if fast.is_none() && !self_tail {
                         crate::perf_bump!(call_ic_miss);
                         fast = match v.unpack() {
                             ValueRef::Fn(id)
@@ -796,7 +819,7 @@ pub(crate) fn exec_chunk(
                     let drop_base = n - argc;
                     if *site != NO_SITE && heap.is_global(cur_env) {
                         let epoch = heap.global_epoch();
-                        let self_hit = if *tail {
+                        let self_hit = if self_tail_probe {
                             heap.vm_call_ic_self(*site, *sym, argc as u32, epoch, arm, cur_env)
                         } else {
                             None
