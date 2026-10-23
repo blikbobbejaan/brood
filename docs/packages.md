@@ -327,32 +327,28 @@ resolved it by hand once and committed the lock file" is *plenty*.
 ### Namespace collisions (ADR-070)
 
 A *version* conflict (above) is two requests for the same dependency. A
-**namespace collision** is different: two *unrelated* providers that each ship a
-module of the same name. Because namespaces aren't package-rooted yet, every
-module lands in the one flat global table under its `(defmodule …)` name — so two
-providers of `util` would clobber. `require` loads whichever `util.blsp` is first
-on `*load-path*`; the other never loads, and any code depending on the loser
-silently binds the *wrong* `util`:
+**namespace collision** is different: two providers that each ship a module of the
+same name. Namespaces are package-rooted (ADR-070) — a dependency `foo`'s `b` is
+`foo/b` — so two *dependencies* may both ship a `util`. Two cases are still refused,
+at resolution time (`fetch`/`add`/the auto-fetch on every subcommand), naming both
+providers:
+
+- **Two of your own source files declare the same `(defmodule …)`.** A package
+  cannot hold two modules of one name.
+- **Your project declares a module a dependency also declares** (other than `main`).
+  A dev run roots the two apart, but a release bundle keeps your modules unrooted and
+  loads a uniquely-named dependency module at root too, so both bind the same globals
+  and the last one loaded wins — a release that fails while every test passed:
 
 ```
-$ nest run
-error: package: module name collision — 'b' is provided by both your project
-  and dependency 'foo'; rename one (namespaces aren't package-rooted yet — ADR-070)
+$ nest check
+error: package: module name collision — your project's 'web/endpoint' is also a
+  module of dependency 'hatch'; a release would load one in place of the other.
+  Rename your module
 ```
 
-So the package manager **detects and rejects** it at resolution time
-(`fetch`/`add`/the auto-fetch on every subcommand), naming both providers. Note
-the providers checked include **your own project's modules**, not just deps — a
-dep shadowing a module you wrote is the same bug. A provider's namespaces are read
-from each source file's `(defmodule …)` name (the name that actually clobbers),
-not the filename.
-
-The fix is to rename one. The structural cure — **package-rooted namespaces**
-(`foo/b` instead of `b`, collisions *impossible*) plus author `:exports` and
-import aliases `[mod :as m]` — is the recorded future direction (ADR-070 *Future
-direction*), deferred until the editor's multi-author plugin ecosystem makes it
-pay. It's a loader-level change that won't churn package source, so deferring it
-is nearly free.
+A provider's modules are read from each source file's `(defmodule …)` name (the
+name that actually clobbers), not the filename. The fix is to rename yours.
 
 ### Reserved names — you can't name a package after the stdlib (ADR-220)
 

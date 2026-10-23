@@ -1314,11 +1314,36 @@ say). Advisory, like every signing check: a bad or changed signature is reported
           (->string (get e :name))
           "' namespace, so this dependency cannot be used until its author renames it")))))
 
+;; A module of YOUR project that a dependency also declares. A dev run roots the two apart
+;; (`myapp/web/endpoint` beside hatch's), but a release bundle keeps the root project
+;; unrooted and loads a uniquely-named dependency module at ROOT as well, so both bind the
+;; same globals and whichever loads last wins. mur-forge's `web/endpoint` was replaced by
+;; hatch's exactly so, and the released machine did not boot, with every dev run and test
+;; green. Refused here, at resolution, so `nest check`/`test`/`run` fail the way the release
+;; would. `own` is the project's module names; `providers` the `[dep-name src-dir]` pairs.
+(defn- package-check-dependency-shadowing (own providers)
+  (fold providers
+    nil
+    (fn (_ provider)
+      (let (clash (seq/find (package-provided-modules (second provider))
+                    (fn (mod) (and (includes? own mod) (not (package-entry-module? mod))))))
+        (when clash
+          (error "package: module name collision — your project's '"
+            clash
+            "' is also a module of dependency '"
+            (first provider)
+            "'; a release would load one in place of the other. Rename your module"))))))
+
 ;; The guard the verbs share: reject a dep named after the stdlib, then any
-;; cross-provider module-name collision.
+;; cross-provider module-name collision, then a project module a dependency also declares.
 (defn- package-guard-collisions (root entries)
   (package-guard-reserved-names entries)
-  (package-check-namespace-collisions (package-collision-sources root entries)))
+  (let (sources (package-collision-sources root entries))
+    (package-check-namespace-collisions sources)
+    (package-check-dependency-shadowing (apply append
+                                          (map sources
+                                            (fn (source) (package-provided-modules (second source)))))
+      (map entries (fn (entry) [(->string (get entry :name)) (package-dep-src-dir entry)])))))
 
 ;; --- the lock file -----------------------------------------------------------
 ;; project.lock.blsp is generated, committed, and plain Brood data so a PR diff is

@@ -3404,3 +3404,13 @@ those closures were deferred to the tree-walker for good (and baked into the pre
 way). It asks `heap.global()` now: loading `path` 108.6M → 93.6M (pre-ADR-423: 92.8M), runtime
 `<anon>` deferrals 20 → 1. Guard: `boot::builder_scope_tests` compiles `(/mm 5)` on a builder
 heap through `compile` (sabotage-verified: `(mm 5)` comes back unexpanded).
+
+2026-10-23 (a project module a dependency also declares is refused): mur-forge named its server
+module `web/endpoint`, which hatch also ships; every dev run and test passed (dev roots the two
+apart), and the release did not boot — a bundle keeps the root project unrooted and loads a
+uniquely-named dependency module at root too, so both bound `web/endpoint/serve` and hatch's
+won. The package guard every verb runs (`package-guard-collisions`) now also refuses a root
+module any dependency declares (`main` excepted), naming both, so `nest check`/`test`/`run` fail
+the way the release would. No sibling project trips it today (scanned against each `_deps/`).
+`docs/packages.md` § Namespace collisions rewritten — it still said namespaces were not rooted.
+Tests not run on this machine; two cases in `tests/package_test.blsp` run in CI.

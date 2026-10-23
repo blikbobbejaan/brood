@@ -1115,6 +1115,27 @@
                                                              ["dependency 'b'"
                                                                (path/join b "src")]))
         nil)))
+  ;; A release bundle loads a dependency's uniquely-named module at ROOT, beside the
+  ;; project's own unrooted modules, so a project module a dependency also declares binds
+  ;; the same globals in a release (mur-forge's `web/endpoint` against hatch's).
+  (test "a project module a dependency also declares collides loudly, naming both"
+    (let (dependency (pkg-fixture-root))
+      (file/mkdir (path/join (path/join dependency "src") "web"))
+      (file/spit (path/join (path/join (path/join dependency "src") "web") "endpoint.blsp")
+        "(defmodule web/endpoint)\n(defn serve () 1)\n")
+      (let (message (try
+                      (package/package-check-dependency-shadowing (list 'app
+                                                                    (symbol "web/endpoint"))
+                        (list ["hatch" (path/join dependency "src")]))
+                      (catch e (error-message e))))
+        (is (includes? message "'web/endpoint'"))
+        (is (includes? message "'hatch'")))))
+  (test "a project and a dependency that share only `main` do not collide"
+    (let (dependency (pkg-fixture-root))
+      (pkg-write-project dependency "lib" "main" "(defn main () 1)" "")
+      (assert= (package/package-check-dependency-shadowing (list 'main 'app)
+                 (list ["lib" (path/join dependency "src")]))
+        nil)))
   ;; A hierarchical module `(defmodule gui/window)` lives in a SUBdirectory
   ;; (`src/gui/window.blsp`), so the scan must recurse — a top-level-only listing
   ;; would miss it and two providers of the same nested namespace would collide
