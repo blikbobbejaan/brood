@@ -834,9 +834,9 @@ fn dense_idx(key: Value) -> Option<usize> {
 /// exactly as map keys do). Buckets are size 0–1 except on a genuine hash collision.
 fn find_idx(heap: &mut Heap, bucket: &[(Message, Message)], key: Value) -> Option<usize> {
     bucket.iter().position(|(km, _)| {
-        // A scalar key compares without being rebuilt in the heap first — the common
-        // table key (an index, an id, a keyword), on every get/put/has?.
-        if let Some(eq) = scalar_key_eq(km, key) {
+        // A scalar or string key compares without being rebuilt in the heap first — the
+        // common table key (an index, an id, a keyword, a name), on every get/put/has?.
+        if let Some(eq) = direct_key_eq(heap, km, key) {
             return eq;
         }
         let k = from_message(heap, km);
@@ -845,10 +845,12 @@ fn find_idx(heap: &mut Heap, bucket: &[(Message, Message)], key: Value) -> Optio
 }
 
 /// Whether the stored key `km` equals `key`, decided without reconstructing it when
-/// both are immediate scalars; `None` when either is not (a compound key resolves
-/// through `from_message` + `equal`, exactly as before). Structural equality's rules
-/// for scalars: an int and a float are never equal, NaN is refused as a key upstream.
-fn scalar_key_eq(km: &Message, key: Value) -> Option<bool> {
+/// both are immediate scalars or either is a string; `None` otherwise (a compound key
+/// resolves through `from_message` + `equal`, exactly as before). Structural equality's
+/// rules: an int and a float are never equal, NaN is refused as a key upstream, and a
+/// string equals only a string with the same text (`from_message` rebuilds a stored
+/// `Str` / `StrShared` as a `Value::Str`, and `equal` has no other arm for one).
+fn direct_key_eq(heap: &Heap, km: &Message, key: Value) -> Option<bool> {
     Some(match (km, key) {
         (Message::Int(a), Value::Int(b)) => *a == b,
         (Message::Float(a), Value::Float(b)) => *a == b,
@@ -856,6 +858,9 @@ fn scalar_key_eq(km: &Message, key: Value) -> Option<bool> {
         (Message::Sym(a), Value::Sym(b)) => *a == b,
         (Message::Bool(a), Value::Bool(b)) => *a == b,
         (Message::Nil, Value::Nil) => true,
+        (Message::Str(text), Value::Str(id)) => text.as_str() == heap.string(id),
+        (Message::StrShared(blob), Value::Str(id)) => blob.as_str() == Some(heap.string(id)),
+        (Message::Str(_) | Message::StrShared(_), _) => false,
         (
             Message::Int(_)
             | Message::Float(_)
@@ -868,7 +873,8 @@ fn scalar_key_eq(km: &Message, key: Value) -> Option<bool> {
             | Value::Keyword(_)
             | Value::Sym(_)
             | Value::Bool(_)
-            | Value::Nil,
+            | Value::Nil
+            | Value::Str(_),
         ) => false,
         _ => return None,
     })
@@ -896,13 +902,40 @@ pub fn put(heap: &mut Heap, id: u64, key: Value, val: Value) -> LispResult {
     // Hashed path (migrating first if still dense — an out-of-shape key/value
     // leaves the dense world for good).
     let mut guard = lock(&store.hashed);
+    let hash = heap.hash_value(key);
+    // An overwrite keeps the stored key, so search an already-hashed, live table first
+    // and copy the key out of the heap only for an insert. A found key equals a stored
+    // one, so it is sendable and its `to_message` could not have failed — skipping it
+    // changes no error. A dense table (no map yet) or a dropped one is not searched here:
+    // the original order below runs — the key, then the value, then the dropped check.
+    let searched = match guard.as_mut() {
+        Some(map) if !store.dropped.load(Ordering::SeqCst) => {
+            let found = map
+                .get(&hash)
+                .and_then(|bucket| find_idx(heap, bucket, key));
+            if let Some(i) = found {
+                let vm = to_message(heap, val)?;
+                if let Some(bucket) = map.get_mut(&hash) {
+                    bucket[i].1 = vm;
+                }
+                return Ok(Value::table(id));
+            }
+            true
+        }
+        _ => false,
+    };
     // Clone both out of the GC heap (also rejects non-sendable values).
     let km = to_message(heap, key)?;
     let vm = to_message(heap, val)?;
-    let hash = heap.hash_value(key);
     let map = store.hashed_or_migrate(&mut guard)?;
     let bucket = map.entry(hash).or_default();
-    match find_idx(heap, bucket, key) {
+    // A map that existed was searched above and has no such key; one migrated just now
+    // from dense may hold it (an int key whose new value is not a dense scalar).
+    match if searched {
+        None
+    } else {
+        find_idx(heap, bucket, key)
+    } {
         Some(i) => bucket[i].1 = vm,
         None => bucket.push((km, vm)),
     }
