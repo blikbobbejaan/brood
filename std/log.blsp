@@ -71,7 +71,9 @@ and `impl LogBackend` for it; reuse `backend-passes?` for the standard gate."
 
 (defability LogBackend
   "How a backend handles one log record. The logger calls `backend-emit` for each of its
-  backends in turn; the backend decides whether and how the record is written."
+  backends in turn; the backend decides whether and how the record is written.
+
+    (log/backend-emit (log/stdout-backend) {:level :info :ts 0 :msg \"up\"})   ;=> nil, the line written"
   (backend-emit [self record] :-> nil))
 
 (defn backend-passes? (b record)
@@ -164,7 +166,9 @@ e.g. an editor appending to its `*Messages*` buffer. Async and share-nothing.
 (defserver server
   (cfg)
   "The logger process: carries `{:level :backends}` and dispatches each
-`[:log rec]` cast to every backend that passes the global and per-backend levels."
+`[:log rec]` cast to every backend that passes the global and per-backend levels.
+
+    (gen/start log/server {:level :info :backends [(log/stdout-backend)]})   ;=> the logger's pid"
   (cast [:log rec]
     (do
       (when (>= (log-rank (get rec :level)) (log-rank (get cfg :level)))

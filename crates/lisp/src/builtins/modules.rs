@@ -72,7 +72,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(0),
         Sig::new(vec![], list_ty),
         &[],
-        "The names of every module baked into this binary, as a sorted list of strings — what a `name/…` reference or `(:use name)` resolves without a load-path. Backs `nest` shell completion and lets a name be validated before referencing it.",
+        "The names of every module baked into this binary, as a sorted list of strings — what a `name/…` reference or `(:use name)` resolves without a load-path. Backs `nest` shell completion and lets a name be validated before referencing it.\n\n    (reflect/builtin-modules)   ;=> (\"audit\" \"base64\" … \"json\" …)",
         builtin_modules);
     // Release-bundle mechanism (ADR-038): an app produced by `nest release`
     // carries its source appended to the binary. These let `std/tool/project.blsp`

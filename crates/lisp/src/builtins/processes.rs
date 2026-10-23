@@ -142,21 +142,21 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![pid_ty], nil_ty),
         &["pid"],
-        "Symmetrically link the current process and pid, local or remote. When either dies, the other gets a [:EXIT pid reason] message if it set (proc/trap-exit true), else dies too on an abnormal reason (propagation cascades through links; :normal does not propagate). A remote link fires :noconnection on net-split; linking an already-dead/unreachable pid notifies the caller (:noproc / :noconnection). Returns nil.",
+        "Symmetrically link the current process and pid, local or remote. When either dies, the other gets a [:EXIT pid reason] message if it set (proc/trap-exit true), else dies too on an abnormal reason (propagation cascades through links; :normal does not propagate). A remote link fires :noconnection on net-split; linking an already-dead/unreachable pid notifies the caller (:noproc / :noconnection). Returns nil.\n\n    (link pid)   ;=> nil, and a crash of either now reaches the other",
         link_proc);
     primitives.def(
         "unlink",
         Arity::exact(1),
         Sig::new(vec![pid_ty], nil_ty),
         &["pid"],
-        "Drop the symmetric link between the current process and pid (local or remote; best-effort). Returns nil.",
+        "Drop the symmetric link between the current process and pid (local or remote; best-effort). Returns nil.\n\n    (unlink pid)   ;=> nil",
         unlink_proc);
     primitives.def(
         "proc/trap-exit",
         Arity::exact(1),
         Sig::new(vec![any], bool_ty),
         &["on"],
-        "Set the current process's trap_exit flag; returns the previous value. When on, a linked peer's death arrives as a trappable [:EXIT pid reason] message instead of killing this process.",
+        "Set the current process's trap_exit flag; returns the previous value. When on, a linked peer's death arrives as a trappable [:EXIT pid reason] message instead of killing this process.\n\n    (proc/trap-exit true)   ;=> false, the previous setting",
         trap_exit_proc);
     primitives.def(
         "%process-flag",
@@ -184,7 +184,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::range(0, 2),
         Sig::new(vec![any, any], any),
         &["&optional", "pid", "opts"],
-        "Read, arm, or clear a subscription to the kernel system monitor — runtime events pushed to subscriber processes as [:system kind subject-pid detail] mailbox messages (the observability event stream's kernel sources). Kinds: :gc {:pause-us :collections :live} (a collection of subject's heap finished), :spawn (detail = parent pid), :exit (detail = the structured exit reason monitors see; :exit-abnormal selects only CRASHES — a reason other than :normal, :kill/:killed, :shutdown or [:shutdown x], the deliberate exits a supervisor produces — filtered before any message is built), :deopt (detail = the JIT arm's fn name, or nil). ONE SUBSCRIPTION PER SUBSCRIBER PID (ADR-305): no args reads the CALLER's config map (nil if none); (proc/system-monitor :all) lists every subscription; (proc/system-monitor nil) clears the caller's and (proc/system-monitor nil pid) clears pid's; (proc/system-monitor pid) arms every event at pid (raising if pid is not a live process);(proc/system-monitor pid {:gc true :gc-min-pause-us 1000 :exit-abnormal true}) selects exactly the truthy keys (:gc-min-pause-us = report only pauses that long). Arming/clearing returns that pid's PREVIOUS config. Events about a subscriber itself are never sent to it (no feedback loops), and a subscriber's death drops its subscription. Policy lives in telemetry/watch-runtime (re-emits as telemetry events) and crash-report (the default crash reporter).",
+        "Read, arm, or clear a subscription to the kernel system monitor — runtime events pushed to subscriber processes as [:system kind subject-pid detail] mailbox messages (the observability event stream's kernel sources). Kinds: :gc {:pause-us :collections :live} (a collection of subject's heap finished), :spawn (detail = parent pid), :exit (detail = the structured exit reason monitors see; :exit-abnormal selects only CRASHES — a reason other than :normal, :kill/:killed, :shutdown or [:shutdown x], the deliberate exits a supervisor produces — filtered before any message is built), :deopt (detail = the JIT arm's fn name, or nil). ONE SUBSCRIPTION PER SUBSCRIBER PID (ADR-305): no args reads the CALLER's config map (nil if none); (proc/system-monitor :all) lists every subscription; (proc/system-monitor nil) clears the caller's and (proc/system-monitor nil pid) clears pid's; (proc/system-monitor pid) arms every event at pid (raising if pid is not a live process);(proc/system-monitor pid {:gc true :gc-min-pause-us 1000 :exit-abnormal true}) selects exactly the truthy keys (:gc-min-pause-us = report only pauses that long). Arming/clearing returns that pid's PREVIOUS config. Events about a subscriber itself are never sent to it (no feedback loops), and a subscriber's death drops its subscription. Policy lives in telemetry/watch-runtime (re-emits as telemetry events) and crash-report (the default crash reporter).\n\n    (proc/system-monitor (self) {:exit-abnormal true})   ;=> nil, the previous config",
         system_monitor);
     primitives.def(
         "%spawn-count",
@@ -231,7 +231,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         // `:name` lookups in `send`/`node-name` use keywords, so the sig must too.
         Sig::new(vec![sym.union(kw), pid_ty], pid_ty),
         &["name", "pid"],
-        "Bind a local name so peers can address this process via {:name name :node this-node}. Returns the pid. Replaces any previous holder of the name. A pid that has already exited binds nothing — the same outcome as registering it and the process exiting, which releases its names.",
+        "Bind a local name so peers can address this process via {:name name :node this-node}. Returns the pid. Replaces any previous holder of the name. A pid that has already exited binds nothing — the same outcome as registering it and the process exiting, which releases its names.\n\n    (proc/register :logger pid)   ;=> pid",
         register_name);
     primitives.def(
         "proc/whereis",
@@ -245,7 +245,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![sym.union(kw)], bool_ty),
         &["name"],
-        "Release the name `name`, so nothing is registered under it; true if a process was bound to it, false if it was already free. The inverse of `proc/register`, which had none — a name could only be released by its process dying, so a service could not hand its name to a replacement or step down without exiting. Strictly local.",
+        "Release the name `name`, so nothing is registered under it; true if a process was bound to it, false if it was already free. The inverse of `proc/register`, which had none — a name could only be released by its process dying, so a service could not hand its name to a replacement or step down without exiting. Strictly local.\n\n    (proc/unregister :brood-doc-nobody)   → false",
         unregister_name);
     primitives.def(
         "proc/alive?",

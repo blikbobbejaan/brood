@@ -125,14 +125,18 @@ The primary source is consulted first, then `*image-sources*` in install order."
 ;; — not the root one. A module can READ a root global (`/*load-path*`), but it cannot rebind
 ;; it, so this pair belongs where the variable does.
 (defn reflect/set-load-path (dirs)
-  "Replace the module search path with `dirs` (a list of directory strings); returns it."
+  "Replace the module search path with `dirs` (a list of directory strings); returns it.
+
+    (reflect/set-load-path (list \"src\" \"lib\"))   ;=> (\"src\" \"lib\")"
   (def *load-path* dirs)
   ;; A module the miss path has already failed to find may be reachable down a path we did
   ;; not have a moment ago, so the kernel's record of absences cannot outlive this (ADR-335).
   (%forget-absent-modules!)
   *load-path*)
 (defn reflect/add-load-path (& dirs)
-  "Prepend `dirs` to the module search path (skipping any already present); returns the new path."
+  "Prepend `dirs` to the module search path (skipping any already present); returns the new path.
+
+    (reflect/add-load-path \"vendor\")   ;=> (\"vendor\" \"src\" …)"
   (reflect/set-load-path (append (seq/reject dirs (fn (d) (includes? *load-path* d))) *load-path*)))
 
 ;; Package-rooted namespaces (ADR-070): a *dependency* `foo` providing a module `b`

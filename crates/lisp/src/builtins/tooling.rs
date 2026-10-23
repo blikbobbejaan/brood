@@ -150,7 +150,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(0),
         Sig::nullary(list_ty),
         &[],
-        "Every globally bound symbol, sorted by spelling.",
+        "Every globally bound symbol, sorted by spelling.\n\n    (includes? (reflect/global-names) 'map)   → true",
         global_names,
     );
     primitives.def(
@@ -158,14 +158,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(0),
         Sig::nullary(list_ty),
         &[],
-        "The special-form / core-macro names (strings) that read as keywords — the canonical list shared by the syntax highlighter and the LSP.",
+        "The special-form / core-macro names (strings) that read as keywords — the canonical list shared by the syntax highlighter and the LSP.\n\n    (includes? (reflect/special-forms) \"let\")   → true",
         special_forms);
     primitives.def(
         "reflect/doc-forms",
         Arity::exact(0),
         Sig::nullary(map_ty),
         &[],
-        "The def... heads that carry a docstring, as head -> :fn or :head — the canonical list shared by the syntax highlighter and the LSP. :fn means the head builds a function, where a lone trailing string is the return value, not a doc.",
+        "The def... heads that carry a docstring, as head -> :fn or :head — the canonical list shared by the syntax highlighter and the LSP. :fn means the head builds a function, where a lone trailing string is the return value, not a doc.\n\n    (get (reflect/doc-forms) \"defn\")   → :fn",
         doc_forms,
     );
     primitives.def(

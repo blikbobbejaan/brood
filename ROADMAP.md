@@ -528,7 +528,7 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
 > carried forward. Three of this list's claims had gone stale in the reader's favour — an
 > item recorded as open can be *fixed* and still read as work, which is its own cost.
 
-- [ ] **Examples.** 2026-10-22 (later): illustrations (` ;=> `, read and callee-checked, not
+- [x] **Examples.** DONE 2026-10-23 — `audit/exampleless` is **0**: the last 120 (Rust builtins, `defrecord`-generated constructors/accessors — now generated with an illustration — and ability ops) carry one. 2026-10-22 (later): illustrations (` ;=> `, read and callee-checked, not
       run) cover the functions whose results depend on the world — ~550 added; with every
       module loaded `audit/exampleless` is **120**, nearly all Rust builtins (docs in `crates/`)
       and `defrecord`-generated constructors/accessors. Earlier the same day: 211 executed examples added across 38 std files (every pure,

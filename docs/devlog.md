@@ -3441,3 +3441,9 @@ bug any concurrent load could hit (`crates/cli/tests/rehome_keeps_positions.rs`)
 2026-10-23 (image write): profiled the cold build's image step after ADR-426 — the kernel's
 encode is 0.6 s, the Brood section grouping was 1.13 s (`project-image-section-of` split and
 re-joined 208 000 names). One `%str-last-index-of` + substring: image step 1.8 s → 1.1 s.
+
+2026-10-23 (examples, finished): `audit/exampleless` 120 → **0** with every module loaded. The
+Rust builtins' doc strings carry illustrations (seven run as executed examples); `defrecord`
+now GENERATES an illustration in each constructor and accessor docstring, so every record —
+std's and every future one — is covered; the ability ops take theirs from the ability's
+docstring. Whole-image doctest 0 failures.

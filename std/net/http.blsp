@@ -343,7 +343,9 @@ exactly. There is no mode flip-back — outbound writes are mode-independent
 
 (defability Response
   "How a handler's return value is written to a connection: everything from the status
-  line to who closes the socket."
+  line to who closes the socket.
+
+    (http/send-response (http/response 200 {} \"ok\") sock)   ;=> nil, written and the socket closed"
   (send-response [self sock] :-> nil))
 
 (defrecord response (status headers body))

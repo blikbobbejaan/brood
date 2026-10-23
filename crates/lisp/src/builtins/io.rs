@@ -39,14 +39,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], nil_ty),
         &["s"],
-        "Write the ready string `s` to the current stdout sink — the active capture buffer (`with-out-str`) if set, else real stdout. The default `*out*` port.",
+        "Write the ready string `s` to the current stdout sink — the active capture buffer (`with-out-str`) if set, else real stdout. The default `*out*` port.\n\n    (with-out-str (%write-out \"hi\"))   → \"hi\"",
         write_out);
     primitives.def(
         "%write-err",
         Arity::exact(1),
         Sig::new(vec![string], nil_ty),
         &["s"],
-        "Write the ready string `s` to real stderr (never captured). The default `*err*` port.",
+        "Write the ready string `s` to real stderr (never captured). The default `*err*` port.\n\n    (%write-err \"careful\")   ;=> nil, with careful written to stderr",
         write_err,
     );
     primitives.def(

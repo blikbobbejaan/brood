@@ -54,7 +54,9 @@ so a port may be any value with an impl.
 It is `emit` rather than `write` because `io/write` is what a CALLER reaches for — the
 variadic, rendering, `:to`-taking function below. The seam is the implementor's side of
 the contract, invoked once per ready string, and it is the one that should yield the
-plainer name."
+plainer name.
+
+    (io/emit (io/stdout-port) \"ready\")   ;=> nil, with ready written to stdout"
   (emit [self s] :-> nil))
 
 ;; A bare 1-arg sink fn is a port — the original representation, still first-class.

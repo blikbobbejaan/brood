@@ -748,7 +748,12 @@ non-blocking window. The shared loop behind the observer (and the editor)."
   "A transient input overlay: a modal feature that sits beside an app's keymap and,
 while open, captures input. Implement it for a record per overlay — only the ops the
 overlay needs: a record that skips `overlay-owns?` captures every key, and one that
-skips `overlay-exit` needs no dismiss step (the `:default` impl supplies both)."
+skips `overlay-exit` needs no dismiss step (the `:default` impl supplies both).
+
+    (editor/ui/overlay-active? overlay model)   ;=> truthy while the overlay is open
+    (editor/ui/overlay-owns? overlay model input)   ;=> truthy when input is the overlay's
+    (editor/ui/overlay-handle overlay model input)   ;=> the model with input folded in
+    (editor/ui/overlay-exit overlay model)   ;=> the model with the overlay dismissed"
   (overlay-active? [self model] :-> any) ; truthy while the overlay is open
   (overlay-owns? [self model input] :-> any) ; truthy when `input` is the overlay's to handle
   (overlay-handle [self model input] :-> any) ; fold an owned key into the model

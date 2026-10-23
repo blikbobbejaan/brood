@@ -475,16 +475,33 @@ prelude declares one, so `:derives` always names an ability from your own code."
         ctor `(defn ~rec (~@fnames)
                 ~(str "Construct a `"
                    (->string rec)
-                   "` record from "
-                   (string/join (map fnames ->string) ", ")
-                   "."
+                   "` record"
+                   (if (empty? fnames) "" (str " from " (string/join (map fnames ->string) ", ")))
+                   ".\n\n    ("
+                   (->string id)
+                   (string/join (map fnames (fn (n) (str " " (->string n)))) "")
+                   ")   ;=> a "
+                   (->string rec)
+                   " record"
                    (if rec-doc (str "\n\n" rec-doc) ""))
                 ~body)
         accs (map fields
                (fn (f)
                  (let (fnm (%defrecord-fname f))
                    `(defn ~(%defrecord-acc-sym rec fnm) (r)
-                      ~(str "The `" (->string fnm) "` field of a `" (->string rec) "` record.")
+                      ~(str "The `"
+                         (->string fnm)
+                         "` field of a `"
+                         (->string rec)
+                         "` record.\n\n    ("
+                         (->string id)
+                         "-"
+                         (->string fnm)
+                         " r)   ;=> the "
+                         (->string fnm)
+                         " field of a "
+                         (->string rec)
+                         " record")
                       (/get r ~(keyword (->string fnm)))))))
         ;; the record-shaped constructor sig (always — this is the dispatch-inference
         ;; seam): each field keeps its declared type, else `any`.
