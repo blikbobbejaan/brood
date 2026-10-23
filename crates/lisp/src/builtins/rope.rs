@@ -6,7 +6,7 @@ use crate::core::heap::Heap;
 use crate::core::value::{EnvId, Value};
 use crate::error::{LispError, LispResult};
 
-use super::args::{arg, expect_int, expect_rope, expect_rope_ref, expect_string};
+use super::args::{arg, expect_int, expect_rope, expect_rope_ref, expect_string_ref};
 
 /// Every primitive this file contributes: name, arity, signature, arglist, docstring.
 pub(super) fn register(primitives: &mut super::Primitives) {
@@ -135,8 +135,8 @@ pub(super) fn rope_oob(who: &str, what: &str, got: i64, max: usize) -> LispError
 
 /// `(string->rope s)` — a rope holding the text of string `s`.
 pub(super) fn string_to_rope(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let s = expect_string(heap, "%string->rope", arg(args, 0))?;
-    Ok(heap.alloc_rope(ropey::Rope::from_str(&s)))
+    let rope = ropey::Rope::from_str(expect_string_ref(heap, "%string->rope", arg(args, 0))?);
+    Ok(heap.alloc_rope(rope))
 }
 
 /// `(rope->string r)` — the full text of rope `r` as a string.
@@ -163,12 +163,12 @@ pub(super) fn rope_line_count(args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
 pub(super) fn rope_insert(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let mut r = expect_rope(heap, "%rope-insert", arg(args, 0))?;
     let idx = expect_int(heap, "%rope-insert", arg(args, 1))?;
-    let s = expect_string(heap, "%rope-insert", arg(args, 2))?;
+    let s = expect_string_ref(heap, "%rope-insert", arg(args, 2))?;
     let len = r.len_chars();
     if idx < 0 || idx as usize > len {
         return Err(rope_oob("%rope-insert", "index", idx, len));
     }
-    r.insert(idx as usize, &s);
+    r.insert(idx as usize, s);
     Ok(heap.alloc_rope(r))
 }
 

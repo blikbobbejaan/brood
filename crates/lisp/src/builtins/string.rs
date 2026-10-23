@@ -1055,7 +1055,7 @@ pub(super) fn lower(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 }
 
 pub(super) fn char_to_int(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let s = expect_string(heap, "string/char->int", arg(args, 0))?;
+    let s = expect_string_ref(heap, "string/char->int", arg(args, 0))?;
     match s.chars().next() {
         Some(c) => Ok(Value::int(c as i64)),
         None => Err(LispError::runtime("string/char->int: empty string")),

@@ -581,7 +581,13 @@ pub(super) fn first(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
         },
         // A set is a sequence of its elements (CHAMP order): its head, or nil if
         // empty — so `first`/`map`/`fold`/… treat a set as a seq (Clojure-like).
-        Value::Set(id) => Ok(heap.set_elems(id).first().copied().unwrap_or(Value::nil())),
+        // The set shares the map's CHAMP store (keys are the elements), so its head is the
+        // first entry's key — the same element `set_elems` lists first, without copying
+        // every element out to take one.
+        Value::Set(id) => Ok(heap
+            .map_first_entry(id)
+            .map(|(element, _)| element)
+            .unwrap_or(Value::nil())),
         // A map seqs as its `[k v]` pairs — the same view `seq`/`map`/`fold`/`last`
         // already take, so `first`/`rest` accept what every other seq op does.
         Value::Map(id) => match heap.map_first_entry(id) {
