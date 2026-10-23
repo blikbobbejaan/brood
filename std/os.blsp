@@ -237,6 +237,51 @@ argument vector to `os/cmd` / `os/spawn` and there is nothing to quote.
     s
     (str "'" (string/replace s "'" "'\\''") "'")))
 
+(def- *shell-blank-chars* #{" " "\t" "\n"})
+(def- *shell-double-escapes* #{"\"" "\\" "$" "`"})
+
+(defn- shell-split-walk (chars:seqable mode:keyword word:string started?:bool acc:list -> list)
+  ;; `mode` is :plain, :single (inside '…') or :double (inside "…"); `started?` says a word
+  ;; is under way, so '' is an empty word rather than none
+  (if (empty? chars)
+    (reverse (if started? (cons word acc) acc))
+    (let (c (first chars)
+          more (rest chars)
+          next (if (empty? more) nil (first more)))
+      (cond
+        (= mode :single)
+          (if (= c "'")
+            (shell-split-walk more :plain word true acc)
+            (shell-split-walk more :single (str word c) true acc))
+        (= mode :double)
+          (cond
+            (= c "\"") (shell-split-walk more :plain word true acc)
+            (and (= c "\\") (contains? *shell-double-escapes* next))
+              (shell-split-walk (rest more) :double (str word next) true acc)
+            :else (shell-split-walk more :double (str word c) true acc))
+        (contains? *shell-blank-chars* c)
+          (shell-split-walk more :plain "" false (if started? (cons word acc) acc))
+        (= c "'") (shell-split-walk more :single word true acc)
+        (= c "\"") (shell-split-walk more :double word true acc)
+        (and (= c "\\") (not (nil? next)))
+          (shell-split-walk (rest more) :plain (str word next) true acc)
+        :else (shell-split-walk more :plain (str word c) true acc)))))
+
+(defn shell-split (s:string -> list)
+  "The words a POSIX shell splits `s` into, without running one — the inverse of
+[[shell-quote]]: blanks separate words; inside single quotes nothing is special; inside
+double quotes a backslash escapes `\"`, `\\`, `$` and a backquote; elsewhere it escapes the
+next character. Nothing is expanded — no `$VAR`, no glob, no `~` — so a word is exactly what
+was typed. For a command line a person types into a prompt (`! commit -m 'two words'`) that
+is then run as an argument vector, never through a shell. An unclosed quote ends at the end
+of the text.
+
+    (os/shell-split \"commit -m 'two words'\")   → (\"commit\" \"-m\" \"two words\")
+    (os/shell-split \"  a   b \")   → (\"a\" \"b\")
+    (os/shell-split (str (os/shell-quote \"it's\") \" x\"))   → (\"it's\" \"x\")
+    (os/shell-split \"''\")   → (\"\")"
+  (shell-split-walk (string/->list s) :plain "" false '()))
+
 (defn cmd-out (result)
   "The stdout string from a `cmd` result, trimmed.
 

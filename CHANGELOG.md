@@ -11,6 +11,21 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   (a `~name` that is no user stays a relative file name), over the new `%user-home` /
   `os/user-home` — the password database (`getpwnam`), so NSS users resolve too. An editor's
   file prompt (bedit's `~/` reading) was the first to want it.
+- `std/vcs`: the version control a directory lives in, git or mur, and what every tool asks of
+  it — `vcs/locate` (the nearest checkout's kind and top), `vcs/files`, `vcs/changed`,
+  `vcs/base-text` (a file as the VCS compares it, for a change gutter) and `vcs/id`. A backend
+  is a row in `std/registry` (`:vcs/backends`), so a package adds another VCS without an edit
+  here. Where one directory is both, mur wins (`mur init` in a clone). `vcs/use-mur-seat`
+  names the seat (`MUR_RUNNER`) a terminal-less program's mur commands speak as, so an
+  editor is not the shared `person`. bedit's projects, gutter and mode line call it, and so
+  does `nest format --changed`.
+- `os/shell-split`: the words a POSIX shell splits a line into, nothing expanded — the
+  inverse of `os/shell-quote`, for a command line typed into a prompt and run as an argv.
+
+**Changed.**
+- `nest format --changed` asks `vcs/changed`, so it works in a mur working copy, and in git
+  takes the commits not yet upstream as well as the uncommitted edits — diffed from where
+  the branch left its upstream, so commits that landed there since are not counted.
 
 ## v0.43.0 — BLAKE3, workers that cannot be starved, and module loads that park
 

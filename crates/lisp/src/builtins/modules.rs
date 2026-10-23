@@ -619,6 +619,11 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // A quantity as a person reads it → `humanize/*`. Tiny and dependency-free on
     // purpose: an editor's render path loads it without loading project tooling.
     embedded_module!("humanize", "std/humanize.blsp"),
+    // The version control a directory lives in → `vcs/*`: git or mur (or a registered
+    // backend), where its top is, its files, the work's changed files, a file's text
+    // before the edit, and what the tree is at. CORE, not tooling: an editor's gutter and
+    // find-file ask it on a shipped runtime, as `nest format` and packaging do.
+    embedded_module!("vcs", "std/vcs.blsp"),
     // Seeded PRNG (xorshift32): public face of the prelude's `%rand-*` mechanism → `rand/*`.
     embedded_module!("rand", "std/rand.blsp"),
     // OS & environment surface → `os/*` (getenv, run-process, now, …).
