@@ -38,7 +38,7 @@ pub struct NsLoadScope<'a> {
     compile_ns: Option<Symbol>,
     known: HashSet<Symbol>,
     known_by_module: std::collections::HashMap<Symbol, HashSet<Symbol>>,
-    imports: std::collections::HashMap<Symbol, crate::core::heap::ImportEntry>,
+    imports: crate::core::heap::ImportTable,
     assume_own: bool,
 }
 
@@ -61,7 +61,7 @@ impl<'a> NsLoadScope<'a> {
         let compile_ns = heap.set_compile_ns(None);
         let known = heap.set_ns_known_names(HashSet::new());
         let known_by_module = heap.set_ns_known_by_module(by_module);
-        let imports = heap.set_imports(std::collections::HashMap::new());
+        let imports = heap.set_imports(crate::core::heap::ImportTable::default());
         let assume_own = heap.set_ns_assume_own(false);
         Self {
             heap,
@@ -252,9 +252,14 @@ fn enforce_private_refs(
             if let Some(slash) = name.rfind('/') {
                 let (m, bare) = (&name[..slash], &name[slash + 1..]);
                 // Resolve a module alias (`(:alias mod :as short)`) so the rule keys
-                // on the REAL module, matching how the reference will resolve.
-                let alias_key = value::intern(&format!("{m}/"));
-                let real_m: String = match heap.import_of(alias_key) {
+                // on the REAL module, matching how the reference will resolve. A file with
+                // no alias skips spelling the `m/` key: no lookup of it could hit.
+                let alias_target = if heap.imports_may_have_aliases() {
+                    heap.import_of(value::intern(&format!("{m}/")))
+                } else {
+                    None
+                };
+                let real_m: String = match alias_target {
                     Some(target) => value::symbol_name(target),
                     // Not an alias: root it (ADR-070). `cur_ns` is the ROOTED namespace
                     // (`%in-ns` roots what `(defmodule tutor)` declares, so inside project
@@ -771,9 +776,14 @@ pub(super) fn resolve_sym(
         // A qualified `prefix/rest`. If `prefix` is a module alias from `(:alias …)`
         // — stored in the import table under the slash-suffixed key `prefix/` so it
         // rides the same per-file lifecycle — rewrite to the real module path:
-        // `conn/build` → `web/conn/build`. Otherwise it's already fully qualified.
-        let alias_key = value::intern(&format!("{}/", &name[..slash]));
-        if let Some(target) = heap.import_of(alias_key) {
+        // `conn/build` → `web/conn/build`. Otherwise it's already fully qualified. A file
+        // that declared no alias skips spelling the key, which no lookup could find.
+        let alias_target = if heap.imports_may_have_aliases() {
+            heap.import_of(value::intern(&format!("{}/", &name[..slash])))
+        } else {
+            None
+        };
+        if let Some(target) = alias_target {
             return value::intern(&format!(
                 "{}/{}",
                 value::symbol_name_ref(target),

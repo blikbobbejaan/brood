@@ -296,7 +296,9 @@ fn in_file_context<T>(interp: &mut Interp, src: &str, query: impl FnOnce(&Heap) 
         let prev_ns = interp.heap.set_compile_ns(None);
         let known = macros::scan_def_names(&interp.heap, &forms);
         let prev_known = interp.heap.set_ns_known_names(known);
-        let prev_imports = interp.heap.set_imports(std::collections::HashMap::new());
+        let prev_imports = interp
+            .heap
+            .set_imports(crate::core::heap::ImportTable::default());
         if let Some(&header) = forms.first() {
             let _ = eval::eval(&mut interp.heap, header, value::EnvId::GLOBAL);
         }

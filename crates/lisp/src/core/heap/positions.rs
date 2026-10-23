@@ -370,10 +370,7 @@ impl Heap {
 
     /// Replace the current file's `(:use …)` import table, returning the prior one
     /// so the caller can restore it (loads nest). Maps bare → [`ImportEntry`].
-    pub fn set_imports(
-        &mut self,
-        imports: HashMap<Symbol, ImportEntry>,
-    ) -> HashMap<Symbol, ImportEntry> {
+    pub fn set_imports(&mut self, imports: ImportTable) -> ImportTable {
         std::mem::replace(&mut self.cold_mut().imports, imports)
     }
 
@@ -420,17 +417,24 @@ impl Heap {
     /// (aliases, the resolver's happy path) correctly see nothing; use
     /// [`ambiguous_import_of`](Self::ambiguous_import_of) to detect the ambiguous case.
     pub fn import_of(&self, bare: Symbol) -> Option<Symbol> {
-        match self.cold().and_then(|c| c.imports.get(&bare)) {
+        match self.cold().and_then(|c| c.imports.get(bare)) {
             Some(ImportEntry::One(q)) => Some(*q),
             _ => None,
         }
+    }
+
+    /// Could the current file's import table hold a module alias (`(:alias …)`, keyed
+    /// `short/`)? False means no alias lookup can hit, so a qualified reference need not
+    /// spell and intern its `prefix/` key to ask. See [`ImportTable`].
+    pub fn imports_may_have_aliases(&self) -> bool {
+        self.cold().is_some_and(|c| c.imports.may_have_aliases())
     }
 
     /// The candidate qualified names a bare name is `(:use …)`-imported to from **more
     /// than one** module — `Some(sorted candidates)` iff the name is ambiguous, else
     /// `None`. Used by the resolver to raise a use-site clash error (ADR-235).
     pub fn ambiguous_import_of(&self, bare: Symbol) -> Option<Vec<Symbol>> {
-        match self.cold().and_then(|c| c.imports.get(&bare)) {
+        match self.cold().and_then(|c| c.imports.get(bare)) {
             Some(ImportEntry::Ambiguous(v)) => Some(v.clone()),
             _ => None,
         }
@@ -443,8 +447,7 @@ impl Heap {
         let entry = self
             .cold_mut()
             .imports
-            .entry(bare)
-            .or_insert(ImportEntry::Ambiguous(Vec::new()));
+            .entry_or_insert(bare, ImportEntry::Ambiguous(Vec::new()));
         let mut names = match entry {
             ImportEntry::One(q) => vec![*q],
             ImportEntry::Ambiguous(v) => std::mem::take(v),

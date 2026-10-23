@@ -341,6 +341,67 @@ pub enum ImportEntry {
     Ambiguous(Vec<Symbol>),
 }
 
+/// The per-file `(:use …)` import table: bare name → [`ImportEntry`], plus whether any key
+/// may be a module ALIAS. An `(:alias mod :as short)` rides this table under the
+/// slash-suffixed key `short/`, so the resolver and the privacy check would otherwise format
+/// and intern `prefix/` for every qualified reference to ask a question whose answer is
+/// almost always "no alias". The fact lives in the table, not beside it, so every
+/// save/restore that swaps the table (`Heap::set_imports`) carries it along unchanged.
+///
+/// `may_alias` is a superset: it is set by any key spelled with a trailing `/`, which every
+/// alias key has (a `(:shadow /)` key, `/shadow//`, sets it too — the cost of that is only
+/// the lookup it would have skipped). Entries are never removed from a table, so the flag
+/// never has to clear; a fresh table starts false.
+#[derive(Clone, Debug, Default)]
+pub struct ImportTable {
+    entries: HashMap<Symbol, ImportEntry>,
+    may_alias: bool,
+}
+
+impl ImportTable {
+    /// Is `key` spelled the way an alias key is (`short/`)?
+    fn alias_shaped(key: Symbol) -> bool {
+        crate::core::value::symbol_name_ref(key).ends_with('/')
+    }
+
+    /// Add or replace `key`'s entry.
+    pub fn insert(&mut self, key: Symbol, entry: ImportEntry) {
+        self.may_alias |= Self::alias_shaped(key);
+        self.entries.insert(key, entry);
+    }
+
+    /// `key`'s entry, if it has one.
+    pub fn get(&self, key: Symbol) -> Option<&ImportEntry> {
+        self.entries.get(&key)
+    }
+
+    /// `key`'s entry, inserted as `default` when it has none.
+    pub fn entry_or_insert(&mut self, key: Symbol, default: ImportEntry) -> &mut ImportEntry {
+        self.may_alias |= Self::alias_shaped(key);
+        self.entries.entry(key).or_insert(default)
+    }
+
+    /// Every `(key, entry)`, in the map's iteration order.
+    pub fn iter(&self) -> impl Iterator<Item = (&Symbol, &ImportEntry)> {
+        self.entries.iter()
+    }
+
+    /// Could any key be a module alias? False means no `prefix/` lookup can hit.
+    pub fn may_have_aliases(&self) -> bool {
+        self.may_alias
+    }
+}
+
+impl FromIterator<(Symbol, ImportEntry)> for ImportTable {
+    fn from_iter<I: IntoIterator<Item = (Symbol, ImportEntry)>>(items: I) -> Self {
+        let mut table = ImportTable::default();
+        for (key, entry) in items {
+            table.insert(key, entry);
+        }
+        table
+    }
+}
+
 /// **Loader / checker / namespace state — cold for a worker process.** Every field here
 /// is used by the process that *loads modules or runs the checker*; a spawned green
 /// process that only runs Brood code never touches any of them. Held behind
@@ -392,7 +453,7 @@ pub(crate) struct ColdHeap {
     /// more `(:use …)`d modules both export is `Ambiguous([…])` — not an error at import
     /// time (ADR-235), only if the bare name is actually *used*, at which point the
     /// resolver names the candidates. Rides the same per-file save/restore as the rest.
-    pub(crate) imports: HashMap<Symbol, ImportEntry>,
+    pub(crate) imports: ImportTable,
     /// Package-rooted namespaces (ADR-070): while loading a *dependency* `foo`, its
     /// local name is the active prefix, so a module the file declares `(defmodule b)`
     /// roots to `foo/b` and its intra-package `(:use b)`/`(:alias b …)` targets root

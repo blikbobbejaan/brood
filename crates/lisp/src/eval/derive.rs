@@ -128,8 +128,12 @@ pub fn module_to_require(heap: &Heap, s: Symbol) -> Option<Symbol> {
     if first == 0 {
         return None; // `/foo` root-escape, or the bare `/` operator
     }
-    let alias_key = value::intern(&format!("{}/", &name[..first]));
-    if heap.import_of(alias_key).is_some() {
+    // A file with no alias cannot hit, so the `prefix/` key is spelled only when it might.
+    if heap.imports_may_have_aliases()
+        && heap
+            .import_of(value::intern(&format!("{}/", &name[..first])))
+            .is_some()
+    {
         return None; // alias prefix — its target module is already loaded
     }
     // Root an intra-package reference to its package (external/std left as-is).

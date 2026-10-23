@@ -251,7 +251,7 @@ pub(crate) fn run_program_body(
         };
         heap.set_ns_known_names(std::collections::HashSet::new());
         heap.set_ns_known_by_module(by_module);
-        heap.set_imports(std::collections::HashMap::new());
+        heap.set_imports(crate::core::heap::ImportTable::default());
     }
 
     // Resume the form the process was suspended/preempted inside, if any.

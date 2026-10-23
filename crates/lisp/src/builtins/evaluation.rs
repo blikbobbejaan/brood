@@ -608,7 +608,7 @@ pub(super) fn eval_string_inner(
         };
         let pk = heap.set_ns_known_names(std::collections::HashSet::new());
         let pbm = heap.set_ns_known_by_module(by_module);
-        let pi = heap.set_imports(std::collections::HashMap::new());
+        let pi = heap.set_imports(crate::core::heap::ImportTable::default());
         (Some(pn), Some(pk), Some(pbm), Some(pi))
     } else {
         (None, None, None, None)

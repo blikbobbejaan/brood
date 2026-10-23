@@ -1126,8 +1126,7 @@ pub(super) fn restore_compile_context(args: &[Value], _: EnvId, heap: &mut Heap)
             ));
         }
     };
-    let mut table: std::collections::HashMap<value::Symbol, ImportEntry> =
-        std::collections::HashMap::new();
+    let mut table = crate::core::heap::ImportTable::default();
     for pair in heap.seq_items(imports)? {
         let Some((bare, target)) = heap.seq_items(pair).ok().and_then(|p| match p.as_slice() {
             [Value::Sym(b), t] => Some((*b, *t)),

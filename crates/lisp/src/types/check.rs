@@ -1959,10 +1959,10 @@ fn check_forms(
     // Imports start empty; a `(:use …)` in the header populates them during pass 1
     // (its `(require …)`/`%refer` is evaluated like any other header form). Checked
     // "here", the process's current imports are the header.
-    let inherited_imports: HashMap<Symbol, crate::core::heap::ImportEntry> = if inherit {
+    let inherited_imports: crate::core::heap::ImportTable = if inherit {
         heap.imports_snapshot().into_iter().collect()
     } else {
-        HashMap::new()
+        crate::core::heap::ImportTable::default()
     };
     let prev_imports = heap.set_imports(inherited_imports);
     // The input forms and their expansions are rooted from here (a module load can
