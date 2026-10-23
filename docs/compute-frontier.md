@@ -1433,6 +1433,9 @@ here rather than at "profile it".
 - process exit: the name sweep is O(names of the pid) under a read lock for an unnamed pid, and `NODE_MONITORS` is write-locked only when the pid watches a node (`7120d5c8`).
 - remote frames: one copy out (sealed in place, writes batched) and one in (decrypted in place, buffered reads); guest filters skipped with no guest connected (`33e3333e`, `b4bd46dc`).
 - `from_message` checks the stack every 32 levels, the list copy builds one `Vec`, the exit/down keywords are interned once (`636f9b9d`, `3e7f17c3`).
+- the message copy (L1 and `Message` alike) reads a map's, failure's or set's entries off the trie instead of collecting them first (`c166e42d`); a parking process trims with its mailbox lock released (`866728ff`) — see §7.8 items 5 and 6.
+
+What §7.3 still lists is not a trim: the receive as an OSR re-entry point (a session), and the per-receive `hof_resolve` memo, declined above for its staleness class — neither re-opened here.
 
 ### 7.4 `sort` is a GC row and the kernel is 5.6% of it — the cheap question is ANSWERED (2026-08-29)
 
@@ -1613,6 +1616,14 @@ before it ships. Ranked by expected value.
    deferred to budget rollover (`scheduler.rs` `tick_reporting_hard_kill`); these
    weren't. A relaxed load-before-swap alone removes the fence from the ~always-zero
    case. Rows: `loop`/`collatz`/`sieve` at ceiling 1, `pingpong`/`ring`.
+
+   > **2026-10-23: already CLOSED on reading — nothing to build.** Both probes left the
+   > back edge in `73dc23cf` (2026-09-24): `loop_safepoint` reads only the heap limit and
+   > the deadline per iteration, and the mailbox bound and the hard-kill probe run in
+   > `quantum_checks`, once per quantum at the reduction rollover. The probe itself is no
+   > longer a `swap` either: `take_overflow_hit` loads first and compare-exchanges only a
+   > breach (KI-103, `6e75388f`). The premise was true when written and is not on this
+   > branch.
 3. ~~**`gc_due()` sums eleven slab `len()`s, 2–3× per call.**~~ ❌ **MEASURED AND RULED OUT
    2026-09-02 — small, and the reading is wrong twice.** Counted with a probe on `gc_due`
    itself, whole runs, warm:
@@ -1685,8 +1696,24 @@ before it ships. Ranked by expected value.
    >   straight to `call_native` — `0e84f2ec`.
    > - `promote_list` loads the code generation once; RUNTIME compaction walks
    >   `live_vm_arms` in place — `7a78d3d0`.
-   > - Still open: `copy_cross_heap`'s temp `Vec` under the mailbox lock (`message.rs`), and
-   >   the RUNTIME positions-table take-and-reinsert.
+   > - `copy_cross_heap`'s temp `Vec`: the premise is half stale. The VECTOR arm it names
+   >   already read its items straight off the slab (`93b7440d`, 2026-09-21), and the
+   >   output `Vec` is not a temp — `alloc_vector` takes it as the vector's storage. What
+   >   was still copied was a MAP's, a failure's and a SET's source entries
+   >   (`map_entries` / `set_elems`) into a `Vec` walked once with `?`; the walker now reads
+   >   them off the trie through `Heap::try_fold_entries`, same order, same charges —
+   >   `c166e42d`. Shared by both copy targets, so every send's `Message` serialisation
+   >   loses the same allocation.
+   > - The RUNTIME positions-table take-and-reinsert: ❌ **rejected on reading — the
+   >   LOCAL analogy does not hold.** The LOCAL collector retains in place because a minor
+   >   moves only the nursery, so rebuilding re-hashed every *unmoved* old entry per minor —
+   >   O(all positions) for O(nursery) of work. A RUNTIME compaction moves the whole
+   >   current generation (`RuntimeForward::for_gens(cur, cur)`, and it bails unless
+   >   `cur == 0`), so every entry it owns is re-keyed either way; retain-plus-reinsert
+   >   would re-hash the same entries and add a `Vec` for the moved ones. The only entries
+   >   it could leave alone are another generation's, carried verbatim. And it runs once
+   >   per compaction, behind an adaptive `2 × live` threshold, beside a walk of the whole
+   >   region that already costs at least as much.
 6. **Message-path latency (scheduler side)**: `dirty_block()` — a whole-worker-queue
    drain that can spawn an OS thread — runs *before* the `wake_pending` early-out in
    `wait_for_message`, under the mailbox state lock; and `trim_on_park` (a full
@@ -1699,6 +1726,18 @@ before it ships. Ranked by expected value.
    > **2026-10-23: the `dirty_block()` half is CLOSED** — it now runs after the
    > `wake_pending` early-out (`b7abdcd7`). Not measured — needs the message rows A/B'd on
    > the test machine. `trim_on_park` under the lock is still open.
+   >
+   > **2026-10-23 (later): the `trim_on_park` half is CLOSED too** (`866728ff`), not
+   > measured. Counted by reading, not a probe: the gate (three loads) runs on every park,
+   > the trim itself only when capacity grew by half since the last one — so this is a
+   > tail-latency item, not a throughput one. `park_on_receive` now asks the gate
+   > (`Heap::park_trim_due`) under the lock and, when it is due, lets go, trims, and runs
+   > its re-checks again (at most one trim per park). Letting go reopens only the
+   > suspend → park window those re-checks already close: a message, a kill or an elapsed
+   > deadline arriving meanwhile re-queues or retires the process. The deadlock note is
+   > moot with it — no mailbox lock is held across the collection, so a `:gc` event it
+   > emits has nothing to deadlock on. Judge it on `latency` unpinned (p99), plus the
+   > message rows for the extra lock round trip on a trimming park.
 
 The same audit's correctness findings are KI-91–97; the mailbox slot-table scan (item of
 the same family as 5) was already fixed with KI-92 (`MsgRoots.free`).
