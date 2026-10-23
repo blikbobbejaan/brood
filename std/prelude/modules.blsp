@@ -1222,9 +1222,8 @@ marker is cleared on failure), never before — see the ordering note above."
   (doseq ([p r] (%require-take-waiters! key))
     (send p [:load-done r key])))
 
-;; ---- a require cycle split across processes ------------------------------------
-;;
-;; One process loading `a`, which requires `b`, which requires `a`, is the classic cycle: the
+;; A require cycle split across processes (still the protocol above: a wait that can never
+;; complete, and how a waiter gets out of it). One process loading `a`, which requires `b`, which requires `a`, is the classic cycle: the
 ;; inner require of `a` sees its own in-flight claim and returns. Split across two processes
 ;; (the parallel cold build, ADR-426, does this whenever two workers each start one end of a
 ;; cycle) it is a deadlock: P holds `a` and waits for `b`; Q holds `b` and waits for `a`; each
@@ -1234,14 +1233,15 @@ marker is cleared on failure), never before — see the ordering note above."
 ;; left bare, and every test of a pane built on it failed `unbound symbol`.
 ;;
 ;; The waiter now walks the wait-for chain — the holder of the key it waits for, the key that
-;; holder waits for, its holder, … — and a chain that comes back to itself is the cycle. It
-;; is broken by the process that sees it: it raises `*require-cycle*`, and as that unwinds
-;; every load it claimed is discarded (ADR-344) and released, so the other process finishes
-;; the whole cycle on its own, exactly as a single-process load would. The outermost load of
+;; holder waits for, its holder, … — and a chain that comes back to itself is the cycle. Every
+;; process on it sees it, so exactly one breaks it: the one waiting on the greatest key
+;; (`%require-cycle?`). It raises `*require-cycle*`, and as that unwinds every load it claimed
+;; is discarded (ADR-344) and released, so the others finish the whole cycle on their own,
+;; exactly as a single-process load would. The outermost load of
 ;; the process that raised then simply requires its module again (`%require-one`), and this
 ;; time it waits for a load that completes. The check repeats while the wait lasts (every
-;; `*require-cycle-check-ms*`), not once: the second process to start waiting closes the
-;; cycle, and a read of the registries can briefly lag another process's write.
+;; `*require-cycle-check-ms*`), not once: the cycle closes only when its last member starts
+;; waiting, and a read of the registries can briefly lag another process's write.
 
 ;; The parallel build's driver (`project-load-cycle?`) knows the error by this text.
 (def- *require-cycle* "require: a load cycle across processes")
@@ -1257,21 +1257,32 @@ marker is cleared on failure), never before — see the ordering note above."
     (any? (second (first pairs)) (fn (waiter) (= (first waiter) pid))) (first (first pairs))
     else (%require-waits-on (rest pairs) pid)))
 
-(defn- %require-chain-reaches? (holder me steps)
+(defn- %require-cycle-keys (holder me keys steps)
+  "The keys waited on along the chain from `holder` when it comes back to `me` (the cycle,
+`keys` so far included), else nil."
   (cond
-    (= holder me) true
-    (or (not (pid? holder)) (<= steps 0)) false
+    (= holder me) keys
+    (or (not (pid? holder)) (<= steps 0)) nil
     else
       (let (next (%require-waits-on (%map-pairs *features-waiting*) holder))
         (if (nil? next)
-          false
-          (%require-chain-reaches? (get *features-loading* next) me (- steps 1))))))
+          nil
+          (%require-cycle-keys (get *features-loading* next) me (cons next keys) (- steps 1))))))
 
 (defn- %require-cycle? (key me)
-  "True when the process holding `key`'s load is — through the loads it is itself waiting
-on — waiting on a load `me` holds: a require cycle split across processes, which no
-completion will ever break. The chain is at most as long as there are loads in flight."
-  (%require-chain-reaches? (get *features-loading* key) me (count *features-loading*)))
+  "True when `me`, waiting on `key`, should break a require cycle split across processes: the
+process holding `key`'s load is — through the loads it is itself waiting on — waiting on a
+load `me` holds, so no completion will ever arrive. Every process on the cycle sees it, so
+only one may break it, or all of them back out, retry together and meet the same cycle again
+(a livelock — the guard's fixture, whose two ends start waiting on the same tick, did exactly
+that). The one waiting on the greatest key breaks it (`compare`'s total order; the keys on a
+cycle are distinct); the rest keep waiting and are woken when its claims are released. The
+chain is at most as long as there are loads in flight."
+  (let (keys (%require-cycle-keys (get *features-loading* key)
+               me
+               (list key)
+               (count *features-loading*)))
+    (and (not (nil? keys)) (every? keys (fn (other) (>= (compare key other) 0))))))
 
 (defn- %require-holds-a-load? (me except)
   "True while `me` still holds the claim on a load in flight other than `except`'s."

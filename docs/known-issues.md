@@ -68,6 +68,39 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 
 (An open entry's `## KI-N` section goes here until it is resolved.)
 
+## KI-290 — a require cycle split across two processes deadlocked until the backstop loaded one end twice
+
+**Open, 2026-10-24 — fixed in code; the guard has not passed yet.** The bedit downstream smoke
+went red once on `14232c96`: 13 of bedit's tests `unbound symbol: ed-layout-now`, in `aside`,
+which does `(:use panes)`, and the build before them printed `[require] BUG: waited 30s for an
+in-flight load of 'bedit/panes'` (also `bedit/commands`, `bedit/view`). The parallel cold build
+(ADR-426) had started the two ends of a require cycle in two workers: P held one end and waited
+for the other, Q the reverse, so neither load could finish and no completion was ever sent. The
+30 s backstop then loaded `panes` a second time while its first load was still in flight, and
+`aside` was compiled against that; the project image kept it, so every test that reached it
+failed. The two green runs of the same commit printed no backstop line: it is a race.
+
+The fix (`%require-cycle?` in `std/prelude/modules.blsp`): a waiter walks the wait-for chain every
+250 ms — the holder of its key, the key that holder waits for, its holder, … A chain that comes
+back to itself is the cycle. Every process on it sees it, so only the one waiting on the greatest
+key breaks it: it raises, its claims are discarded and released as that unwinds, the others finish
+the cycle on their own as one process would, and its outermost load requires its module again.
+The parallel driver also reloads a file sequentially should the error reach it.
+
+The parallel cold load has since been made opt-in (`BROOD_LOAD_PARALLEL=1`, `43fd26e6`): bedit's
+pool-built image differed from the sequential one in 89 of 116 sections, with load-order
+dependence the hypothesis. A double load by the backstop is one concrete mechanism that
+produces such a difference; whether it is the only one is that investigation's to answer.
+
+The first cut let every member break it. CI's contracts job timed the guard out at
+`[:timeout :timeout]`: its two fixture processes start waiting on the same tick, so both backed
+out, both retried and met the same cycle again — a livelock. The tie-break is the second cut.
+
+Guard: `tests/modules_test.blsp` "a require cycle split across two processes resolves, both
+modules whole" — two fixture modules that each pause after their claim, so the cycle forms on
+every run. To close: green in CI, and sabotage-verified (with the `%require-cycle?` branch
+removed it must time out at 10 s).
+
 ## KI-281 — a JIT fast-link test never published in 90 s, once (watch)
 
 **Watching, 2026-10-18 — not reproducible on demand; diagnostic armed.** CI's tree-walker job on
@@ -116,7 +149,7 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
-| KI-290 | **a require cycle split across two processes deadlocked until the 30 s backstop, which then loaded one end a second time** — P holds `a` and waits for `b` while Q holds `b` and waits for `a`; neither load can finish, no completion is sent, and the backstop force-loads while the first load is still in flight. Met by the parallel cold build (ADR-426) on bedit, 1 run in 3: `[require] BUG: waited 30s … 'bedit/panes'` (also `commands`, `view`), then 13 of bedit's tests `unbound symbol: ed-layout-now` — `aside` compiled against a half-published `panes`, and the project image kept it | ⚠️ **OPEN 2026-10-24 — fixed in code, guard written, not yet run or sabotage-verified.** A waiter walks the wait-for chain every 250 ms (`%require-cycle?`); the process that finds itself on it raises, its claims are discarded and released as that unwinds, the other process finishes the cycle alone, and the raiser's outermost load requires its module again. The parallel driver also reloads such a file sequentially if the error ever reaches it. Guard `modules_test.blsp` "a require cycle split across two processes resolves, both modules whole" (two fixture modules that each pause after their claim, so the cycle forms every run); its sabotage is the `%require-cycle?` branch removed, which should time out at 10 s |
+| KI-290 | **a require cycle split across two processes deadlocked until the 30 s backstop, which then loaded one end a second time** — P holds `a` and waits for `b` while Q holds `b` and waits for `a`; neither load can finish, no completion is sent, and the backstop force-loads while the first load is still in flight. Met by the parallel cold build (ADR-426) on bedit, 1 run in 3: `[require] BUG: waited 30s … 'bedit/panes'` (also `commands`, `view`), then 13 of bedit's tests `unbound symbol: ed-layout-now` — `aside` compiled against a half-published `panes`, and the project image kept it | ⚠️ **OPEN 2026-10-24 — fixed in code; the guard has not passed yet.** A waiter walks the wait-for chain every 250 ms (`%require-cycle?`); of the processes on a cycle, the one waiting on the greatest key raises, its claims are discarded and released as that unwinds, the others finish the cycle alone, and its outermost load requires its module again. The first cut let every member raise and livelocked the guard in CI (`[:timeout :timeout]`). The parallel cold load has since been made opt-in (`BROOD_LOAD_PARALLEL=1`, `43fd26e6`) while bedit's pool-built image is investigated; this is one mechanism behind that difference. Guard `modules_test.blsp` "a require cycle split across two processes resolves, both modules whole"; to close, green in CI and red with `%require-cycle?` removed |
 | KI-289 | **a definition published while the RUNTIME code region aged lost every inner source position** — code a load promoted into the old generation and published after the flip is re-homed at `def` time (`rehome_to_current_locked`), and the re-home made new pairs without carrying their `(form-pos …)` entries, so an error inside such a function reported its CALLER's line. Needs a load in flight in one process while another's allocation turns the region over: found 2026-10-23 by the parallel cold load (about one module in 25 on the 302-module rig) | ✅ **FIXED 2026-10-23** — the re-home carries positions as aging's migration does (`carry_positions`, shared by both). Guard `crates/cli/tests/rehome_keeps_positions.rs`: four processes `require-one` twenty modules under `BROOD_GC_STRESS`; red 3/3 with the carry removed (`BAD (1 3 10)`), green with it; with aging disabled (`BROOD_RT_GC_FLOOR`) it never failed |
 | KI-288 | **two closures sharing one first body form ran one compiled body** — the VM keys a compiled closure on that form, and the linear-map rewrites (a body opening with a quoted form) and a macro splicing one quoted argument into two bodies gave two closures the same one; the range loop shared its whole body, harmlessly | ✅ **FIXED 2026-10-23** — every guard sabotage-verified on GitHub Actions (the three loops, the linear-map quote and the walk's quote each red where predicted; with `resolve_walk` rebuilding everything the module case's range-loop assertion goes green, as claimed). Was: ⚠️ OPEN 2026-10-23 — fix landed (`copy_form`: one pair, one position), guards written but not yet run or sabotage-verified |
 | KI-287 | **a guest could take a full peer's node name, and with it the peer's link and traffic** — a guest's name is only its `Hello` claim, so naming itself after a connected full peer with a new incarnation retired that peer's link, and the guest then received what was sent to the peer and could reach the pids in it; a same-incarnation duplicate kept the guest against the real peer, and a dial reused the guest's link. Found by reading; never observed | ✅ **FIXED 2026-10-23** — every guard sabotage-verified on GitHub Actions, the distribution guard last (red at "no reply by name" without `translate_inbound`, after `0315006e` fixed its host script). Was: ⚠️ OPEN 2026-10-23 — fixed in code, twice: first by refusing a guest a name a full link holds or has held here, then by construction (ADR-425): a guest link is registered under a `guest~` name its host mints, which no full node may use, and its pids are translated at the link — which also closes the case the first fix left open, a full peer elsewhere in the cluster that has never linked here. Unit guards sabotage-verified; open on the distribution guard |
