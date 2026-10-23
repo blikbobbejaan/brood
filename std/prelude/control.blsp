@@ -405,7 +405,7 @@ Bindings are ONE flat list, exactly like `let`'s — not a list per pair. `(with
 ;; ---- error handling ----
 ;; The kernel gives us `throw` (raise) and `%try` (low-level catch). Everything
 ;; user-facing — `error`, `try`/`catch` — is written here in Brood.
-(defn last (xs)
+(defn last (xs:seqable -> any)
   "The last item of `xs`.
 
     (last [1 2 3])   → 3
