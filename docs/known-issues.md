@@ -68,6 +68,77 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 
 (An open entry's `## KI-N` section goes here until it is resolved.)
 
+## KI-287 — a guest could take a full peer's node name, and with it the peer's link and traffic ⚠️ OPEN 2026-10-23
+
+**Open until the guards are verified — the fix is in, the guards have not run.** Found by
+reading the code while fixing KI-286 (2026-10-23); never observed, and nothing was run to show
+it. This desktop runs no tests, so the guards are **not yet sabotage-verified** (see Guard).
+
+**Symptom.** None observed. What it would look like: a full peer's link to a node that
+granted a guest drops (its watchers get `[:nodedown]`) the moment a guest attaches, and
+messages this node sends to that peer — and the pids in them — reach the guest instead. Or a
+`node/connect` to a full peer answers at once without dialing, and the node it "reached" is a
+guest.
+
+**Cause.** A node name is whatever the initiator wrote in its `Hello`; the cookie proves only
+that it holds the node cookie or a grant. ADR-415 bound nothing about the guest's NAME — the
+grant records its cookie, its `:names` and an `:as` identity, and `:as` (what bedit's
+`--invite NAME` binds) is who the person is, not a node name; the session grant has no `:as`
+at all, and a client's node name is `editor/serve`'s generated `attach-<time>`. So
+`register_link` treated a guest link like any other under the name it claimed:
+
+1. **A new incarnation retired the full link.** A guest naming itself after a connected full
+   peer, with any other incarnation, took the restarted-peer arm: the full link was retired as
+   a node-down and the guest registered under the name. `route` then sent the guest everything
+   addressed to that name, and its `note_outbound` made every local pid in it reachable.
+2. **A name the full peer was not holding at that moment** — down, restarting, not yet dialed
+   — was the guest's for the taking, with the same result for every pid of that peer still
+   held here.
+3. **The same incarnation won the tie-break.** A guest's link is always inbound, so its
+   connector is the claimed name — the same connector the real peer dialing in has, and the
+   equal-connector rule keeps the registered link: a guest that copied the real peer's
+   incarnation would hold the name against it.
+4. **A dial reused it.** `linked_peer_for` answered a `node/connect` from any link under the
+   claimed name, or any link advertising the dialed address — and a guest's advertised
+   address is its claim too; `mesh_consider` skipped dialing any gossiped name in `NODES`.
+
+**Why it survived.** ADR-415's threat model was what a guest's FRAMES may do; the guest
+test (`a_guest_link_reaches_what_it_was_given_and_ships_no_code`) runs one guest under its
+own name on a node with no other peer. The duplicate and restart tests in `dist::tests` have
+no guest. No test put a guest and a full peer under one name.
+
+**Fix.** A guest's name is never a full peer's, enforced in `register_link` under the
+`NODES` write lock (`guest_may_take`): a guest link is refused if the name is held by a full
+link or by a guest of another grant (another person's session), or if a full link has EVER
+held it here (`FULL_PEER_NAMES`, written as a full link registers; bounded by the node
+cookie, since only a holder adds a name). A guest of the same grant under its own name is
+that guest reconnecting and follows the ordinary rules. A full link under a name a guest
+holds always displaces it, as a node-down, whatever the incarnations or connectors. A dial
+(`linked_peer_for`) and the mesh (`mesh_consider`) count only full links as already
+connected, so a dial goes ahead and its full link displaces the guest.
+
+Deliberately not done: binding a NODE name into the grant, which was the first proposal.
+The grant has no node name to bind — `:as` is an identity — and the session grant is one
+cookie for any number of clients, each under its own generated name, so an exact bound name
+would admit one client per cookie. The rule above needs nothing from the client and closes
+the hijack for every grant. What it leaves: a guest may still claim a name that is a full
+peer's ELSEWHERE in the cluster and has never linked here. Until that peer links (directly,
+or by the dial gossip about it now triggers), a pid of it that a third node forwards here
+routes to the guest. Closing that needs names a guest cannot spell — a guest namespace, or
+names the host assigns — which is a protocol change, for an ADR.
+
+**Guard.** `dist::tests::a_guest_cannot_take_a_full_peers_name` — a guest claiming a
+connected full peer's name with a new incarnation is refused, the full link is untouched and
+its node monitor hears nothing; after the full peer disconnects, a guest still cannot take
+the name. `dist::tests::a_full_link_displaces_a_guest_holding_its_name_whatever_the_tie_break`
+— a full link at the guest's own incarnation and connector replaces it, and `linked_peer_for`
+does not answer a dial with the guest's link. **Not yet run and not yet sabotage-verified** —
+on the test machine: run both; sabotage `guest_may_take` to return `true` and confirm the
+first goes red ("displaced its link"); drop the `existing.guest.is_some() &&
+link.guest.is_none()` disjunct from `register_link`'s first arm and confirm the second goes
+red at its tie-break assertion; drop the `link.guest.is_none()` filter from `linked_peer_for`
+and confirm it goes red at "a dial reused". Record the red output here before closing.
+
 ## KI-286 — a guest link's frames could be admitted as a full peer's once its name moved to another link ⚠️ OPEN 2026-10-23
 
 **Open until the guard is verified — the fix is in, the guard has not run.** Found by reading
@@ -137,12 +208,7 @@ atomic load it replaces), and the standing is in place before the link is visibl
 `NODES`. `node/peer-grant` and the mesh's "never gossip a guest" read the registered link's
 `Conn::guest` (`dist::peer_grant`).
 
-Not in this fix, and worth its own entry: **a guest may claim the node name of a connected
-full peer.** The handshake trusts the `Hello`'s name for a guest as for a full peer, so a
-guest that names itself after a full peer, with a new incarnation, retires that peer's link
-(`register_link`) and from then on receives what this node sends to that name — and the
-pids in it become reachable by the guest. This fix stops the guest from gaining the full
-peer's privileges on its inbound frames; it does not stop the name being taken.
+Not in this fix: a guest could take a full peer's node name — its own entry, **KI-287**.
 
 **Guard.** `dist::tests::a_guest_links_frames_stay_a_guests_after_a_full_link_takes_its_name`
 — a guest link, then a full link under the same name (the guest's retired), then
@@ -208,7 +274,8 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
-| KI-286 | **a guest link's frames could be admitted as a full peer's once its node name moved to another link** — the guest filter (ADR-415) was keyed by name and looked up per frame, so a full link reclaiming the name, `node/disconnect`, or a second connection by the guest itself emptied the entry while the guest's reader was still draining frames it had read, and those passed unfiltered (a `node/spawn` closure among them). Found by reading; never observed | ⚠️ **OPEN 2026-10-23** — fixed in code (the standing is the link's: `GuestLink` on `Conn`, handed to its reader at `establish`; `GUESTS` / `GUEST_COUNT` gone), guards written but **not yet run or sabotage-verified** — on the test machine before this closes. Not fixed: a guest may claim a connected full peer's name and take its link |
+| KI-287 | **a guest could take a full peer's node name, and with it the peer's link and traffic** — a guest's name is only its `Hello` claim, so naming itself after a connected full peer with a new incarnation retired that peer's link, and the guest then received what was sent to the peer and could reach the pids in it; a same-incarnation duplicate kept the guest against the real peer, and a dial reused the guest's link. Found by reading; never observed | ⚠️ **OPEN 2026-10-23** — fixed in code (`register_link` refuses a guest a name a full link holds or has held, or another grant's guest holds; a full link always displaces a guest; dials and the mesh count only full links), guards written but **not yet run or sabotage-verified**. Left open by design: a name that is a full peer's elsewhere in the cluster and has never linked here |
+| KI-286 | **a guest link's frames could be admitted as a full peer's once its node name moved to another link** — the guest filter (ADR-415) was keyed by name and looked up per frame, so a full link reclaiming the name, `node/disconnect`, or a second connection by the guest itself emptied the entry while the guest's reader was still draining frames it had read, and those passed unfiltered (a `node/spawn` closure among them). Found by reading; never observed | ⚠️ **OPEN 2026-10-23** — fixed in code (the standing is the link's: `GuestLink` on `Conn`, handed to its reader at `establish`; `GUESTS` / `GUEST_COUNT` gone), guards written but **not yet run or sabotage-verified** — on the test machine before this closes. The name hijack beside it is KI-287 |
 | KI-285 | **a loader waiting on its header's dependency still blocked its worker**, and the prefetch that fixed it broke CI's contracts job | ✅ **FIXED 2026-10-21** — the CI break was a tier-up pre-load starting an unrelated load inside a module load; it now declines until the load is over, and the prefetch is restored. Guards: `tier_up_loads.rs` (red without the decline), `lazy_load_wait_parks` (un-ignored) |
 | KI-284 | **a worker BUSY under a native frame still counted as live, so as many processes looping under `reflect/eval-string` as there were workers starved every other process** — the in-language suite sat 30 minutes on two cores (v0.42.2 too), and on an oversubscribed `make test` one `fuzzy` test hit its 600 s timeout and the clean-up failed 343 more as `unbound symbol` | ✅ **FIXED 2026-10-21** — a nested run that spends its quantum with work waiting takes its worker out of the pool until it returns (`cpu_dirty_enter`, the CPU twin of `dirty_block`). Guard: `blocking_native::a_process_runs_while_every_worker_loops_under_a_native_frame` (`BROOD_J=2`, two spinners, every tier; red without the guard) |
 | KI-283 | **a function the linear-map rewrite built on a table leaked that table on every call** — a plain tally called ~25 000 times exhausted a 16 GB `ulimit -v` (`table: cannot reserve a 512 KB dense slot chunk`); a dropped table also kept its registry slot and chunk reservations for good | ✅ **FIXED 2026-10-21** — the rewrite frees its table, tables die with their creating process (ADR-418), and a dropped table's slot is reused under a generation-checked handle. Guard: `table_address_space.rs` (three reuse cases, `VmSize`-metered, each red under its sabotage) |

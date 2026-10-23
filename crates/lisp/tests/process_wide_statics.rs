@@ -87,6 +87,8 @@ const PROCESS_WIDE: &[(&str, &str, Reason)] = &[
     ("dist.rs", "LISTEN_ADDRS", OneMachine),
     ("dist.rs", "DIAL_ROUTES", OneMachine),
     ("dist.rs", "PENDING_DIALS", OneMachine),
+    // The names full links have held, which a guest may not claim (KI-287).
+    ("dist.rs", "FULL_PEER_NAMES", OneMachine),
     // Guest links (ADR-415): the grants the node accepts. A connected guest's standing is
     // its link's (`Conn::guest`), not a table (KI-286).
     ("dist/guest.rs", "GRANTS", OneMachine),

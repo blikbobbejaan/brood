@@ -498,6 +498,16 @@ impl NameTable {
 static NODE_MONITORS: LazyLock<RwLock<HashMap<Symbol, Vec<u64>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
+/// Every node name a FULL link has held on this node. A guest link is refused one
+/// (KI-287): a guest's name is only what it claimed in its `Hello`, and under a full
+/// peer's name it would receive what this node sends that peer — the peer's traffic,
+/// and the local pids in it, made reachable. Bounded by the cookie: only a holder of the
+/// node's own cookie adds a name. Written only by `register_link`, under the `NODES`
+/// write lock, so a guest's check and the insert it guards cannot interleave with a full
+/// link's.
+static FULL_PEER_NAMES: LazyLock<RwLock<HashSet<Symbol>>> =
+    LazyLock::new(|| RwLock::new(HashSet::new()));
+
 /// The addresses this node listens on, in registration order (`"unix:PATH"` /
 /// `"tcp:HOST:PORT"`). One entry per `node-start`/`node-also-listen` listener.
 /// Read by [`advertised_addr`] to tell a peer how others should dial us.
@@ -1625,20 +1635,25 @@ pub(crate) fn node_connect(peer: Symbol, addr: &str) -> io::Result<Symbol> {
 /// of the same address authenticated as (`DIAL_ROUTES`); else the node that
 /// advertises `addr` as its dial address. Each answer is trusted only while that
 /// node is still in `NODES`.
+///
+/// Only a FULL link answers (KI-287). A guest's name and advertised address are its own
+/// claims, so a guest link is never the link a dial was looking for: the dial goes
+/// ahead, and the full link it makes displaces the guest.
 fn linked_peer_for(claimed: Symbol, addr: &str) -> Option<Symbol> {
     // Lock order: NODES, then DIAL_ROUTES — nothing takes them the other way round.
     let nodes = crate::core::sync::read(&NODES);
-    if nodes.contains_key(&claimed) {
+    let full = |name: &Symbol| nodes.get(name).is_some_and(|link| link.guest.is_none());
+    if full(&claimed) {
         return Some(claimed);
     }
     if let Some(&routed) = crate::core::sync::read(&DIAL_ROUTES).get(addr)
-        && nodes.contains_key(&routed)
+        && full(&routed)
     {
         return Some(routed);
     }
     nodes
         .iter()
-        .find(|(_, link)| !link.addr.is_empty() && link.addr == addr)
+        .find(|(_, link)| link.guest.is_none() && !link.addr.is_empty() && link.addr == addr)
         .map(|(&name, _)| name)
 }
 
@@ -1718,6 +1733,11 @@ fn accept_link(mut stream: Stream) -> io::Result<()> {
 ///   or two dials from one side racing). Both reach the live peer, so tearing either
 ///   down must not reach a monitor: the symmetric connector tie-break picks one, and
 ///   an equal connector keeps the registered link.
+///
+/// A GUEST link (ADR-415) stands outside both: its name is only its claim, so it
+/// never displaces a full link or another grant's guest, never takes a name a full link
+/// has held here, and a full link under a name a guest holds always displaces the guest
+/// as the node-down it is (KI-287).
 fn establish(authenticated: handshake::Authenticated, stream: Stream, role: Role) {
     let handshake::Authenticated {
         peer,
@@ -1785,9 +1805,26 @@ fn establish(authenticated: handshake::Authenticated, stream: Stream, role: Role
 fn register_link(peer: Symbol, link: Conn) -> Option<bool> {
     let (was_new, evicted) = loop {
         let mut nodes = crate::core::sync::write(&NODES);
+        // A guest never displaces a link of other standing, whatever the incarnation or
+        // the tie-break would say, and never takes a name a full peer has held (KI-287).
+        if let Some(standing) = &link.guest
+            && !guest_may_take(&nodes, peer, standing)
+        {
+            drop(nodes);
+            eprintln!(
+                "dist: refused a guest link claiming to be {}: the name is another peer's",
+                value::symbol_name(peer)
+            );
+            return None;
+        }
         match nodes.get(&peer) {
-            Some(existing) if existing.incarnation != link.incarnation => {
-                // The peer restarted. Retire the previous life's link OUTSIDE the
+            Some(existing)
+                if existing.incarnation != link.incarnation
+                    || (existing.guest.is_some() && link.guest.is_none()) =>
+            {
+                // The peer restarted — or a full link reaches a name a guest holds, which
+                // is never the same node, whatever incarnation the guest claimed or the
+                // tie-break would pick (KI-287). Retire the previous link OUTSIDE the
                 // lock — its node-down delivers to monitors and sweeps the process
                 // tables — and with `NODES` empty for this name meanwhile, so a
                 // monitor or link made in that window fails over to `:noconnection`
@@ -1811,6 +1848,9 @@ fn register_link(peer: Symbol, link: Conn) -> Option<bool> {
                 // We win (or there was no existing link). Take over the slot; any
                 // evicted link is torn down below, outside the lock.
                 let was_new = other.is_none();
+                if link.guest.is_none() {
+                    crate::core::sync::write(&FULL_PEER_NAMES).insert(peer);
+                }
                 let old = nodes.remove(&peer);
                 nodes.insert(peer, link);
                 break (was_new, old);
@@ -1827,6 +1867,26 @@ fn register_link(peer: Symbol, link: Conn) -> Option<bool> {
         sever_couplings(peer);
     }
     Some(was_new)
+}
+
+/// Whether a guest link with `standing` may be registered as `peer` (KI-287). Not if
+/// the name is held by a full link, or by a guest of another grant — someone else's
+/// session — and not if a full link ever held it here: a full peer that is down or
+/// restarting still owns its name, and the pids of it this node's processes hold still
+/// route to whoever has it. A guest of the SAME grant under the same name is that guest
+/// reconnecting, and is decided by the ordinary incarnation and tie-break rules.
+fn guest_may_take(
+    nodes: &HashMap<Symbol, Conn>,
+    peer: Symbol,
+    standing: &guest::GuestLink,
+) -> bool {
+    let held_by_another = nodes.get(&peer).is_some_and(|existing| {
+        existing
+            .guest
+            .as_ref()
+            .is_none_or(|other| other.grant().cookie != standing.grant().cookie)
+    });
+    !held_by_another && !crate::core::sync::read(&FULL_PEER_NAMES).contains(&peer)
 }
 
 /// The link's writer thread: pull each plaintext frame payload off the channel, **seal**
@@ -2078,9 +2138,15 @@ fn mesh_consider(peers: Vec<(Symbol, String)>) {
     let me = local_node();
     // Snapshot who we're already linked to (a different lock than PENDING_DIALS;
     // take it first and drop it before claiming, so the two are never held nested).
+    // A guest link under a gossiped name does not count: the name is a full peer's
+    // somewhere in the cluster, so dial it, and the full link displaces the guest (KI-287).
     let connected: HashSet<Symbol> = {
         let nodes = crate::core::sync::read(&NODES);
-        nodes.keys().copied().collect()
+        nodes
+            .iter()
+            .filter(|(_, link)| link.guest.is_none())
+            .map(|(&name, _)| name)
+            .collect()
     };
     let mut to_dial: Vec<(Symbol, String)> = Vec::new();
     {
@@ -2478,6 +2544,86 @@ mod tests {
         assert!(
             !guest::admit(peer, Some(&guest_standing), &to_pid(78)),
             "a pid sent over the full link that took the name reached the retired guest link"
+        );
+        assert!(disconnect(peer));
+    }
+
+    /// KI-287: a guest's node name is only its claim, so it must never take a full
+    /// peer's. Claiming a connected full peer's name with a new incarnation used to
+    /// retire that peer's link — the guest then received the peer's traffic and could
+    /// reach the pids in it. Now the guest is refused, the full link is untouched and no
+    /// monitor hears of it; and once the full peer is gone the name is still its own.
+    #[test]
+    fn a_guest_cannot_take_a_full_peers_name() {
+        let me = process::self_pid();
+        let peer = value::intern("full-peer-name-taken@test");
+        let (full_stream, _full_far_end) = stream_pair();
+        establish(authenticated_as(peer, 1), full_stream, Role::Responder);
+        let full_link = registered_link(peer).expect("the full link registers");
+        monitor_node(peer, me);
+
+        let (guest_stream, _guest_far_end) = stream_pair();
+        establish(
+            authenticated_as_guest(peer, 2),
+            guest_stream,
+            Role::Responder,
+        );
+        assert_eq!(
+            registered_link(peer),
+            Some(full_link),
+            "a guest claiming a full peer's name displaced its link"
+        );
+        assert!(registered_guest(peer).is_none());
+        assert_eq!(
+            process::mailbox_len(me),
+            Some(0),
+            "the full peer never went down"
+        );
+
+        // The full peer goes away; its name is still not a guest's to take.
+        assert!(disconnect(peer));
+        assert_eq!(process::mailbox_len(me), Some(1), "its [:nodedown]");
+        let (late_guest_stream, _late_guest_far_end) = stream_pair();
+        establish(
+            authenticated_as_guest(peer, 3),
+            late_guest_stream,
+            Role::Responder,
+        );
+        assert_eq!(
+            registered_link(peer),
+            None,
+            "a guest took the name of a full peer that was down"
+        );
+        demonitor_node(peer, me);
+    }
+
+    /// KI-287's other direction: a full link under a name a guest holds always replaces
+    /// the guest — even at the guest's own incarnation and with the same connector,
+    /// where the duplicate tie-break would keep the registered link — and a dial never
+    /// mistakes the guest's link for the peer it was looking for.
+    #[test]
+    fn a_full_link_displaces_a_guest_holding_its_name_whatever_the_tie_break() {
+        let peer = value::intern("guest-held-name@test");
+        let address = "unix:/nonexistent/brood-test/guest-held-name.sock";
+        let (guest_stream, _guest_far_end) = stream_pair();
+        establish(
+            authenticated_as_guest(peer, 5),
+            guest_stream,
+            Role::Responder,
+        );
+        assert!(registered_guest(peer).is_some(), "the guest link registers");
+        crate::core::sync::write(&DIAL_ROUTES).insert(address.to_string(), peer);
+        assert_eq!(
+            linked_peer_for(peer, address),
+            None,
+            "a dial reused a guest's link as the peer it was looking for"
+        );
+
+        let (full_stream, _full_far_end) = stream_pair();
+        establish(authenticated_as(peer, 5), full_stream, Role::Responder);
+        assert!(
+            registered_link(peer).is_some() && registered_guest(peer).is_none(),
+            "a full link lost a duplicate tie-break to a guest holding its name"
         );
         assert!(disconnect(peer));
     }

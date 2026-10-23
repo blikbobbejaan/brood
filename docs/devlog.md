@@ -3361,3 +3361,12 @@ by the link's `Conn` and handed to its reader; `GUESTS` and `GUEST_COUNT` are go
 notes pids on the link it enqueues on. Found by reading, never observed; the guards are written
 but not run or sabotage-verified here — that is the test machine's. Open, not fixed: a guest can
 claim a connected full peer's name and take its link.
+
+2026-10-23 (KI-287, a guest's name is never a full peer's): a guest's node name is only its
+`Hello` claim, and `register_link` treated it like any other — so a guest naming itself after
+a connected full peer with a new incarnation retired that peer's link and took its traffic.
+Binding a node name into the grant does not fit (the grant has no node name, `:as` is an
+identity, the session cookie serves many generated names), so the rule lives in
+`register_link`: a guest is refused a name a full link holds or ever held here
+(`FULL_PEER_NAMES`) or another grant's guest holds; a full link always displaces a guest; a
+dial and the mesh ignore guest links. Guards written, not run here.
