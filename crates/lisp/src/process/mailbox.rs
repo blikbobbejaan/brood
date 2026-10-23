@@ -1954,7 +1954,6 @@ fn wait_for_message(ctx: &CurrentProcess, i: usize, deadline: Option<SchedDeadli
         return;
     }
     set_self_status(ctx, ST_WAITING);
-    let _dirty = crate::process::dirty_block();
     // Register on `cv_waiters` under this same lock hold, so every wake site's
     // critical section either runs before us (we see its effect on the re-checks
     // above and never block) or after (it reads a non-zero count and notifies).
@@ -1970,6 +1969,12 @@ fn wait_for_message(ctx: &CurrentProcess, i: usize, deadline: Option<SchedDeadli
         st.wake_pending = false;
         return;
     }
+    // Only now is this thread about to block, so only now does its worker leave the
+    // executors (`dirty_block` re-routes its queue and may start a drainer thread). The
+    // early returns above never block, and paid that whole-queue drain for nothing
+    // (compute-frontier §7.8 item 6). Still under the state lock, still before the wait,
+    // and the guard still lives until the wait returns.
+    let _dirty = crate::process::dirty_block();
     match deadline {
         Some(d) => {
             let remaining = d.remaining();
