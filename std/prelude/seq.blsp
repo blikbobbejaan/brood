@@ -270,10 +270,14 @@ Always true for `n` <= 0.
     ;; `from` is read as its entries first (`%map-into` takes a list/vector of `[k v]`).
     ;; a record target conj's each item via `Conjable` (a custom collection defines how);
     ;; a plain map uses the GC-quiet CHAMP builder. `%map-get` tells them apart.
+    ;; A map poured into an EMPTY map is the answer itself, as with vectors below — so
+    ;; `(merge m …)` copies nothing for its first map, rather than rebuilding it entry by
+    ;; entry through `%map-pairs`.
     (map? to)
-      (if (%map-get to :__id__ nil)
-        (fold (seq from) to %conj-one)
-        (%map-into to (if (map? from) (%map-pairs from) from)))
+      (cond
+        (%map-get to :__id__ nil) (fold (seq from) to %conj-one)
+        (and (map? from) (empty? to)) from
+        :else (%map-into to (if (map? from) (%map-pairs from) from)))
     ;; Set target: add each item (duplicates collapse). Without this branch the
     ;; `else` would pour a set into a LIST — `(into #{} [1 1 2])` as `(1 1 2)`.
     (set? to) (fold from to %set-add)
@@ -839,7 +843,14 @@ A trailing `:into coll` collects with `conj` onto `coll` instead of building a l
           body (if (empty? (rest body)) (first body) (cons 'do body)))
       (if (nil? into)
         `(/reverse (let (~acc nil) ~(%for-fold acc binds `(cons ~body ~acc))))
-        `(let (~acc ~(first into)) ~(%for-fold acc binds `(conj ~acc ~body)))))))
+        `(%for-into ~(first into)
+           (/reverse (let (~acc nil) ~(%for-fold acc binds `(cons ~body ~acc)))))))))
+
+;; `:into`'s collection step. The items arrive as a list in order, and a VECTOR target takes
+;; them in one `into` — `conj` onto a vector copies it, so collecting element by element was
+;; quadratic. Every other target is `conj`'d item by item, exactly as before: a list
+;; prepends, a map takes `[k v]` pairs, a set drops duplicates, a record its own way.
+(defn- %for-into (target items) (if (vector? target) (into target items) (fold items target conj)))
 
 ;; (fold-for (acc init x xs …) body…) — the accumulating comprehension: `for`'s walk
 ;; with the body as the STEP. The first pair names the accumulator and its start; the
@@ -965,4 +976,14 @@ structural order (`compare`) — or a key's own `compare-to` if the key is a rec
 string, keyword, vector, and record keys all work.
 
     (sort-by [\"aaa\" \"b\"] count)   → (\"b\" \"aaa\")"
-  (%merge-sort (fn (x y) (< (%ord-compare (key-fn x) (key-fn y)) 0)) coll))
+  ;; Each key is computed ONCE, paired with its item, and the pairs sorted — rather than
+  ;; `key-fn` running on both sides of every comparison, ~2·n·log n calls, which is what
+  ;; a completion menu sorting by a computed score paid.
+  ;; A collection of one item or none comes back as `%merge-sort` returns it — itself, and
+  ;; typed as it always was (the test is on the keyed list, so `coll` is never narrowed by a
+  ;; `count`); the comparator is never called for it.
+  (let (keyed (map coll (fn (item) [(key-fn item) item])))
+    (if (empty? (rest keyed))
+      (%merge-sort < coll)
+      (map (%merge-sort (fn (x y) (< (%ord-compare (%vector-ref x 0) (%vector-ref y 0)) 0)) keyed)
+        (fn (pair) (%vector-ref pair 1))))))
