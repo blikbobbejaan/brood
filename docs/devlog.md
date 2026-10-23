@@ -3334,3 +3334,20 @@ runs; an undeclared template writes nothing; `--template hatch` points at `--fro
   `reflect/arglists` (every arm; `arglist` shows the last). No stale illustration in std.
 - **Shadow warnings** (import and root macro) are written through the dynamic `*err*` port, so
   `with-err-str` captures them; the macro one is queued during resolve and flushed by `compile`.
+
+2026-10-23 (making the session's snags hard to repeat):
+- **The pre-push hook rebuilds a stale binary** before judging (`make release`; a `-dirty` build
+  carries HEAD's sha and still predates the edits after it) — four false reds in two days were a
+  binary older than the tree. It also greps the added lines for CI's two Rust source gates that
+  reddened main today (an unlisted process-wide `static`; a checker rule head that names nothing
+  bound), and a prelude change runs `bare_names_test` and `prelude_capture_test`. Each new gate
+  sabotage-checked on a planted violation and on a clean one.
+- **`make ci-wait [REF=…]`** waits for CI's verdict on a push, following the newest run whose
+  commit contains it through cancellations, and prints the failing jobs and tests.
+- **The bare-name ledger** rejects a name listed twice and a group whose header count is not its
+  bullet count — it found `dynamic (73)` heading 74 names.
+- **The stdimage builder** names a `defdyn` in a std module as such ("declare it in std/prelude/")
+  instead of blaming an already-loaded module.
+- `EnvId::GLOBAL`'s doc says it is not the global scope during a source boot. Aliasing it inside
+  `env_get` was tried and broke the source boot (some of the 122 sites rely on the miss), so
+  the trap is documented rather than removed.

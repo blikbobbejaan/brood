@@ -113,7 +113,7 @@ SYMBOLS_DIR := target/$(TARGET_SUBDIR)release-symbols
 # fails on one.
 .PHONY: ab ab-clean ab-pin ab-vm asan benchmark breakagetests build check check-corpora \
 	check-cost check-examples check-imaged check-stress clean clippy configure doctor \
-	enable-perf-check ensure-nextest fmt fuzz gcstress gcstress-all green green-all help hooks install \
+	ci-wait enable-perf-check ensure-nextest fmt fuzz gcstress gcstress-all green green-all help hooks install \
 	install-features \
 	latency-gate loom perf-brood perf-symbols prepush quickbench release release-brood repl \
 	runtime-soak smoke-bedit stress suite test test-both test-contracts test-light tier-audit tsan \
@@ -339,6 +339,9 @@ green: ## Answer one question honestly: is this tree green? (completed CI runs +
 	# A cancelled CI run is not evidence, and `make check` is not what CI runs (KI-68/KI-69).
 	# `--local` skips the CI half, `--remote` skips the local half.
 	@./scripts/green.sh $(ARGS)
+
+ci-wait: ## Wait for CI's verdict on REF (default HEAD) — through cancellations, counting a later run that contains it — and name what failed
+	@./scripts/ci-wait.sh $(REF)
 
 green-all: check-examples check-stress check-imaged smoke-bedit tier-audit wasm-test test-contracts gcstress-all latency-gate ## `make green` plus clippy (CI's flags), the two slow .blsp corpus gates, the bedit smoke, the tier audit, the wasm behavioural suite, the suite with contracts armed, every test file under GC stress, and the latency gate
 	@./scripts/green.sh --clippy

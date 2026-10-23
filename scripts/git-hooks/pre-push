@@ -12,7 +12,16 @@
 #       have an entry in diagnostics/debug_flags.rs (the same rule the 0.03 s Rust unit test
 #       `every_runtime_flag_is_catalogued` enforces, as a grep, so it costs nothing to ask
 #       here). `BROOD_GUI_BLIT` landed uncatalogued on 2026-09-13.
+#     - two of CI's Rust source gates, as greps over the ADDED lines (both reddened main on
+#       2026-10-23, an hour after a push the hook had passed): a new lock-holding `static`
+#       under crates/lisp/src must be listed in `tests/process_wide_statics.rs`, and a new
+#       `symbol_is(_, "name")` rule head in the checker must name something bound — or be
+#       listed in `rule_heads_are_bound`'s NOT_CALLEES.
 #   when a .blsp is involved (a minute or so; a Rust-only push never pays it)
+#     - the binaries are REBUILT first (`make release`, incremental) when they are older than
+#       the tree: a gate judged by a stale binary fails correct work ("nest check would fail
+#       CI" over a std/ edit the binary predates — four times on 2026-10-22/23, every one a
+#       rebuild-and-retry). `PREPUSH_NO_BUILD=1` skips the build and says the check may be stale.
 #     - `nest format --check` — whole-project by design; the merge that went red on
 #       2026-08-18 read the formatter's LAST LINE instead of its exit code.
 #     - the tests that name the modules touched: `std/**/foo-bar.blsp` → `tests/foo_bar_test.blsp`
@@ -20,6 +29,9 @@
 #       (`tests/audit_test.blsp`: docstring + `form → result` example ratchets) and the
 #       executed doc examples (`tests/doc_examples_test.blsp`) whenever std/ changed — two
 #       public functions landed without an example on 2026-09-13 and moved the ratchet.
+#     - a change under std/prelude/ also runs the bare-name ledger (`bare_names_test`) and the
+#       macro-capture gate (`prelude_capture_test`): a new root name (`->count`, 2026-10-22)
+#       is only caught there, and nothing in its own file's name points at either.
 #     - a change under crates/lisp/src/types/ runs the checker's expectation files
 #       (`sig_adoption_test`, `checker_pass_agreement_test`): a spelling change in a warning
 #       (ADR-341's tuple merge) sat red in the suite for a day.
@@ -80,7 +92,28 @@ done
 [ -n "$missing" ] && fail "BROOD_* flag read by the runtime but absent from the catalogue:$missing
   add an f(NAME, GROUP, \"…\") entry — or NON_FLAGS if it is not an env flag — in $catalogue"
 
-[ "$blsp_touched" -eq 0 ] && [ "$types_touched" -eq 0 ] && exit 0
+# ---- 3b. CI's Rust source gates, on the lines this push ADDS -----------------------
+added_rs() { # the added lines of changed .rs files under $1, prefixed `path:`
+    for f in $(printf '%s\n' "$changed" | grep -E "^$1.*\.rs\$"); do
+        [ -f "$f" ] || continue
+        { git diff "$upstream" -- "$f" 2>/dev/null; git diff --cached -- "$f" 2>/dev/null; } \
+            | grep -E '^\+[^+]' | sed "s|^+|$f:|"
+    done
+}
+statics_list=crates/lisp/tests/process_wide_statics.rs
+unlisted=""
+for hit in $(added_rs crates/lisp/src/ \
+        | grep -E ':[[:space:]]*(pub(\((crate|super)\))? )?static [A-Z][A-Z0-9_]*:.*(Mutex|RwLock|boxcar|Registry)' \
+        | grep -v 'Cell<' | sed -E 's|^crates/lisp/src/([^:]*):.*static ([A-Z][A-Z0-9_]*):.*|\1,\2|'); do
+    path=${hit%,*}; name=${hit#*,}
+    grep -qF "(\"$path\", \"$name\"" "$statics_list" || unlisted="$unlisted $path:$name"
+done
+[ -n "$unlisted" ] && fail "a new process-wide table static is not listed with its reason:$unlisted
+  if it records anything about ONE runtime make it a RuntimeCode field; otherwise add it to
+  PROCESS_WIDE in $statics_list (CI's every_process_wide_table_says_why)"
+rule_heads=$(added_rs crates/lisp/src/types/ | grep -oE 'symbol_is\([^,]*, "[^"]+"\)' | sed -E 's/.*"([^"]+)"\)/\1/' | sort -u)
+
+[ "$blsp_touched" -eq 0 ] && [ "$types_touched" -eq 0 ] && [ -z "$rule_heads" ] && exit 0
 
 # ---- 4. the binaries that MATCH THIS TREE ------------------------------------------
 # Not merely the first that exists: the old order was release, then debug, then PATH, so
@@ -109,7 +142,28 @@ pick_bin() { # $1 = nest | brood ; prints the path, or nothing
     [ -n "$best" ] && echo "pre-push: no $name built at $head_sha; using the newest ($best, $("$best" --version 2>/dev/null | head -1)) — this check may be stale." >&2
     echo "$best"
 }
-nest_bin=$(pick_bin nest)
+# Stale = older than a std/ or crates/ file in the tree. By mtime, not by the sha in
+# `--version`: a `-dirty` build carries HEAD's sha and still predates the edits after it, a
+# merge's checkout writes the files it brings in (so they are newer), and a commit alone
+# changes the sha without changing a byte the binary was built from.
+stale_bin() { # $1 = a binary path; true when it is older than the tree it would judge
+    [ -n "$1" ] && [ -x "$1" ] || return 0
+    [ -n "$(find std crates -newer "$1" \( -name '*.blsp' -o -name '*.rs' \) -print -quit 2>/dev/null)" ]
+}
+nest_bin=$(pick_bin nest 2>/dev/null)
+if stale_bin "$nest_bin"; then
+    if [ "${PREPUSH_NO_BUILD:-}" = 1 ]; then
+        echo "pre-push: the binaries predate the tree and PREPUSH_NO_BUILD=1 — the Brood gates may judge stale code." >&2
+    else
+        echo "pre-push: the binaries predate the tree — rebuilding (make release; PREPUSH_NO_BUILD=1 skips)" >&2
+        if ! make release >/tmp/brood-prepush-build.$$.log 2>&1; then
+            tail -15 /tmp/brood-prepush-build.$$.log | sed 's/^/  /' >&2
+            fail "make release failed (log: /tmp/brood-prepush-build.$$.log) — a full disk reads as an LLVM or linker error"
+        fi
+        rm -f /tmp/brood-prepush-build.$$.log
+    fi
+    nest_bin=$(pick_bin nest 2>/dev/null)
+fi
 if [ -z "$nest_bin" ]; then
     echo "pre-push: Brood files changed but no nest binary found — skipping the Brood gates." >&2
     exit 0
@@ -144,6 +198,30 @@ if [ "$std_changed" -eq 1 ]; then
     add_test tests/audit_test.blsp
     add_test tests/doc_examples_test.blsp
 fi
+if printf '%s\n' "$changed" | grep -q '^std/prelude/'; then
+    add_test tests/bare_names_test.blsp
+    add_test tests/prelude_capture_test.blsp
+fi
+# The checker's rule heads (CI: rule_heads_are_bound): each new `symbol_is(_, "name")` must
+# name a bound function, a special form, or a word NOT_CALLEES lists.
+not_callees=$(sed -n '/const NOT_CALLEES/,/];/p' crates/lisp/src/types/check/tests/review_inference.rs | grep -oE '"[^"]+"' | tr -d '"')
+unbound_heads=""
+brood_bin=$(pick_bin brood 2>/dev/null)
+for head in $rule_heads; do
+    printf '%s\n' "$not_callees" | grep -qxF -- "$head" && continue
+    [ -n "$brood_bin" ] || continue
+    module=${head%/*}; [ "$module" = "$head" ] && module=""
+    probe="${module:+(require-one '$module) }(io/puts (or (bound? '$head) (any? (reflect/special-forms) (fn (x) (= x \"$head\")))))"
+    printf '%s\n' "$probe" > /tmp/brood-prepush-head.$$.blsp
+    case "$("$brood_bin" /tmp/brood-prepush-head.$$.blsp 2>/dev/null | tail -1)" in
+        true) ;;
+        *) unbound_heads="$unbound_heads $head" ;;
+    esac
+done
+rm -f /tmp/brood-prepush-head.$$.blsp
+[ -n "$unbound_heads" ] && fail "a checker rule keys on a name that is not bound:$unbound_heads
+  rename it to the live spelling, or — a clause word, not a callee — add it to NOT_CALLEES in
+  crates/lisp/src/types/check/tests/review_inference.rs (CI's rule_heads_are_bound)"
 if [ "$types_touched" -gt 0 ]; then
     add_test tests/sig_adoption_test.blsp
     add_test tests/checker_pass_agreement_test.blsp

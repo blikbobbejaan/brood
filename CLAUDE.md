@@ -202,11 +202,17 @@ cargo run -p cli file.blsp        # run a program file
 cargo run -p cli -- --test f.blsp # run one self-contained test file
 cargo run -p nest -- new foo      # scaffold a new project
 make green                        # IS THE TREE GREEN? completed CI runs + the gates `make check` skips
+make ci-wait [REF=sha]            # wait for CI's verdict on a push (follows cancellations) and name the failures
 make green-all                    # …plus clippy on CI's flags, examples/stress gates, check-imaged, tier-audit, wasm-test
 make ab BASE=<ref>                # A/B the working tree vs a git ref on the benchmark rows
 make help                         # every target
 ```
 
+- **After a push, `make ci-wait` — never a hand-written `gh run list -L 1` loop**: right after a
+  push that returns the PREVIOUS run, and every push cancels the run before it; `ci-wait`
+  follows the newest run whose commit contains yours and prints the failing tests.
+- **Waiting for a build: never `while pgrep -f "cargo build"`** — the pattern matches the waiting
+  shell's own command line, so the loop never ends. Wait on the build command itself.
 - **`make green` answers "is the tree green?" — never hand-read the run list.** A cancelled
   CI run is not evidence (every run is cancelled by the next push), and `make check` is not
   what CI runs: CI also runs `nest format --check`, the zero-warning checker gates, the
@@ -287,9 +293,12 @@ before pushing**.
 
 **Before every push: `make hooks` once, then let the hook run (or `make prepush` by hand).**
 The pre-push hook (`scripts/git-hooks/pre-push`) is the fast half of CI: rustfmt and the
-`BROOD_*` flag catalogue always; with a `.blsp` involved, `nest format --check`, the tests
-that name the changed modules, the surface audit and the executed doc examples; for a change
-under `types/`, the checker's expectation files. A red you did not cause is still yours to
+`BROOD_*` flag catalogue always, plus greps for two of CI's Rust source gates (an unlisted
+process-wide `static`, an unbound checker rule head); with a `.blsp` involved it first REBUILDS a
+binary older than the tree (`PREPUSH_NO_BUILD=1` skips), then `nest format --check`, the tests
+that name the changed modules, the surface audit and the executed doc examples (and, for a
+prelude change, the bare-name ledger and the capture gate); for a change under `types/`, the
+checker's expectation files. A red you did not cause is still yours to
 attribute: run the failing file against a clean build of the previous commit.
 
 > **A global `core.hooksPath` makes that hook INERT, and nothing says so** — it *replaces*

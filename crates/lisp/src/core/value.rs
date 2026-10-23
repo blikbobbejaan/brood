@@ -592,6 +592,14 @@ impl EnvId {
     /// (see `Heap::env_frame`), not the `_ => unreachable!()` fall-through.
     /// (`u64::MAX` survives the gen-masked equality — its region+index bits are
     /// all-ones, which no real handle produces.)
+    ///
+    /// **Not the global scope during a source boot.** The prelude's builder heap keeps its
+    /// globals in an ordinary frame (`boot::builder_heap`, `Heap::global`), so a compile-time
+    /// lookup `env_get(EnvId::GLOBAL, …)` there misses everything the prelude has defined so
+    /// far — silently: ADR-423's template pass found no root names until it asked
+    /// `env_get(heap.global(), …)`. Code that runs while the prelude compiles and must see its
+    /// definitions asks `heap.global()`. (Aliasing GLOBAL to the frame inside `env_get` was
+    /// tried and breaks the source boot: some of the 122 call sites rely on the miss.)
     pub const GLOBAL: EnvId = EnvId(u64::MAX);
 }
 

@@ -52,6 +52,24 @@
 (defn- full-surface? ()
   (and (bound? 'test/run) (bound? 'doctest/failures)))
 
+;; `[header-count bullet-count]` per counted group (`## core (159)`), keyed by group name.
+(defn- group-counts ()
+  (let (step (fn (acc line)
+               (let ([groups current] acc
+                     header (if (string/starts-with? line "## ") (string/split line " (") nil))
+                 (cond
+                   (and header (= 2 (count header)))
+                     (let (name (string/substring (first header) 3 (count (first header)))
+                           n (string/->number (first (string/split (second header) ")"))))
+                       [(assoc groups name [n 0]) name])
+                   header [groups nil]
+                   (and current (string/starts-with? line "- `"))
+                     (let ([n seen] (get groups current))
+                       [(assoc groups current [n (inc seen)]) current])
+                   else acc)))
+        [groups _] (fold (string/split (file/slurp ledger-path) "\n") [{} nil] step))
+    groups))
+
 (describe "the bare namespace is gated, not merely counted"
 
   (test "the ledger parses and is not empty"
@@ -62,6 +80,19 @@
       (is (includes? recorded "spawn"))
       (is (includes? recorded "*out*"))
       (is (not (includes? recorded "string/join")))))
+
+  ;; Two people fixing the same red each add the same bullet, and git merges the two
+  ;; identical appends cleanly (`->count`, 2026-10-22). Nothing else notices a duplicate.
+  (test "no name is recorded twice, and every group's header count is its bullet count"
+    (let (recorded (ledger-names))
+      (assert= []
+        (apply vector
+          (sort (seq/filter (keys (seq/frequencies recorded))
+                  (fn (n) (> (get (seq/frequencies recorded) n) 1)))))))
+    (let (groups (group-counts))
+      (is (contains? groups "core"))
+      (assert= {}
+        (into {} (seq/filter (seq groups) (fn ([_ [n seen]]) (not (= n seen))))))))
 
   (test "every bare public name is recorded in docs/bare-names.md"
     (let (unrecorded (missing-from (live-bare-names) (ledger-names)))
