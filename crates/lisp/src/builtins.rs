@@ -98,6 +98,9 @@ pub(crate) use numeric::{NumericText, classify_numeric_text};
 pub use os::set_script_args;
 #[cfg(feature = "jit")]
 pub(crate) use sequences::{first_without_eval, is_empty_without_eval, rest_without_eval};
+// The VM's `Prim1` fallback for a non-pair `first` / `rest` / `empty?` operand calls these
+// directly once its guard has proved the head is the native (`exec_chunk`).
+pub(crate) use sequences::{first, is_empty, rest};
 pub use terminal::{restore_raw, restore_terminal, restore_terminal_on_exit};
 pub use tooling::{DOC_FORMS, SPECIAL_FORMS};
 

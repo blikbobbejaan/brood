@@ -555,7 +555,7 @@ pub(crate) fn is_empty_without_eval(heap: &mut Heap, v: Value) -> Option<LispRes
     Some(is_empty(&[v], genv, heap))
 }
 
-pub(super) fn first(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
+pub(crate) fn first(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let v0 = arg(args, 0);
     // a record dispatches to its `Seqable` view first (custom collection or fields).
     let v = match record_seq(heap, v0)? {
@@ -606,7 +606,7 @@ pub(super) fn first(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     }
 }
 
-pub(super) fn rest(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
+pub(crate) fn rest(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let v0 = arg(args, 0);
     let v = match record_seq(heap, v0)? {
         Some(s) => s,
@@ -708,7 +708,7 @@ fn record_counted(heap: &mut Heap, v: Value) -> Result<Option<Value>, LispError>
     )?))
 }
 
-pub(super) fn is_empty(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
+pub(crate) fn is_empty(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let x0 = arg(args, 0);
     // A record that knows its size (`Counted`) is empty iff that size is zero.
     if let Some(n) = record_counted(heap, x0)? {

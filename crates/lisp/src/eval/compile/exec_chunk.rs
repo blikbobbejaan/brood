@@ -512,6 +512,29 @@ pub(crate) fn exec_chunk(
                             heap.push_root(result);
                             continue;
                         }
+                        // `first` / `rest` / `empty?` on anything else (a vector, a set, a
+                        // map, a record, a seq-view, a type error): the guard proved the head
+                        // is that native, so call its body directly — what `env_get` +
+                        // `dispatch` (passthrough loop, `apply` test, `eval::apply`,
+                        // `call_native`'s arity check on a one-argument call) would reach.
+                        // The JIT's `unary_fallback` calls the same functions. The operand
+                        // stays rooted at `n - 1` across a collection inside it.
+                        (PrimOp1::First | PrimOp1::Rest | PrimOp1::IsEmpty, _) => {
+                            crate::perf_bump!(prim1_fallback);
+                            let cur_env = heap.read_root_env(genv);
+                            let builtin = match op {
+                                PrimOp1::First => crate::builtins::first,
+                                PrimOp1::Rest => crate::builtins::rest,
+                                _ => crate::builtins::is_empty,
+                            };
+                            let result = builtin(&[sa], cur_env, heap);
+                            heap.truncate_roots(n - 1);
+                            match result {
+                                Ok(v) => heap.push_root(v),
+                                Err(e) => return Err(tag_pos(e, pos)),
+                            }
+                            continue;
+                        }
                         _ => {}
                     }
                 }
