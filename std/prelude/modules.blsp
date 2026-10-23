@@ -1222,6 +1222,62 @@ marker is cleared on failure), never before — see the ordering note above."
   (doseq ([p r] (%require-take-waiters! key))
     (send p [:load-done r key])))
 
+;; ---- a require cycle split across processes ------------------------------------
+;;
+;; One process loading `a`, which requires `b`, which requires `a`, is the classic cycle: the
+;; inner require of `a` sees its own in-flight claim and returns. Split across two processes
+;; (the parallel cold build, ADR-426, does this whenever two workers each start one end of a
+;; cycle) it is a deadlock: P holds `a` and waits for `b`; Q holds `b` and waits for `a`; each
+;; load completes only after the other, so no completion is ever sent. It lasted until the
+;; 30 s backstop force-loaded one end a SECOND time while its first load was still in flight
+;; — bedit's `aside` was then compiled against a half-published `panes`, its `ed-layout-now`
+;; left bare, and every test of a pane built on it failed `unbound symbol`.
+;;
+;; The waiter now walks the wait-for chain — the holder of the key it waits for, the key that
+;; holder waits for, its holder, … — and a chain that comes back to itself is the cycle. It
+;; is broken by the process that sees it: it raises `*require-cycle*`, and as that unwinds
+;; every load it claimed is discarded (ADR-344) and released, so the other process finishes
+;; the whole cycle on its own, exactly as a single-process load would. The outermost load of
+;; the process that raised then simply requires its module again (`%require-one`), and this
+;; time it waits for a load that completes. The check repeats while the wait lasts (every
+;; `*require-cycle-check-ms*`), not once: the second process to start waiting closes the
+;; cycle, and a read of the registries can briefly lag another process's write.
+
+;; The parallel build's driver (`project-load-cycle?`) knows the error by this text.
+(def- *require-cycle* "require: a load cycle across processes")
+
+;; How often a waiter looks for a cycle, and how many looks make the 30 s backstop.
+(def- *require-cycle-check-ms* 250)
+(def- *require-cycle-checks* 120)
+
+(defn- %require-waits-on (pairs pid)
+  "The key `pid` is waiting to see loaded, from `*features-waiting*`'s `pairs`, or nil."
+  (cond
+    (empty? pairs) nil
+    (any? (second (first pairs)) (fn (waiter) (= (first waiter) pid))) (first (first pairs))
+    else (%require-waits-on (rest pairs) pid)))
+
+(defn- %require-chain-reaches? (holder me steps)
+  (cond
+    (= holder me) true
+    (or (not (pid? holder)) (<= steps 0)) false
+    else
+      (let (next (%require-waits-on (%map-pairs *features-waiting*) holder))
+        (if (nil? next)
+          false
+          (%require-chain-reaches? (get *features-loading* next) me (- steps 1))))))
+
+(defn- %require-cycle? (key me)
+  "True when the process holding `key`'s load is — through the loads it is itself waiting
+on — waiting on a load `me` holds: a require cycle split across processes, which no
+completion will ever break. The chain is at most as long as there are loads in flight."
+  (%require-chain-reaches? (get *features-loading* key) me (count *features-loading*)))
+
+(defn- %require-holds-a-load? (me except)
+  "True while `me` still holds the claim on a load in flight other than `except`'s."
+  (any? (%map-pairs *features-loading*)
+    (fn (pair) (and (= (second pair) me) (not (= (first pair) except))))))
+
 (defn- %require-await (key)
   "Block until the process that claimed `key`'s load has finished it. Returns `key`."
   (let (me (self)
@@ -1244,46 +1300,63 @@ marker is cleared on failure), never before — see the ordering note above."
         (not (%registry-member? '*features-loading* key))
           (do (%require-unwatch! key me rref mref) (require-one key))
         else
-          (receive
-            ([:load-done r k] :when
-              (= r rref)
-              (do
-                (when mref (demonitor mref))
-                ;; "Finished" includes FAILED — the error path releases waiters too, so that
-                ;; nobody blocks on a load that will never provide. So re-check rather than
-                ;; trust the notification: without this a failed load is reported to every
-                ;; waiter as a success, and the caller meets an unbound name instead of the
-                ;; loader's actual error.
-                (if (%registry-member? '*features* k) k (require-one k))))
-            ;; The claimant died mid-load: nobody will provide, and its marker is still there
-            ;; — nothing clears `*features-loading*` on process death. CLEAR IT FIRST, then
-            ;; retry. Retrying without clearing is not a slow retry, it is a hot infinite
-            ;; loop: `require-one` sees the stale marker, comes back here, monitors the same
-            ;; dead pid, and `add_monitor` answers a dead target with an IMMEDIATE synthetic
-            ;; `[:down … :noproc]` — so the cycle spins at 100% CPU with no delay in it, and
-            ;; it poisons that module for every process, not just this one.
-            ([:down r _ _] :when
-              (= r mref)
-              (do
-                (%require-unwatch! key me rref nil)
-                (%require-release-dead-claim! key loader)
-                (require-one key)))
-            ;; Backstop. OTP needs none — its code server cannot silently forget a requester.
-            ;; Ours is ordinary Brood, so keep a last resort, but make it LOUD: reaching it
-            ;; means the protocol above dropped a waiter, and KI-72's whole lesson is that a
-            ;; silent stall is unattributable.
-            (after 30000
-              (do
-                (%require-unwatch! key me rref mref)
-                (%eprint (str "[require] BUG: waited 30s for an in-flight load of '"
-                           key "' with no completion and no loader death; force-loading. "
-                           "This should be unreachable — please report it.\n"))
-                ;; `%require-force`, not `require-one`: reaching here means the claimant is
-                ;; alive and has been mid-load for 30 s, so its marker is still set and
-                ;; `require-one` would simply wait another 30 s, forever. Forcing risks a
-                ;; duplicate load, which is the lesser evil against never making progress —
-                ;; and the message above says the protocol is broken either way.
-                (%require-force key))))))))
+          (%require-await-loop key
+            me rref mref loader *require-cycle-checks*)))))
+
+(defn- %require-await-loop (key me rref mref loader checks)
+  "`%require-await`'s wait: for the completion, the claimant's death, or — every
+`*require-cycle-check-ms*` — a cycle across processes, `checks` times before the backstop."
+  (receive
+    ([:load-done r k] :when
+      (= r rref)
+      (do
+        (when mref (demonitor mref))
+        ;; "Finished" includes FAILED — the error path releases waiters too, so that
+        ;; nobody blocks on a load that will never provide. So re-check rather than
+        ;; trust the notification: without this a failed load is reported to every
+        ;; waiter as a success, and the caller meets an unbound name instead of the
+        ;; loader's actual error.
+        (if (%registry-member? '*features* k) k (require-one k))))
+    ;; The claimant died mid-load: nobody will provide, and its marker is still there
+    ;; — nothing clears `*features-loading*` on process death. CLEAR IT FIRST, then
+    ;; retry. Retrying without clearing is not a slow retry, it is a hot infinite
+    ;; loop: `require-one` sees the stale marker, comes back here, monitors the same
+    ;; dead pid, and `add_monitor` answers a dead target with an IMMEDIATE synthetic
+    ;; `[:down … :noproc]` — so the cycle spins at 100% CPU with no delay in it, and
+    ;; it poisons that module for every process, not just this one.
+    ([:down r _ _] :when
+      (= r mref)
+      (do
+        (%require-unwatch! key me rref nil)
+        (%require-release-dead-claim! key loader)
+        (require-one key)))
+    (after *require-cycle-check-ms*
+      (cond
+        ;; A cycle across processes: nobody will complete. Leave the queue and raise, so
+        ;; this process's own claims are discarded and released as the error unwinds and the
+        ;; other end of the cycle finishes it alone (see the note above `%require-cycle?`).
+        (%require-cycle? key me)
+          (do
+            (%require-unwatch! key me rref mref)
+            (error *require-cycle*
+              ": '" key "' is being loaded by a process that is waiting on a load this one holds"))
+        (> checks 0) (%require-await-loop key me rref mref loader (- checks 1))
+        ;; Backstop. OTP needs none — its code server cannot silently forget a requester.
+        ;; Ours is ordinary Brood, so keep a last resort, but make it LOUD: reaching it
+        ;; means the protocol above dropped a waiter, and KI-72's whole lesson is that a
+        ;; silent stall is unattributable.
+        else
+          (do
+            (%require-unwatch! key me rref mref)
+            (%eprint (str "[require] BUG: waited 30s for an in-flight load of '"
+                       key "' with no completion and no loader death; force-loading. "
+                       "This should be unreachable — please report it.\n"))
+            ;; `%require-force`, not `require-one`: reaching here means the claimant is
+            ;; alive and has been mid-load for 30 s, so its marker is still set and
+            ;; `require-one` would simply wait another 30 s, forever. Forcing risks a
+            ;; duplicate load, which is the lesser evil against never making progress —
+            ;; and the message above says the protocol is broken either way.
+            (%require-force key))))))
 
 (defn- %require-release-dead-claim! (key loader)
   "Clear `key`'s in-flight marker, but only while it still names `loader` — CAS-retried, so
@@ -1391,29 +1464,41 @@ it waits for that load to finish (a half-evaluated module is never observable).
           ;; cache) and skip the load if it is already there. Without this, a claimant whose
           ;; guard read was stale reloads an already-loaded module — the co-located-secondary
           ;; double-load (ADR-225). The marker is released either way.
-          (unless (%registry-member? '*features* key)
-            ;; `%with-load-journal` (KI-134, ADR-339): this load's defines and registrations
-            ;; are journalled, so an `%isolate` restore — this process's window or a
-            ;; concurrent one's — replays them instead of rolling back a module every other
-            ;; process may already be using. Isolation undoes what a TEST did, never a load.
-            (try
-              (%with-load-journal (fn () (%require-force key)))
-              (catch e
-                (do
-                  (%registry-update! '*features-loading* :dissoc [key] nil)
-                  ;; Release BEFORE rethrowing. A load that throws must not strand its
-                  ;; waiters: the marker is gone, so nobody will provide, and a waiter
-                  ;; blocked on a completion that can never arrive would sit until its
-                  ;; backstop. Woken here, each waiter re-checks, finds `key` unprovided and
-                  ;; unclaimed, and one of them wins the claim and retries the load.
-                  (%require-release! key)
-                  (throw e)))))
-          ;; Marker cleared, then waiters released — and both AFTER `provide` (inside
-          ;; `%require-force`). See the ordering note on `%require-await`: provide-then-drain
-          ;; is what lets a waiter that joins the queue late still observe the load itself.
-          (%registry-update! '*features-loading* :dissoc [key] nil)
-          (%require-release! key)
-          key))))
+          (if (= :%cycle-broken
+                (unless (%registry-member? '*features* key)
+                  ;; `%with-load-journal` (KI-134, ADR-339): this load's defines and registrations
+                  ;; are journalled, so an `%isolate` restore — this process's window or a
+                  ;; concurrent one's — replays them instead of rolling back a module every other
+                  ;; process may already be using. Isolation undoes what a TEST did, never a load.
+                  (try
+                    (do (%with-load-journal (fn () (%require-force key))) nil)
+                    (catch e
+                      (do
+                        (%registry-update! '*features-loading* :dissoc [key] nil)
+                        ;; Release BEFORE rethrowing. A load that throws must not strand its
+                        ;; waiters: the marker is gone, so nobody will provide, and a waiter
+                        ;; blocked on a completion that can never arrive would sit until its
+                        ;; backstop. Woken here, each waiter re-checks, finds `key` unprovided and
+                        ;; unclaimed, and one of them wins the claim and retries the load.
+                        (%require-release! key)
+                        ;; A cycle across processes this process closed (`%require-cycle?`) is
+                        ;; broken once its last claim is released — here, at its OUTERMOST load.
+                        ;; A load nested in another of its own rethrows, so the levels above
+                        ;; release theirs too.
+                        (if (and (includes? (error-message e) *require-cycle*)
+                              (not (%require-holds-a-load? (self) key)))
+                          :%cycle-broken (throw e)))))))
+            ;; The other end of the cycle can finish it now: require the module again, which
+            ;; waits for that load (or claims it, if nobody has yet).
+            (%require-one key inferred? nil)
+            (do
+              ;; Marker cleared, then waiters released — and both AFTER `provide` (inside
+              ;; `%require-force`). See the ordering note on `%require-await`:
+              ;; provide-then-drain is what lets a waiter that joins the queue late still
+              ;; observe the load itself.
+              (%registry-update! '*features-loading* :dissoc [key] nil)
+              (%require-release! key)
+              key))))))
 
 ;; The VM's first-use load of a module not yet provided (`derive::module_to_load_off_native`),
 ;; run as ordinary frames rather than under the native lookup that missed: every wait in it —
