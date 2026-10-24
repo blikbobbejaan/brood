@@ -256,10 +256,17 @@
     (assert= :neg (fhg-sign -2))
     (assert= :pos (fhg-sign 5))
     (assert= :zero (fhg-sign 0)))
-  (test ":when combined with &optional/& in one fn is rejected"
+  ;; ADR-434: a guarded head is a list pattern over the arguments, so `&` is its rest and
+  ;; works; `&optional` has no meaning there and is still refused.
+  (test ":when combined with &optional in one fn is rejected"
     (is (try
-          (do (reflect/eval '(fn ((r) :when (> r 0) r) ((& xs) :bad))) false)
+          (do (reflect/eval '(fn ((r) :when (> r 0) r) ((r &optional y) :bad))) false)
           (catch e (includes? (str (error-message e)) "guard-dispatched")))))
+  (test ":when combined with a & rest clause dispatches"
+    (let (f (fn ((r) :when (> r 0) [:pos r]) ((& xs) [:rest xs])))
+      (assert= [:pos 3] (f 3))
+      (assert= [:rest (list -1)] (f -1))
+      (assert= [:rest (list 1 2)] (f 1 2))))
   (test "across processes: a guarded fn dispatches correctly in spawned workers"
     (let (me (self)
           sign (fn ((n) :when (< n 0) :neg) ((n) :when (> n 0) :pos) ((_n) :zero))

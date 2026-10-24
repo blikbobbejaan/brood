@@ -84,6 +84,17 @@ means changing `get`'s 3-arity arm, `PrimOp3::MapGet3` (`Heap::map_get3_inline`)
 tally rewrite's record handling and that test together. Until then a record collection
 gives its own `get` with a default (`sorted/get`; `multimap/get-all`).
 
+## KI-300 — a thin-wrapper callback did not tier within the test's window (watch)
+
+**Seen once:** CI run 40133808011 (`bbb74f2b`), the `test` job.
+`jit_computed_call_test.blsp` "a thin-wrapper callback from native code" asserts that
+`(settle add 2 …)` reaches `:native` and got `:untried`. It passed in run 40131899750 the
+same night. That merge brought in ADR-433/434 (gen options, `& rest` in pattern clauses)
+and ADR-440..444 from another session, and none of them touch tiering or the thin-wrapper
+path (ADR-408). Next step, on the test machine: loop the file and record how often `settle`
+times out. If it is the background compiler's queue under load, widen the window; if not,
+bisect.
+
 ## KI-299 — a self-exit with a soft reason was reported `:normal` (watch)
 
 **Seen once:** CI run 40129996373 (`d191da46`), the breakage job.
@@ -113,6 +124,7 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
+| KI-300 | **a thin-wrapper callback did not tier within `settle`'s window** — `tests/jit_computed_call_test.blsp:77` got `:untried` for `(fn (a x) (+ a x))` in CI run 40133808011 (`bbb74f2b`); green in the run before | 👁 **WATCH** — section above |
 | KI-299 | **a self-exit with a soft reason reported `:normal`** — breakage P16, once in CI | 👁 **WATCH** — section above |
 | KI-298 | **`(get coll k default)` with a non-nil default skipped `Lookup`, so a record collection answered the default for a key it held** — `(get multimap :k [])` gave `[]` for a key holding values. Both `get`'s 3-arity arm and `PrimOp3::MapGet3` (`Heap::map_get3_inline`) asked `%lookup-miss` only for a nil result, and a non-nil default made an absent field non-nil. Found while building `std/sorted` | ↩️ **WITHDRAWN 2026-10-24 — by design, reopened as a design question.** The fix (`58fb635d`) sent a record's miss to `Lookup` whatever the default. CI then failed `linmap_soundness_test` "a fold literal is the same tally as the loop", which pins the rule on purpose: "`get` consults `Lookup` only when the map lookup answers nil — so `(get c :zz 0)` never reaches it". The linmap rewrite's loop path keeps that rule, so the fix made the fold-literal path and the loop path disagree. Reverted. Whether a default should suppress `Lookup` is the user's call. Until then a record collection gives its own `get` with a default (`sorted/get`; `multimap/get-all`) |
 | KI-297 | **a require waiter that missed its claimant's pid set no death watch, so a hard-killed claimant left it waiting for the 30 s backstop** — `%require-await` read the claimant, then checked the claim separately; a failed load re-claimed by another process between the two left `mref` nil, and a hard kill of the new claimant skips its catch and sends no completion. Needs a failed load, a re-claim within microseconds and a `:kill`. Found by review | ✅ **FIXED 2026-10-24** — each 250 ms tick, a waiter without a death watch watches the claim's current holder. By construction (no test can schedule the microsecond window) |
