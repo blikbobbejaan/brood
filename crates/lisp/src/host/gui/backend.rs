@@ -17,12 +17,14 @@ use render::*;
 #[cfg(feature = "gui-gpu")]
 pub(crate) use {paint::paint_stall_ms, paint::text_px_width, render::snap_hairline};
 
-use super::{CursorShape, Key, Mouse, MouseAction, MouseButton, Op, WindowSpec};
+use super::{
+    CursorShape, Key, KeyRepeat, Mouse, MouseAction, MouseButton, Op, WheelMode, WindowSpec,
+};
 
 use crate::core::sync::lock;
 use crate::core::value;
 
-use crate::process::{Message, deliver};
+use crate::process::{Message, deliver, deliver_credited};
 
 use std::cell::RefCell;
 
@@ -192,6 +194,32 @@ const WHEEL_IMPULSE: f64 = 0.45;
 const WHEEL_STREAK_MS: u128 = 220;
 const WHEEL_STREAK_BOOST: f64 = 0.18;
 const WHEEL_STREAK_CAP: f64 = 2.2;
+/// Lines one wheel notch scrolls under `{:wheel :lines}` — the distance a glide covers
+/// too, so switching modes changes how a notch moves, not how far.
+const WHEEL_LINES: f64 = 3.0;
+/// How long a `{:wheel :lines}` scroll waits for the app to draw the last one before the
+/// backlog goes anyway — a raw loop that never draws must not lose its wheel.
+const WHEEL_HOLD: Duration = Duration::from_millis(100);
+
+/// Deliver a `{:wheel :lines}` window's wheel backlog as ONE scroll message, unless the
+/// last one is still undrawn (and younger than `WHEEL_HOLD`) — then it waits and keeps
+/// summing. True when nothing is left waiting.
+fn flush_wheel(w: &mut Win, now: Instant) -> bool {
+    if w.wheel_backlog == 0.0 {
+        return true;
+    }
+    let undrawn = w.scroll_pending
+        && w.wheel_sent
+            .is_some_and(|sent| now.duration_since(sent) < WHEEL_HOLD);
+    if undrawn {
+        return false;
+    }
+    deliver_scroll(w, w.wheel_backlog);
+    w.wheel_backlog = 0.0;
+    w.scroll_pending = true;
+    w.wheel_sent = Some(now);
+    true
+}
 
 // The rendering *mechanism's* fallback colours — used ONLY when Brood supplies
 // none: `Op::Clear` / the inset-margin fill when no `gui-bg!` is set, and a face
@@ -1145,6 +1173,26 @@ struct Win {
     /// delivered while this is set, so the queue never grows beyond one pending event
     /// even when Brood's render pipeline is slower than the 12 ms tick rate.
     scroll_pending: bool,
+    /// Who repeats a held key (`WindowSpec::key_repeat`), and — under `KeyRepeat::Os` —
+    /// the gate that keeps at most one OS repeat undelivered (ADR-431).
+    key_repeat: KeyRepeat,
+    repeat_gate: Arc<RepeatGate>,
+    /// Whether an input method may compose in this window (`WindowSpec::ime`); whether
+    /// its composition is showing now (so an IME switched off clears it); whether one
+    /// was shown since the last commit (so the commit that ends it is `[:text …]` even
+    /// though winit clears the preedit just before); and the cursor rect last handed to
+    /// it for the candidate window, so it is only told when the cursor moves.
+    ime: bool,
+    preedit_shown: bool,
+    ime_composed: bool,
+    ime_area: Option<(isize, isize, usize, usize)>,
+    /// What a wheel notch does (`WindowSpec::wheel`). Under `WheelMode::Lines`, the lines
+    /// of notches that arrived while the last scroll message was not yet drawn, summed
+    /// into the next one, and when that last one went (a window that never draws is not
+    /// held up past `WHEEL_HOLD`).
+    wheel: WheelMode,
+    wheel_backlog: f64,
+    wheel_sent: Option<Instant>,
 }
 
 /// The global renderer settings a window opens with — each behind a `gui-*!`
@@ -1221,6 +1269,10 @@ fn build_window(
         .create_window(attributes)
         .map_err(|e| format!("window: {e}"))?;
     let window = Rc::new(window);
+    // An input method composes in the window unless the app opted out (`{:ime false}`):
+    // winit allows none by default, which left dead keys, compose and every CJK input
+    // method unable to type here at all (ADR-431).
+    window.set_ime_allowed(spec.ime);
     // A `gui-gpu` build draws on the GPU unless BROOD_GUI_GPU=0; a GPU that cannot be
     // brought up (no adapter, no surface) is reported once and the window falls back to
     // the CPU painter rather than failing to open.
@@ -1279,6 +1331,15 @@ fn build_window(
         particles_next: None,
         scroll_last_tick: Instant::now(),
         scroll_pending: false,
+        key_repeat: spec.key_repeat,
+        repeat_gate: Arc::new(RepeatGate::default()),
+        ime: spec.ime,
+        preedit_shown: false,
+        ime_composed: false,
+        ime_area: None,
+        wheel: spec.wheel,
+        wheel_backlog: 0.0,
+        wheel_sent: None,
     })
 }
 
@@ -1544,6 +1605,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     // zone to pixels with the metrics its own region is painted at.
                     w.zones = cursor_zones(&ops, &w.renderer);
                     w.frame = ops;
+                    update_ime_area(w);
                     w.window.request_redraw();
                 }
             }
@@ -1773,14 +1835,31 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // dropped too — they'd be phantom keystrokes. Relaying the flood was
                 // the original bug: it outran the mailbox drain, so a backlog kept
                 // "playing" after key-up (the cursor scrolling on past).
+                //
+                // Under `{:key-repeat :os}` (ADR-431) the repeat is not dropped but
+                // delivered as another press of the held key — through `RepeatGate`, so
+                // at most one is ever undelivered and a slow frame cannot rebuild that
+                // backlog. A keystroke that typed several characters (a compose
+                // sequence) is `[:text …]`, not a key, and is not tracked as held.
                 ElementState::Pressed if !is_synthetic => {
-                    if let Some(k) = translate_key(&ke, w.mods) {
+                    if let Some(text) = typed_text(&ke, w.mods) {
+                        if !ke.repeat || w.key_repeat == KeyRepeat::Os {
+                            deliver(w.subscriber, text_message(&text));
+                        }
+                    } else if let Some(k) = translate_key(&ke, w.mods) {
                         let mut hk = lock(&w.held_key);
                         if *hk != Some(k) {
                             *hk = Some(k);
                             drop(hk);
                             w.held_physical = Some(ke.physical_key);
                             deliver(w.subscriber, key_message(&k));
+                        } else {
+                            drop(hk);
+                            if w.key_repeat == KeyRepeat::Os
+                                && let Some(credit) = RepeatGate::charge(&w.repeat_gate)
+                            {
+                                deliver_credited(w.subscriber, key_message(&k), credit);
+                            }
                         }
                     }
                 }
@@ -1816,8 +1895,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
             // missing entirely — the release happens in another window. Deliver
             // `:blur` so the app can drop any held key and stop repeating; a
             // belt-and-suspenders backstop beside the synthetic releases above
-            // (ADR-086). Focus *gain* (`true`) needs no signal — the next real
-            // press resumes input.
+            // (ADR-086). Focus *gain* is `:focus-in`, below.
             WindowEvent::Focused(false) => {
                 // Drop the held key: we can't observe its release while unfocused,
                 // so `gui-held-key` must not keep reporting it (the poll-based stop)
@@ -1835,6 +1913,49 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     );
                 }
             }
+            // Focus GAIN, as `:focus-in` — the pair of `:blur` (ADR-431). What an app
+            // needs to repaint focus-dependent chrome (a hollow cursor turned solid), to
+            // re-check files changed while it was away, and to know the held-key state it
+            // dropped on `:blur` starts clean. Not `:focus`: that is `ui-run`'s
+            // raise-this-window control message, which the loop acts on itself.
+            WindowEvent::Focused(true) => {
+                deliver(w.subscriber, Message::Keyword(value::intern("focus-in")));
+            }
+            // The input method (ADR-431). A composition in progress is `[:preedit text
+            // range]` — shown at point by the app, not inserted — and an empty one clears
+            // it; a commit is `[:text …]`, or a plain key when the IME merely passed one
+            // character through (`commit_message`). A disabled IME drops whatever
+            // composition was showing, so the app is told to clear it.
+            WindowEvent::Ime(ime) => match ime {
+                winit::event::Ime::Enabled => {
+                    // The candidate window must be told where the caret is again.
+                    w.ime_area = None;
+                    update_ime_area(w);
+                }
+                winit::event::Ime::Preedit(text, cursor) => {
+                    if text.is_empty() && !w.preedit_shown {
+                        return;
+                    }
+                    w.preedit_shown = !text.is_empty();
+                    w.ime_composed |= w.preedit_shown;
+                    deliver(w.subscriber, preedit_message(&text, cursor));
+                }
+                winit::event::Ime::Commit(text) => {
+                    // winit sends the clearing preedit just before, so whether a
+                    // composition was shown is remembered here, not read from the flag.
+                    let after_preedit = std::mem::take(&mut w.ime_composed);
+                    w.preedit_shown = false;
+                    if let Some(message) = commit_message(&text, after_preedit) {
+                        deliver(w.subscriber, message);
+                    }
+                }
+                winit::event::Ime::Disabled => {
+                    if std::mem::take(&mut w.preedit_shown) {
+                        deliver(w.subscriber, preedit_message("", None));
+                    }
+                    w.ime_composed = false;
+                }
+            },
             WindowEvent::CursorLeft { .. } => {
                 // The pointer left the window. If a button was held, its release happens
                 // outside and we never see it — so the NEXT re-entry's motion would emit
@@ -1999,15 +2120,15 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // line units; PixelDelta (trackpad) is in physical pixels — normalised
                 // here to line units so Brood gets a consistent float in both cases.
                 //
-                // Momentum is only for PixelDelta (smooth trackpad). LineDelta (mouse
-                // wheel clicks) always delivers immediately and stops any running momentum.
+                // A wheel notch (LineDelta) scrolls its lines at once or glides, per the
+                // window's `WheelMode`; a trackpad (PixelDelta) tracks the finger and coasts.
                 // Momentum itself is driven by `about_to_wait` with `WaitUntil(12ms)` so
                 // it fires once per event-loop cycle after the queue is drained — no
                 // flooding, no background thread.
                 let ch = w.renderer.cell_h.max(1);
                 match delta {
                     MouseScrollDelta::LineDelta(_, y) => {
-                        // A wheel notch is an IMPULSE into the same kinetic scroll a
+                        // `{:wheel :glide}`: a notch is an IMPULSE into the kinetic scroll a
                         // trackpad flick runs, not a three-line jump: the glide reaches
                         // the notch's distance over ~half a second of fractional steps
                         // (`WHEEL_DECAY`), so the text moves rather than snaps. Notches in
@@ -2016,6 +2137,22 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                         // A notch against the running direction stops the glide first.
                         let dy = y as f64;
                         if dy == 0.0 {
+                            return;
+                        }
+                        // `{:wheel :lines}` (the default, ADR-431): the notch's whole
+                        // distance at once, as a terminal and Emacs scroll — no glide, no
+                        // streak. A notch the app has not drawn the last one of yet joins
+                        // the backlog (`flush_wheel`), so a spun wheel is one message per
+                        // frame carrying the sum, never a queue of them.
+                        if w.wheel == WheelMode::Lines {
+                            w.scroll_momentum_active = false;
+                            w.scroll_velocity = 0.0;
+                            if w.wheel_backlog * dy < 0.0 {
+                                w.wheel_backlog = 0.0;
+                            }
+                            w.wheel_backlog += dy * WHEEL_LINES;
+                            // what cannot go now, `about_to_wait` sends after the draw
+                            flush_wheel(w, Instant::now());
                             return;
                         }
                         let now = Instant::now();
@@ -2141,6 +2278,12 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     next_wakeup = Some(next_wakeup.map_or(due, |t| t.min(due)));
                 }
             }
+            // A `{:wheel :lines}` backlog goes out once the app has drawn the last
+            // scroll (or `WHEEL_HOLD` has passed); until then, wake to check again.
+            if !flush_wheel(w, now) {
+                let due = w.wheel_sent.map_or(now, |sent| sent + WHEEL_HOLD);
+                next_wakeup = Some(next_wakeup.map_or(due, |t| t.min(due)));
+            }
             if !w.scroll_momentum_active {
                 continue;
             }
@@ -2236,6 +2379,37 @@ fn apply_font(w: &mut Win, family: Option<u32>, px: Option<f32>) {
     // break). The sub-cell remainder is re-placed at paint time (`grid_origin`).
     publish_size(w);
     w.window.request_redraw();
+}
+
+/// Tell the input method where the caret is, so its candidate window opens beside it
+/// rather than in a screen corner (ADR-431): the frame's `Op::Cursor` cell
+/// (`ime_cursor_area`), offset by the grid origin into window pixels. Only when it moved —
+/// a frame per keystroke must not cost an IME round trip each.
+fn update_ime_area(w: &mut Win) {
+    if !w.ime {
+        return;
+    }
+    let Some((x, y, width, height)) = ime_cursor_area(&w.frame, &w.renderer) else {
+        return;
+    };
+    let inner = w.window.inner_size();
+    let (origin_x, origin_y) = w
+        .renderer
+        .grid_origin(inner.width as usize, inner.height as usize);
+    let area = (
+        x.saturating_add(origin_x as isize),
+        y.saturating_add(origin_y as isize),
+        width,
+        height,
+    );
+    if w.ime_area == Some(area) {
+        return;
+    }
+    w.ime_area = Some(area);
+    w.window.set_ime_cursor_area(
+        PhysicalPosition::new(area.0.max(0) as i32, area.1.max(0) as i32),
+        winit::dpi::PhysicalSize::new(width as u32, height as u32),
+    );
 }
 
 /// Republish a window's size to the Brood side and wake its app loop with the

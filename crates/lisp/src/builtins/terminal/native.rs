@@ -226,6 +226,25 @@ pub(in crate::builtins) fn key_to_value(heap: &mut Heap, k: crossterm::event::Ke
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     let alt = k.modifiers.contains(KeyModifiers::ALT);
     match k.code {
+        // Super (Emacs `s-`): a terminal reports it only under the kitty keyboard
+        // protocol, but when it does the chord spells the way the GUI's does —
+        // `:super-x`, `:ctrl-super-x`, a shifted letter upper-case unless Control is held.
+        KeyCode::Char(c) if k.modifiers.contains(KeyModifiers::SUPER) => {
+            let glyph = if !ctrl && k.modifiers.contains(KeyModifiers::SHIFT) {
+                c.to_ascii_uppercase()
+            } else {
+                c.to_ascii_lowercase()
+            };
+            value::kw(crate::host::gui::named_key(
+                &glyph.to_string(),
+                crate::host::gui::KeyModifiers {
+                    ctrl,
+                    alt,
+                    shift: false,
+                    super_key: true,
+                },
+            ))
+        }
         // Ctrl+Alt (Emacs C-M-… — structural sexp motion C-M-f/b/u/d, mark-sexp
         // C-M-SPC). Must precede the ctrl-only / alt-only arms so the second modifier
         // isn't dropped (the `ctrl-meta-` spelling the keymaps bind).
@@ -268,6 +287,14 @@ pub(in crate::builtins) fn key_to_value(heap: &mut Heap, k: crossterm::event::Ke
         KeyCode::End => named_kw("end", &k),
         KeyCode::PageUp => named_kw("page-up", &k),
         KeyCode::PageDown => named_kw("page-down", &k),
+        KeyCode::Insert => named_kw("insert", &k),
+        KeyCode::F(number) => match crate::host::gui::function_key(number) {
+            Some(name) => named_kw(name, &k),
+            None => Value::nil(),
+        },
+        KeyCode::Menu => named_kw("menu", &k),
+        KeyCode::Pause => named_kw("pause", &k),
+        KeyCode::ScrollLock => named_kw("scroll-lock", &k),
         _ => Value::nil(),
     }
 }
@@ -277,9 +304,12 @@ fn named_kw(base: &'static str, k: &crossterm::event::KeyEvent) -> Value {
     use crossterm::event::KeyModifiers;
     value::kw(crate::host::gui::named_key(
         base,
-        k.modifiers.contains(KeyModifiers::CONTROL),
-        k.modifiers.contains(KeyModifiers::ALT),
-        k.modifiers.contains(KeyModifiers::SHIFT),
+        crate::host::gui::KeyModifiers {
+            ctrl: k.modifiers.contains(KeyModifiers::CONTROL),
+            alt: k.modifiers.contains(KeyModifiers::ALT),
+            shift: k.modifiers.contains(KeyModifiers::SHIFT),
+            super_key: k.modifiers.contains(KeyModifiers::SUPER),
+        },
     ))
 }
 
@@ -826,6 +856,39 @@ pub(in crate::builtins) fn gui_open(args: &[Value], _: EnvId, heap: &mut Heap) -
         Some(v) => crate::eval::truthy(v),
         None => false,
     };
+    //   :key-repeat :os    — the OS auto-repeat reaches the app as presses of the held key
+    //     (at most one undelivered at a time); `:app` (the default) drops it (ADR-086).
+    //   :ime false         — no input method in this window (on by default).
+    //   :wheel :glide      — a wheel notch glides; `:lines` (the default) scrolls its
+    //     three lines at once (ADR-431).
+    let keyword_option = |key: &str, allowed: &[&str]| -> Result<Option<String>, LispError> {
+        match opts.and_then(|id| heap.map_get(id, value::kw(key))) {
+            None | Some(Value::Nil) => Ok(None),
+            Some(Value::Keyword(name)) if allowed.contains(&value::symbol_name_ref(name)) => {
+                Ok(Some(value::symbol_name(name)))
+            }
+            Some(_) => Err(LispError::runtime(format!(
+                "%gui-open: :{key} is one of {}",
+                allowed
+                    .iter()
+                    .map(|name| format!(":{name}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ))),
+        }
+    };
+    let key_repeat = match keyword_option("key-repeat", &["app", "os"])?.as_deref() {
+        Some("os") => crate::host::gui::KeyRepeat::Os,
+        _ => crate::host::gui::KeyRepeat::App,
+    };
+    let wheel = match keyword_option("wheel", &["lines", "glide"])?.as_deref() {
+        Some("glide") => crate::host::gui::WheelMode::Glide,
+        _ => crate::host::gui::WheelMode::Lines,
+    };
+    let ime = match opts.and_then(|id| heap.map_get(id, value::kw("ime"))) {
+        Some(v) => crate::eval::truthy(v),
+        None => true,
+    };
     let spec = crate::host::gui::WindowSpec {
         title,
         size,
@@ -833,6 +896,9 @@ pub(in crate::builtins) fn gui_open(args: &[Value], _: EnvId, heap: &mut Heap) -
         app_id,
         pixel_input,
         vsync,
+        key_repeat,
+        ime,
+        wheel,
     };
     let id =
         crate::host::gui::open(crate::process::self_pid(), spec).map_err(LispError::runtime)?;
@@ -2335,6 +2401,24 @@ mod key_to_value_tests {
         );
         assert_eq!(kw_of(KeyCode::BackTab, KeyModifiers::SHIFT), "back-tab");
         assert_eq!(kw_of(KeyCode::Esc, KeyModifiers::CONTROL), "escape");
+    }
+
+    // Function keys, Insert and Super spell the way the GUI frontend spells them
+    // (ADR-431), so `<f5>`, `C-<f5>`, `<insert>` and `s-x` bind the same in both.
+    #[test]
+    fn function_keys_insert_and_super_are_named() {
+        assert_eq!(kw_of(KeyCode::F(5), KeyModifiers::NONE), "f5");
+        assert_eq!(kw_of(KeyCode::F(12), KeyModifiers::CONTROL), "ctrl-f12");
+        assert_eq!(kw_of(KeyCode::Insert, KeyModifiers::SHIFT), "shift-insert");
+        assert_eq!(kw_of(KeyCode::Char('x'), KeyModifiers::SUPER), "super-x");
+        assert_eq!(
+            kw_of(
+                KeyCode::Char('x'),
+                KeyModifiers::SUPER | KeyModifiers::CONTROL
+            ),
+            "ctrl-super-x"
+        );
+        assert_eq!(kw_of(KeyCode::F(3), KeyModifiers::SUPER), "super-f3");
     }
 }
 

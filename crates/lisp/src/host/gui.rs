@@ -109,6 +109,43 @@ pub struct WindowSpec {
     /// synchronously whatever this says. Off by default, as the GPU path always was —
     /// a sim measuring its own frame rate wants the work-bound rate.
     pub vsync: bool,
+    /// Who repeats a held key (the `{:key-repeat …}` open option, ADR-431).
+    pub key_repeat: KeyRepeat,
+    /// True to let an input method compose text in this window (the `{:ime …}` open
+    /// option, on by default): its preedit arrives as `[:preedit text range]`, its
+    /// commits as `[:text text]`, and the candidate window is placed at the frame's
+    /// cursor. A game that reads raw keys can turn it off.
+    pub ime: bool,
+    /// What a mouse-wheel notch does (the `{:wheel …}` open option, ADR-431).
+    pub wheel: WheelMode,
+}
+
+/// Who repeats a held key in a GUI window (ADR-431).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum KeyRepeat {
+    /// The app does (`{:key-repeat :app}`, the default): the OS auto-repeat is dropped and
+    /// a held key is one press and one `[:key-up …]`, so the app paces its own repeat
+    /// from `gui-held-key` (ADR-086).
+    #[default]
+    App,
+    /// The OS does (`{:key-repeat :os}`): each auto-repeat is delivered as a press of the
+    /// held key, at the user's system delay and rate — but never more than ONE undelivered
+    /// repeat at a time, so a slow frame cannot queue a burst that plays on after release.
+    Os,
+}
+
+/// What one mouse-wheel notch does in a GUI window (ADR-431). A trackpad's pixel deltas
+/// and their momentum are the same under both.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum WheelMode {
+    /// The notch's whole distance (three lines) in one scroll message, now — what a
+    /// terminal and Emacs do (`{:wheel :lines}`, the default). Notches that arrive while
+    /// the app has not yet drawn the last one are summed into the next message.
+    #[default]
+    Lines,
+    /// The notch is an impulse into a short kinetic glide (`{:wheel :glide}`): the same
+    /// three lines over about half a second of fractional steps.
+    Glide,
 }
 
 impl Default for WindowSpec {
@@ -122,6 +159,9 @@ impl Default for WindowSpec {
             app_id: None,
             pixel_input: false,
             vsync: false,
+            key_repeat: KeyRepeat::App,
+            ime: true,
+            wheel: WheelMode::Lines,
         }
     }
 }
@@ -502,31 +542,43 @@ pub enum Key {
     Named(&'static str),
 }
 
-/// The name of a named key under modifiers — ONE rule for both frontends, so a chord
-/// reads the same whether it arrived from winit or from crossterm: `[ctrl-meta-|ctrl-|
-/// alt-][shift-]<name>` — `:ctrl-left`, `:alt-shift-up`, `:ctrl-meta-delete`. Character
-/// chords already spell their modifiers this way (`:ctrl-x`, `:ctrl-meta-f`), and every
-/// named key carries all of its modifiers so chords like `C-<left>` can be bound. Tab
-/// keeps its own spelling (Shift+Tab is `:back-tab`) and Escape carries none.
+/// The modifiers a key name spells, frontend-neutral: each frontend reads its own event's
+/// modifier state into one of these and [`named_key`] spells it.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct KeyModifiers {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    /// The Super / Windows / Command key — Emacs's `s-`.
+    pub super_key: bool,
+}
+
+/// The name of a key under modifiers — ONE rule for both frontends, so a chord reads the
+/// same whether it arrived from winit or from crossterm:
+/// `[ctrl-meta-|ctrl-|alt-][shift-][super-]<name>` — `:ctrl-left`, `:alt-shift-up`,
+/// `:ctrl-meta-delete`, `:super-f5`, `:ctrl-shift-super-left`. The order is Emacs's own
+/// (`C-M-S-s-`), so a label is the prefixes translated one by one. Character chords
+/// already spell their modifiers this way (`:ctrl-x`, `:ctrl-meta-f`); a character chord
+/// that has Super (`:super-x`, `:ctrl-super-x`) goes through here too, with its Shift
+/// already folded into the glyph (`:super->`, not `:shift-super-.`). Tab keeps its own
+/// spelling (Shift+Tab is `:back-tab`) and Escape carries none.
 ///
-/// Returns a `&'static str` — the vocabulary is closed (a dozen keys × eight modifier
-/// sets), so each spelling is built once and kept for the process, which lets [`Key`]
-/// stay `Copy`.
-pub fn named_key(base: &'static str, ctrl: bool, alt: bool, shift: bool) -> &'static str {
+/// Returns a `&'static str` — the vocabulary is closed (the named keys and the printable
+/// characters × sixteen modifier sets), so each spelling is built once and kept for the
+/// process, which lets [`Key`] stay `Copy`.
+pub fn named_key(base: &str, modifiers: KeyModifiers) -> &'static str {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
-    if !(ctrl || alt || shift) {
-        return base;
-    }
     let name = format!(
-        "{}{}{}",
-        match (ctrl, alt) {
+        "{}{}{}{}",
+        match (modifiers.ctrl, modifiers.alt) {
             (true, true) => "ctrl-meta-",
             (true, false) => "ctrl-",
             (false, true) => "alt-",
             (false, false) => "",
         },
-        if shift { "shift-" } else { "" },
+        if modifiers.shift { "shift-" } else { "" },
+        if modifiers.super_key { "super-" } else { "" },
         base
     );
     static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
@@ -539,24 +591,76 @@ pub fn named_key(base: &'static str, ctrl: bool, alt: bool, shift: bool) -> &'st
     leaked
 }
 
+/// The name of function key F`number` — `"f1"` … `"f24"` — or `None` past F24. Both
+/// frontends name the function keys through here, so `<f5>` binds the same in each.
+pub fn function_key(number: u8) -> Option<&'static str> {
+    const NAMES: [&str; 24] = [
+        "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "f13", "f14",
+        "f15", "f16", "f17", "f18", "f19", "f20", "f21", "f22", "f23", "f24",
+    ];
+    NAMES.get(usize::from(number).checked_sub(1)?).copied()
+}
+
 #[cfg(test)]
 mod named_key_tests {
-    use super::named_key;
+    use super::{KeyModifiers, function_key, named_key};
+    fn mods(ctrl: bool, alt: bool, shift: bool, super_key: bool) -> KeyModifiers {
+        KeyModifiers {
+            ctrl,
+            alt,
+            shift,
+            super_key,
+        }
+    }
     #[test]
     fn spells_modifiers_the_way_character_chords_do() {
-        assert_eq!(named_key("left", false, false, false), "left");
-        assert_eq!(named_key("left", false, false, true), "shift-left");
-        assert_eq!(named_key("left", true, false, false), "ctrl-left");
-        assert_eq!(named_key("up", false, true, false), "alt-up");
-        assert_eq!(named_key("up", true, true, false), "ctrl-meta-up");
-        assert_eq!(named_key("right", true, false, true), "ctrl-shift-right");
-        assert_eq!(named_key("delete", false, true, true), "alt-shift-delete");
+        assert_eq!(named_key("left", mods(false, false, false, false)), "left");
+        assert_eq!(
+            named_key("left", mods(false, false, true, false)),
+            "shift-left"
+        );
+        assert_eq!(
+            named_key("left", mods(true, false, false, false)),
+            "ctrl-left"
+        );
+        assert_eq!(named_key("up", mods(false, true, false, false)), "alt-up");
+        assert_eq!(
+            named_key("up", mods(true, true, false, false)),
+            "ctrl-meta-up"
+        );
+        assert_eq!(
+            named_key("right", mods(true, false, true, false)),
+            "ctrl-shift-right"
+        );
+        assert_eq!(
+            named_key("delete", mods(false, true, true, false)),
+            "alt-shift-delete"
+        );
+    }
+    #[test]
+    fn super_comes_last_in_emacs_order() {
+        assert_eq!(named_key("x", mods(false, false, false, true)), "super-x");
+        assert_eq!(
+            named_key("f5", mods(true, false, false, true)),
+            "ctrl-super-f5"
+        );
+        assert_eq!(
+            named_key("left", mods(true, true, true, true)),
+            "ctrl-meta-shift-super-left"
+        );
     }
     #[test]
     fn the_same_chord_is_the_same_static_str() {
-        let a = named_key("home", true, false, true);
-        let b = named_key("home", true, false, true);
+        let a = named_key("home", mods(true, false, true, false));
+        let b = named_key("home", mods(true, false, true, false));
         assert!(std::ptr::eq(a, b));
+    }
+    #[test]
+    fn function_keys_run_f1_to_f24() {
+        assert_eq!(function_key(1), Some("f1"));
+        assert_eq!(function_key(24), Some("f24"));
+        assert_eq!(function_key(0), None);
+        assert_eq!(function_key(25), None);
     }
 }
 
