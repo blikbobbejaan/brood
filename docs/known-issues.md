@@ -69,80 +69,6 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 (An open entry's `## KI-N` section goes here until it is resolved.)
 
 
-## KI-281 — a JIT fast-link test never published in 90 s: the caller's inlined upgrade won the race ⚠️ OPEN
-
-**Watching, 2026-10-18 — not reproducible on demand; diagnostic armed.** CI's tree-walker job on
-`911e6474` failed `jit_runtime::link::tests::a_thin_wrapper_called_by_name_publishes_its_fast_link`
-after its 90 s deadline: `(wcaller 20000 0)` run for 90 s and the caller's site never published
-a fast-link mirror for the thin wrapper `wrapped`. It normally passes in ~0.4 s, including in
-the same job on the previous commit, and the commit touched only `os/cmd`. Locally it passed 30/30
-under `BROOD_TIER=0`, 20/20 on four cores under 12 busy spinners, and 20/20 pinned to one core
-beside four. (A first 30/30 "failure" was a stale incremental build failing to link, not the
-test.) The ceiling is forced per thread, but no `tier_ceiling()` read runs on the compiler thread,
-so that is not it. Ninety seconds without a publish reads as a permanent state rather than slowness.
-
-2026-10-18 (evening), in CI's full environment — `BROOD_TIER=0 BROOD_NO_STDIMAGE=1
-BROOD_NO_PRELUDE_IMAGE=1`, which the attempts above did not set: 400/400 sixteen at a time; green
-with the background compiler delayed 50-500 ms before lowering and again before install, under
-`BROOD_GC_STRESS`/`BROOD_GC_VERIFY`, and with `BROOD_J=1`; and one full run of CI's tree-walker
-job, 1939/1939.
-
-2026-10-21: the whole `brood` lib test binary, not the case alone — `taskset -c 0,1`, `--profile
-tree-walker`, CI's three variables — five times: 5 × 1105/1105, the case 0.17 s each time. One
-mechanism that WOULD read as this permanent state, recorded so the dump can be checked against it:
-the JIT compiler thread refused at start (`EAGAIN` under a CI thread limit) drops its receivers,
-every enqueue then fails, and every arm stays on the VM — the dump would show every arm
-`uncompiled` with `calls` far past the tier threshold.
-
-2026-10-22, from the failing run's own artifact (`gh run download 39111522756`, the tree-walker
-nextest log): the case's stderr holds the test's panic and nothing else. A refused compiler
-thread prints `brood: cannot start the JIT compiler thread` unconditionally
-(`jit_runtime/compiler.rs`), and a codegen panic prints `reason=CODEGEN-PANICKED`
-unconditionally — neither is there, so **the `EAGAIN` mechanism above is ruled out**, and so is a
-poisoned compiler. Two more read off the code and ruled out: the caller's IC caches the wrapper
-CLOSURE, never the builtin the dispatcher redirects it to (`exec_chunk.rs`'s miss arm installs
-the resolved value), so no builtin cell can stand in for the link; and an arm marked
-`stale_bindings` is marked only after the global epoch moved, so the IC entry holding it misses at
-the next probe and re-resolves — it cannot pin a stale arm. What remains is the link's own
-gating (`fast_link_from_entry`: the IC arm native and at the current epoch), so the dump now also
-prints the caller's IC entries for the callee and the cell beside each.
-
-Armed: the helper's failure now reports the run count, what was published, and every compiled
-arm's JIT state (uncompiled / `BAILED` / native, calls, deopts, entry deopts), so the next
-occurrence says whether an arm never compiled, latched, or kept deopting.
-
-2026-10-24, **the second occurrence**, with that dump: CI's tree-walker job on a throwaway
-experiment ref (`4db6fbbe`, run 40072666463 — its one change is in `std/tool/project.blsp`,
-which this Rust unit test never loads). 436 138 runs in 90 s, nothing published, global epoch
-0. The caller's one IC entry for `wrapped` holds the closure WITH its arm, and that arm is
-native, compile-epoch 0, not stale, no captures, two slots — every gate
-`fast_link_from_entry` applies passes, so the first call to reach `jit_dispatch_call` at that
-site would have published it (`vm_call_ic_fast_link` publishes on the spot). Both `wrapped`
-(calls 128) and `wcaller` (129) are native, with zero deopts. So the IC was filled by native code
-calling `wrapped` before `wrapped` was native, and once it was, no call from native code
-reached that site again. The question is no longer the link's gating. It is what the native
-caller is running instead. The dump now also says, per site, whether the entry links at this
-moment (`linkable now`), and, per arm, whether its inlined upgrade is installed.
-
-2026-10-24, **the third occurrence names it**: CI's `test` job on `main` (`09a24923`, run
-40074956436), with those two fields: `linkable now true`, and `wcaller` **inline-installed
-true**. `wrapped` (`(+ a x)`) is a qualifying leaf (`leaf_body_qualifies`), so the caller's
-inlined upgrade splices its body in, and the upgraded caller makes no call to `wrapped` at
-all. Only the caller's SMALL native code publishes the mirror, and only on a call made after
-`wrapped` went native. When the background compiler installs the upgrade before that call,
-nothing ever publishes. The runtime is right: it is the faster state, and it is permanent,
-which is why 90 s never helped. The test was not, so this is a race in the test, not a
-runtime bug. The mirror cross-check tests' `caller`/`callee` pair has the same shape (a leaf
-callee), so they shared the exposure. **Fixed in the helper** (`tiered_pair` in
-`jit_runtime/link.rs`): an attempt where some arm runs its inlined upgrade with nothing
-published is discarded, and a fresh interpreter (fresh arms; the JIT caches are per runtime)
-tries again, up to five times. A publish that is really broken fails all five, so the
-helper's guards keep their sabotage. The upgrade is detected from the code pointers (the
-installed code is the inlined code), the way `frame_size_for_code` tells them apart; the
-first cut of the dump read `inline_installed` directly and tripped
-`jit_tier_frame_pairing`'s allowlist, the other red on that run. To close: green in CI, and
-the thin-wrapper sabotage red through all five attempts.
-
 ## Index — status per issue
 
 Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](archive/known-issues-closed.md).
@@ -159,7 +85,7 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 | KI-284 | **a worker BUSY under a native frame still counted as live, so as many processes looping under `reflect/eval-string` as there were workers starved every other process** — the in-language suite sat 30 minutes on two cores (v0.42.2 too), and on an oversubscribed `make test` one `fuzzy` test hit its 600 s timeout and the clean-up failed 343 more as `unbound symbol` | ✅ **FIXED 2026-10-21** — a nested run that spends its quantum with work waiting takes its worker out of the pool until it returns (`cpu_dirty_enter`, the CPU twin of `dirty_block`). Guard: `blocking_native::a_process_runs_while_every_worker_loops_under_a_native_frame` (`BROOD_J=2`, two spinners, every tier; red without the guard) |
 | KI-283 | **a function the linear-map rewrite built on a table leaked that table on every call** — a plain tally called ~25 000 times exhausted a 16 GB `ulimit -v` (`table: cannot reserve a 512 KB dense slot chunk`); a dropped table also kept its registry slot and chunk reservations for good | ✅ **FIXED 2026-10-21** — the rewrite frees its table, tables die with their creating process (ADR-418), and a dropped table's slot is reused under a generation-checked handle. Guard: `table_address_space.rs` (three reuse cases, `VmSize`-metered, each red under its sabotage) |
 | KI-282 | **the read that arms `:cpu-us` accounting never timed its own quantum**, so a process timing its own work across the runtime's first read got 0 — `cpu_time_test`'s self-timing test failed whenever it made the suite's first read (the nightly's GC stress job on `e63b70c8`) | ✅ **FIXED 2026-10-18** — the arming read starts the running quantum's clock on a worker (`pool::arm_cpu_accounting`). Guard: `cpu_time_first_read::the_first_read_in_a_runtime_times_the_work_after_it` (red without the stamp: 0 µs) |
-| KI-281 | **a JIT fast-link test never published within its 90 s deadline**, three times in CI (2026-10-18, twice 2026-10-24) — a race in the test: the caller's inlined upgrade splices the leaf callee in and makes no call, so when it lands before the small native's first publishing call nothing ever publishes (a correct, faster state) | ⚠️ **OPEN 2026-10-24 — fixed in code, not yet green in CI or sabotage-verified.** The third occurrence's dump named it (`linkable now true`, the caller's upgrade installed). `tiered_pair` discards such an attempt and retries in a fresh interpreter, up to five times; a broken publish still fails all five. Was: 👁 WATCH, the thread-refusal mechanism and the link's gating ruled out |
+| KI-281 | **a JIT fast-link test never published within its 90 s deadline**, three times in CI (2026-10-18, twice 2026-10-24) — a race in the test: the caller's inlined upgrade splices the leaf callee in and makes no call, so when it lands before the small native's first publishing call nothing ever publishes (a correct, faster state) | ✅ **FIXED 2026-10-24** — green in CI on `61928087`; sabotage-verified on GitHub Actions (run 40078185738: with an arm-less closure hit never attaching its arm, the thin-wrapper test failed all five attempts in `test` and the tree-walker job, nothing else red). The third occurrence's dump named it (`linkable now true`, the caller's upgrade installed). `tiered_pair` discards such an attempt and retries in a fresh interpreter, up to five times; a broken publish still fails all five. Was: 👁 WATCH, the thread-refusal mechanism and the link's gating ruled out |
 | KI-280 | **a worker waiting in `os/cmd` still counted as live, so a process woken meanwhile was routed to it and waited for the command** — on a two-worker pool, `os/cmd` beside a tree-walked `receive` (which does mark its worker) left nobody to run anything: the stuck-victim memory test starved its leak for the hoarder's whole 20 s `sleep` under `BROOD_TIER=0` on two cores, and the leak then raised in itself | ✅ **FIXED 2026-10-18** — `os/cmd` marks its worker dirty-blocked (`dirty_block`, ADR-100 §7.4) for the wait. Guard: `blocking_native::a_process_runs_while_every_worker_waits_in_os_cmd` (`BROOD_J=2`, two blockers, every tier; red without the guard) |
 | KI-279 | **the stuck-victim memory test raced who reached a safepoint first** — after the hoarder's grace the leak had grown ~40-50 MB, under the eighth of the count a process must hold to be stopped, so nobody was attributable and the error was raised in whichever process got there first; on CI's tree-walker job that was the waiting root, which died instead of the leak (both tries, `8f345ed9`) | ✅ **FIXED 2026-10-18** — the leak is primed to 64 MB before the hoarder fills up, so it holds an attributable share whoever reaches the safepoint |
 | KI-278 | **a child spawned by a backgrounded runtime could not be interrupted** — an ignored SIGINT/SIGQUIT survives fork+exec, so a runtime started with `&` or `nohup` passed it to every `os/spawn`/`os/spawn-pty`/`os/cmd` child, and bedit's `C-c C-c` did nothing to a running shell command | ✅ **FIXED 2026-10-18** — `subprocess::reset_inherited_signals` (pre_exec, SIG_DFL). Guard: `a_spawned_child_does_not_inherit_ignored_interrupts` |

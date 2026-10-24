@@ -15031,3 +15031,86 @@ run. Sabotage: with `%require-cycle?` never true (`bf6607c2`, a throwaway CI ref
 all three jobs that run it: the contracts suite, nextest's suite and the tree-walker's (both tries each). Each fixture
 process held its own module and was waiting on the other's, neither provided, and nothing else
 failed.
+
+## KI-281 — a JIT fast-link test never published in 90 s: the caller's inlined upgrade won the race ✅ FIXED 2026-10-24
+
+**Fixed 2026-10-24: a race in the test, not the runtime.** Green in CI on `61928087` (run
+40078174268), and red with the publish broken (below). History, in order:
+
+**Watching, 2026-10-18 — not reproducible on demand; diagnostic armed.** CI's tree-walker job on
+`911e6474` failed `jit_runtime::link::tests::a_thin_wrapper_called_by_name_publishes_its_fast_link`
+after its 90 s deadline: `(wcaller 20000 0)` run for 90 s and the caller's site never published
+a fast-link mirror for the thin wrapper `wrapped`. It normally passes in ~0.4 s, including in
+the same job on the previous commit, and the commit touched only `os/cmd`. Locally it passed 30/30
+under `BROOD_TIER=0`, 20/20 on four cores under 12 busy spinners, and 20/20 pinned to one core
+beside four. (A first 30/30 "failure" was a stale incremental build failing to link, not the
+test.) The ceiling is forced per thread, but no `tier_ceiling()` read runs on the compiler thread,
+so that is not it. Ninety seconds without a publish reads as a permanent state rather than slowness.
+
+2026-10-18 (evening), in CI's full environment — `BROOD_TIER=0 BROOD_NO_STDIMAGE=1
+BROOD_NO_PRELUDE_IMAGE=1`, which the attempts above did not set: 400/400 sixteen at a time; green
+with the background compiler delayed 50-500 ms before lowering and again before install, under
+`BROOD_GC_STRESS`/`BROOD_GC_VERIFY`, and with `BROOD_J=1`; and one full run of CI's tree-walker
+job, 1939/1939.
+
+2026-10-21: the whole `brood` lib test binary, not the case alone — `taskset -c 0,1`, `--profile
+tree-walker`, CI's three variables — five times: 5 × 1105/1105, the case 0.17 s each time. One
+mechanism that WOULD read as this permanent state, recorded so the dump can be checked against it:
+the JIT compiler thread refused at start (`EAGAIN` under a CI thread limit) drops its receivers,
+every enqueue then fails, and every arm stays on the VM — the dump would show every arm
+`uncompiled` with `calls` far past the tier threshold.
+
+2026-10-22, from the failing run's own artifact (`gh run download 39111522756`, the tree-walker
+nextest log): the case's stderr holds the test's panic and nothing else. A refused compiler
+thread prints `brood: cannot start the JIT compiler thread` unconditionally
+(`jit_runtime/compiler.rs`), and a codegen panic prints `reason=CODEGEN-PANICKED`
+unconditionally — neither is there, so **the `EAGAIN` mechanism above is ruled out**, and so is a
+poisoned compiler. Two more read off the code and ruled out: the caller's IC caches the wrapper
+CLOSURE, never the builtin the dispatcher redirects it to (`exec_chunk.rs`'s miss arm installs
+the resolved value), so no builtin cell can stand in for the link; and an arm marked
+`stale_bindings` is marked only after the global epoch moved, so the IC entry holding it misses at
+the next probe and re-resolves — it cannot pin a stale arm. What remains is the link's own
+gating (`fast_link_from_entry`: the IC arm native and at the current epoch), so the dump now also
+prints the caller's IC entries for the callee and the cell beside each.
+
+Armed: the helper's failure now reports the run count, what was published, and every compiled
+arm's JIT state (uncompiled / `BAILED` / native, calls, deopts, entry deopts), so the next
+occurrence says whether an arm never compiled, latched, or kept deopting.
+
+2026-10-24, **the second occurrence**, with that dump: CI's tree-walker job on a throwaway
+experiment ref (`4db6fbbe`, run 40072666463 — its one change is in `std/tool/project.blsp`,
+which this Rust unit test never loads). 436 138 runs in 90 s, nothing published, global epoch
+0. The caller's one IC entry for `wrapped` holds the closure WITH its arm, and that arm is
+native, compile-epoch 0, not stale, no captures, two slots — every gate
+`fast_link_from_entry` applies passes, so the first call to reach `jit_dispatch_call` at that
+site would have published it (`vm_call_ic_fast_link` publishes on the spot). Both `wrapped`
+(calls 128) and `wcaller` (129) are native, with zero deopts. So the IC was filled by native code
+calling `wrapped` before `wrapped` was native, and once it was, no call from native code
+reached that site again. The question is no longer the link's gating. It is what the native
+caller is running instead. The dump now also says, per site, whether the entry links at this
+moment (`linkable now`), and, per arm, whether its inlined upgrade is installed.
+
+2026-10-24, **the third occurrence names it**: CI's `test` job on `main` (`09a24923`, run
+40074956436), with those two fields: `linkable now true`, and `wcaller` **inline-installed
+true**. `wrapped` (`(+ a x)`) is a qualifying leaf (`leaf_body_qualifies`), so the caller's
+inlined upgrade splices its body in, and the upgraded caller makes no call to `wrapped` at
+all. Only the caller's SMALL native code publishes the mirror, and only on a call made after
+`wrapped` went native. When the background compiler installs the upgrade before that call,
+nothing ever publishes. The runtime is right: it is the faster state, and it is permanent,
+which is why 90 s never helped. The test was not, so this is a race in the test, not a
+runtime bug. The mirror cross-check tests' `caller`/`callee` pair has the same shape (a leaf
+callee), so they shared the exposure. **Fixed in the helper** (`tiered_pair` in
+`jit_runtime/link.rs`): an attempt where some arm runs its inlined upgrade with nothing
+published is discarded, and a fresh interpreter (fresh arms; the JIT caches are per runtime)
+tries again, up to five times. A publish that is really broken fails all five, so the
+helper's guards keep their sabotage. The upgrade is detected from the code pointers (the
+installed code is the inlined code), the way `frame_size_for_code` tells them apart; the
+first cut of the dump read `inline_installed` directly and tripped
+`jit_tier_frame_pairing`'s allowlist, the other red on that run.
+
+Sabotage: an arm-less IC hit on a closure returning `None` in `jit_dispatch_call` instead of
+attaching the arm (`83f3ea06`, a throwaway CI ref, run
+[40078185738](https://github.com/broodlang/brood/actions/runs/40078185738)) turned the thin-wrapper
+test red in both jobs that run it, `test` and the tree-walker's, at "in 5 fresh interpreters the
+caller's inlined upgrade was installed before its small native ever published", with nothing
+else red.
