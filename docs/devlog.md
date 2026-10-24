@@ -3565,3 +3565,7 @@ half-open range, and it is a full collection (`Seqable`, `Counted`, `Conjable`, 
 Writing its `get` turned up KI-298: `(get coll k default)` with a non-nil default never asked
 `Lookup`, so `(get multimap :k [])` gave `[]` for a key holding values. Fixed in `get`'s
 3-arity arm and in `PrimOp3::MapGet3` alike. Not run on this machine.
+2026-10-24 (ADR-434, `ui-run` skips no-op turns): the loop remembers the model and grid it last
+drew, and a turn that leaves both `=` renders nothing. In bedit that's the key-up and the
+hosted buffer's echo of every keystroke, plus timers that found no work: three frames per key
+become one. Not run on this machine.

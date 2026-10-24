@@ -561,27 +561,34 @@ re-raises, surfacing a genuine startup bug instead of spinning."
   (if (get model :done)
     nil
     (let ([cols rows] ((get display :size))
+          ;; the screen already shows this model at this grid: a turn that changed
+          ;; nothing (a key-up, an echo, a timer that found nothing to do, a poll that
+          ;; timed out) renders nothing. `=` is a pointer test when `update` handed the
+          ;; model back untouched, and stops at the first differing subtree otherwise.
+          unchanged (= (get clock :shown) [model cols rows])
           ;; render this model; a `[:frame …]` result is the frame to draw, `:failed`
-          ;; means `view` threw (already logged) and we must fall back to `last-good`.
-          rendered (try
-                     ;; the previous turn's memoised fragments are in scope for `ui-memo`
-                     ;; (ADR-336) — nil outside a loop, `{}` on the first turn
-                     (let ([frame ms cost] (ui-timed (fn ()
-                                                       (binding (*ui-memo* (or (get clock :memo)
-                                                                             {}))
-                                                         (view model cols rows))))
-                           [flat table] (ui-harvest frame))
-                       (do
-                         (ui-trace "view"
-                           ms
-                           (str (count flat) " ops, " (count table) " memo")
-                           cost)
-                         [:frame flat table]))
-                     (catch e
-                       (if (nil? last-good)
-                         ; first render failed — a real startup bug, not a wedge
-                         (throw e)
-                         (do (ui-log-error "view" e) :failed)))))
+          ;; means `view` threw (already logged) and we must fall back to `last-good`,
+          ;; `:unchanged` means there is nothing new to draw.
+          rendered (if unchanged
+                     :unchanged (try
+                       ;; the previous turn's memoised fragments are in scope for `ui-memo`
+                       ;; (ADR-336) — nil outside a loop, `{}` on the first turn
+                       (let ([frame ms cost] (ui-timed (fn ()
+                                                         (binding (*ui-memo* (or (get clock :memo)
+                                                                               {}))
+                                                           (view model cols rows))))
+                             [flat table] (ui-harvest frame))
+                         (do
+                           (ui-trace "view"
+                             ms
+                             (str (count flat) " ops, " (count table) " memo")
+                             cost)
+                           [:frame flat table]))
+                       (catch e
+                         (if (nil? last-good)
+                           ; first render failed — a real startup bug, not a wedge
+                           (throw e)
+                           (do (ui-log-error "view" e) :failed))))))
       (if (= rendered :failed)
         ;; couldn't render `model` — roll back to the last model that did, and re-render it
         ;; (the clock keeps advancing — it's wall-clock reality, not model state).
@@ -589,9 +596,14 @@ re-raises, surfacing a genuine startup bug instead of spinning."
         (let (
               ;; this turn's fragments become next turn's memo table — loop bookkeeping
               ;; on `clock`, like the timers: never rolled back with the model
-              clock (assoc clock :memo (nth rendered 2)))
+              clock (if unchanged
+                      clock
+                      (assoc clock :memo (nth rendered 2) :shown [model cols rows])))
           (do
-            (ui-trace "draw" (second (ui-timed (fn () ((get display :draw) (second rendered))))) "")
+            (when (not unchanged)
+              (ui-trace "draw"
+                (second (ui-timed (fn () ((get display :draw) (second rendered)))))
+                ""))
             ;; `model` rendered cleanly: it's now the fallback point for the next turns.
             ;; Named timers are opt-in via the `:timers` key — `timers` is nil for a
             ;; pre-timers app (the legacy `:tick-ms`/`:tick` path) and the clock is just
@@ -695,6 +707,13 @@ instead of over seconds of frames. Intermediate frames within a burst are never 
 anyway; a throwing `update` still drops just its one input, and a `:close`/`:focus` pulled
 mid-burst is still honoured. Off leaves the per-input behaviour (and every existing app)
 exactly as before.
+
+**A turn that changes nothing renders nothing (ADR-434).** When the model after a turn
+is `=` to the one last drawn, at the same grid, the loop skips `view` and `:draw` and goes
+straight back to the poll. A key release, a timer that found no work, an echo that
+confirmed what the model already held: none of them costs a frame. This is why `view` has
+to be a function of the model and the grid alone. A view that reads the clock or another
+process will not be called again until the model changes.
 
 **The window's close button (the X) always quits.** A GUI frontend delivers it as
 a `:close` input (distinct from the Escape *key*, `:escape`), and `ui-run` treats
