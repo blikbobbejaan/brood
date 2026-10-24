@@ -171,6 +171,10 @@ scheduler.** What is behind OTP is *around* supervision, and nearly all of it is
   declared, start `:requires` in dependency order, link the root supervisor to the top-level
   process, stop apps in reverse on `halt`/SIGTERM. Extend `--check-boot` to "start every app,
   stop every app, run nothing". Supersedes the `Application` entry under "OTP deferred" below.
+  *Sized 2026-10-24:* the reverse stop on SIGTERM needs a capability the runtime lacks:
+  the process cannot trap its own signals (`os/signal` only signals a child). The first
+  step is a mechanism-only primitive delivering SIGTERM/SIGINT to a registered Brood
+  process as a message; `defapp` is then Brood on top of it.
 - ✅ **C. `try … finally`** (ADR-306, shipped 2026-08-30 — a prelude macro clause over two
   `%try`s; `throw` now rebuilds an error from its caught map so a rethrow renders as the
   original). Original note: All three Lisps have unwind cleanup (`finally` /
