@@ -1044,6 +1044,10 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
   entry's `:rank`): atomic across processes and carried by the image, which a `defonce` + `def`
   table is not. Store hooks as symbols and call them with `(reflect/call-if-bound sym
   fallback args…)`, so a redefinition takes and an unloaded module is simply absent ·
+  `settings` for a user config file that is data (ADR-428): `(settings/define :app/settings
+  :cursor {:default :block :type '(or :block :bar) :doc "…"})` once, then `read-file`,
+  `warnings`, `value-of` (the default when unset or invalid) and `default-source` (the
+  documented file to write the first time) ·
   `if-let`/`when-let` test truth, `if-some`/`when-some` test presence (`false` counts) ·
   `condp` asks `(pred value test)`, value first: `(condp < 15 10 :small 100 :medium
   :large)` → `:medium`.

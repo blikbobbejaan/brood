@@ -516,6 +516,10 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // `%registry-update!`'s atomic, isolate-safe, imaged write under one global keyed by a
     // caller-chosen id, so a project module never has to spell a qualified global.
     embedded_module!("registry", "std/registry.blsp"),
+    // Declared settings over `registry` (ADR-428): `define` a setting once (default, type,
+    // doc), then read a data config file, check it, fill its defaults and generate its
+    // documented default text from the declarations — nest's user config and bedit's init.
+    embedded_module!("settings", "std/settings.blsp"),
     // Markdown to HTML — a small subset, HTML-escaped. CORE, not tooling: the doc generator
     // renders its guides with it and the hosted registry its package READMEs, at request
     // time, on a shipped runtime (ADR-356).

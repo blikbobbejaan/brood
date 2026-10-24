@@ -32,7 +32,9 @@
 (def fnt-queries
   ["a"
     "ab" "abc" "ABC" "aB" "v" "vi" "view" "view.b" "limits" "limits.ex" "mc/lim" "lib/mc" "PageC"
-    "pc" "mixexs" "md" "zzqq" "x" "." "/" "-" "b.c" "20240101" "tvst"])
+    "pc" "mixexs" "md" "zzqq" "x" "." "/" "-" "b.c" "20240101" "tvst"
+    ;; terms (ADR-429): each matches on its own, in any order; spaces alone are no query
+    "lim ex" "ex lim" "view test" "test view" "a b c" "  ab  " "zz ab" "ab zz" " " "lib lim ex"])
 
 (describe "%fuzzy-top agrees with the Brood ranking"
   (test "bounded: the best 5 are the same list for every query over the corpus"

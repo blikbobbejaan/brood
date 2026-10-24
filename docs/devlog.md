@@ -3543,3 +3543,16 @@ claimant's pid had no death watch; it takes one each tick. Refuted: the stale-ca
 KI-290, now closed and sabotage-verified. Since KI-294 the pool is a prefetch with a sequential
 pass behind it. With the pool on by default, bedit's smoke passed 3 attempts of 3. Not run on
 this machine.
+
+2026-10-24 (ADR-428, `std/settings`): a setting is declared once — `(settings/define id name
+{:default :type :doc …})` — and its value check, accepted-value text, warnings and documented
+default file all derive from that declaration. nest's user config is the first caller: its three
+keys are declared, the default file is generated, and a rejected value (`:git-init "no"`) is
+warned about on stderr and not applied. bedit's init file is the intended second caller.
+Guard: `tests/std_settings_test.blsp`. Not run on this machine.
+
+2026-10-24 (ADR-429, fuzzy terms): a space in a fuzzy query separates terms that must each
+match, in any order, scored independently and added; one term ranks exactly as before. The
+native `%fuzzy-top` splits and adds the same way (`score_terms`), and
+`tests/fuzzy_native_test.blsp` holds the two equal on multi-term queries. Not run on this
+machine.

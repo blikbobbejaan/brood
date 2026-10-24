@@ -1,0 +1,99 @@
+;; std/settings — a setting declared once gives the default file, the check and the value
+;; with its fallback. The cases are what a config file's owner depends on: a broken file
+;; reads as empty rather than throwing, a wrong value falls back to the default and is
+;; reported by name, an unknown key is reported, and the generated default file reads
+;; back as exactly the defaults it sets.
+;;
+;; Register-only — discovered and run by `nest test`.
+
+(defmodule std-settings-test (:use test) (:use settings))
+
+(defn even-width? (v) (and (int? v) (= 0 (math/mod v 2))))
+
+(define :std-settings-test/editor
+  :hl-line {:default true :type 'bool :doc "Highlight the current line."})
+(define :std-settings-test/editor
+  :cursor {:default :block :type '(or :block :bar) :doc "The caret shape:\n:block or :bar."})
+(define :std-settings-test/editor
+  :width {:default 4
+   :type 'int
+   :valid? 'std-settings-test/even-width?
+   :want "an even int"
+   :commented? true
+   :doc "Indent width."})
+(define :std-settings-test/editor
+  :name {:default nil :type 'string :commented? true :example "you" :doc "Your name."})
+
+(describe "settings: define and specs"
+  (test "specs come back in declaration order"
+    (assert= [:hl-line :cursor :width :name]
+      (vec (map (specs :std-settings-test/editor) :name))))
+  (test "redefining a setting keeps its place"
+    (define :std-settings-test/redefine :a {:default 1})
+    (define :std-settings-test/redefine :b {:default 2})
+    (define :std-settings-test/redefine :a {:default 10})
+    (assert= [:a :b] (vec (map (specs :std-settings-test/redefine) :name)))
+    (assert= 10 (:default (spec-of :std-settings-test/redefine :a))))
+  (test "an explicit :rank orders before declaration order"
+    (define :std-settings-test/ranked :late {:default 1})
+    (define :std-settings-test/ranked :early {:default 2 :rank -1})
+    (assert= [:early :late] (vec (map (specs :std-settings-test/ranked) :name)))))
+
+(describe "settings: read-form"
+  (test "a (config …) form reads into a map"
+    (assert= {:hl-line false :cursor :bar}
+      (read-form "(config :hl-line false :cursor :bar)" 'config)))
+  (test "another head, a broken file or a dangling key read as {}"
+    (assert= {} (read-form "(other :a 1)" 'config))
+    (assert= {} (read-form "(config :a" 'config))
+    (assert= {} (read-form "" 'config))
+    (assert= {:a 1} (read-form "(config :a 1 :b)" 'config)))
+  (test "the file is never evaluated"
+    (assert= {:a '(file/delete "x")} (read-form "(config :a (file/delete \"x\"))" 'config)))
+  (test "a missing file reads as {}"
+    (assert= {} (read-file "/no/such/dir/std-settings-test.blsp" 'config))))
+
+(describe "settings: valid?, warnings"
+  (test "unset is always valid; a set value must match the type and the predicate"
+    (is (valid? (spec-of :std-settings-test/editor :cursor) nil))
+    (is (valid? (spec-of :std-settings-test/editor :cursor) :bar))
+    (refute (valid? (spec-of :std-settings-test/editor :cursor) :blockk))
+    (is (valid? (spec-of :std-settings-test/editor :width) 2))
+    (refute (valid? (spec-of :std-settings-test/editor :width) 3))
+    (refute (valid? (spec-of :std-settings-test/editor :width) "2")))
+  (test "a clean config has no warnings"
+    (assert= [] (warnings :std-settings-test/editor {} "init"))
+    (assert= [] (warnings :std-settings-test/editor {:hl-line false :width 8} "init")))
+  (test "a wrong value is named with what was wanted"
+    (assert= ["init: :cursor is :blockk — want :block / :bar"
+               "init: :width is 3 — want an even int"]
+      (warnings :std-settings-test/editor {:cursor :blockk :width 3} "init")))
+  (test "an undeclared key is reported after the bad values"
+    (let (ws (warnings :std-settings-test/editor {:hl-lin true :cursor 1} "init"))
+      (assert= 2 (count ws))
+      (is (string/starts-with? (first ws) "init: :cursor is 1"))
+      (is (string/starts-with? (second ws) "init: :hl-lin is not a setting")))))
+
+(describe "settings: value-of, values-of"
+  (test "a valid value wins; an invalid or absent one is the default"
+    (assert= :bar (value-of :std-settings-test/editor {:cursor :bar} :cursor))
+    (assert= :block (value-of :std-settings-test/editor {:cursor :blockk} :cursor))
+    (assert= :block (value-of :std-settings-test/editor {} :cursor))
+    (assert= false (value-of :std-settings-test/editor {:hl-line false} :hl-line)))
+  (test "an undeclared name is nil"
+    (is (nil? (value-of :std-settings-test/editor {:other 1} :other))))
+  (test "values-of fills every declared setting"
+    (assert= {:hl-line true :cursor :bar :width 4 :name nil}
+      (values-of :std-settings-test/editor {:cursor :bar :width 5 :stray 1}))))
+
+(describe "settings: default-source"
+  (test "each setting under its doc, a commented one shown with its example"
+    (assert= (str ";; top\n"
+               "(config\n" "  ;; Highlight the current line.\n" "  :hl-line true\n"
+               "  ;; The caret shape:\n" "  ;; :block or :bar.\n" "  :cursor :block\n"
+               "  ;; Indent width.\n" "  ;; :width 4\n" "  ;; Your name.\n" "  ;; :name \"you\"\n"
+               "  )\n")
+      (default-source :std-settings-test/editor 'config ";; top\n")))
+  (test "it reads back as exactly the defaults it does not comment out"
+    (assert= {:hl-line true :cursor :block}
+      (read-form (default-source :std-settings-test/editor 'config "") 'config))))

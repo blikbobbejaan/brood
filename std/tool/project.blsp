@@ -1165,10 +1165,27 @@ resolve in the advisory checker. Returns the project root.
 (defn- config-dir () (path/join (config-base-dir) "brood"))
 (defn- config-path () (path/join (config-dir) "config.blsp"))
 
+;; The keys `config` accepts, each declared once (std `settings`, ADR-428): the default file
+;; below is generated from these, and `load-config` warns about a value or a key they reject.
+(settings/define :project/user-config
+  :git-init {:default false :type 'bool :doc "run `git init` in projects made by `nest new`"})
+(settings/define :project/user-config
+  :registry {:default "https://brood.fly.dev"
+   :type 'string
+   :commented? true
+   :doc "the package registry's base URL (hive) — `nest search`, `publish` and `:version` deps"})
+(settings/define :project/user-config
+  :registry-token {:default nil
+   :type 'string
+   :commented? true
+   :example "…"
+   :doc "the Bearer token `nest publish` sends ($HIVE_TOKEN overrides it)"})
+
 (def *config-default-source*
-  (str ";; Brood user config — tooling preferences (the sibling of project.blsp).\n"
-    ";; Edit to taste; any `nest` command re-reads it.\n" "(config\n"
-    "  :git-init false)   ; run `git init` in projects made by `nest new`\n"))
+  (settings/default-source :project/user-config
+    'config
+    (str ";; Brood user config — tooling preferences (the sibling of project.blsp).\n"
+      ";; Edit to taste; any `nest` command re-reads it.\n")))
 
 ;; Ensure the config exists (writing a documented default the first time), then
 ;; apply it. Called by the `brood` subcommands, so a tool use always leaves an
@@ -1190,7 +1207,20 @@ resolve in the advisory checker. Returns the project root.
     ;; (the project manifest is read the same way, ADR-020) and decouples it from
     ;; namespace resolution — `config` here is `project/config` (this body is
     ;; compiled in the `project` namespace), so the apply resolves.
-    (let (form (reflect/read-first (file/slurp p)))
-      (when (and (pair? form) (= (first form) 'config))
-        (/apply config (rest form)))))
+    ;; `settings/read-form` never throws — a broken config is `{}`, so no nest command
+    ;; is stopped by it — and each value or key the declarations reject is said on stderr.
+    ;; A rejected value is warned about and NOT applied — `:git-init "no"` is truthy and
+    ;; would otherwise still run `git init` — so `accepted` hands `config` nil for it, which
+    ;; `config` skips, leaving the setting as it was.
+    (let (cfg (settings/read-form (file/slurp p) 'config)
+          accepted (fn (key)
+                     (let (value (get cfg key))
+                       (if (settings/valid? (settings/spec-of :project/user-config key) value)
+                         value
+                         nil))))
+      (doseq (w (settings/warnings :project/user-config cfg p)) (io/puts w :to *err*))
+      (config :git-init
+        (accepted :git-init)
+        :registry (accepted :registry)
+        :registry-token (accepted :registry-token))))
   nil)

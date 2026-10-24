@@ -13,7 +13,7 @@
     (is (nil? (fuzzy/match "xz" "foo-bar")))
     (is (nil? (fuzzy/match "rab" "foo-bar"))))
   (test "the empty query matches anything, score 0"
-    (assert= (fuzzy/match "" "abc") {:score 0 :positions ()}))
+    (assert= (fuzzy/match "" "abc") {:score 0 :positions () :terms []}))
   ; f@0, b@? scattered, no boundary on b
   (test "a boundary/contiguous match outscores a scattered one"
     (is
@@ -22,6 +22,34 @@
         (get (fuzzy/match "fb" "fluffball") :score))))
   (test "an exact prefix scores well (contiguous + boundary + early)"
     (is (> (get (fuzzy/match "foo" "foobar") :score) (get (fuzzy/match "foo" "barfoo") :score)))))
+
+(describe "terms — a space separates what must match, in any order (ADR-429)"
+  (test "every term must match; either order finds the same candidate"
+    (is (map? (fuzzy/match "lim ex" "lib/limits.ex")))
+    (is (map? (fuzzy/match "ex lim" "lib/limits.ex")))
+    (is (nil? (fuzzy/match "lim rb" "lib/limits.ex"))))
+  (test "the score is the terms' scores added, and positions are all of theirs, in order"
+    (let (lim (fuzzy/match "lim" "lib/limits.ex")
+          ex (fuzzy/match "ex" "lib/limits.ex")
+          both (fuzzy/match "ex lim" "lib/limits.ex"))
+      (assert= (+ (:score lim) (:score ex)) (:score both))
+      (assert= (list 4 5 6 11 12) (:positions both))
+      ;; and each term's own, in the order the query names them — what colours them apart
+      (assert= [(list 11 12) (list 4 5 6)] (:terms both))))
+  (test "a term overlapping another's positions lists each position once"
+    (assert= (list 0 1) (:positions (fuzzy/match "ab a" "ab"))))
+  (test "extra spaces are not terms; only spaces is the empty query"
+    (assert= (:score (fuzzy/match "lim  ex " "lib/limits.ex"))
+      (:score (fuzzy/match "lim ex" "lib/limits.ex")))
+    (assert= {:score 0 :positions () :terms []} (fuzzy/match "   " "abc"))
+    (assert= (list "b" "a") (fuzzy/filter "  " (list "b" "a"))))
+  (test "a space no longer matches a space: it separates"
+    (is (map? (fuzzy/match "my file" "my-file.txt"))))
+  (test "ranking with terms: only candidates matching every term, best first"
+    (assert= (list "lib/limits.ex" "test/limits_test.exs")
+      (fuzzy/top "lim ex"
+        (list "lib/limits.ex" "lib/other.ex" "test/limits_test.exs" "README.md")
+        5))))
 
 (describe "fuzzy/filter"
   (test "keeps matches, best score first"

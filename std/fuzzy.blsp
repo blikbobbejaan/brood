@@ -2,7 +2,8 @@
 ;;
 ;; The matcher completion UIs ride on: a query matches a candidate when its characters
 ;; appear IN ORDER somewhere in the candidate (case-insensitive) — "fb" matches
-;; "foo-bar". Matches are scored so the best rise first: contiguous runs, matches at
+;; "foo-bar". A space separates TERMS that must each match, in any order — "lim ex" finds
+;; "lib/limits.ex" (ADR-429). Matches are scored so the best rise first: contiguous runs, matches at
 ;; word boundaries (string start, after a `- _ / . space`, or a camelCase upper), and
 ;; early matches all score higher. Greedy left-to-right (flx/fzf-lite — not the optimal
 ;; DP, but cheap and good in practice). Brood, tail-recursive, everything below readable.
@@ -27,8 +28,8 @@
     (filter \"fb\" cands)        ; => the matching cands, best score first
     (top \"fb\" cands 20)        ; => just the best 20 of them
 
-`match` returns nil when `query` isn't a case-insensitive subsequence of the
-candidate, else `{:score :positions}` (`positions` are the matched char indices, for
+`match` returns nil unless each space-separated term of `query` is a case-insensitive
+subsequence of the candidate (in any order), else `{:score :positions}` (`positions` are the matched char indices, for
 highlighting). `filter` keeps the matches and sorts them best-first (ties: shorter
 candidate, then lexicographic); an empty query returns the candidates unchanged. `top` is
 `filter` stopping at the number of rows a UI can actually show, which is what makes
@@ -149,34 +150,81 @@ lower it, and it is paid only by candidates that already matched."
   (let (at (index-of clow qlow))
     (if (< at 0) nil (fuzzy-walk qchars 0 qn clow cand at nil 0 '()))))
 
-(defn- fuzzy-run (qchars qlow qn cand)
-  "`[score positions]` for one candidate against an already-prepared query, or nil — the
-better of the greedy alignment and the contiguous one (`fuzzy-contiguous`)."
-  (let (clow (string/lower cand)
-        greedy (fuzzy-walk qchars 0 qn clow cand 0 nil 0 '()))
+(defn- fuzzy-run (qchars qlow qn clow cand)
+  "`[score positions]` for one candidate against one already-prepared term, or nil — the
+better of the greedy alignment and the contiguous one (`fuzzy-contiguous`). `clow` is the
+candidate lowered, once per candidate however many terms ask."
+  (let (greedy (fuzzy-walk qchars 0 qn clow cand 0 nil 0 '()))
     (if (nil? greedy)
       nil ; not a subsequence at all: no alignment exists, and no `index-of` is paid
       (let (run (fuzzy-contiguous qchars qlow qn clow cand))
         (if (and run (> (first run) (first greedy))) run greedy)))))
 
+;; ---- terms: a space separates what must match, in any order -----------------
+;; `lim ex` is two things the reader remembers about a file, not a name with a space in it.
+;; Each term matches on its own, anywhere and in either order (orderless's rule, which is
+;; what Emacs completion settled on), the candidate's score is the terms' scores added, and
+;; its positions are all of theirs — so a row can highlight every term it was found by. One
+;; term is exactly the old walk. A query of nothing but spaces asks for nothing, like "".
+
+(defn- fuzzy-split (query)
+  "The non-empty space-separated pieces of `query`, lowered."
+  (seq/filter (string/split (string/lower query) " ") (fn (piece) (not (= piece "")))))
+
+(defn- fuzzy-terms (query)
+  "`query`'s terms, each prepared (`fuzzy-prepare`) — the once-per-ranking work."
+  (into [] (map (fuzzy-split query) fuzzy-prepare)))
+
+(defn- fuzzy-terms-loop (terms index clow cand score per-term)
+  (if (>= index (count terms))
+    [score per-term]
+    (let ([qchars qlow qn] (nth terms index)
+          r (fuzzy-run qchars qlow qn clow cand))
+      (if (nil? r)
+        nil
+        (fuzzy-terms-loop terms
+          (inc index)
+          clow
+          cand
+          (+ score (first r))
+          (conj per-term (second r)))))))
+
+(defn- fuzzy-run-terms (terms cand)
+  "`[score positions per-term]` for `cand` against every prepared term, or nil when one of
+them does not match: the scores added, every term's positions merged in order (each index
+once), and each term's own positions in query order. One term is `fuzzy-run` itself."
+  (let (clow (string/lower cand))
+    (if (= (count terms) 1)
+      (let ([qchars qlow qn] (first terms)
+            r (fuzzy-run qchars qlow qn clow cand))
+        (if (nil? r) nil [(first r) (second r) [(second r)]]))
+      (let (r (fuzzy-terms-loop terms 0 clow cand 0 []))
+        (if (nil? r)
+          nil
+          [(first r) (sort (seq/distinct (fold (second r) (list) append))) (second r)])))))
+
 ;; ---- matching one candidate -------------------------------------------------
 
 (defn match (query:string cand:string -> (or nil map))
-  "`nil` if `query` isn't a case-insensitive subsequence of `cand`, else
-`{:score <int> :positions [i …]}`. The empty query matches anything (score 0) —
-handled directly, since its empty position list is indistinguishable from `nil`.
+  "`nil` unless every space-separated term of `query` is a case-insensitive subsequence of
+`cand`, else `{:score <int> :positions (i …) :terms [(i …) …]}` — the terms' scores added,
+all their matched indices in order (each once), and each term's own indices in query order,
+so a UI can colour every term apart. The terms match independently, in any order. A query
+with no terms (`\"\"`, or only spaces) matches anything (score 0, no terms) — handled
+directly, since its empty position list is indistinguishable from `nil`.
 
 For ONE candidate — the rows a UI actually draws, which need `:positions` to highlight the
 matched chars. To rank a whole set use `top`, which walks the same rules without building
 a map per candidate.
 
-    (fuzzy/match \"abc\" \"xAxbxC\")   → {:score 12 :positions (1 3 5)}
-    (fuzzy/match \"zz\" \"abc\")   → nil"
-  (if (= query "")
-    {:score 0 :positions ()}
-    (let ([qchars qlow qn] (fuzzy-prepare query)
-          r (fuzzy-run qchars qlow qn cand))
-      (if (nil? r) nil {:score (first r) :positions (second r)}))))
+    (fuzzy/match \"abc\" \"xAxbxC\")   → {:score 12 :positions (1 3 5) :terms [(1 3 5)]}
+    (fuzzy/match \"zz\" \"abc\")   → nil
+    (:terms (fuzzy/match \"ex lim\" \"lib/limits.ex\"))   → [(11 12) (4 5 6)]"
+  (let (terms (fuzzy-terms query))
+    (if (empty? terms)
+      {:score 0 :positions () :terms []}
+      (let (r (fuzzy-run-terms terms cand))
+        (if (nil? r) nil {:score (first r) :positions (second r) :terms (third r)})))))
 
 ;; ---- the scorer: the rules as a value you can replace -----------------------
 
@@ -196,8 +244,10 @@ chars) happens out here, once.
                (fn (q) (let (base (fuzzy/scorer q))
                          (fn (c) (let (s (base c)) (if (nil? s) nil (+ s (recency c))))))))
       (fuzzy/top query files 20))"
-  (let ([qchars qlow qn] (fuzzy-prepare query))
-    (fn (cand) (let (r (fuzzy-run qchars qlow qn cand)) (if (nil? r) nil (first r))))))
+  (let (terms (fuzzy-terms query))
+    (if (empty? terms)
+      (fn (cand) 0)
+      (fn (cand) (let (r (fuzzy-run-terms terms cand)) (if (nil? r) nil (first r)))))))
 
 (defdyn *fuzzy-scorer* :default)
 ;; How ranking scores a candidate: a `(query) -> (cand) -> score | nil`. Bind it to rank by
@@ -433,7 +483,8 @@ Prefer this over `filter` whenever the caller shows a fixed number of rows: the 
         bounded (> k 0)
         n (if bounded (count cands) 0))
     (cond
-      (= query "") (if bounded (take cands k) cands)
+      ;; no terms — "" or only spaces — asks for nothing, so nothing is ranked
+      (empty? (fuzzy-split query)) (if bounded (take cands k) cands)
       ;; The default rules, natively (ADR-375). Same walk, same ordering, no shard fan-out
       ;; — and no copy of the candidate set across process boundaries per keystroke. Gated
       ;; on the scorer still BEING the default: bind `*fuzzy-scorer*` and every ranking

@@ -1,0 +1,193 @@
+;; std/settings.blsp — declared settings, read from a config file that is data.
+;;
+;; Design notes (the *why*; the *what* is in the docstrings below):
+;;  - A program with a user config file kept each setting in four hand-maintained places:
+;;    the default file's text, the value check, the accepted-value list and the code that
+;;    applies it. bedit's `init.blsp` had thirteen keys spread that way, and nest's own
+;;    `~/.config/brood/config.blsp` had three with no check at all, so a typo'd key was
+;;    silently ignored. A setting declared ONCE — name, default, type, doc — gives all four:
+;;    the default file is generated from the docs, the check is the type, the value with
+;;    its fallback is one call.
+;;  - The type is a `sig` type-expression, checked with `type-matches?`, so the literal and
+;;    interval types the checker already reads (`(or :block :bar)`, `(int 0 _)`) are the
+;;    accepted-value lists. A rule a type cannot spell (a float range) is a `:valid?`
+;;    predicate, stored as a SYMBOL and called late like any registry hook.
+;;  - Declarations live in a `registry` under a caller-chosen id, so a module or a plugin
+;;    declares its own settings when it loads and the program's config code names none
+;;    of them.
+;;  - The config file stays DATA: one `(head :key value …)` form, read and never evaluated
+;;    (ADR-065), so a config file cannot run code and cannot fail to resolve a name.
+
+(defmodule settings
+  "Declared settings read from a data config file — `define` a setting once (default, type,
+doc) under a registry id, then `read-form` the user's `(config …)` form, `value-of` a
+setting with its fallback, `warnings` for every typo, and `default-source` for the
+documented file to write the first time. ADR-428."
+  (:use registry))
+
+;; ---- declaring ------------------------------------------------------------
+
+(defn define (id:any name:keyword spec:map -> map)
+  "Declare the setting `name` in the settings registry `id`, replacing any declaration
+already there, and return the stored spec. `spec` keys:
+
+- `:default` — the value when the config file does not set it (or sets it wrongly).
+- `:type` — a `sig` type-expression the value must match (`'bool`, `'(or :block :bar)`,
+  `'(int 0 _)`); absent means any value.
+- `:valid?` — a further check, a symbol naming a `(value) -> bool` function, called late.
+- `:want` — how a warning describes a good value; derived from a literal `or` type if absent.
+- `:doc` — what it does, one or more lines; the default file's comment above the key.
+- `:commented?` — write the key commented out in the default file (`:example` shows there
+  instead of the default when given).
+- `:rank` — order in the default file; declaration order when absent.
+
+    (:default (settings/define :doc/settings :tabs {:default 4 :type '(int 1 16) :doc \"Tab width.\"}))   → 4"
+  (let (existing (registry/lookup id name)
+        rank (cond
+               (number? (:rank spec)) (:rank spec)
+               (map? existing) (:rank existing)
+               else (count (registry/entries id))))
+    (registry/put! id name (assoc spec :name name :rank rank))))
+
+(defn specs (id:any -> list)
+  "The settings declared under `id`, as spec maps in rank order.
+
+    (do (settings/define :doc/ordered :b {:default 2}) (settings/define :doc/ordered :a {:default 1}) (map (settings/specs :doc/ordered) :name))   → (:b :a)"
+  (map (registry/ranked id) second))
+
+(defn spec-of (id:any name:any -> any)
+  "The spec declared for `name` under `id`, or nil when there is none.
+
+    (do (settings/define :doc/one :k {:default 1}) (:default (settings/spec-of :doc/one :k)))   → 1
+    (settings/spec-of :doc/one :nope)   → nil"
+  (registry/lookup id name))
+
+;; ---- reading the file -----------------------------------------------------
+
+(defn read-form (text:string head:symbol -> map)
+  "The keys and values of the first form in `text` when it is `(head :key value …)`, as a
+map — `{}` when it is some other form, or when `text` does not read. Never evaluates and
+never throws: a broken config file must not stop the program it configures.
+
+    (settings/read-form \"(config :hl-line false :cursor :bar)\" 'config)   → {:hl-line false :cursor :bar}
+    (settings/read-form \"(config :x\" 'config)   → {}
+    (settings/read-form \"(other :x 1)\" 'config)   → {}"
+  (check-allow :discarded-catch
+    (try
+      (let (form (reflect/read-first text))
+        (if (and (pair? form) (= (first form) head))
+          (fold (partition (rest form) 2)
+            {}
+            (fn (acc pair) (if (= (count pair) 2) (assoc acc (first pair) (second pair)) acc)))
+          {}))
+      (catch e {}))))
+
+(defn read-file (file:string head:symbol -> map)
+  "`read-form` over the contents of `file` — `{}` when the file is missing or unreadable.
+
+    (settings/read-file \"/no/such/settings-file.blsp\" 'config)   → {}"
+  (check-allow :discarded-catch
+    (if (file/exists? file)
+      (try (read-form (file/slurp file) head) (catch e {}))
+      {})))
+
+;; ---- checking -------------------------------------------------------------
+
+(defn valid? (spec:map value:any -> bool)
+  "True when `value` is acceptable for the setting `spec`: nil (unset) always is; anything
+else must match the spec's `:type` and pass its `:valid?` predicate.
+
+    (settings/valid? {:type '(or :block :bar)} :bar)   → true
+    (settings/valid? {:type '(or :block :bar)} :blockk)   → false
+    (settings/valid? {:type 'bool} nil)   → true"
+  (or (nil? value)
+    (and (or (not (contains? spec :type)) (type-matches? (:type spec) value))
+      (let (check (:valid? spec))
+        (if (symbol? check) (= true (reflect/call-if-bound check true value)) true)))))
+
+(defn- literal? (t)
+  (or (keyword? t) (string? t) (bool? t) (int? t)))
+
+(defn want-text (spec:map -> string)
+  "How a warning describes a good value for `spec`: its `:want`, else the alternatives of a
+literal `or` type, else the printed type.
+
+    (settings/want-text {:type '(or :block :bar)})   → \":block / :bar\"
+    (settings/want-text {:type 'bool})   → \"bool\"
+    (settings/want-text {:type 'number :want \"a number in 0.8..3.0\"})   → \"a number in 0.8..3.0\""
+  (let (t (:type spec))
+    (cond
+      (string? (:want spec)) (:want spec)
+      (and (pair? t) (= (first t) 'or) (every? (rest t) literal?))
+        (string/join (map (rest t) pr-str) " / ")
+      (contains? spec :type) (pr-str t)
+      else "any value")))
+
+(defn warnings (id:any config:map label:string -> vector)
+  "Every problem with `config` against the settings declared under `id`, as readable
+strings that start with `label` (the file's name): a value its setting rejects, in rank
+order, then each key no setting declares — a typo, or a setting whose module has not loaded.
+Empty when the config is clean.
+
+    (do (settings/define :doc/warn :cursor {:type '(or :block :bar)}) (settings/warnings :doc/warn {:cursor :blockk :curser :bar} \"init.blsp\"))   → [\"init.blsp: :cursor is :blockk — want :block / :bar\" \"init.blsp: :curser is not a setting (a typo, or one whose module has not loaded)\"]"
+  (let (declared (registry/entries id)
+        bad (fold (specs id)
+              []
+              (fn (acc spec)
+                (let (value (get config (:name spec)))
+                  (if (valid? spec value)
+                    acc
+                    (conj acc
+                      (str label
+                        ": "
+                        (pr-str (:name spec))
+                        " is "
+                        (pr-str value)
+                        " — want "
+                        (want-text spec)))))))
+        unknown (sort (map (seq/filter (keys config) (fn (k) (not (contains? declared k)))) pr-str)))
+    (into bad
+      (map unknown
+        (fn (k) (str label ": " k " is not a setting (a typo, or one whose module has not loaded)"))))))
+
+;; ---- values ---------------------------------------------------------------
+
+(defn value-of (id:any config:map name:any -> any)
+  "The value of setting `name`: `config`'s when it sets a valid one, else the declared
+`:default` — so a typo'd value, or a key deleted before a reload, means the default rather
+than the last value in force. nil for a name nothing declares.
+
+    (do (settings/define :doc/val :cursor {:default :block :type '(or :block :bar)}) [(settings/value-of :doc/val {:cursor :bar} :cursor) (settings/value-of :doc/val {:cursor 7} :cursor) (settings/value-of :doc/val {} :cursor)])   → [:bar :block :block]"
+  (let (spec (spec-of id name)
+        value (get config name))
+    (cond
+      (not (map? spec)) nil
+      (and (not (nil? value)) (valid? spec value)) value
+      else (:default spec))))
+
+(defn values-of (id:any config:map -> map)
+  "Every setting declared under `id`, name → `value-of` — the whole config with each
+default filled in and each invalid value replaced.
+
+    (do (settings/define :doc/all :a {:default 1}) (settings/define :doc/all :b {:default 2 :type 'int}) (settings/values-of :doc/all {:b \"x\"}))   → {:a 1 :b 2}"
+  (fold (specs id) {} (fn (acc spec) (assoc acc (:name spec) (value-of id config (:name spec))))))
+
+;; ---- the default file -----------------------------------------------------
+
+(defn- comment-lines (text)
+  (map (string/split text "\n") (fn (line) (str "  ;; " line "\n"))))
+
+(defn- setting-text (spec)
+  (let (shown (if (contains? spec :example) (:example spec) (:default spec))
+        line (str (pr-str (:name spec)) " " (pr-str shown)))
+    (str (string/join (if (string? (:doc spec)) (comment-lines (:doc spec)) []) "")
+      (if (:commented? spec) (str "  ;; " line "\n") (str "  " line "\n")))))
+
+(defn default-source (id:any head:symbol preamble:string -> string)
+  "The documented config file to write the first time: `preamble` (comment lines, each
+ending in a newline), then one `(head …)` form listing every setting declared under `id`
+in rank order — its doc as comments above it, set to its default, or commented out when it
+is `:commented?`. What `read-form` reads back is exactly the defaults it did not comment.
+
+    (do (settings/define :doc/src :hl-line {:default true :doc \"Highlight the line.\"}) (settings/default-source :doc/src 'config \";; mine\\n\"))   → \";; mine\\n(config\\n  ;; Highlight the line.\\n  :hl-line true\\n  )\\n\""
+  (str preamble "(" head "\n" (string/join (map (specs id) setting-text) "") "  )\n"))

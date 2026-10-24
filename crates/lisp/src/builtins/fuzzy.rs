@@ -10,7 +10,8 @@
 //!
 //! The rules are `std/fuzzy.blsp`'s, ported term for term — `fuzzy-bonus` (match, boundary,
 //! contiguous, gap, lead), the greedy `fuzzy-walk`, the contiguous-run second alignment
-//! (`fuzzy-contiguous`, kept when it scores higher) and the `[-score length cand]` ordering.
+//! (`fuzzy-contiguous`, kept when it scores higher), the space-separated terms each scored
+//! on their own and added (`fuzzy-run-terms`, ADR-429) and the `[-score length cand]` ordering.
 //! `tests/fuzzy_native_test.blsp` pins them equal over a corpus; that test is the contract,
 //! not this comment.
 //!
@@ -35,7 +36,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::range(2, 3),
         Sig::with_optional(vec![string, seqable], vec![any], list_ty),
         &["query", "cands", "limit"],
-        "The best `limit` of `cands` for `query` under std/fuzzy's built-in rules, best score first (ties: shorter candidate, then lexicographic) — a nil or non-positive limit means all of them. The ranking pass behind fuzzy/top and fuzzy/filter, native because a completion UI runs it over a whole project on every keystroke; fuzzy/top calls it only while *fuzzy-scorer* is the default, so redefining the rules still moves every ranking (ADR-375 amending ADR-357). Every candidate must be a string.\n\n    (%fuzzy-top \"ab\" [\"axb\" \"ab\" \"zz\"] 1)   → (\"ab\")",
+        "The best `limit` of `cands` for `query` under std/fuzzy's built-in rules (a space separates terms that must each match, in any order), best score first (ties: shorter candidate, then lexicographic) — a nil or non-positive limit means all of them. The ranking pass behind fuzzy/top and fuzzy/filter, native because a completion UI runs it over a whole project on every keystroke; fuzzy/top calls it only while *fuzzy-scorer* is the default, so redefining the rules still moves every ranking (ADR-375 amending ADR-357). Every candidate must be a string.\n\n    (%fuzzy-top \"ab\" [\"axb\" \"ab\" \"zz\"] 1)   → (\"ab\")",
         fuzzy_top,
     );
 }
@@ -153,12 +154,25 @@ fn score_candidate(query: &[char], clow: &[char], cand: &[char]) -> Option<i64> 
     }
 }
 
+/// `fuzzy-run-terms`: every term must match, independently and in any order; the score is
+/// theirs added. One term is `score_candidate` itself.
+fn score_terms(terms: &[&[char]], clow: &[char], cand: &[char]) -> Option<i64> {
+    terms.iter().try_fold(0i64, |total, term| {
+        Some(total + score_candidate(term, clow, cand)?)
+    })
+}
+
 /// `(%fuzzy-top query cands &optional limit)` — see the registration.
 fn fuzzy_top(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let who = "%fuzzy-top";
-    let query: Vec<char> = expect_string_ref(heap, who, arg(args, 0))?
+    let lowered_query: Vec<char> = expect_string_ref(heap, who, arg(args, 0))?
         .chars()
         .map(lower_char)
+        .collect();
+    // `fuzzy-split`: a space separates terms (ADR-429), and empty pieces are dropped.
+    let query: Vec<&[char]> = lowered_query
+        .split(|&c| c == ' ')
+        .filter(|term| !term.is_empty())
         .collect();
     let cands_value = arg(args, 1);
     let Some(cands) = heap.list_or_vector_items(cands_value) else {
@@ -173,9 +187,9 @@ fn fuzzy_top(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         Value::Nil => 0,
         v => expect_int(heap, who, v)?.max(0) as usize,
     };
-    // An empty query matches everything at score 0 and keeps the given order, which is what
-    // the Brood `top` answers without ranking at all. Mirrored here so the primitive is
-    // usable on its own.
+    // A query with no terms ("" or only spaces) matches everything at score 0 and keeps the
+    // given order, which is what the Brood `top` answers without ranking at all. Mirrored
+    // here so the primitive is usable on its own.
     if query.is_empty() {
         let kept = if limit > 0 && limit < cands.len() {
             cands[..limit].to_vec()
@@ -196,7 +210,7 @@ fn fuzzy_top(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         original.extend(text.chars());
         lowered.clear();
         lowered.extend(original.iter().copied().map(lower_char));
-        if let Some(score) = score_candidate(&query, &lowered, &original) {
+        if let Some(score) = score_terms(&query, &lowered, &original) {
             ranked.push((score, original.len(), index));
         }
     }
