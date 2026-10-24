@@ -217,7 +217,9 @@ needs a Brood-specific form to respect an ADR.
   calls. The first customer was bedit wanting Emacs' `compilation-error-regexp-alist`,
   which a boolean-only engine cannot express at all. Remaining: backreferences, lookaround,
   named groups. Still open for the corpora below.
-- ⬜ **3. `iterate` / generators without unbounded laziness** *(shape)*. Not a lazy cons: a
+- ✅ **3. `iterate`** (2026-10-24, ADR-431): `(seq/iterate x f)` is a source only
+  `seq/transduce` consumes, ended by a stopping stage; realising it raises. Original note:
+  *(shape)*. Not a lazy cons: a
   seqview stage `(seq/iterate f x)` consumed only by the fused `seq/l*` pipeline or a `take`,
   plus `std/stream` as the process-backed generator for anything that crosses a `send`.
   Keeps ADR-111's rule that laziness is opt-in and heap-local. Replaces the "unbounded stream

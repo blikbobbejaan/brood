@@ -3565,3 +3565,8 @@ half-open range, and it is a full collection (`Seqable`, `Counted`, `Conjable`, 
 Writing its `get` turned up KI-298: `(get coll k default)` with a non-nil default never asked
 `Lookup`, so `(get multimap :k [])` gave `[]` for a key holding values. Fixed in `get`'s
 3-arity arm and in `PrimOp3::MapGet3` alike. Not run on this machine.
+
+2026-10-24 (ADR-431, `seq/iterate`): an unbounded source that only `seq/transduce` consumes, ended
+by `xtake`/`xtake-while`/a stage's `reduced`. Realising it raises instead of looping. A `seq/l*`
+view over one hands its stages to the run. No lazy value and no prelude change. Not run on this
+machine.

@@ -1,0 +1,69 @@
+;; `seq/iterate` (ADR-431): an unbounded source that only `seq/transduce` consumes, ended
+;; by a stopping stage. Realising it raises rather than looping forever.
+
+(defmodule seq-iterate-test (:use test))
+
+(defn- doubling () (seq/iterate 1 (fn (n) (* n 2))))
+
+(defn- raises? (thunk)
+  (check-allow :discarded-catch
+    (try (do (thunk) false) (catch _ true))))
+
+(describe "seq/iterate"
+  (test "xtake ends it"
+    (assert= [1 2 4 8 16] (seq/transduce (doubling) (seq/xtake 5) conj [])))
+  (test "xtake-while ends it"
+    (assert= [1 2 4 8] (seq/transduce (doubling) (seq/xtake-while (fn (n) (< n 10))) conj [])))
+  (test "stateless stages run ahead of the stop"
+    (assert= [3 9 15]
+      (seq/transduce (seq/iterate 0 inc)
+        (comp (seq/xfilter math/odd?) (seq/xmap (fn (n) (* n 3))) (seq/xtake 3))
+        conj
+        [])))
+  (test "a seq/l* view over it hands its stages to the run"
+    (assert= [2 3 4 5]
+      (seq/transduce (seq/lmap (seq/iterate 1 inc) inc) (seq/xtake-while (fn (n) (< n 6))) conj []))
+    (assert= [20 40]
+      (seq/transduce (-> (seq/iterate 1 inc) (seq/lfilter math/even?) (seq/lmap (fn (n) (* n 10))))
+        (seq/xtake 2)
+        conj
+        [])))
+  (test "the step is not called past the element that ends the run"
+    ;; `f` raising on 4 would break the run if the loop stepped ahead of `rf`.
+    (assert= [1 2 3]
+      (seq/transduce (seq/iterate 1 (fn (n) (if (= n 3) (error "stepped past the end") (inc n))))
+        (seq/xtake 3)
+        conj
+        [])))
+  (test "a failure accumulator ends it, as it ends fold"
+    (is (failure? (seq/transduce (seq/iterate 1 inc)
+                    (seq/xmap identity)
+                    (fn (acc n) (if (= n 3) (failure "stop at three") (+ acc n)))
+                    0))))
+  (test "realising it raises instead of looping"
+    (is (raises? (fn () (seq (doubling)))))
+    (is (raises? (fn () (into [] (doubling)))))
+    (is (raises? (fn () (fold (doubling) 0 +)))))
+  (test "it displays as itself"
+    (assert= "#<iterate>" (->string (doubling)))))
+
+(defn- it-worker (parent start)
+  (send parent
+    [:done start (seq/transduce (seq/iterate start inc) (seq/xtake 4) + 0)]))
+(defn- it-collect (n acc)
+  (if (= n 0) acc (it-collect (- n 1) (receive ([:done start total] (assoc acc start total))))))
+
+(describe "seq/iterate across processes"
+  :isolated (test "workers each run their own iterate; the parent fans in"
+    (let (me (self))
+      (doseq (start (range 0 8)) (spawn (it-worker me start)))
+      (let (totals (it-collect 8 {}))
+        (assert= 8 (count totals))
+        ;; start + (start+1) + (start+2) + (start+3)
+        (assert= 6 (get totals 0))
+        (assert= 34 (get totals 7)))))
+  (test "an iterate value sent to a worker runs there"
+    (let (me (self)
+          w (spawn (receive (it (send me (seq/transduce it (seq/xtake 3) conj []))))))
+      (send w (doubling))
+      (assert= [1 2 4] (receive)))))

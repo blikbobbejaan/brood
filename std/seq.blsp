@@ -303,7 +303,7 @@ machinery; use `transduce` when the stage stack is computed, reused, or your own
   ;; The run's table (ADR-421) is dropped before the outcome is delivered, on every path.
   (let (run (table/new))
     (try
-      (let (v (fold coll init (binding (*transduce-run* run) (xform rf))))
+      (let (v (run-stack coll init xform rf run))
         (table/drop run)
         v)
       (catch e
@@ -336,6 +336,52 @@ of being walked to its end with every later element ignored.
 
     (seq/transduce (range 1000000) (seq/xtake-while (fn (n) (< n 3))) conj [])   → [0 1 2]"
   (fn (rf) (fn (acc x) (if (pred x) (rf acc x) (reduced acc)))))
+
+;; ---- iterate: an unbounded source for transduce (ADR-431) -----------------------------
+;; `x`, `(f x)`, `(f (f x))`, … with no end of its own. Not a lazy list (ADR-111): it is a
+;; value only `transduce` consumes, and a stopping stage (`xtake`, `xtake-while`, or a
+;; stage's own `reduced`) ends the run. Everything that would REALISE it — `seq`, `fold`,
+;; `count`, `into`, `map` — raises instead of looping forever. A `seq/l*` view over it
+;; is accepted too: `transduce` takes the view's stages ahead of its own.
+(defrecord %iterate (seed step))
+
+(defn iterate (x f)
+  "The unbounded sequence `x`, `(f x)`, `(f (f x))`, … as a source for [[transduce]],
+which must end it with a stopping stage — [[xtake]], [[xtake-while]] or a stage's own
+[[reduced]]. Nothing else consumes it: realising it (`seq`, `fold`, `into`, `count`)
+raises, since it has no end. For values that cross a `send`, use `std/stream`.
+
+    (seq/transduce (seq/iterate 1 (fn (n) (* n 2))) (seq/xtake 5) conj [])   → [1 2 4 8 16]
+    (seq/transduce (seq/iterate 1 inc) (seq/xtake-while (fn (n) (< n 4))) + 0)   → 6"
+  (%iterate x f))
+
+(defn- iterate? (x) (and (record? x) (= (record-id x) :seq/%iterate)))
+
+(impl Seqable
+  seq/%iterate
+  (->seq [_]
+    (error "seq/iterate: an unbounded sequence cannot be realised — consume it with "
+      "seq/transduce and a stopping stage (seq/xtake, seq/xtake-while)")))
+(impl Display seq/%iterate (->string [_] "#<iterate>"))
+
+(defn- iterate-loop (x step acc rf)
+  ;; Stops on a failure accumulator, as `fold` does (ADR-315).
+  (if (failure? acc) acc (let (next-acc (rf acc x)) (iterate-loop (step x) step next-acc rf))))
+
+;; `transduce`'s walk. The stack is built with the run bound, so a stateful stage finds its
+;; table (ADR-421). An `iterate` source runs in its own loop; a seq-view over one hands its
+;; stages to this run, ahead of the caller's.
+(defn- run-stack (coll init xform rf run)
+  (cond
+    (iterate? coll)
+      (iterate-loop (%iterate-seed coll)
+        (%iterate-step coll)
+        init
+        (binding (*transduce-run* run) (xform rf)))
+    (and (seqview? coll) (iterate? (%vector-ref (%seqview-parts coll) 0)))
+      (let (parts (%seqview-parts coll))
+        (run-stack (%vector-ref parts 0) init (comp (%vector-ref parts 1) xform) rf run))
+    else (fold coll init (binding (*transduce-run* run) (xform rf)))))
 
 (defn filterv (coll pred)
   "A VECTOR of the items of `coll` for which `(pred x)` is truthy — [[filter]]
