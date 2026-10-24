@@ -3573,6 +3573,7 @@ mod reuse_tests {
             place: RunPlace::Cell { col },
             metrics: [8.0f32.to_bits(), 16.0f32.to_bits(), 13.0f32.to_bits(), 1],
             ground: [0, 0, 0],
+            fonts: (0, false),
         }
     }
 

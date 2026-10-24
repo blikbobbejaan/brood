@@ -713,10 +713,9 @@ exactly as before.
 
 **A turn that changes nothing renders nothing (ADR-434).** When the model after a turn
 is `=` to the one last drawn, at the same grid, the loop skips `view` and `:draw` and goes
-straight back to the poll. A key release, a timer that found no work, an echo that
-confirmed what the model already held: none of them costs a frame. This is why `view` has
-to be a function of the model and the grid alone. A view that reads the clock or another
-process will not be called again until the model changes.
+straight back to the poll. A key release or a timer that found no work costs no frame.
+This is why `view` has to be a function of the model and the grid alone. A view that
+reads the clock or another process will not be called again until the model changes.
 
 **The window's close button (the X) always quits.** A GUI frontend delivers it as
 a `:close` input (distinct from the Escape *key*, `:escape`), and `ui-run` treats
