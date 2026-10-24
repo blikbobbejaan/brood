@@ -3525,3 +3525,14 @@ KI-294: the parallel driver counted workers by message order and reported a dead
 missing file; it tracks pids, and a sequential pass over whatever the pool left unloaded is the
 build. The first two guards sabotage-verified locally (red, the cycle case at exactly the 5 runs
 the trace predicted), the third by construction.
+
+2026-10-24 (review cycle 2: KI-295, KI-296, KI-297): three more reviews — leads left by the
+first cycle, the guest-link commits, the week's macro and package fixes. KI-295, the worst:
+pipeline fusion, on by default, renamed a stage's parameters through lists only, so a parameter
+inside a vector, map or set literal stayed behind — unbound, or silently the outer binding of the
+same name. KI-296: a guest's message could carry a pid it guessed, which became reach when echoed
+back, and posed as a full peer to `serve`'s identity check; a guest now sends only its own pids
+and ones it was given (ADR-425's "Not done", amended). KI-297: a require waiter that missed its
+claimant's pid had no death watch; it takes one each tick. Refuted: the stale-cache read in
+`%require-await` (ordered by the registry lock) and the macro `GLOBAL` lookup on a builder heap
+(no namespaced module is ever compiled there).

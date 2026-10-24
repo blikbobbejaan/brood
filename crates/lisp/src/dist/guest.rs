@@ -10,7 +10,11 @@
 //! What a guest can reach is the grant's names plus the local pids this node has SENT to
 //! it ([`GuestLink::note_outbound`]) — a capability by introduction: a pid on this node is
 //! a small sequential integer, so being able to name one proves nothing, but having been
-//! told it does. What a guest can carry is data: a message holding a closure, a native
+//! told it does. The same holds for a pid INSIDE what a guest sends: one not of its own node
+//! must be one it was sent, or the message is refused. Otherwise a pid it guessed became
+//! reach the moment anything here echoed it back (an app broadcasting what participants
+//! wrote), and a server that reads who a client is from the pid it attached with
+//! (`std/editor/serve`) took a guest naming a full peer's pid for that peer. What a guest can carry is data: a message holding a closure, a native
 //! function or a shared function handle is dropped whole, since a closure crossing the
 //! wire is code the receiver may run (ADR-033).
 //!
@@ -58,7 +62,8 @@ static GRANTS: LazyLock<RwLock<Vec<Arc<Grant>>>> = LazyLock::new(|| RwLock::new(
 /// that link's frames may do.
 pub(crate) struct GuestLink {
     grant: Arc<Grant>,
-    reachable: Mutex<HashSet<u64>>,
+    /// Every pid this node has sent the guest, as `(node, id)` ([`pid_key`]).
+    reachable: Mutex<HashSet<(Symbol, u64)>>,
     /// The node name the guest gave in its `Hello` — its own spelling of itself, which its
     /// pids carry on the wire. Never a key of `NODES`.
     claimed: Symbol,
@@ -136,15 +141,35 @@ impl GuestLink {
         }
     }
 
-    /// A message is about to go out over this link: every local pid in it becomes
-    /// reachable by the guest — it has been told about them.
+    /// A message is about to go out over this link: every pid in it becomes reachable by
+    /// the guest — it has been told about them.
     pub(super) fn note_outbound(&self, msg: &Message) {
-        local_pids(msg, &mut crate::core::sync::lock(&self.reachable));
+        let mut reachable = crate::core::sync::lock(&self.reachable);
+        for_each_pid(msg, |node, id| {
+            reachable.insert(pid_key(node, id));
+        });
     }
 
     fn reaches_pid(&self, id: u64) -> bool {
-        crate::core::sync::lock(&self.reachable).contains(&id)
+        crate::core::sync::lock(&self.reachable).contains(&(*super::NONODE, id))
     }
+
+    /// Whether every pid in `msg`, read from the guest, is one of its own node's or one it
+    /// was sent.
+    fn holds_only_known_pids(&self, msg: &Message) -> bool {
+        let reachable = crate::core::sync::lock(&self.reachable);
+        let mut known = true;
+        for_each_pid(msg, |node, id| {
+            known &= node == self.claimed || reachable.contains(&pid_key(node, id));
+        });
+        known
+    }
+}
+
+/// A pid as [`GuestLink::reachable`] keys it: this node's under `nonode`, whichever of its
+/// spellings it came in.
+fn pid_key(node: Symbol, id: u64) -> (Symbol, u64) {
+    (if is_local(node) { *super::NONODE } else { node }, id)
 }
 
 /// Register (or replace) a grant for `cookie`.
@@ -185,12 +210,15 @@ pub(super) fn admit(peer: Symbol, guest: Option<&GuestLink>, frame: &Frame) -> b
         Target::Pid(id) => guest.reaches_pid(*id),
     };
     let admitted = match frame {
-        Frame::Send { target, msg } => reaches(target) && !carries_code(msg),
+        Frame::Send { target, msg } => {
+            reaches(target) && !carries_code(msg) && guest.holds_only_known_pids(msg)
+        }
         Frame::Monitor { target, .. } => guest.reaches_pid(*target),
         Frame::MonitorName { name, .. } => guest.grant.names.contains(name),
         // Dropping a monitor it holds, or being told one of ITS monitors fired, couples
-        // nothing new.
-        Frame::Demonitor { .. } | Frame::Down { .. } => true,
+        // nothing new — as long as the reason introduces no pid it was never given.
+        Frame::Demonitor { .. } => true,
+        Frame::Down { reason, .. } => guest.holds_only_known_pids(reason),
         // liveness — the reader has already stamped `last_seen`
         Frame::Ping | Frame::Pong => true,
         // A link ties a process here to the guest's fate, and an exit signal is how a peer
@@ -207,7 +235,8 @@ pub(super) fn admit(peer: Symbol, guest: Option<&GuestLink>, frame: &Frame) -> b
 fn warn_refused(peer: Symbol, frame: &Frame) {
     let what = match frame {
         Frame::Send { msg, .. } if carries_code(msg) => "a message carrying code",
-        Frame::Send { .. } => "a message to something it was not given",
+        Frame::Send { .. } => "a message to, or naming, something it was not given",
+        Frame::Down { .. } => "a down reason naming a pid it was not given",
         _ => "a frame a guest may not send",
     };
     eprintln!(
@@ -269,16 +298,13 @@ fn rename_pids(msg: &mut Message, from: Symbol, to: Symbol) {
     }
 }
 
-/// Every pid of THIS node in `msg`, added to `out`.
-fn local_pids(msg: &Message, out: &mut HashSet<u64>) {
+/// `f(node, id)` for every pid in `msg`. An explicit stack, so a deeply nested message
+/// costs no native stack.
+fn for_each_pid(msg: &Message, mut f: impl FnMut(Symbol, u64)) {
     let mut stack = vec![msg];
     while let Some(next) = stack.pop() {
         match next {
-            Message::Pid { node, id } => {
-                if is_local(*node) {
-                    out.insert(*id);
-                }
-            }
+            Message::Pid { node, id } => f(*node, *id),
             _ => stack.extend(children(next)),
         }
     }
@@ -316,21 +342,13 @@ mod tests {
     }
 
     #[test]
-    fn only_this_nodes_pids_are_collected() {
-        let here = Message::Pid {
-            node: *super::super::NONODE,
-            id: 7,
-        };
-        let elsewhere = Message::Pid {
-            node: value::intern("elsewhere@nowhere"),
-            id: 8,
-        };
-        let mut found = HashSet::new();
-        local_pids(
-            &Message::Vector(vec![here, Message::List(vec![elsewhere], None)]),
-            &mut found,
+    fn a_pid_of_this_node_is_keyed_alike_in_either_spelling() {
+        let elsewhere = value::intern("elsewhere@nowhere");
+        assert_eq!(
+            pid_key(*super::super::NONODE, 7),
+            (*super::super::NONODE, 7)
         );
-        assert_eq!(found, HashSet::from([7]));
+        assert_eq!(pid_key(elsewhere, 8), (elsewhere, 8));
     }
 
     #[test]
@@ -386,6 +404,54 @@ mod tests {
             admit(peer, None, &send(Target::Pid(99), keyword("hi"))),
             "a full link is unfiltered"
         );
+
+        // A pid inside a message: its own node's always; any other only once it was sent one.
+        let pid = |node, id| Message::Pid { node, id };
+        let full_peer = value::intern("full-peer@cluster");
+        let docs = || Target::Name(value::intern("docs"));
+        assert!(
+            admit(peer, guest, &send(docs(), pid(peer, 3))),
+            "its own pids"
+        );
+        assert!(
+            !admit(
+                peer,
+                guest,
+                &send(
+                    docs(),
+                    Message::Vector(vec![pid(*super::super::NONODE, 77)])
+                )
+            ),
+            "a local pid it guessed — echoed back, it would have become reach"
+        );
+        assert!(
+            !admit(
+                peer,
+                guest,
+                &send(
+                    docs(),
+                    Message::Map(vec![(keyword("client"), pid(full_peer, 5))])
+                )
+            ),
+            "a full peer's pid it guessed — a server would take it for that peer"
+        );
+        assert!(admit(
+            peer,
+            guest,
+            &send(docs(), pid(*super::super::NONODE, 42))
+        ));
+        link.note_outbound(&pid(full_peer, 5));
+        assert!(admit(peer, guest, &send(docs(), pid(full_peer, 5))));
+        assert!(!admit(
+            peer,
+            guest,
+            &Frame::Down {
+                watcher_pid: 1,
+                mref: 2,
+                target_pid: 3,
+                reason: pid(*super::super::NONODE, 78),
+            }
+        ));
     }
 
     /// ADR-425: a guest link's name is minted here, in a namespace no full peer may use,

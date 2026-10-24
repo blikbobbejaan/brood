@@ -170,7 +170,11 @@ pub(super) fn form_binds_any(
         return true; // too deep to prove clean — decline
     }
     let Some(items) = heap.list_items(form) else {
-        return false;
+        // A literal's elements are code too: `[(let (x 1) x)]` binds `x`.
+        return literal_items(heap, form).is_some_and(|xs| {
+            xs.iter()
+                .any(|&x| form_binds_any(heap, x, names, depth + 1))
+        });
     };
     let Some(&head) = items.first() else {
         return false;
@@ -433,7 +437,25 @@ pub(super) fn form_has_quasiquote(heap: &Heap, form: Value, depth: usize) -> boo
                 && matches!(it.unpack(), ValueRef::Sym(s) if value::symbol_is(s, kw::QUASIQUOTE)))
                 || form_has_quasiquote(heap, it, depth + 1)
         }),
-        None => false,
+        None => literal_items(heap, form)
+            .is_some_and(|xs| xs.iter().any(|&x| form_has_quasiquote(heap, x, depth + 1))),
+    }
+}
+
+/// The elements of a vector, map (keys and values) or set literal — code a walk over a form
+/// must enter as it enters a list's items, since the literal evaluates each one. `None` for
+/// anything else.
+pub(super) fn literal_items(heap: &Heap, form: Value) -> Option<Vec<Value>> {
+    match form.unpack() {
+        ValueRef::Vector(id) => Some(heap.vector(id).to_vec()),
+        ValueRef::Map(id) => Some(
+            heap.map_entries(id)
+                .into_iter()
+                .flat_map(|(k, v)| [k, v])
+                .collect(),
+        ),
+        ValueRef::Set(id) => Some(heap.set_elems(id)),
+        _ => None,
     }
 }
 

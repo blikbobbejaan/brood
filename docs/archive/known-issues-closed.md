@@ -14945,6 +14945,57 @@ looking for".
 Runs: [39950556262](https://github.com/broodlang/brood/actions/runs/39950556262) (`7ed008cf`),
 [39954644031](https://github.com/broodlang/brood/actions/runs/39954644031) (`e9e1af8b`).
 
+## KI-297 — a require waiter without a death watch outlived a killed claimant ✅ FIXED 2026-10-24
+
+**Symptom.** Found by review, never observed: a waiter on a module load blocks until the 30 s
+backstop, prints `[require] BUG`, and force-loads.
+
+**Cause.** `%require-await` registers, reads the claimant (`get *features-loading*`) for its death
+watch, then checks whether the claim is vacant with a second read. Claimant A's load fails and
+releases its waiters before W registers; W's first read finds no claimant, so no monitor; process
+C claims the module; W's vacancy check sees C's claim and waits. If C is then hard-killed its
+catch never runs, so no completion comes and no `[:down …]` either.
+
+**Fix.** Every 250 ms tick, a waiter with no death watch reads the current holder and monitors it,
+so a kill costs one tick. **Guard.** By construction: the window is microseconds between two reads.
+
+## KI-296 — a guest could gain reach, or pose as a full peer, with a guessed pid ✅ FIXED 2026-10-24
+
+**Symptom.** Found by review. (1) A guest sends its session `{:me <host's name, 17>}`; when any
+process here sends that data back to the guest, `note_outbound` records pid 17 as introduced and
+the guest can now send to it. (2) A guest attaches to `std/editor/serve` as
+`[:attach <full peer's pid> cols rows {:name "admin"}]`: `node/peer-grant` of that pid is nil, so
+the session takes `opts` as the identity — no `:guest true`, any `:name`.
+
+**Cause.** ADR-425 translated only the guest's own spelling and left every other pid as it was,
+judging what processes do with a guest's pids "the data's business". Both the capability record
+and serve's identity read a pid's node as a fact about who sent it.
+
+**Fix.** `admit` refuses a guest's `Send`, and a `Down` reason, holding a pid that is neither of
+the guest's node nor one this node sent it; `reachable` keys `(node, id)`.
+
+**Guard.** `dist::guest::tests::a_guest_reaches_its_names_and_the_pids_it_was_sent_and_nothing_else`
+— a guessed local pid, a guessed full-peer pid and a down reason refused, a pid once sent admitted;
+red with the check disabled.
+
+## KI-295 — pipeline fusion dropped a parameter inside a collection literal ✅ FIXED 2026-10-24
+
+**Symptom.** Found by review.
+`(fold (seq/lmap [1 2 3] (fn (x) [x])) [] (fn (acc v) (conj acc v)))` raised `unbound symbol: x`;
+`(let (x 0) (fold (seq/lmap [1 2 3] inc) [] (fn (acc x) (conj acc {:v x}))))` returned
+`[{:v 0} {:v 0} {:v 0}]`. Both right with `BROOD_LINMAP=0`.
+
+**Cause.** `beta_reduce` (`eval/macros/pipeline.rs`) inlines a plain `fn` literal by substituting
+gensyms for its parameters; `substitute_symbol` walked lists and returned any other form as it
+was, and the guards that decline the inlining walked lists only.
+
+**Fix.** The substitution and the guard walks (`form_binds_any`, `form_has_quote`,
+`form_has_quasiquote`) enter vector, map and set literals (`literal_items`).
+
+**Guard.** `tests/pipeline_fusion_test.blsp` "a parameter inside a vector, map or set literal is
+substituted with the rest" and "a literal that rebinds or quotes its parameter inside a
+collection is called, and right" — red with the old walkers.
+
 ## KI-294 — the parallel cold load's driver counted workers by message order ✅ FIXED 2026-10-24
 
 **Symptom.** Found by review, never observed. Opt-in path only (`BROOD_LOAD_PARALLEL=1`).

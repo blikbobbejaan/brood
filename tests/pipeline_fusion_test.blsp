@@ -61,6 +61,22 @@
       (assert= 2 (table/get *pf-log* :map))
       (assert= 2 (table/get *pf-log* :rf))))
 
+  (test "a parameter inside a vector, map or set literal is substituted with the rest"
+    ;; The substitution walked lists only, so a literal kept the parameter's name: unbound
+    ;; in the fused body, or — when the reducer's parameter shadowed an outer binding — the
+    ;; outer value, silently.
+    (assert= [[1] [2] [3]] (fold (seq/lmap [1 2 3] (fn (x) [x])) [] (fn (acc v) (conj acc v))))
+    (assert= [{:v 2} {:v 3} {:v 4}]
+      (let (x 0) (fold (seq/lmap [1 2 3] inc) [] (fn (acc x) (conj acc {:v x})))))
+    (assert= [#{2} #{3} #{4}]
+      (let (x 0) (fold (seq/lmap [1 2 3] inc) [] (fn (acc x) (conj acc #{x})))))
+    (assert= [{1 :k} {2 :k}] (fold (seq/lmap [1 2] (fn (x) {x :k})) [] (fn (acc v) (conj acc v)))))
+
+  (test "a literal that rebinds or quotes its parameter inside a collection is called, and right"
+    (assert= [[10 1] [10 2]]
+      (fold (seq/lmap [1 2] (fn (x) [(let (x 10) x) x])) [] (fn (acc v) (conj acc v))))
+    (assert= [['x 1] ['x 2]] (fold (seq/lmap [1 2] (fn (x) ['x x])) [] (fn (acc v) (conj acc v)))))
+
   (test "the reducer's error is the same error"
     (assert-error "+: expected number" (-> (range 3) (seq/lmap str) (reduce 0 +)))))
 

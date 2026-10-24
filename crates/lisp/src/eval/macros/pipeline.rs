@@ -121,6 +121,36 @@ fn substitute_symbol(heap: &mut Heap, form: Value, from: value::Symbol, to: Valu
                 .collect();
             rebuild_list(heap, form, out)
         }
+        // A literal evaluates its elements, so a parameter inside one is a use: `(fn (x) [x])`.
+        ValueRef::Vector(id) => {
+            let items = heap.vector(id).to_vec();
+            let out: Vec<Value> = items
+                .into_iter()
+                .map(|it| substitute_symbol(heap, it, from, to))
+                .collect();
+            heap.alloc_vector(out)
+        }
+        ValueRef::Map(id) => {
+            let entries = heap.map_entries(id);
+            let out: Vec<(Value, Value)> = entries
+                .into_iter()
+                .map(|(k, v)| {
+                    (
+                        substitute_symbol(heap, k, from, to),
+                        substitute_symbol(heap, v, from, to),
+                    )
+                })
+                .collect();
+            heap.map_from_pairs(out)
+        }
+        ValueRef::Set(id) => {
+            let elements = heap.set_elems(id);
+            let out: Vec<Value> = elements
+                .into_iter()
+                .map(|it| substitute_symbol(heap, it, from, to))
+                .collect();
+            heap.set_from_elems(out)
+        }
         _ => form,
     }
 }
@@ -159,7 +189,8 @@ fn form_has_quote(heap: &Heap, form: Value, depth: usize) -> bool {
         return true;
     }
     let Some(items) = heap.list_items(form) else {
-        return false;
+        return literal_items(heap, form)
+            .is_some_and(|xs| xs.iter().any(|&x| form_has_quote(heap, x, depth + 1)));
     };
     if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack())
         && (value::symbol_is(h, kw::QUOTE) || value::symbol_is(h, kw::QUASIQUOTE))

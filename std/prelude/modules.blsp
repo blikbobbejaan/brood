@@ -1382,32 +1382,39 @@ of this process's never asks for this one."
         (%require-release-dead-claim! key loader)
         (require-one key)))
     (after *require-cycle-check-ms*
-      (cond
-        ;; A cycle across processes: nobody will complete. Leave the queue and raise, so
-        ;; this process's own claims are discarded and released as the error unwinds and the
-        ;; other end of the cycle finishes it alone (see the note above `%require-cycle?`).
-        (%require-cycle? key me)
-          (do
-            (%require-unwatch! key me rref mref)
-            (error *require-cycle*
-              ": '" key "' is being loaded by a process that is waiting on a load this one holds"))
-        (> checks 0) (%require-await-loop key me rref mref loader (- checks 1))
-        ;; Backstop. OTP needs none — its code server cannot silently forget a requester.
-        ;; Ours is ordinary Brood, so keep a last resort, but make it LOUD: reaching it
-        ;; means the protocol above dropped a waiter, and KI-72's whole lesson is that a
-        ;; silent stall is unattributable.
-        else
-          (do
-            (%require-unwatch! key me rref mref)
-            (%eprint (str "[require] BUG: waited 30s for an in-flight load of '"
-                       key "' with no completion and no loader death; force-loading. "
-                       "This should be unreachable — please report it.\n"))
-            ;; `%require-force`, not `require-one`: reaching here means the claimant is
-            ;; alive and has been mid-load for 30 s, so its marker is still set and
-            ;; `require-one` would simply wait another 30 s, forever. Forcing risks a
-            ;; duplicate load, which is the lesser evil against never making progress —
-            ;; and the message above says the protocol is broken either way.
-            (%require-force key))))))
+      (let (holder (when (nil? mref) (get *features-loading* key)))
+        (cond
+          ;; No death watch: the claim we saw at registration was vacant and another process
+          ;; claimed it between that read and the vacancy check (a failed load, re-claimed at
+          ;; once). Its completion will still reach us — we are on its queue — but a hard kill
+          ;; skips its catch and sends none, so watch it now: a kill then costs one tick, not
+          ;; the 30 s backstop and a forced double load.
+          (pid? holder) (%require-await-loop key me rref (monitor holder) holder checks)
+          ;; A cycle across processes: nobody will complete. Leave the queue and raise, so
+          ;; this process's own claims are discarded and released as the error unwinds and the
+          ;; other end of the cycle finishes it alone (see the note above `%require-cycle?`).
+          (%require-cycle? key me)
+            (do
+              (%require-unwatch! key me rref mref)
+              (error *require-cycle*
+                ": '" key "' is being loaded by a process that is waiting on a load this one holds"))
+          (> checks 0) (%require-await-loop key me rref mref loader (- checks 1))
+          ;; Backstop. OTP needs none — its code server cannot silently forget a requester.
+          ;; Ours is ordinary Brood, so keep a last resort, but make it LOUD: reaching it
+          ;; means the protocol above dropped a waiter, and KI-72's whole lesson is that a
+          ;; silent stall is unattributable.
+          else
+            (do
+              (%require-unwatch! key me rref mref)
+              (%eprint (str "[require] BUG: waited 30s for an in-flight load of '"
+                         key "' with no completion and no loader death; force-loading. "
+                         "This should be unreachable — please report it.\n"))
+              ;; `%require-force`, not `require-one`: reaching here means the claimant is
+              ;; alive and has been mid-load for 30 s, so its marker is still set and
+              ;; `require-one` would simply wait another 30 s, forever. Forcing risks a
+              ;; duplicate load, which is the lesser evil against never making progress —
+              ;; and the message above says the protocol is broken either way.
+              (%require-force key)))))))
 
 (defn- %require-release-dead-claim! (key loader)
   "Clear `key`'s in-flight marker, but only while it still names `loader` — CAS-retried, so
