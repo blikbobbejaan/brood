@@ -571,9 +571,10 @@ re-raises, surfacing a genuine startup bug instead of spinning."
           unchanged (= (get clock :shown) [model cols rows])
           ;; render this model; a `[:frame …]` result is the frame to draw, `:failed`
           ;; means `view` threw (already logged) and we must fall back to `last-good`,
-          ;; `:unchanged` means there is nothing new to draw.
+          ;; `[:unchanged …]` means there is nothing new to draw.
           rendered (if unchanged
-                     :unchanged (try
+                     [:unchanged nil nil]
+                     (try
                        ;; the previous turn's memoised fragments are in scope for `ui-memo`
                        ;; (ADR-336) — nil outside a loop, `{}` on the first turn
                        (let ([frame ms cost] (ui-timed (fn ()
