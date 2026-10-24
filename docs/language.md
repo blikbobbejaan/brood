@@ -2346,9 +2346,9 @@ Client API: `(gen/cast pid payload)` casts; `(gen/call pid payload)` calls and
 blocks up to 5 s (it `monitor`s the server, so a *dead* server raises at once
 instead of hanging); `(gen/call-timeout pid payload ms)` sets a custom deadline;
 `(gen/stop pid)` ends the loop; `(gen/code-change pid)` asks a running server to
-migrate its state after a hot reload. Spawn with `gen/start`,
-`gen/start-link` (Erlang `start_link` — links the server to the caller), or
-`gen/start-named` (registers it for `proc/whereis`). A `defserver` server
+migrate its state after a hot reload. Spawn with `(gen/start f state)`, which takes an
+options map: `{:link true}` links the server to the caller (Erlang `start_link`) and
+`{:name :k}` registers it for `proc/whereis`, together or apart (ADR-433). A `defserver` server
 composes directly under `supervisor` (see `std/proc/supervisor.blsp`).
 
 **A call that times out leaves nothing behind.** `gen/call-timeout` mints a fresh
@@ -2454,7 +2454,7 @@ failure only appears under load — exactly where a supervisor matters.
 
 **Use `spawn-link` for anything supervised.** `std/proc/supervisor.blsp`'s
 `:start` thunks do (`(fn () (spawn-link (worker …)))`), and `gen`'s
-`gen/start-link` is the same guarantee for a `defserver` server. The prelude
+`(gen/start f state {:link true})` is the same guarantee for a `defserver` server. The prelude
 macro expands to the `%spawn-link` primitive (ADR-067).
 
 #### `spawn-monitor` — spawn and monitor atomically

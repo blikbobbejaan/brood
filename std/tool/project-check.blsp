@@ -1492,10 +1492,21 @@ more than one namespace, and a name that moved behind `%`. Backs `nest check --f
     (if (and (empty? names) (empty? ledgered))
       (do (io/puts "fix-renames: no unbound names — nothing to do") 0)
       (let (index (rename-index names)
+            ;; A ledger target with a space is a call shape (`gen/start f state {:link
+            ;; true}`, ADR-433), not a name: the arguments changed, so it is a human's.
             plans (append (map ledgered
                             (fn (nm)
-                              (let (entry (get ledger nm))
-                                [nm [:fix (get entry :to) (str " (" (get entry :adr) ")")]])))
+                              (let (entry (get ledger nm)
+                                    to (get entry :to))
+                                (if (includes? to " ")
+                                  [nm
+                                    [:skip
+                                      (str "now `("
+                                        to
+                                        ")` ("
+                                        (get entry :adr)
+                                        ") — the arguments changed, so rewrite it by hand")]]
+                                  [nm [:fix to (str " (" (get entry :adr) ")")]]))))
                     (map (sort (vec names))
                       (fn (bare) [bare (rename-plan bare (%map-get index bare #{}) pname)])))
             fixes (seq/filter plans (fn (p) (= (first (second p)) :fix)))

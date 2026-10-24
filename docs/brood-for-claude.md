@@ -732,7 +732,7 @@ named form.
 ```
 
 Use it for anything supervised — `std/proc/supervisor.blsp`'s `:start` thunks are
-`(fn () (spawn-link (worker …)))`, and `gen/start-link` is the
+`(fn () (spawn-link (worker …)))`, and `(gen/start f state {:link true})` is the
 same idea for a `defserver` server.
 
 ## Distributed nodes — named processes & cross-node addressing

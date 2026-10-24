@@ -218,20 +218,32 @@
 (describe "gen: named and linked spawn"
   :isolated (defserver echo2 (s) (query [:echo x] x))
 
-  (test "start-named registers the server for proc/whereis"
-    (let (p (start-named :echo-srv echo2 nil))
+  (test ":name registers the server for proc/whereis"
+    (let (p (start echo2 nil {:name :echo-srv}))
       (assert= (proc/whereis :echo-srv) p)
       (assert= (call (or (proc/whereis :echo-srv) (error "gen-test: :echo-srv is not registered"))
                  [:echo 99])
         99)
       (stop p)))
 
-  (test "start-link links the server but a normal stop won't take us down"
-    (let (p (start-link echo2 nil))
+  (test ":link links the server but a normal stop won't take us down"
+    (let (p (start echo2 nil {:link true}))
       (assert= (call p [:echo 5]) 5)
       (stop p)
-      (is true))))
-; reached here ⇒ the linked normal exit didn't kill us
+      ;; reached here ⇒ the linked normal exit didn't kill us
+      (is true)))
+
+  ;; ADR-433: the two options compose, which the old `start-link`/`start-named` could not.
+  (test ":link and :name together: registered, and a crash reaches the caller"
+    (proc/trap-exit true)
+    (let (p (start echo2 nil {:link true :name :echo-linked}))
+      (assert= (proc/whereis :echo-linked) p)
+      (exit p :boom)
+      (assert= :boom (receive ([:EXIT ^p reason] reason) (after 5000 :no-exit-signal))))
+    (proc/trap-exit false))
+
+  (test "an unknown option is an error, not ignored"
+    (assert-error "unknown option :linked" (start echo2 nil {:linked true}))))
 
 ;; The `code-change` lifecycle clause (ADR-013, live-editing.md Stage 6): a long-lived
 ;; server migrates its own loop state to a new shape on `(code-change pid)` — the

@@ -3633,3 +3633,8 @@ drew, and a turn that leaves both `=` renders nothing. In bedit that is any time
 no work and a release that changed nothing. (A release that ends a held key, and the hosted
 buffer's echo of an edit, still render: each changes the model, though the view they build is
 all memo hits.) Not run on this machine.
+
+2026-10-24 (ADR-433, `gen/start` options): `gen/start-link` and `gen/start-named` are gone;
+`(gen/start f state {:link true :name :k})` composes the two, and an unknown option raises. The
+rename ledger points at the new call shape, and `--fix-renames` leaves a call-shape target to a
+human instead of rewriting it to a bare name and dropping the link. Not run on this machine.

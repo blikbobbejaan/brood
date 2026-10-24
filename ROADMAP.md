@@ -592,7 +592,8 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
         it, and `sig`s exist specifically to catch a reversal. This entry had it backwards:
         `remove-nth`'s move *to* index-first was KI-71, which surfaced as seven unrelated
         buffer-lifecycle failures. Acting on the entry would have recreated that bug.
-      - 🟡 **The one real residue is narrower than "five verbs".** `spawn`/`spawn-link` are
+      - ✅ **DONE 2026-10-24 (ADR-433):** `(gen/start f state {:link true :name :k})`;
+        `start-link`/`start-named` are gone and ledgered. Original note: **The one real residue is narrower than "five verbs".** `spawn`/`spawn-link` are
         core; `gen/`, `agent/`, `supervisor/` and `node/` each qualify their own, so a call
         site is never ambiguous. What genuinely reads wrong is that `gen/start`,
         `gen/start-link` and `gen/start-named` are three one-line wrappers that **do not

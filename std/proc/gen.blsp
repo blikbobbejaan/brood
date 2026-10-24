@@ -161,26 +161,29 @@ usual caller, once per affected child after a reload.
     (gen/code-change server)   ;=> nil — the server migrates its state on its next message"
   (send pid [:$code-change]))
 
-(defn start (f state)
-  "Spawn a `defserver` server `f` with its initial `state`; return its pid.
+;; One entry with options rather than a verb per combination (ADR-433): `start-link` and
+;; `start-named` were one-line wrappers that did not compose, so a linked AND named server
+;; had no spelling at all.
+(def- *start-options* #{:link :name})
 
-    (gen/start counter 0)   ;=> the pid of a `counter` server with state 0"
-  (spawn (f state)))
+(defn start (f state & opts)
+  "Spawn a `defserver` server `f` with its initial `state`; return its pid. `opts` is an
+optional map:
+  - `:link` — `spawn-link` the server to the caller, so a crash propagates either way
+    (Erlang `start_link`)
+  - `:name` — `register` it under this keyword, so it is reachable as
+    `(proc/whereis name)` or by sending to `{:name name}`
 
-(defn start-link (f state)
-  "Like `start`, but `spawn-link` the server to the caller so a crash
-propagates either way (Erlang `start_link`). Returns the pid.
-
-    (gen/start-link counter 0)   ;=> the pid of a `counter` server linked to the caller"
-  (spawn-link (f state)))
-
-(defn start-named (name f state)
-  "Spawn a server and `register` it under `name` (a keyword), returning its pid.
-Address it later via `(proc/whereis name)` or by sending to `{:name name}`. (Combine
-with linking by registering the result of `start-link` yourself.)
-
-    (gen/start-named :counter counter 0)   ;=> the pid, also reachable as `(proc/whereis :counter)`"
-  (let (pid (start f state)) (proc/register name pid) pid))
+    (gen/start counter 0)                                 ;=> the pid of a `counter` server with state 0
+    (gen/start counter 0 {:link true :name :counter})     ;=> the pid, linked to the caller and registered as :counter"
+  (let (options (or (first opts) {})
+        unknown (seq/reject (keys options) (fn (k) (contains? *start-options* k))))
+    (when (not (empty? unknown))
+      (error "gen/start: unknown option " (pr-str (first unknown)) " (expected :link or :name)"))
+    (let (pid (if (get options :link) (spawn-link (f state)) (spawn (f state)))
+          name (get options :name))
+      (when name (proc/register name pid))
+      pid)))
 
 ;; ---- defserver -------------------------------------------------------------
 

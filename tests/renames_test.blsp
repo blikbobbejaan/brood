@@ -44,12 +44,14 @@
     (assert= (get (renamed-to 'gui/bg!) :adr) "ADR-302")
     (assert= (renamed-to "gui/bg") nil))
 
+  ;; A target may be a call shape (`gen/start f state {:link true}`, ADR-433): its head, the
+  ;; text before the first space, is the name that must be bound.
   (test "every ledger old name is unbound and every new name is bound"
     (let (entries (seq (ledger))
           stale (seq/filter entries
                   (fn (kv)
                     (let (old (first kv)
-                          new (get (second kv) :to)
+                          new (first (string/split (get (second kv) :to) " "))
                           modname (module-of new))
                       (when modname (require-one (symbol modname)))
                       (or (bound? (symbol old)) (not (bound? (symbol new))))))))
