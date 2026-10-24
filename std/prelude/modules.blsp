@@ -1637,6 +1637,10 @@ as an ordinary frame too, and a `receive` in it parks."
 ; [ability op id] → registering ns (provenance for conflict detection; read only at
 ; registration, never on dispatch — keeps the dispatch value a bare fn)
 (def- *impl-from* {})
+; [ability op id] → {tier → [fn ns]}: EVERY registration's fn by precedence tier, the
+; shadowed ones included, so `next-impl` can reach the impl one tier down (ADR-432). Read
+; only by `%next-impl` and the image writers, never on dispatch.
+(def- *impl-tiers* {})
 ; qualified-op-fn-symbol → the ability that declared it. An ability op becomes a global
 ; `defn` named after the op (qualified to the declaring ns), so two abilities in the SAME
 ; ns declaring the same op name would have the second silently clobber the first's op

@@ -59,7 +59,8 @@ claims it by prefix."
 ;; sections, and `*module-files*`, which maps a PACKAGE's modules to disk paths and so
 ;; never describes baked-in std.
 (def- %std-regs-skip
-  #{'*features* '*features-loading* '*require-edges* '*module-files* '*impls* '*impl-from*})
+  #{'*features*
+    '*features-loading* '*require-edges* '*module-files* '*impls* '*impl-from* '*impl-tiers*})
 
 (defn- %reg-owner (reg path entry)
   "The module that OWNS registry `reg`'s entry at `path`: the module whose load WROTE it
@@ -152,20 +153,28 @@ day. Dropping a live one is harmless: its binary rebuilds the image, or loads fr
   "The live ability registrations, grouped by the module that declared each: module name →
 vector of `[ability op key f from]`, the exact argument list `%register-impl` takes.
 
-`*impl-from*` maps `[ability op key]` → the declaring namespace, which is what makes
-per-module attribution exact — there is no need to guess from the ability's or the id's
-owner. A registration whose `from` is nil came from the root/REPL and belongs to no module;
-it is dropped, since nothing materialises it back."
-  (fold (%map-pairs *impl-from*)
+`*impl-tiers*` keeps every registration of `[ability op key]` by precedence tier with its
+declaring namespace, which is what makes per-module attribution exact — there is no need to
+guess from the ability's or the id's owner. Every tier is carried, the shadowed ones too, so
+a restored module's override still reaches the impl below it through `next-impl` (ADR-432);
+replay order does not matter, since precedence picks the winner. A registration whose `from`
+is nil came from the root/REPL and belongs to no module; it is dropped, since nothing
+materialises it back."
+  (fold (%map-pairs *impl-tiers*)
     {}
     (fn (acc entry)
-      (let ([prov from] entry
-            [aname op key] prov
-            f (get (get *impls* [aname op]) key))
-        (if (or (nil? from) (nil? f))
+      (let ([prov tiers] entry
+            [aname op key] prov)
+        (fold (%map-pairs tiers)
           acc
-          (let (mn (->string from))
-            (%map-assoc acc mn (append (or (%map-get acc mn nil) []) [[aname op key f from]]))))))))
+          (fn (acc2 tier)
+            (let ([f from] (second tier))
+              (if (nil? from)
+                acc2
+                (let (mn (->string from))
+                  (%map-assoc acc2
+                    mn
+                    (append (or (%map-get acc2 mn nil) []) [[aname op key f from]])))))))))))
 
 (defn build (&optional modules)
   "Build (or rebuild) this binary's stdlib image in the cache directory and return

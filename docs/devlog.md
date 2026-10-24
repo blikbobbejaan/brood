@@ -3570,3 +3570,9 @@ Writing its `get` turned up KI-298: `(get coll k default)` with a non-nil defaul
 by `xtake`/`xtake-while`/a stage's `reduced`. Realising it raises instead of looping. A `seq/l*`
 view over one hands its stages to the run. No lazy value and no prelude change. Not run on this
 machine.
+
+2026-10-24 (ADR-432, `next-impl`): an `impl` method can call the impl it shadows, one precedence
+tier down, else the ability's `:default`. Registration now keeps every tier (`*impl-tiers*`),
+and both images replay all of them, so a warm start reaches the same shadowed impls a cold
+start does. A method that never mentions `next-impl` is registered as written. Not run on this
+machine.

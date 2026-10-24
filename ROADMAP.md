@@ -243,7 +243,8 @@ needs a Brood-specific form to respect an ADR.
   clauses on `defmacro` heads (they exist for `defn`) plus a `:hint` per clause, so a
   no-match raises with the macro's own message at the offending sub-form (ADR-297 positions
   already propagate). No expander rewrite.
-- ⬜ **7. `next-impl` in abilities** *(shape)*. The precedence ladder (app > type-owner >
+- ✅ **7. `next-impl` in abilities** (2026-10-24, ADR-432): every tier is kept, and
+  `(next-impl)` in an `impl` body calls the one below. Original note: *(shape)*. The precedence ladder (app > type-owner >
   ability-owner > default) has the ordering but no way for the winner to call the impl it
   shadowed, so an app override copies the type-owner's body. A `(next-impl)` form valid only
   inside an `impl` body, resolving one rung down. No `:before/:after` combination (ADR-011).

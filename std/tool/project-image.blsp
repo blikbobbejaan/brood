@@ -301,6 +301,9 @@ permanent rather than transient.
                               key (get r 2))
                           (%registry-update! '*impls* :dissoc [[aname op] key] nil)
                           (%registry-update! '*impl-from* :dissoc [[aname op key]] nil)
+                          (%registry-update! '*impl-tiers*
+                            :dissoc [[aname op key] (%impl-rank aname key (get r 4))]
+                            nil)
                           (+ n2 1)))))))
     (+ n-regs n-impls)))
 
@@ -570,7 +573,10 @@ the record the next partial rebuild reads.
           op (get r 1)
           key (get r 2))
       (%registry-update! '*impls* :dissoc [[aname op] key] nil)
-      (%registry-update! '*impl-from* :dissoc [[aname op key]] nil)))
+      (%registry-update! '*impl-from* :dissoc [[aname op key]] nil)
+      (%registry-update! '*impl-tiers*
+        :dissoc [[aname op key] (%impl-rank aname key (get r 4))]
+        nil)))
   (%registry-update! '*require-edges* :dissoc [m] nil))
 
 ;; The partial rebuild, or nil when this change needs a whole one. Returns the set of modules

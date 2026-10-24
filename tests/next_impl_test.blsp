@@ -1,0 +1,91 @@
+;; `next-impl` (ADR-432): inside an `impl` body it calls the impl one precedence tier down,
+;; else the ability's `:default`. The lower tiers are registered here with `%register-impl`
+;; and a crafted namespace — what a library module's own `impl` would register — because one
+;; test file cannot be two modules.
+
+(defmodule next-impl-test (:use test))
+
+(defrecord person ((name string)))
+
+;; ---- an override wraps the impl it shadows -----------------------------------------
+(defability Greet (greet [self] :-> string))
+(%register-impl 'Greet
+  'greet
+  :next-impl-test/person (fn (p) (str "hello " (get p :name)))
+  'stranger)
+(impl Greet next-impl-test/person (greet [p] (str (next-impl) "!")))
+
+;; ---- explicit arguments ---------------------------------------------------------------
+(defability Rename (rename [self] :-> string))
+(%register-impl 'Rename 'rename :next-impl-test/person (fn (p) (get p :name)) 'stranger)
+(impl Rename next-impl-test/person (rename [p] (next-impl (person "bob"))))
+
+;; ---- the lower tier registered AFTER the override: order does not matter --------------
+(defability Late (late [self] :-> string))
+(impl Late next-impl-test/person (late [p] (str "<" (next-impl) ">")))
+(%register-impl 'Late 'late :next-impl-test/person (fn (p) "lib") 'stranger)
+
+;; ---- nothing below the id's impl: the ability's :default ------------------------------
+(defability Shout (shout [self] :-> string))
+(impl Shout :default (shout [x] "default"))
+(impl Shout :int (shout [n] (str (next-impl) "+" n)))
+
+;; ---- three tiers chain ----------------------------------------------------------------
+;; `chainlib` owns the ability (tier 2), this module owns the record (tier 3), and
+;; `stranger` owns neither (tier 1). The middle tier is a bare fn, not an `impl` method, so
+;; it calls the runtime entry the `next-impl` binding expands to.
+(%register-ability 'Chain '((chain [self])) 'chainlib)
+(defn- chain-middle (p)
+  (conj (%next-impl 'Chain 'chain :next-impl-test/person 'chainlib [p]) :mid))
+(%register-impl 'Chain 'chain :next-impl-test/person (fn (p) [:other]) 'stranger)
+(%register-impl 'Chain 'chain :next-impl-test/person chain-middle 'chainlib)
+(impl Chain next-impl-test/person (chain [p] (conj (next-impl) :top)))
+(defn- chain (p) ((%impl-for '[Chain chain] :next-impl-test/person) p))
+
+;; ---- no impl below, and no :default ---------------------------------------------------
+(defability Lone (lone [self] :-> any))
+(impl Lone :int (lone [n] (next-impl)))
+
+;; ---- pattern parameters must pass arguments -------------------------------------------
+(defability Pat (pat [self] :-> any))
+(impl Pat :default (pat [x] [:default x]))
+(impl Pat :vector (pat [[a b]] (next-impl)))
+(defability PatArgs (pat-args [self] :-> any))
+(impl PatArgs :default (pat-args [x] [:default x]))
+(impl PatArgs :vector (pat-args [[a b]] (next-impl [b a])))
+
+(defn- raised-message (thunk)
+  (check-allow :discarded-catch
+    (try (do (thunk) nil) (catch e (error-message e)))))
+
+(describe "next-impl"
+  (test "an override wraps the impl it shadows"
+    (assert= "hello ann!" (greet (person "ann"))))
+  (test "explicit arguments replace the method's own"
+    (assert= "bob" (rename (person "ann"))))
+  (test "the shadowed impl is found whichever registered first"
+    (assert= "<lib>" (late (person "ann"))))
+  (test "with no impl below for the id, the ability's :default answers"
+    (assert= "default+5" (shout 5)))
+  (test "tiers chain downward, one step per call"
+    (assert= [:other :mid :top] (chain (person "ann"))))
+  (test "with nothing below and no :default, it raises naming the op"
+    (let (message (raised-message (fn () (lone 1))))
+      (is (includes? message "next-impl"))
+      (is (includes? message "lone"))))
+  (test "a method with pattern parameters must pass its arguments"
+    (is (includes? (raised-message (fn () (pat [1 2]))) "pattern parameters"))
+    (assert= [:default [2 1]] (pat-args [1 2]))))
+
+(defn- ni-worker (parent i) (send parent [:greeted i (greet (person (str "p" i)))]))
+(defn- ni-collect (n acc)
+  (if (= n 0) acc (ni-collect (- n 1) (receive ([:greeted i s] (assoc acc i s))))))
+
+(describe "next-impl across processes"
+  :isolated (test "many processes dispatch through the same override at once"
+    (let (me (self))
+      (doseq (i (range 0 16)) (spawn (ni-worker me i)))
+      (let (got (ni-collect 16 {}))
+        (assert= 16 (count got))
+        (assert= "hello p0!" (get got 0))
+        (assert= "hello p15!" (get got 15))))))

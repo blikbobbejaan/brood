@@ -727,6 +727,22 @@ telemetry's `attach`/`detach` follow. A re-registration from a *different* modul
 a loud cross-module conflict (warned, last wins); from the same module it is
 ordinary hot reload and stays silent.
 
+**`next-impl` — calling the impl you shadow** (ADR-432). The precedence ladder decides
+which impl dispatch runs, and every lower-tier registration is kept beside it. Inside an
+`impl` method body, `(next-impl)` calls the impl one tier down for the same id, with the
+same arguments — or `(next-impl x …)` with others — and falls back to the ability's
+`:default` when nothing is below. So an app override wraps a library's impl instead of
+copying its body:
+
+```clojure
+(impl Display shapes/circle               ; the app's override
+  (->string [c] (str "⭕ " (next-impl))))  ; …around the library's own rendering
+```
+
+With nothing below and no `:default` it raises. A method whose parameters are patterns has
+no argument list to pass on, so it must call `(next-impl args…)` explicitly. A method that
+never mentions `next-impl` is registered exactly as written, at no cost.
+
 Prefer `match`/`cond` when the set of cases is closed and local; reach for an
 ability when third-party or later code must be able to add a case.
 

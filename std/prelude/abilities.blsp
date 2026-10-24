@@ -214,6 +214,8 @@ the image was written."
     (when (>= new-rank old-rank)
       (%registry-update! '*impls* :assoc [op-key key] f)
       (%registry-update! '*impl-from* :assoc [prov-key] from))
+    ; Every tier is kept, the winner's and the shadowed ones', for `next-impl` (ADR-432).
+    (%registry-update! '*impl-tiers* :assoc [prov-key new-rank] [f from])
     nil))
 
 (defn %impl-for (op-key key)
@@ -221,6 +223,23 @@ the image was written."
   `:default` impl, or nil. One map fetch for the op's method set, then one by id."
   (let (methods (get *impls* op-key))
     (or (get methods key) (get methods :default))))
+
+(defn %next-impl (aname op key from args)
+  "Call the impl of `aname`'s `op` for id `key` one precedence tier below the one `from`
+registered — the highest tier under it — with `args`, else the ability's `:default` impl.
+What `(next-impl)` inside an `impl` body expands to call (ADR-432); not for direct use."
+  (let (rank (%impl-rank aname key from)
+        below (fold (%map-pairs (or (get *impl-tiers* [aname op key]) {}))
+                nil
+                (fn (best entry)
+                  (if (and (< (first entry) rank) (or (nil? best) (> (first entry) (first best))))
+                    entry
+                    best)))
+        fallback (if (= key :default) nil (get (get *impls* [aname op]) :default)))
+    (cond
+      below (apply (first (second below)) args)
+      fallback (apply fallback args)
+      else (error "next-impl: " aname "/" op " for " key " has no impl below this one"))))
 
 (defn %impl-exact? (op-key key)
   "Is there an impl of op `op-key` registered for id `key` SPECIFICALLY — ignoring the
@@ -268,7 +287,8 @@ which is meaningless for a rope, so falling through unconditionally would swap a
         had (contains? (or (get *impls* op-key) {}) key))
     (when had
       (%registry-update! '*impls* :dissoc [op-key key] nil)
-      (%registry-update! '*impl-from* :dissoc [prov-key] nil))
+      (%registry-update! '*impl-from* :dissoc [prov-key] nil)
+      (%registry-update! '*impl-tiers* :dissoc [prov-key] nil))
     had))
 
 (defn %derive-into (aname id fields from)
@@ -619,6 +639,56 @@ error is a `:blame :callee` contract error, like a function's own result mismatc
                       :expected ret
                       :got value})))
 
+;; Does `forms` (a list of forms) mention the symbol `sym` anywhere? A walk with an explicit
+;; work list, so a deep body cannot overflow it. Vectors and maps are searched too.
+(defn- %forms-mention? (forms sym)
+  (cond
+    (empty? forms) false
+    (= (first forms) sym) true
+    (pair? (first forms)) (%forms-mention? (append (first forms) (rest forms)) sym)
+    ;; a map's entries are `[k v]` vectors, which the vector case then opens
+    (or (vector? (first forms)) (map? (first forms)))
+      (%forms-mention? (append (seq (first forms)) (rest forms)) sym)
+    else (%forms-mention? (rest forms) sym)))
+
+;; The expression that rebuilds a method's argument list from its parameters, for a bare
+;; `(next-impl)`: `(list a b)`, or `(append (list a) rest)` after a `&`. Nil when a parameter
+;; is a pattern, which has no single value to pass on.
+(defn- %impl-args-expr (params)
+  (let (fixed (take-while params (fn (p) (not (= p '&))))
+        tail (rest (drop-while params (fn (p) (not (= p '&))))))
+    (cond
+      (not (every? (append fixed tail) symbol?)) nil
+      (empty? tail) (cons 'list fixed)
+      else (list 'append (cons 'list fixed) (first tail)))))
+
+;; A method body that calls `next-impl` runs inside a binding of it (ADR-432): a local fn
+;; calling `%next-impl` with this method's ability, op, id and namespace. Built with `list`,
+;; not a template, so the binder is the literal `next-impl` the body names. A body that
+;; never mentions it is left exactly as written, so it costs nothing.
+(defn- %impl-method-fn (aname op-name id-kw arg-syms body)
+  (if (%forms-mention? body 'next-impl)
+    (let (args-expr (%impl-args-expr arg-syms))
+      (list 'fn
+        arg-syms
+        (cons 'let
+          (cons (list 'next-impl
+                  (list 'fn
+                    '(& next-args)
+                    (list '%next-impl
+                      (list 'quote aname)
+                      (list 'quote op-name)
+                      id-kw
+                      (list 'quote (reflect/current-ns))
+                      (list 'if
+                        '(empty? next-args)
+                        (or args-expr
+                          (list 'error
+                            "next-impl: a method with pattern parameters must pass its arguments"))
+                        'next-args))))
+            body))))
+    (cons 'fn (cons arg-syms body))))
+
 (defmacro impl (aname key & methods)
   "Register implementations of ability `aname` for dispatch id `key` — a `type-of`
   keyword (`:int`, `:map`, …), a record's nominal id (`geometry/circle`), or `:default`.
@@ -626,7 +696,12 @@ error is a `:blame :callee` contract error, like a function's own result mismatc
   registration is tagged with the current namespace for conflict detection.
 
     (impl Size :int             (size [n] n))
-    (impl Size geometry/circle  (size [c] (get c :r)))"
+    (impl Size geometry/circle  (size [c] (get c :r)))
+
+  Inside a method body, `(next-impl)` calls the impl this one shadows — the next
+  precedence tier down, else the ability's `:default` — with the same arguments, or with
+  new ones: `(next-impl x)`. An app override can wrap the library's impl instead of
+  copying it (ADR-432)."
   ; the dispatch id is a KEYWORD: a record id written as a symbol (`geometry/circle`) is
   ; keyworded to match what `%identity-of` produces; a built-in id (`:int`) is already one.
   ; A method is registered as the thin closure it was written as. An op's declared `:-> RET`
@@ -646,7 +721,7 @@ error is a `:blame :callee` contract error, like a function's own result mismatc
               (list 'quote aname)
               (list 'quote op-name)
               id-kw
-              (cons 'fn (cons arg-syms body))
+              (%impl-method-fn aname op-name id-kw arg-syms body)
               (list 'quote (reflect/current-ns)))))))))
 
 (defmacro %unimpl (aname key & ops)
