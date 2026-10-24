@@ -144,10 +144,13 @@ crates/lisp/src/   (the directory tree mirrors the layers — see lib.rs)
                args.rs the argument readers (`arg`, `expect_int`, `expect_string`, …).
   boot.rs + boot/   the shared prelude bundle, the two boot paths (prelude image ADR-314 /
                source), boot/image.rs (the stdlib startup image, ADR-218)
-  introspect.rs, cli_support.rs, renames.rs (the rename ledger, ADR-304), error.rs, lib.rs
+  introspect.rs, cli_support.rs, renames.rs (the rename ledger, ADR-304), stack.rs (native
+               stack growth over `stacker`), error.rs, lib.rs
   process.rs + process/   green-process scheduler (mailbox, message, monitor, links, timer,
-               sysmon, io_source; scheduler/ split into pool, lifecycle, guards)
-  dist.rs + dist/   distributed nodes (handshake, heartbeat, wire) — ADR-033/034
+               sysmon, io_source, pressure, cputime, receive_spec; scheduler/ split into
+               pool, lifecycle, guards)
+  dist.rs + dist/   distributed nodes (handshake, heartbeat, wire, session: the encrypted
+               session ADR-089, guest: guest links ADR-415) — ADR-033/034
   host.rs + host/   feature-gated machine bindings, mechanism only: net (TCP/TLS, ADR-062),
                subprocess (ADR-104), wasm (`wasmtime` host, ADR-071/145), treesit,
                clipboard, gui + gui/ (ADR-046: winit backend, cosmic-text renderer, and
@@ -155,7 +158,7 @@ crates/lisp/src/   (the directory tree mirrors the layers — see lib.rs)
   diagnostics.rs + diagnostics/   coverage (ADR-148), perf/profile (VM counters, sampling
                profiler), debug_flags.rs (the `BROOD_*` catalogue behind --debug-flags)
   bundle.rs    single-binary app bundling (ADR-038) + the reserved `--brood-` argv prefix
-  jit.rs + jit/   the JIT ABI + backend registry (ADR-101/220): backend.rs (the
+  jit.rs + jit/   the JIT ABI + backend registry (ADR-101/221): backend.rs (the
                `JitBackend` contract), rt.rs (the `brood_rt_*` callbacks — the ONLY heap/GC
                interface native code has), cranelift.rs
   Module convention: a parent is `foo.rs` beside its `foo/` directory (never `foo/mod.rs`);
@@ -164,6 +167,7 @@ crates/cli/src/main.rs   the `brood` binary — the language (REPL, file runner,
 crates/nest/src/         the `nest` binary — a thin shell over std/tool/nest.blsp — ADR-028
 crates/lsp/src/main.rs   the `brood-lsp` language server (ADR-025, docs/lsp.md)
 crates/playground/src/   the wasm-bindgen in-browser playground
+crates/tab/src/          `brood-tab`: the wasm-bindgen shim that runs a bundled program in a browser tab
 std/                     the standard library in Brood (ADR-085): prelude/ (13 bare-root
                          files concatenated in the order boot.rs lists) + bare-core modules;
                          `proc/*` (gen, supervisor, agent, crash-report), `net/*` (http, sse,
@@ -257,7 +261,7 @@ but too slow to expose contention races).
 handle held across a collection without re-rooting goes stale):
 
 1. **Per-deref tripwire** (always on under debug-assertions). Every LOCAL handle accessor in
-   `core/heap.rs` checks a poison bit + a generation epoch (`check_epoch`), panicking at the
+   `core/heap.rs` checks a poison bit + a generation epoch (`check_epoch_aged`), panicking at the
    *instant of the bad deref*. Catches a stale handle that's **dereferenced**.
 2. **Heap verifier** (`BROOD_GC_VERIFY=1`, `Heap::verify_local_graph`, works in plain
    release). The tripwire misses a stale handle **stored** into a heap cell without being
@@ -302,11 +306,14 @@ checker's expectation files. A red you did not cause is still yours to
 attribute: run the failing file against a clean build of the previous commit.
 
 > **A global `core.hooksPath` makes that hook INERT, and nothing says so** — it *replaces*
-> `.git/hooks`. On this machine it is `~/.config/git/hooks` (a `commit-msg` that strips AI
-> trailers and chains to a repo-local one, and no `pre-push`). `make hooks` warns about it;
-> `scripts/git-hooks/global-pre-push` is the chaining fix. Until it is installed, run
-> `make prepush` by hand and **read its exit status, not its last line** (`make prepush | tail`
-> reports the pipe's status).
+> `.git/hooks`. `make hooks` warns about it; `scripts/git-hooks/global-pre-push` is the
+> chaining fix. On the development desktop that fix IS installed (`~/.config/git/hooks/pre-push`),
+> so the repo hook runs on every push — **including its `.blsp` test step, which the
+> no-tests-on-the-desktop rule forbids there.** On the desktop, run the hook's static gates
+> by hand (`cargo fmt --check`, `nest format --check`, `nest check` and `--strict` as CI
+> spells them, clippy with `--all-features`) and push with `--no-verify`; CI runs the tests.
+> Wherever you run `make prepush`, **read its exit status, not its last line**
+> (`make prepush | tail` reports the pipe's status).
 
 **Do not add a `Co-Authored-By: Claude` trailer (or any Claude/AI co-author attribution) to
 commits in this repo.**
@@ -318,8 +325,9 @@ commits in this repo.**
   continuation (`KontKind`) for each non-last sub-form and hand the *last* form back to the
   loop (`self.expr = …; Ok(Step::Continue)`) — never a nested `eval`. The test
   `tail_calls_do_not_overflow` guards this.
-- **All heap construction goes through `value.rs` helpers** (`cons`, `list`, `sym`,
-  `str_val`, …), never scattered constructors (ADR-002).
+- **All heap construction goes through the `Heap` constructors** (`alloc_pair`,
+  `alloc_vector`, `list`, `alloc_string`, …; `value::sym` for symbols), never scattered
+  constructors.
 - **Prefer Brood over Rust** (ADR-006) — see the core principle above.
 - **Favor the simplest user-facing design; defer power features** (ADR-011). Additive
   features cost nothing to delay; every knob is a tax on every user, forever.
@@ -390,7 +398,7 @@ commits in this repo.**
 
 ## When you RENAME or REORDER a stdlib function
 
-A rename wave or argument reorder is not a find-and-replace (ADR-302/307 cost ten bugs, six
+A rename wave or argument reorder is not a find-and-replace (ADR-302/308 cost ten bugs, six
 silent). **Enumerate these before the first edit.**
 
 **A call has five spellings**, and a textual rewriter sees only the first: bare `(map xs f)`;
