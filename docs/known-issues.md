@@ -97,48 +97,6 @@ for the sites converted.
 
 **Guard.** None yet.
 
-## KI-290 — a require cycle split across two processes deadlocked until the backstop loaded one end twice
-
-**Open, 2026-10-24 — fixed in code; the guard is green in CI (`3c21217c`, every job), not yet
-sabotage-verified.** The bedit downstream smoke
-went red once on `14232c96`: 13 of bedit's tests `unbound symbol: ed-layout-now`, in `aside`,
-which does `(:use panes)`, and the build before them printed `[require] BUG: waited 30s for an
-in-flight load of 'bedit/panes'` (also `bedit/commands`, `bedit/view`). The parallel cold build
-(ADR-426) had started the two ends of a require cycle in two workers: P held one end and waited
-for the other, Q the reverse, so neither load could finish and no completion was ever sent. The
-30 s backstop then loaded `panes` a second time while its first load was still in flight, and
-`aside` was compiled against that; the project image kept it, so every test that reached it
-failed. The two green runs of the same commit printed no backstop line: it is a race.
-
-The fix (`%require-cycle?` in `std/prelude/modules.blsp`): a waiter walks the wait-for chain every
-250 ms — the holder of its key, the key that holder waits for, its holder, … A chain that comes
-back to itself is the cycle. Every process on it sees it, so only the one waiting on the greatest
-key breaks it: it raises, its claims are discarded and released as that unwinds, the others finish
-the cycle on their own as one process would, and its outermost load requires its module again.
-The parallel driver also reloads a file sequentially should the error reach it.
-
-The parallel cold load has since been made opt-in (`BROOD_LOAD_PARALLEL=1`, `43fd26e6`): bedit's
-pool-built image differed from the sequential one in 89 of 116 sections, with load-order
-dependence the hypothesis. A double load by the backstop is one concrete mechanism that
-produces such a difference; whether it is the only one is that investigation's to answer.
-
-The first cut let every member break it. CI's contracts job timed the guard out at
-`[:timeout :timeout]`: its two fixture processes start waiting on the same tick, so both backed
-out, both retried and met the same cycle again — a livelock. The tie-break is the second cut.
-
-The second cut timed out too, in the contracts job only. The guard's diagnostics (`855d4b53`)
-showed why: the breaker held `xcyc-a` again and was waiting on nothing, the other process was
-still waiting on `xcyc-a`, and neither module was provided. The breaker's retry had re-claimed
-its module the moment it released it, before the process it released could take it, so it met
-the same cycle and broke it again, over and over. The third cut (`%require-after-break`): a
-breaker leaves its module to the others — done when one loads it, a wait when one claims it —
-and loads it itself only when nobody has taken it after about a second.
-
-Guard: `tests/modules_test.blsp` "a require cycle split across two processes resolves, both
-modules whole" — two fixture modules that each pause after their claim, so the cycle forms on
-every run. To close: green in CI, and sabotage-verified (with the `%require-cycle?` branch
-removed it must time out at 10 s).
-
 ## KI-281 — a JIT fast-link test never published in 90 s, once (watch)
 
 **Watching, 2026-10-18 — not reproducible on demand; diagnostic armed.** CI's tree-walker job on
@@ -181,6 +139,19 @@ Armed: the helper's failure now reports the run count, what was published, and e
 arm's JIT state (uncompiled / `BAILED` / native, calls, deopts, entry deopts), so the next
 occurrence says whether an arm never compiled, latched, or kept deopting.
 
+2026-10-24, **the second occurrence**, with that dump: CI's tree-walker job on a throwaway
+experiment ref (`4db6fbbe`, run 40072666463 — its one change is in `std/tool/project.blsp`,
+which this Rust unit test never loads). 436 138 runs in 90 s, nothing published, global epoch
+0. The caller's one IC entry for `wrapped` holds the closure WITH its arm, and that arm is
+native, compile-epoch 0, not stale, no captures, two slots — every gate
+`fast_link_from_entry` applies passes, so the first call to reach `jit_dispatch_call` at that
+site would have published it (`vm_call_ic_fast_link` publishes on the spot). Both `wrapped`
+(calls 128) and `wcaller` (129) are native, with zero deopts. So the IC was filled by native code
+calling `wrapped` before `wrapped` was native, and once it was, no call from native code
+reached that site again. The question is no longer the link's gating. It is what the native
+caller is running instead. The dump now also says, per site, whether the entry links at this
+moment (`linkable now`), and, per arm, whether its inlined upgrade is installed.
+
 ## Index — status per issue
 
 Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](archive/known-issues-closed.md).
@@ -188,7 +159,7 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 | # | What | Status |
 |---|---|---|
 | KI-291 | **a user `error` rethrown by a catch-and-rethrow loses its position** — `catch` binds a user throw's bare payload, so `(throw e)` raises a new error positioned at the rethrow site: an `(error …)` in a required module is reported at the outermost requirer's header (`src/main.blsp:1:1`), and `(try (error "x") (finally nil))` at the `try`. Builtin errors keep theirs (their caught map carries it) | ⚠️ **OPEN 2026-10-24** — found investigating the failing-load slowness; cause pinned, fix options in the section |
-| KI-290 | **a require cycle split across two processes deadlocked until the 30 s backstop, which then loaded one end a second time** — P holds `a` and waits for `b` while Q holds `b` and waits for `a`; neither load can finish, no completion is sent, and the backstop force-loads while the first load is still in flight. Met by the parallel cold build (ADR-426) on bedit, 1 run in 3: `[require] BUG: waited 30s … 'bedit/panes'` (also `commands`, `view`), then 13 of bedit's tests `unbound symbol: ed-layout-now` — `aside` compiled against a half-published `panes`, and the project image kept it | ⚠️ **OPEN 2026-10-24 — fixed in code; the guard is green in CI (`3c21217c`), not yet sabotage-verified.** The breaker now leaves its module to the others before retrying (`%require-after-break`): its immediate re-claim was the contracts job's second livelock. A waiter walks the wait-for chain every 250 ms (`%require-cycle?`); of the processes on a cycle, the one waiting on the greatest key raises, its claims are discarded and released as that unwinds, the others finish the cycle alone, and its outermost load requires its module again. The first cut let every member raise and livelocked the guard in CI (`[:timeout :timeout]`). The parallel cold load has since been made opt-in (`BROOD_LOAD_PARALLEL=1`, `43fd26e6`) while bedit's pool-built image is investigated; this is one mechanism behind that difference. Guard `modules_test.blsp` "a require cycle split across two processes resolves, both modules whole"; to close, green in CI and red with `%require-cycle?` removed |
+| KI-290 | **a require cycle split across two processes deadlocked until the 30 s backstop, which then loaded one end a second time** — P holds `a` and waits for `b` while Q holds `b` and waits for `a`; neither load can finish, no completion is sent, and the backstop force-loads while the first load is still in flight. Met by the parallel cold build (ADR-426) on bedit, 1 run in 3: `[require] BUG: waited 30s … 'bedit/panes'` (also `commands`, `view`), then 13 of bedit's tests `unbound symbol: ed-layout-now` — `aside` compiled against a half-published `panes`, and the project image kept it | ✅ **FIXED 2026-10-24** — green in CI on `3c21217c` (every job); sabotage-verified on GitHub Actions (run 40072510464: with `%require-cycle?` never true the guard timed out in the contracts suite and in nextest's, each fixture process waiting on the other's module, nothing else red). A waiter walks the wait-for chain every 250 ms; of the processes on a cycle, the one waiting on the greatest key raises, its claims are released as that unwinds, the others finish the cycle alone, and it leaves its module to them before retrying (`%require-after-break`). Guard `modules_test.blsp` "a require cycle split across two processes resolves, both modules whole" |
 | KI-289 | **a definition published while the RUNTIME code region aged lost every inner source position** — code a load promoted into the old generation and published after the flip is re-homed at `def` time (`rehome_to_current_locked`), and the re-home made new pairs without carrying their `(form-pos …)` entries, so an error inside such a function reported its CALLER's line. Needs a load in flight in one process while another's allocation turns the region over: found 2026-10-23 by the parallel cold load (about one module in 25 on the 302-module rig) | ✅ **FIXED 2026-10-23** — the re-home carries positions as aging's migration does (`carry_positions`, shared by both). Guard `crates/cli/tests/rehome_keeps_positions.rs`: four processes `require-one` twenty modules under `BROOD_GC_STRESS`; red 3/3 with the carry removed (`BAD (1 3 10)`), green with it; with aging disabled (`BROOD_RT_GC_FLOOR`) it never failed |
 | KI-288 | **two closures sharing one first body form ran one compiled body** — the VM keys a compiled closure on that form, and the linear-map rewrites (a body opening with a quoted form) and a macro splicing one quoted argument into two bodies gave two closures the same one; the range loop shared its whole body, harmlessly | ✅ **FIXED 2026-10-23** — every guard sabotage-verified on GitHub Actions (the three loops, the linear-map quote and the walk's quote each red where predicted; with `resolve_walk` rebuilding everything the module case's range-loop assertion goes green, as claimed). Was: ⚠️ OPEN 2026-10-23 — fix landed (`copy_form`: one pair, one position), guards written but not yet run or sabotage-verified |
 | KI-287 | **a guest could take a full peer's node name, and with it the peer's link and traffic** — a guest's name is only its `Hello` claim, so naming itself after a connected full peer with a new incarnation retired that peer's link, and the guest then received what was sent to the peer and could reach the pids in it; a same-incarnation duplicate kept the guest against the real peer, and a dial reused the guest's link. Found by reading; never observed | ✅ **FIXED 2026-10-23** — every guard sabotage-verified on GitHub Actions, the distribution guard last (red at "no reply by name" without `translate_inbound`, after `0315006e` fixed its host script). Was: ⚠️ OPEN 2026-10-23 — fixed in code, twice: first by refusing a guest a name a full link holds or has held here, then by construction (ADR-425): a guest link is registered under a `guest~` name its host mints, which no full node may use, and its pids are translated at the link — which also closes the case the first fix left open, a full peer elsewhere in the cluster that has never linked here. Unit guards sabotage-verified; open on the distribution guard |
@@ -197,7 +168,7 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 | KI-284 | **a worker BUSY under a native frame still counted as live, so as many processes looping under `reflect/eval-string` as there were workers starved every other process** — the in-language suite sat 30 minutes on two cores (v0.42.2 too), and on an oversubscribed `make test` one `fuzzy` test hit its 600 s timeout and the clean-up failed 343 more as `unbound symbol` | ✅ **FIXED 2026-10-21** — a nested run that spends its quantum with work waiting takes its worker out of the pool until it returns (`cpu_dirty_enter`, the CPU twin of `dirty_block`). Guard: `blocking_native::a_process_runs_while_every_worker_loops_under_a_native_frame` (`BROOD_J=2`, two spinners, every tier; red without the guard) |
 | KI-283 | **a function the linear-map rewrite built on a table leaked that table on every call** — a plain tally called ~25 000 times exhausted a 16 GB `ulimit -v` (`table: cannot reserve a 512 KB dense slot chunk`); a dropped table also kept its registry slot and chunk reservations for good | ✅ **FIXED 2026-10-21** — the rewrite frees its table, tables die with their creating process (ADR-418), and a dropped table's slot is reused under a generation-checked handle. Guard: `table_address_space.rs` (three reuse cases, `VmSize`-metered, each red under its sabotage) |
 | KI-282 | **the read that arms `:cpu-us` accounting never timed its own quantum**, so a process timing its own work across the runtime's first read got 0 — `cpu_time_test`'s self-timing test failed whenever it made the suite's first read (the nightly's GC stress job on `e63b70c8`) | ✅ **FIXED 2026-10-18** — the arming read starts the running quantum's clock on a worker (`pool::arm_cpu_accounting`). Guard: `cpu_time_first_read::the_first_read_in_a_runtime_times_the_work_after_it` (red without the stamp: 0 µs) |
-| KI-281 | **a JIT fast-link test never published within its 90 s deadline**, once, in CI's tree-walker job | 👁 **WATCH** — not reproduced in 70 local runs; the thread-refusal mechanism ruled out from the failing run's log (2026-10-22); diagnostic armed (see the section above) |
+| KI-281 | **a JIT fast-link test never published within its 90 s deadline**, twice, in CI's tree-walker job (2026-10-18, 2026-10-24) | 👁 **WATCH** — not reproduced in 70 local runs; the thread-refusal mechanism ruled out (2026-10-22); the second occurrence's dump rules out the link's gating — the caller's entry was linkable and no native call reached it (see the section above); diagnostic re-armed |
 | KI-280 | **a worker waiting in `os/cmd` still counted as live, so a process woken meanwhile was routed to it and waited for the command** — on a two-worker pool, `os/cmd` beside a tree-walked `receive` (which does mark its worker) left nobody to run anything: the stuck-victim memory test starved its leak for the hoarder's whole 20 s `sleep` under `BROOD_TIER=0` on two cores, and the leak then raised in itself | ✅ **FIXED 2026-10-18** — `os/cmd` marks its worker dirty-blocked (`dirty_block`, ADR-100 §7.4) for the wait. Guard: `blocking_native::a_process_runs_while_every_worker_waits_in_os_cmd` (`BROOD_J=2`, two blockers, every tier; red without the guard) |
 | KI-279 | **the stuck-victim memory test raced who reached a safepoint first** — after the hoarder's grace the leak had grown ~40-50 MB, under the eighth of the count a process must hold to be stopped, so nobody was attributable and the error was raised in whichever process got there first; on CI's tree-walker job that was the waiting root, which died instead of the leak (both tries, `8f345ed9`) | ✅ **FIXED 2026-10-18** — the leak is primed to 64 MB before the hoarder fills up, so it holds an attributable share whoever reaches the safepoint |
 | KI-278 | **a child spawned by a backgrounded runtime could not be interrupted** — an ignored SIGINT/SIGQUIT survives fork+exec, so a runtime started with `&` or `nohup` passed it to every `os/spawn`/`os/spawn-pty`/`os/cmd` child, and bedit's `C-c C-c` did nothing to a running shell command | ✅ **FIXED 2026-10-18** — `subprocess::reset_inherited_signals` (pre_exec, SIG_DFL). Guard: `a_spawned_child_does_not_inherit_ignored_interrupts` |

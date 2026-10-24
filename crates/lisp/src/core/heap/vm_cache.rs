@@ -1000,8 +1000,14 @@ impl Heap {
                     ),
                     _ => "no cell".to_string(),
                 };
+                // Would a call through `jit_dispatch_call` publish this site NOW? Yes with
+                // no cell means the native caller stopped reaching the call (KI-281's
+                // second occurrence read that way: every gate passed, nothing published).
+                let linkable = self
+                    .fast_link_from_entry(abs, sym, e.argc, self.global_epoch())
+                    .is_some();
                 format!(
-                    "site {abs} argc {} epoch {} callee {callee} {arm}; {cell}",
+                    "site {abs} argc {} epoch {} callee {callee} {arm}; {cell}; linkable now {linkable}",
                     e.argc, e.epoch
                 )
             })

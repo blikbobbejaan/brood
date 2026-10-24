@@ -3486,3 +3486,12 @@ recorded error; a later require, outside that load, tries again. Loads once at a
 Seen on the way, not fixed: a user `error` rethrown by a catch-cleanup-rethrow (`finally`, the
 loader's journal) loses its position — `catch` binds a user throw's bare payload — so a build
 error from `(error …)` in a required module is reported at the outermost requirer's header (KI-291).
+
+2026-10-24 (KI-290 closed; KI-281 seen again): KI-290's guard was sabotaged on a throwaway CI ref
+(`%require-cycle?` never true) and timed out in both suites that run it, each fixture process
+waiting on the other's module and nothing else red, so it is closed. A second throwaway ref
+switched the parallel cold load back on by default over that fix, and bedit's downstream smoke
+passed on it. Its tree-walker job met KI-281 for the second time: the dump shows the caller's IC
+entry linkable and both arms native, so the link's gating is ruled out and the question is what
+the native caller runs instead. The dump now prints whether each entry links at that moment and
+whether each arm's inlined upgrade is installed.
