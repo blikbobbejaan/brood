@@ -3473,3 +3473,16 @@ bedit hung in 2 runs of 4. Cross-process require cycles: in one process a module
 itself back mid-load proceeds; across workers each holds one claim and parks on the other's.
 The flag is marked experimental; the design that could make the pool safe (schedule by the
 header require graph, one worker per strongly-connected component) is recorded in the ADR.
+
+2026-10-24 (a failing module load, the proper look): the slowness ROADMAP recorded (a 13-deep
+require chain whose bottom module throws: 3.4 s to report) was exponential, not a compile cost —
+8 deep 0.16 s, 13 deep 3.8 s, 20 deep still running after five minutes at 4.7 GB. Counting the
+bottom module's loads gave 2^(depth−1): `%require-header-deps` loads a header's dependencies
+before the source (so a wait parks) and swallows a failure for the header to raise "in context",
+and the header raised it by loading the dependency again, at every level. The pass now records
+the failure in `*require-failed*`, bound around the one source load, and `%require-one` raises the
+recorded error; a later require, outside that load, tries again. Loads once at any depth (13 deep:
+0.05 s). Guard: `tests/require_failure_test.blsp` (512 and 1 024 loads with the branch removed).
+Seen on the way, not fixed: a user `error` rethrown by a catch-cleanup-rethrow (`finally`, the
+loader's journal) loses its position — `catch` binds a user throw's bare payload — so a build
+error from `(error …)` in a required module is reported at the outermost requirer's header (KI-291).

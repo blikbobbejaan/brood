@@ -1,0 +1,57 @@
+;;; A module that throws at load, at the bottom of a require chain, loads ONCE.
+;;;
+;;; `%require-header-deps` loads a module's header dependencies before its source (so a wait
+;;; on one parks) and leaves a failure for the header to raise again, in context. The header
+;;; used to raise it by loading the dependency again — at every level of the chain, so the
+;;; bottom module loaded 2^(depth-1) times: a 13-deep chain took 3.4 s to report its error and
+;;; a 20-deep one ran for minutes. The header now raises the error the pass recorded
+;;; (`*require-failed*`). Sabotage-verified: with the `*require-failed*` branch of
+;;; `%require-one` removed, the first test counts 512 loads.
+
+(defmodule require-failure-test (:use test))
+
+(purge-stale-temp "reqfail-")
+(def- *dir* (temp-dir "reqfail-"))
+(file/mkdir *dir*)
+(reflect/add-load-path *dir*)
+
+(def- depth 10)
+
+;; `<prefix>-0` appends a mark to `count-file` and throws; `<prefix>-i` `:use`s `<prefix>-(i-1)`.
+;; Names unique to the call: a module provided or failed by an earlier run is not reloaded.
+(defn- write-chain (prefix count-file)
+  (file/spit (path/join *dir* (str prefix "-0.blsp"))
+    (str "(defmodule "
+      prefix
+      "-0)\n"
+      "(file/spit-append "
+      (pr-str count-file)
+      " \"x\")\n"
+      "(error \"boom at the bottom\")\n"))
+  (fold (range 1 depth)
+    nil
+    (fn (_ i)
+      (file/spit (path/join *dir* (str prefix "-" i ".blsp"))
+        (str "(defmodule " prefix "-" i " (:use " prefix "-" (- i 1) "))\n" "(def here " i ")\n"))))
+  (symbol (str prefix "-" (- depth 1))))
+
+(defn- loads (count-file) (if (file/exists? count-file) (count (file/slurp count-file)) 0))
+
+(describe "a module that throws at load under a require chain"
+  (test "loads once, however deep the chain, and its error reaches the top"
+    (let (prefix (str "reqfail-" (os/now-ns))
+          count-file (path/join *dir* (str prefix ".count"))
+          top (write-chain prefix count-file))
+      (assert= "boom at the bottom"
+        (try (require-one top) :no-error (catch e (error-message e))))
+      (assert= 1 (loads count-file))
+      (assert= false (contains? *features* (->string top)))))
+  (test "the recorded failure does not outlive the load: a later require loads it again"
+    (let (prefix (str "reqfail-again-" (os/now-ns))
+          count-file (path/join *dir* (str prefix ".count"))
+          top (write-chain prefix count-file))
+      ;; check-allow :discarded-catch — the failure is the point; the count is the assertion
+      (check-allow :discarded-catch
+        (try (require-one top) (catch _ nil))
+        (try (require-one top) (catch _ nil)))
+      (assert= 2 (loads count-file)))))

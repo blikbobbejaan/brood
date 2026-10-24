@@ -72,6 +72,14 @@
 ;; deep inside `reflect/load`ing the parent's source, with no call path to thread it down.
 (defdyn *require-parent* nil)
 
+;; The header dependencies this process's open loads already failed to load, each name to the
+;; error it raised. `%require-header-deps` loads a module's dependencies before its source and
+;; keeps a failure for the header to raise again in context; this is how the header raises it
+;; without loading the module again. Without it every level of a require chain over a failing
+;; module loaded the level below twice — 2^n loads (a 13-deep chain took 3.4 s, 20 deep ran
+;; for minutes). Dynamic: bound around the one source load the pre-pass ran for.
+(defdyn *require-failed* {})
+
 ;; The root setter for the pair above, and it exists for the same reason `reflect/set-load-path`
 ;; does: these globals live in the ROOT namespace, so a `(def *image-sections* …)` written
 ;; inside a module defines `mod/*image-sections*` and `%require-force` — root code — goes on
@@ -946,20 +954,31 @@ not a header, or does not read: the load itself reports a malformed one."
 ;; happens in a Brood frame, where it parks. Inside `%load-module-source` / `reflect/load` the
 ;; same wait is under a native frame and blocks its OS worker for the other load's duration.
 ;; Best-effort: a dependency that fails to load is left for the header to require again,
-;; so its error is reported where the module asked for it.
-(defn- %require-header-deps (src)
-  (%require-each-quietly (reverse (%header-requires src))))
+;; so its error is reported where the module asked for it — and the header raises the error
+;; the pass recorded (`*require-failed*`) rather than loading that dependency a second time.
+;; `load` is the module's own source load.
+(defn- %with-header-deps (src load)
+  (let (failed (%require-each-quietly (reverse (%header-requires src)) *require-failed*))
+    (if (= failed *require-failed*)
+      (load)
+      (binding (*require-failed* failed) (load)))))
 
-(defn- %require-header-deps-of (path)
+(defn- %with-header-deps-of (path load)
   ;; check-allow :discarded-catch — an unreadable file is `reflect/load`'s error to report
   (let (src (check-allow :discarded-catch (try (file/slurp path) (catch _ nil))))
-    (when (string? src) (%require-header-deps src))))
+    (if (string? src) (%with-header-deps src load) (load))))
 
-(defn- %require-each-quietly (modules)
-  (when (not (empty? modules))
-    ;; check-allow :discarded-catch — the header's own require raises this again, in context
-    (check-allow :discarded-catch (try (require-one (first modules)) (catch _ nil)))
-    (%require-each-quietly (rest modules))))
+;; `failed` gains each module whose load threw, for the header's own require to raise again in
+;; context (`*require-failed*`). Not a broken cross-process cycle: that one is meant to be
+;; retried (`%require-after-break`).
+(defn- %require-each-quietly (modules failed)
+  (if (empty? modules)
+    failed
+    (let (e (try (do (require-one (first modules)) nil) (catch e e)))
+      (%require-each-quietly (rest modules)
+        (if (and e (not (includes? (error-message e) *require-cycle*)))
+          (assoc failed (->string (first modules)) e)
+          failed)))))
 
 ;; `%require-force`'s body, split out only so the dynamic binding above wraps every branch.
 (defn- %require-force-in (key)
@@ -1076,8 +1095,8 @@ not a header, or does not read: the load itself reports a malformed one."
                 prev (if prefix
                        (%set-package-context prefix (get *package-modules-of* (->string prefix)))
                        (%set-package-context nil nil)))
-            (%require-header-deps src)
-            (%load-module-source src (%builtin-module-file load-key))
+            (%with-header-deps src
+              (fn () (%load-module-source src (%builtin-module-file load-key))))
             (%set-package-context (first prev) (second prev)))
           (provide key)
           ;; Reached by resolving a bare name to the embedded rooted key `pkg/key`: mark the
@@ -1109,7 +1128,7 @@ not a header, or does not read: the load itself reports a malformed one."
         (let (path (or (%require-find (str key ".blsp") *load-path*)
                      (%require-find-colocated key)))
           (if path
-            (do (%require-header-deps-of path) (reflect/load path) (provide key))
+            (do (%with-header-deps-of path (fn () (reflect/load path))) (provide key))
             (error "require: cannot find module '" key "'"))))
     key))
 
@@ -1161,7 +1180,7 @@ load-time (`require`) guards.
     (let (modules (get *package-modules-of* (->string prefix))
           prev (%set-package-context prefix modules))
       (try
-        (do (%require-header-deps-of path) (reflect/load path) (provide key))
+        (do (%with-header-deps-of path (fn () (reflect/load path))) (provide key))
         (catch e
           (do (%set-package-context (first prev) (second prev)) (throw e))))
       (%set-package-context (first prev) (second prev))
@@ -1470,6 +1489,8 @@ it waits for that load to finish (a half-evaluated module is never observable).
       (= (get *features-loading* key) (self)) key
       ;; someone else is mid-load: wait for their provide (never see a partial module)
       (contains? *features-loading* key) (if hand-off :%hand-off (%require-await key))
+      ;; this load's header-dependency pass already failed to load it: raise that again
+      (contains? *require-failed* key) (throw (get *require-failed* key))
       ;; Claim the load atomically. `:assoc-new` sets the marker only if `key` is
       ;; still absent — the test-and-set runs INSIDE the registry lock — and returns
       ;; false if another process claimed it between the `contains?` read above and
