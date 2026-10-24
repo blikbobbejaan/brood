@@ -428,37 +428,66 @@ mod tests {
     use super::*;
     use crate::core::value;
 
-    /// A fresh interpreter at ceiling 2 with the `caller`/`callee` pair defined. The ceiling
-    /// is forced (per thread) so the tests mean the same thing under every `BROOD_TIER`.
-    fn interp_with_the_pair() -> crate::Interp {
-        set_forced_ceiling(Some(Tier::Native));
-        let mut interp = crate::Interp::new();
-        interp
-            .eval_str(
-                "(do (defn callee (x) (+ x 1)) \
-                     (defn caller (n acc) (if (= n 0) acc (caller (- n 1) (callee acc)))))",
-            )
-            .expect("define the pair");
-        interp
-    }
+    /// The `caller`/`callee` pair the mirror cross-check tests tier up.
+    const THE_PAIR: &str = "(do (defn callee (x) (+ x 1)) \
+         (defn caller (n acc) (if (= n 0) acc (caller (- n 1) (callee acc)))))";
 
-    /// Tier `caller`/`callee` up until the caller's call site has PUBLISHED a flat mirror
-    /// for `callee`, and hand that slot back with its absolute index. The background compiler
-    /// decides when, so this keeps running the pair up to a generous deadline — and FAILS
-    /// past it: a setup that never publishes would otherwise pass both tests vacuously.
-    fn published_mirror_for(
-        interp: &mut crate::Interp,
+    /// How many fresh interpreters [`tiered_pair`] tries before it calls the publish broken.
+    const PUBLISH_ATTEMPTS: usize = 5;
+
+    /// A fresh interpreter at ceiling 2 with `define`'s pair defined, tiered up through `run`
+    /// until the caller's call site has PUBLISHED a flat mirror for `callee`, with that slot
+    /// and its absolute index. The ceiling is forced (per thread) so the tests mean the same
+    /// thing under every `BROOD_TIER`.
+    ///
+    /// Only the caller's SMALL native code publishes: both callees here are leaves, so the
+    /// caller's inlined upgrade splices the callee's body in and makes no call at all. When
+    /// that upgrade is installed before the small native's first call after the callee went
+    /// native, nothing will ever publish — a correct state (and the faster one), which is
+    /// what KI-281 was: three CI failures in this helper, the third dump showing the entry
+    /// linkable and the caller's upgrade installed. That attempt is discarded and a fresh
+    /// interpreter (fresh arms, fresh caches — they are per runtime) tries again. A publish
+    /// that is really broken fails every attempt, so the sabotages still go red.
+    fn tiered_pair(
+        define: &str,
+        run: &str,
         callee: value::Symbol,
-    ) -> (usize, crate::core::heap::FastLink) {
-        published_mirror_running(interp, "(caller 20000 0)", callee)
+    ) -> (crate::Interp, usize, crate::core::heap::FastLink) {
+        for _ in 0..PUBLISH_ATTEMPTS {
+            set_forced_ceiling(Some(Tier::Native));
+            let mut interp = crate::Interp::new();
+            interp.eval_str(define).expect("define the pair");
+            if let Some((abs, mirror)) = published_mirror_running(&mut interp, run, callee) {
+                return (interp, abs, mirror);
+            }
+        }
+        panic!(
+            "in {PUBLISH_ATTEMPTS} fresh interpreters the caller's inlined upgrade was installed \
+             before its small native ever published a fast-link mirror for the callee — the \
+             publish from an arm-less or armed IC hit is broken, not merely late"
+        );
     }
 
-    /// [`published_mirror_for`] driving the pair through `run`.
+    /// Does `arm` run its inlined upgrade? Read off the code pointers (the installed code IS
+    /// the inlined code), the way `frame_size_for_code` tells them apart.
+    fn runs_its_inlined_upgrade(arm: &CompiledArm) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        let inlined = arm.inline_code.load(Relaxed);
+        !inlined.is_null()
+            && inlined != crate::jit::QUEUED
+            && inlined != crate::jit::BAILED
+            && arm.jit_code.load(Relaxed) == inlined
+    }
+
+    /// Run `run` until a mirror for `callee` is published (`Some`), or until some arm runs its
+    /// inlined upgrade with nothing published (`None`: this attempt lost the race
+    /// [`tiered_pair`] describes). FAILS past a generous deadline: a setup that never
+    /// publishes would otherwise pass every test using it vacuously.
     fn published_mirror_running(
         interp: &mut crate::Interp,
         run: &str,
         callee: value::Symbol,
-    ) -> (usize, crate::core::heap::FastLink) {
+    ) -> Option<(usize, crate::core::heap::FastLink)> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
         let mut runs = 0u64;
         while std::time::Instant::now() < deadline {
@@ -470,12 +499,19 @@ mod tests {
                 .into_iter()
                 .find(|(_, fl)| fl.sym == callee)
             {
-                return hit;
+                return Some(hit);
+            }
+            if interp
+                .heap
+                .dbg_compiled_arms()
+                .iter()
+                .any(|arm| runs_its_inlined_upgrade(arm))
+            {
+                return None;
             }
         }
-        // Seen once in CI (the tree-walker job, 2026-10-18) and not reproduced locally in 70
-        // runs, loaded and unloaded: report what the JIT made of every arm, so the next time
-        // says whether an arm never compiled, latched BAILED, or kept deopting.
+        // Report what the JIT made of every arm, so a failure says whether an arm never
+        // compiled, latched BAILED, or kept deopting.
         use std::sync::atomic::Ordering::Relaxed;
         let arms: Vec<String> = interp
             .heap
@@ -492,7 +528,7 @@ mod tests {
                 };
                 format!(
                     "{} uid {} nsites {} {state} compile-epoch {} stale {} calls {} deopts {} \
-                     (total {}) entry-deopts {} inline-installed {}",
+                     (total {}) entry-deopts {} runs-inlined-upgrade {}",
                     arm.dbg_label(),
                     arm.uid,
                     arm.nsites,
@@ -502,7 +538,7 @@ mod tests {
                     arm.jit_deopts.load(Relaxed),
                     arm.jit_deopts_total.load(Relaxed),
                     arm.jit_entry_deopts.load(Relaxed),
-                    arm.inline_installed.load(Relaxed),
+                    runs_its_inlined_upgrade(arm),
                 )
             })
             .collect();
@@ -535,9 +571,8 @@ mod tests {
         // mirror was valid when read, and the release path re-validates and falls through.
         // Sabotage: pass `heap.global_epoch()` to `vm_fast_link_authoritative` in
         // `debug_check_fast_link_mirror` and this reds.
-        let mut interp = interp_with_the_pair();
         let callee = value::intern("callee");
-        let (abs, mirror) = published_mirror_for(&mut interp, callee);
+        let (mut interp, abs, mirror) = tiered_pair(THE_PAIR, "(caller 20000 0)", callee);
         let epoch_before = interp.heap.global_epoch();
         assert_eq!(
             mirror.epoch, epoch_before,
@@ -579,9 +614,8 @@ mod tests {
     fn mirror_check_still_fires_on_a_real_desync() {
         // The check must remain a check: a mirror whose values disagree with the entry at the
         // SAME epoch is the silent-wrong-answer case it exists for.
-        let mut interp = interp_with_the_pair();
         let callee = value::intern("callee");
-        let (abs, mirror) = published_mirror_for(&mut interp, callee);
+        let (interp, abs, mirror) = tiered_pair(THE_PAIR, "(caller 20000 0)", callee);
         let old_bases = interp
             .heap
             .set_ic_bases((abs as u32, interp.heap.ic_bases().1));
@@ -614,16 +648,12 @@ mod tests {
     /// this never publishes.
     #[test]
     fn a_thin_wrapper_called_by_name_publishes_its_fast_link() {
-        set_forced_ceiling(Some(Tier::Native));
-        let mut interp = crate::Interp::new();
-        interp
-            .eval_str(
-                "(do (defn wrapped (a x) (+ a x)) \
-                     (defn wcaller (n acc) (if (= n 0) acc (wcaller (- n 1) (wrapped acc 1)))))",
-            )
-            .expect("define the pair");
-        let (_, mirror) =
-            published_mirror_running(&mut interp, "(wcaller 20000 0)", value::intern("wrapped"));
+        let (mut interp, _, mirror) = tiered_pair(
+            "(do (defn wrapped (a x) (+ a x)) \
+                 (defn wcaller (n acc) (if (= n 0) acc (wcaller (- n 1) (wrapped acc 1)))))",
+            "(wcaller 20000 0)",
+            value::intern("wrapped"),
+        );
         assert_eq!(mirror.argc, 2);
         assert_eq!(
             interp.eval_str("(wcaller 20000 5)").expect("run").as_int(),

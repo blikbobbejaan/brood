@@ -3503,3 +3503,13 @@ passed on it. Its tree-walker job met KI-281 for the second time: the dump shows
 entry linkable and both arms native, so the link's gating is ruled out and the question is what
 the native caller runs instead. The dump now prints whether each entry links at that moment and
 whether each arm's inlined upgrade is installed.
+
+2026-10-24 (KI-281, a race in the test): the third occurrence, on `main` with those fields,
+named it: the entry was linkable and the caller ran its inlined upgrade, which splices the leaf
+callee in and makes no call. Only the small native publishes the mirror, so an upgrade
+installed before its first call after the callee went native leaves nothing ever published.
+That is correct (and faster), and permanent. The link tests' helper (`tiered_pair`) now
+discards such an attempt and retries in a fresh interpreter, up to five times. The dump's
+upgrade field reads the code pointers, not `inline_installed`, which
+`jit_tier_frame_pairing` keeps to an allowlist (the first cut tripped it). Not run on this
+machine.
