@@ -624,7 +624,7 @@ pub(crate) fn exec_chunk(
                             }
                         }
                         // `(get m k default)` on a map (ADR-368): `Heap::map_get3_inline`
-                        // is the rule; a record's miss and every non-map receiver
+                        // is the rule; a record's nil result and every non-map receiver
                         // defer to the real `get` below.
                         PrimOp3::MapGet3 => {
                             if let ValueRef::Map(mid) = sa.unpack()

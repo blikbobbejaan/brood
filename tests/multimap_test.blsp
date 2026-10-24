@@ -123,16 +123,6 @@
     (let (mm (multimap/assoc (multimap/empty) :k 1))
       (assert= (get mm :nope) nil)
       (assert= (get mm :nope :none) :none)))
-  ;; KI-298: with a non-nil default, the 3-arity `get` answered the default on the record's
-  ;; field miss without asking `Lookup`, so a key holding values read as absent.
-  (test "a default does not hide a key the multimap holds"
-    (let (mm (multimap/assoc (multimap/empty) :k 1))
-      (assert= (get mm :k :none) (list 1))
-      (assert= (get mm :k []) (list 1))))
-  (test "a plain record still answers a field, or the default for a missing one"
-    (let (mm (multimap/empty))
-      (assert= (get (assoc mm :extra 5) :extra :none) 5)
-      (assert= (get {:__id__ :x/y :a 1} :b :none) :none)))
   (test "bare `keys` gives the DISTINCT keys, and `vals` every value"
     ;; `keys` read the `Seqable` view and answered one key per VALUE; it consults
     ;; `Lookup`'s `lookup-keys` now. `multimap/keys` and `multimap/values` are GONE — bare `keys`

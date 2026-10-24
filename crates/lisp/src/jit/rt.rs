@@ -692,8 +692,8 @@ pub unsafe extern "C" fn brood_rt_table_dense_base(
 }
 
 /// `(get m k default)` on a CHAMP map — the native half of `PrimOp3::MapGet3` (ADR-368).
-/// Status 0 = the answer is in `*out`; 1 = decline (a non-map receiver, or a record's miss,
-/// which `get`'s `%lookup-miss` owns). The rule is `Heap::map_get3_inline`, shared
+/// Status 0 = the answer is in `*out`; 1 = decline (a non-map receiver, or a record's nil
+/// result, which `get`'s `%lookup-miss` owns). The rule is `Heap::map_get3_inline`, shared
 /// with the VM's `Inst::Prim3` arm. Pure: a CHAMP probe allocates nothing.
 ///
 /// # Safety

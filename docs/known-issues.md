@@ -68,6 +68,28 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 
 (An open entry's `## KI-N` section goes here until it is resolved.)
 
+## KI-299 — a self-exit with a soft reason was reported `:normal` (watch)
+
+**Seen once:** CI run 40129996373 (`d191da46`), the breakage job.
+`breakage/chaos2_process_links.blsp` P16 spawn-links a child whose whole body is
+`(exit (self) :badness)`. The parent, trapping exits, received `[:EXIT _ :normal]` where
+`:badness` was expected. P16 passed in every earlier completed CI run, so this is
+timing-dependent.
+
+**What the code says.** A soft `exit` only sets `kill_pending` (`Mailbox::request_kill`).
+`exit`'s docstring says the target "dies at its next receive", and the child never reaches
+another `receive`: its body returns at once. So `:badness` reaches the link only if the
+completion path takes the pending kill over the body's normal return. When the body wins,
+the result is `:normal`. Either that ordering has a window, or a self-exit is not meant to
+be synchronous and the test assumes too much. Erlang makes `exit(self(), Reason)` take effect
+at once.
+
+**Not reproduced:** not run on the desktop (no test runs there). Next step, on the test
+machine: loop `brood --test breakage/chaos2_process_links.blsp` under `BROOD_J=1` and under
+load, and read how `run_one` retires a process that returns with `kill_pending` set.
+None of the commits in that run touch the scheduler (`std/sorted`, `%hash`, a reverted `get`
+change, CLAUDE.md).
+
 
 ## Index — status per issue
 
@@ -75,7 +97,8 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
-| KI-298 | **`(get coll k default)` with a non-nil default skipped `Lookup`, so a record collection answered the default for a key it held** — `(get multimap :k [])` gave `[]` for a key holding values. Both `get`'s 3-arity arm and `PrimOp3::MapGet3` (`Heap::map_get3_inline`) asked `%lookup-miss` only for a nil result, and a non-nil default made an absent field non-nil. The 2-arity `get` was right. Found while building `std/sorted` | ✅ **FIXED 2026-10-24** — a record whose field lookup misses is declined to `%lookup-miss` whatever the default, and a `Lookup` that answers nil keeps the default. Guard: `tests/multimap_test.blsp` "a default does not hide a key the multimap holds" (by construction: the old arm answers `:none`). Not run on this machine |
+| KI-299 | **a self-exit with a soft reason reported `:normal`** — breakage P16, once in CI | 👁 **WATCH** — section above |
+| KI-298 | **`(get coll k default)` with a non-nil default skipped `Lookup`, so a record collection answered the default for a key it held** — `(get multimap :k [])` gave `[]` for a key holding values. Both `get`'s 3-arity arm and `PrimOp3::MapGet3` (`Heap::map_get3_inline`) asked `%lookup-miss` only for a nil result, and a non-nil default made an absent field non-nil. Found while building `std/sorted` | ↩️ **WITHDRAWN 2026-10-24 — by design, reopened as a design question.** The fix (`58fb635d`) sent a record's miss to `Lookup` whatever the default. CI then failed `linmap_soundness_test` "a fold literal is the same tally as the loop", which pins the rule on purpose: "`get` consults `Lookup` only when the map lookup answers nil — so `(get c :zz 0)` never reaches it". The linmap rewrite's loop path keeps that rule, so the fix made the fold-literal path and the loop path disagree. Reverted. Whether a default should suppress `Lookup` is the user's call. Until then a record collection gives its own `get` with a default (`sorted/get`; `multimap/get-all`) |
 | KI-297 | **a require waiter that missed its claimant's pid set no death watch, so a hard-killed claimant left it waiting for the 30 s backstop** — `%require-await` read the claimant, then checked the claim separately; a failed load re-claimed by another process between the two left `mref` nil, and a hard kill of the new claimant skips its catch and sends no completion. Needs a failed load, a re-claim within microseconds and a `:kill`. Found by review | ✅ **FIXED 2026-10-24** — each 250 ms tick, a waiter without a death watch watches the claim's current holder. By construction (no test can schedule the microsecond window) |
 | KI-296 | **a guest could gain reach to any local pid, or pose as a full peer to `std/editor/serve`, by putting a guessed pid in a message** — the link translated only the guest's own spelling and passed other pids through; `note_outbound` made any local pid echoed back to the guest reachable, and serve takes a client's identity from the grant of its pid's node, so `[:attach <full peer's pid> …]` was no guest at all. ADR-425's "Not done". Found by review | ✅ **FIXED 2026-10-24** (ADR-425 amendment) — a guest's `Send` and `Down` reason may hold only its own node's pids and pids this node sent it. Guard: `dist::guest::tests::a_guest_reaches_its_names_and_the_pids_it_was_sent_and_nothing_else` (red with the check disabled); the distribution guest test green |
 | KI-295 | **pipeline fusion dropped a parameter inside a vector, map or set literal** — the default rewrite of `(fold (seq/lmap …) init (fn …))` inlines a plain `fn` stage or reducer by renaming its parameters, and the renaming walked lists only: `(fn (x) [x])` left `x` unbound in the fused body, and `(fn (acc x) (conj acc {:v x}))` under an outer `x` read the OUTER value, silently. The guards that decline the inlining (`form_binds_any`, `form_has_quote`) were blind to literals too. Found by review | ✅ **FIXED 2026-10-24** — the renaming and every guard walk enter collection literals (`literal_items`). Guards: two `pipeline_fusion_test` cases (red with the old walkers: `unbound symbol: x`), green with `BROOD_LINMAP=0` too |

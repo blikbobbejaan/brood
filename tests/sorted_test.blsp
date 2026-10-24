@@ -15,13 +15,15 @@
     (let (m (sorted/assoc (sm {:a 1}) :a 9))
       (assert= 1 (count m))
       (assert= 9 (get m :a))))
+  ;; Bare `get` with a default answers the default for any key that is not a FIELD, without
+  ;; asking `Lookup` (`linmap_soundness_test` pins that rule), so a default goes through
+  ;; `sorted/get`.
   (test "bare get reads the contents, and sorted/get takes a default"
     (let (m (sm {:a 1 :b nil}))
       (assert= 1 (get m :a))
       (assert= nil (get m :zz))
-      (assert= 1 (get m :a 0))
-      (assert= 0 (get m :zz 0))
       (assert= 0 (sorted/get m :zz 0))
+      (assert= 1 (sorted/get m :a 0))
       (assert= nil (sorted/get m :b 0))))
   (test "contains? tells a stored nil from absence"
     (let (m (sm {:a nil}))

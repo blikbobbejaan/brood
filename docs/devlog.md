@@ -3576,3 +3576,10 @@ tier down, else the ability's `:default`. Registration now keeps every tier (`*i
 and both images replay all of them, so a warm start reaches the same shadowed impls a cold
 start does. A method that never mentions `next-impl` is registered as written. Not run on this
 machine.
+
+2026-10-24 (CI red on 87987990, both defects mine): `std/sorted` recursed forever on an empty
+collection. Its nil `%tree` field read as a miss, `get` handed it to `Lookup`, and the impl read
+the tree again. It reads its own fields with `%map-get` now. The KI-298 `get` change is
+reverted: `linmap_soundness_test` pins "a default never reaches `Lookup`" on purpose, and the
+linmap loop path keeps that rule. KI-298 is a design question now, not a fix. Not run on this
+machine.
