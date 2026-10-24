@@ -3598,3 +3598,14 @@ Noto. `gui-ligatures!` (off by default) shapes 2–8-char punctuation runs as on
 unit in both painters. `gui-font-info` says which file each style resolved to. Rust tests
 (`render.rs` `font_tests`) were written for CI and were not run on this machine; nothing was run
 here beyond the gui / gui-gpu builds and clippy.
+2026-10-24 (ADR-430, the GPU target's feel): the installed build paints on the GPU, and that
+path re-shaped every text run and re-uploaded every instance each frame. Now a run's quads are
+kept and replayed while the run repeats; position is not in the key, so a scroll reuses every
+line it keeps. The instance buffers write only the span that changed. Translucent geometry
+blends in linear light through an sRGB view; text keeps the encoded lerp and gains the
+contrast lift. The default present is MAILBOX (else FIFO) with one frame in flight;
+`{:vsync false}` is the only road to IMMEDIATE. A window stays hidden until its app's first
+frame is painted, or 500 ms. `BROOD_GUI_TRACE=1` prints input → present per frame, and
+`gui/latency` returns the samples. The cursor op takes a colour and a `:hollow` style. Built
+with and without `gui-gpu`, clippy clean. No tests were run on this machine and no window was
+opened: the reuse and present-mode tests are for CI.
