@@ -487,6 +487,10 @@ pub(crate) struct ColdHeap {
     >,
 }
 
+/// How many caught user errors [`HeapExtras::caught`] keeps: a handler that catches
+/// another error while cleaning up before its rethrow does not lose the first.
+const CAUGHT_KEPT: usize = 4;
+
 /// [`Heap::extras`]: the per-process fields almost no process writes, boxed at the first
 /// write so a process that never collects or sets a flag pays one pointer for them.
 #[derive(Default)]
@@ -570,6 +574,15 @@ pub(crate) struct HeapExtras {
     pub(crate) owned_tables: Vec<u64>,
     /// The `owned_tables` length that triggers the next prune.
     pub(crate) owned_tables_prune_at: usize,
+    /// The user errors this process caught most recently, oldest first (KI-291). A `catch`
+    /// binds a user throw's bare payload, which has nowhere to carry the position and trace
+    /// the error collected; without this a rethrow (`finally`, a cleanup then `(throw e)`)
+    /// raised it afresh from the rethrow site, and a module's `(error …)` at load was
+    /// reported at the outermost requirer's header. `throw` of a recorded payload takes its
+    /// origin back ([`Heap::take_caught_origin`]). Only heap payloads, matched by handle:
+    /// the record is GC-traced where `dynamics` is, so no other value can come to share
+    /// the handle while it is kept.
+    pub(crate) caught: Vec<crate::error::CaughtOrigin>,
 }
 
 /// [`Heap::type_alias_cache`]'s contents: `(declared_sigs_version, name → alias key)`.
@@ -1623,6 +1636,54 @@ impl Heap {
                 .retain(|&t| crate::core::table::owned_by(t, pid));
             extras.owned_tables_prune_at = (extras.owned_tables.len() * 2).max(64);
         }
+    }
+
+    /// Record where the user error `error` was raised as a handler catches it, binding
+    /// `caught` (KI-291, [`HeapExtras::caught`]). Keeps the newest [`CAUGHT_KEPT`]. Takes
+    /// the error: every catch is done with it here, so its trace moves rather than copies.
+    #[inline]
+    pub(crate) fn note_caught(&mut self, error: crate::error::LispError, caught: Value) {
+        // A contract violation binds a map rebuilt from its payload, not the payload.
+        let Some(payload) = error.payload else { return };
+        if !payload.same_heap_object(caught)
+            || (error.pos.is_none() && error.file.is_none() && error.trace.is_empty())
+        {
+            return;
+        }
+        self.record_caught(error, payload);
+    }
+
+    /// [`Heap::note_caught`]'s recording half, kept off the catch path's hot loop (a loop
+    /// that throws and catches an immediate never reaches it).
+    #[cold]
+    #[inline(never)]
+    fn record_caught(&mut self, mut error: crate::error::LispError, payload: Value) {
+        let origin = crate::error::CaughtOrigin {
+            payload,
+            pos: error.pos,
+            file: error.file.take(),
+            trace: std::mem::take(&mut error.trace),
+        };
+        let caught = &mut self.extras_mut().caught;
+        caught.retain(|o| !o.payload.same_heap_object(payload));
+        if caught.len() == CAUGHT_KEPT {
+            caught.remove(0);
+        }
+        caught.push(origin);
+    }
+
+    /// Whether any caught user error's origin is recorded — `throw`'s cheap test.
+    #[inline]
+    pub(crate) fn has_caught_origins(&self) -> bool {
+        self.extras().is_some_and(|e| !e.caught.is_empty())
+    }
+
+    /// The recorded origin of the caught payload `v`, removed — for `throw` to raise it
+    /// again from where it was first raised (KI-291).
+    pub(crate) fn take_caught_origin(&mut self, v: Value) -> Option<crate::error::CaughtOrigin> {
+        let caught = &mut self.extras.as_deref_mut()?.caught;
+        let at = caught.iter().rposition(|o| o.payload.same_heap_object(v))?;
+        Some(caught.remove(at))
     }
 
     /// The tables this process created and may still own — for its exit to drop.

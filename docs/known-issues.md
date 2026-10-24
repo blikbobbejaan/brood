@@ -68,35 +68,6 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 
 (An open entry's `## KI-N` section goes here until it is resolved.)
 
-## KI-291 — a user `error` rethrown by a catch-and-rethrow loses its position (OPEN 2026-10-24)
-
-**Symptom.** A module that calls `(error "boom")` while it loads, required through a chain, is
-reported at the OUTERMOST requirer's header — `src/main.blsp:1:1: error: boom` under
-`(defmodule main (:use m12))` — not at its own `(error …)` line. A builtin error in the same
-place keeps its line (`src/m0.blsp:3:8: type error: first: …`). In one file:
-`(try (error "x") (finally nil))` is reported at the `try`, not the `error`.
-
-**Cause.** `catch` binds a user `throw`'s value verbatim (the "throw shape == catch shape"
-contract), and a bare payload has nowhere to carry the position and trace the error collected
-as it unwound. `(throw e)` then raises a NEW error with neither (`LispError::thrown`), which takes
-the position of the rethrow site's nearest positioned form. A caught builtin error is a map
-holding `:file :line :col :trace`, which `from_error_map` rebuilds — so only user errors lose it.
-Every cleanup-and-rethrow does this: `finally`, the loader's journal (`%with-load-journal`) and
-claim release (`%require-one`), and ~24 `(throw e)` sites in `std/`.
-
-**Why it survived.** Error-position tests raise builtin errors, or a user `error` with no
-rethrow between it and the report.
-
-**Fix (not yet).** `%try-described` already hands a handler the full description, but the VM
-does not inline it (a native frame: a `receive` under it cannot park, which the loader needs).
-Options: (a) a per-process record of the last few caught user errors, keyed by payload
-identity and rooted for the collector, which `throw` consults — fixes every rethrow site, at
-the cost of a rare stale position when an identical immediate payload is thrown afresh; (b) a
-`%rethrow payload description` primitive plus VM inlining of `%try-described` — exact, but only
-for the sites converted.
-
-**Guard.** None yet.
-
 ## KI-290 — a require cycle split across two processes deadlocked until the backstop loaded one end twice
 
 **Open, 2026-10-24 — fixed in code; the guard is green in CI (`3c21217c`, every job), not yet
@@ -187,7 +158,7 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
-| KI-291 | **a user `error` rethrown by a catch-and-rethrow loses its position** — `catch` binds a user throw's bare payload, so `(throw e)` raises a new error positioned at the rethrow site: an `(error …)` in a required module is reported at the outermost requirer's header (`src/main.blsp:1:1`), and `(try (error "x") (finally nil))` at the `try`. Builtin errors keep theirs (their caught map carries it) | ⚠️ **OPEN 2026-10-24** — found investigating the failing-load slowness; cause pinned, fix options in the section |
+| KI-291 | **a user `error` rethrown by a catch-and-rethrow lost its position** — `catch` binds a user throw's bare payload, so `(throw e)` raised a new error positioned at the rethrow site: an `(error …)` in a required module was reported at the outermost requirer's header (`src/main.blsp:1:1`), and `(try (error "x") (finally nil))` at the `try`. Builtin errors kept theirs (their caught map carries it) | ✅ **FIXED 2026-10-24** (ADR-427) — a catch records a heap payload's origin (position, file, trace) per process, and `throw` of that payload takes it back. Guards `tests/rethrow_position_test.blsp` (7 of 9 red with `throw` ignoring the record; the collection case and the module case red under `BROOD_GC_STRESS` with the record not relocated) and `crates/cli/tests/rethrow_rendering.rs` `a_user_error_escaping_a_finally_is_reported_where_it_was_raised`. Was: ⚠️ OPEN 2026-10-24 — found investigating the failing-load slowness |
 | KI-290 | **a require cycle split across two processes deadlocked until the 30 s backstop, which then loaded one end a second time** — P holds `a` and waits for `b` while Q holds `b` and waits for `a`; neither load can finish, no completion is sent, and the backstop force-loads while the first load is still in flight. Met by the parallel cold build (ADR-426) on bedit, 1 run in 3: `[require] BUG: waited 30s … 'bedit/panes'` (also `commands`, `view`), then 13 of bedit's tests `unbound symbol: ed-layout-now` — `aside` compiled against a half-published `panes`, and the project image kept it | ⚠️ **OPEN 2026-10-24 — fixed in code; the guard is green in CI (`3c21217c`), not yet sabotage-verified.** The breaker now leaves its module to the others before retrying (`%require-after-break`): its immediate re-claim was the contracts job's second livelock. A waiter walks the wait-for chain every 250 ms (`%require-cycle?`); of the processes on a cycle, the one waiting on the greatest key raises, its claims are discarded and released as that unwinds, the others finish the cycle alone, and its outermost load requires its module again. The first cut let every member raise and livelocked the guard in CI (`[:timeout :timeout]`). The parallel cold load has since been made opt-in (`BROOD_LOAD_PARALLEL=1`, `43fd26e6`) while bedit's pool-built image is investigated; this is one mechanism behind that difference. Guard `modules_test.blsp` "a require cycle split across two processes resolves, both modules whole"; to close, green in CI and red with `%require-cycle?` removed |
 | KI-289 | **a definition published while the RUNTIME code region aged lost every inner source position** — code a load promoted into the old generation and published after the flip is re-homed at `def` time (`rehome_to_current_locked`), and the re-home made new pairs without carrying their `(form-pos …)` entries, so an error inside such a function reported its CALLER's line. Needs a load in flight in one process while another's allocation turns the region over: found 2026-10-23 by the parallel cold load (about one module in 25 on the 302-module rig) | ✅ **FIXED 2026-10-23** — the re-home carries positions as aging's migration does (`carry_positions`, shared by both). Guard `crates/cli/tests/rehome_keeps_positions.rs`: four processes `require-one` twenty modules under `BROOD_GC_STRESS`; red 3/3 with the carry removed (`BAD (1 3 10)`), green with it; with aging disabled (`BROOD_RT_GC_FLOOR`) it never failed |
 | KI-288 | **two closures sharing one first body form ran one compiled body** — the VM keys a compiled closure on that form, and the linear-map rewrites (a body opening with a quoted form) and a macro splicing one quoted argument into two bodies gave two closures the same one; the range loop shared its whole body, harmlessly | ✅ **FIXED 2026-10-23** — every guard sabotage-verified on GitHub Actions (the three loops, the linear-map quote and the walk's quote each red where predicted; with `resolve_walk` rebuilding everything the module case's range-loop assertion goes green, as claimed). Was: ⚠️ OPEN 2026-10-23 — fix landed (`copy_form`: one pair, one position), guards written but not yet run or sabotage-verified |

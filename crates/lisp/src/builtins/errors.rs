@@ -113,8 +113,36 @@ pub(super) fn make_macro(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
     )
 }
 
+/// `(throw v)`. A `v` a handler caught is raised again from where it was first raised —
+/// its position, file and trace — rather than from here (KI-291, `Heap::note_caught`).
 pub(super) fn throw(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    Err(LispError::thrown(arg(args, 0), heap))
+    let v = arg(args, 0);
+    let error = LispError::thrown(v, heap);
+    if error.pos.is_none() && heap.has_caught_origins() {
+        return Err(with_caught_origin(error, v, heap));
+    }
+    Err(error)
+}
+
+/// `throw`'s rethrow half: `error` (raising `v`) located where `v` was first raised, when a
+/// handler caught it ([`Heap::take_caught_origin`]).
+#[cold]
+#[inline(never)]
+fn with_caught_origin(mut error: LispError, v: Value, heap: &mut Heap) -> LispError {
+    if let Some(origin) = heap.take_caught_origin(v) {
+        // Caught before any form tagged it (the tree-walker raising inside a vector
+        // literal): the innermost frame's call site is where it was raised. Left empty,
+        // the rethrow site's form would claim it.
+        let site = origin.trace.iter().find(|f| f.pos.is_some());
+        error.pos = origin.pos.or_else(|| site.and_then(|f| f.pos));
+        error.file = match (&origin.file, origin.pos) {
+            (Some(file), _) => Some(file.clone()),
+            (None, None) => site.and_then(|f| f.file.as_deref().map(str::to_string)),
+            (None, Some(_)) => None,
+        };
+        error.trace = origin.trace;
+    }
+    error
 }
 
 /// `(%failure message)` — build a **failure** value. The kernel primitive behind the
@@ -188,13 +216,15 @@ pub(super) fn try_catch(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResu
 /// `%try-described` also the raise's structured description. Shared with the tree-walker's
 /// `Try` frame. No rooting needed between the two allocations: allocation never collects
 /// (the GC fires only at eval safepoints).
-pub(crate) fn handler_args(error: &LispError, heap: &mut Heap, described: bool) -> Vec<Value> {
+pub(crate) fn handler_args(error: LispError, heap: &mut Heap, described: bool) -> Vec<Value> {
     let caught = error.caught_value(heap);
-    if described {
+    let argv = if described {
         vec![caught, error.to_value_map(heap)]
     } else {
         vec![caught]
-    }
+    };
+    heap.note_caught(error, caught);
+    argv
 }
 
 /// `(%try-described thunk handler)` — `%try` whose handler also receives the raise's
@@ -214,7 +244,7 @@ fn run_guarded(
     args: &[Value],
     env: EnvId,
     heap: &mut Heap,
-    handler_args: impl FnOnce(&LispError, &mut Heap) -> Vec<Value>,
+    handler_args: impl FnOnce(LispError, &mut Heap) -> Vec<Value>,
 ) -> LispResult {
     let thunk = arg(args, 0);
     let handler = arg(args, 1);
@@ -249,7 +279,7 @@ fn run_guarded(
             //     parsing strings (`docs/llm-native.md` §4). Shape on
             //     `LispError::to_value_map`: `{:kind :message [:code] [:file
             //     :line :col] [:hint]}`.
-            let handler_argv = handler_args(&e, heap);
+            let handler_argv = handler_args(e, heap);
             apply_engine(heap, handler, &handler_argv, env)
         }
     }

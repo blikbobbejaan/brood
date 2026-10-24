@@ -205,6 +205,11 @@ impl Heap {
         if let Some(v) = self.extras.as_mut().and_then(|e| e.trace_context.as_mut()) {
             *v = flush_value(source, dest, forward, *v);
         }
+        if let Some(extras) = self.extras.as_mut() {
+            for origin in extras.caught.iter_mut() {
+                origin.payload = flush_value(source, dest, forward, origin.payload);
+            }
+        }
         for v in self.roots.iter_mut() {
             *v = flush_value(source, dest, forward, *v);
         }
@@ -559,6 +564,9 @@ impl Heap {
         #[cfg(feature = "dev-tools")]
         if let Some(v) = self.trace_context() {
             work.push(Pending::Value(v, 0));
+        }
+        if let Some(extras) = self.extras() {
+            work.extend(extras.caught.iter().map(|o| Pending::Value(o.payload, 0)));
         }
         for &frame_id in &self.remembered {
             if frame_id.is_old()

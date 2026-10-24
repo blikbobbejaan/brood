@@ -153,6 +153,18 @@ pub enum Control {
 /// engines and collapses tail calls identically (a tail callee reuses its
 /// caller's frame, so the entry shows the tail chain's final name at the
 /// original call site — the BEAM behaviour).
+/// Where a caught user error was raised: its payload with the position, file and trace the
+/// error had collected when a handler caught it (KI-291, [`Heap::note_caught`]).
+///
+/// [`Heap::note_caught`]: crate::core::heap::Heap::note_caught
+#[derive(Debug, Clone)]
+pub struct CaughtOrigin {
+    pub payload: crate::core::value::Value,
+    pub pos: Option<Pos>,
+    pub file: Option<String>,
+    pub trace: Vec<TraceFrame>,
+}
+
 #[derive(Debug, Clone)]
 pub struct TraceFrame {
     pub name: Option<&'static str>,

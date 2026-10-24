@@ -626,6 +626,7 @@ fn catch_in_driver(
         None
     };
     let caught = e.caught_value(heap);
+    heap.note_caught(e, caught);
     heap.truncate_roots(h.sp);
     heap.truncate_env_roots(h.env_len);
     heap.live_arm_truncate(h.arms_len);

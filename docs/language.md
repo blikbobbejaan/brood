@@ -1726,7 +1726,12 @@ lock held in a `gen` server — where letting the process die is not an option:
 OTP's `after`: a kill is not an error and unwinds no handler. A rethrown built-in
 error is rebuilt from its map by `throw` (`kind`, message, position, hint and
 `:trace` restored), so what escapes a `finally` — or a `(catch e (throw e))` —
-prints and propagates exactly as the original did rather than as a printed map.
+prints and propagates exactly as the original did rather than as a printed map. A
+rethrown USER error keeps where it was raised too: `catch` binds its payload as
+thrown, and the runtime remembers the position and trace of a caught payload that
+lives on the heap (a string, a map, …), so `throw` of that same value raises it from
+its original site (ADR-427). A keyword or number has no identity to remember; it is
+located at the rethrow.
 
 `catch` takes **exactly one bare binder** and no exception class — Clojure's
 `(catch Type e body…)` is rejected with a hint, since reading it Brood's way would

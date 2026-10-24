@@ -770,6 +770,9 @@ impl Heap {
         work.extend(self.msg_roots.iter().flat_map(|t| t.slots.iter()).copied());
         #[cfg(feature = "dev-tools")]
         work.extend(self.trace_context());
+        if let Some(extras) = self.extras() {
+            work.extend(extras.caught.iter().map(|o| o.payload));
+        }
         // --- Live VM arms mid-execution: RUNTIME literals baked into Const/MakeClosure
         // (the one holder off the GC root graph, mirroring compaction's step 3b). Read
         // them via the arm-handle visitor, returning each value unchanged. ---
@@ -1308,6 +1311,11 @@ impl Heap {
         #[cfg(feature = "dev-tools")]
         if let Some(v) = self.extras.as_mut().and_then(|e| e.trace_context.as_mut()) {
             *v = flush_rt_value(&old_code, &new, &mut forward, *v);
+        }
+        if let Some(extras) = self.extras.as_mut() {
+            for origin in extras.caught.iter_mut() {
+                origin.payload = flush_rt_value(&old_code, &new, &mut forward, origin.payload);
+            }
         }
         // ...and the caller's extra live roots (the auto path's `expr`/`env`).
         for v in extra_roots.iter_mut() {

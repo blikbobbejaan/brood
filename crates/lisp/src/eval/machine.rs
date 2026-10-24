@@ -2079,7 +2079,7 @@ impl Machine<'_> {
     ) -> Result<Step, LispError> {
         // Allocation only, so `handler`, `env` and the arguments stay valid until the handler
         // is bound.
-        let argv = crate::builtins::handler_args(&e, heap, described);
+        let argv = crate::builtins::handler_args(e, heap, described);
         let handler = heap.read_root(handler_r);
         let call_form = heap.read_root(call_form_r);
         if let ValueRef::Fn(id) = handler.unpack() {

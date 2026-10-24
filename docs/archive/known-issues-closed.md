@@ -14944,3 +14944,47 @@ looking for".
 
 Runs: [39950556262](https://github.com/broodlang/brood/actions/runs/39950556262) (`7ed008cf`),
 [39954644031](https://github.com/broodlang/brood/actions/runs/39954644031) (`e9e1af8b`).
+
+## KI-291 — a user `error` rethrown by a catch-and-rethrow lost its position ✅ FIXED 2026-10-24
+
+**Symptom.** A module that calls `(error "boom")` while it loads, required through a chain, is
+reported at the OUTERMOST requirer's header — `src/main.blsp:1:1: error: boom` under
+`(defmodule main (:use m12))` — not at its own `(error …)` line. A builtin error in the same
+place keeps its line (`src/m0.blsp:3:8: type error: first: …`). In one file:
+`(try (error "x") (finally nil))` is reported at the `try`, not the `error`.
+
+**Cause.** `catch` binds a user `throw`'s value verbatim (the "throw shape == catch shape"
+contract), and a bare payload has nowhere to carry the position and trace the error collected
+as it unwound. `(throw e)` then raises a NEW error with neither (`LispError::thrown`), which takes
+the position of the rethrow site's nearest positioned form. A caught builtin error is a map
+holding `:file :line :col :trace`, which `from_error_map` rebuilds — so only user errors lose it.
+Every cleanup-and-rethrow does this: `finally`, the loader's journal (`%with-load-journal`) and
+claim release (`%require-one`), and ~24 `(throw e)` sites in `std/`.
+
+**Why it survived.** Error-position tests raise builtin errors, or a user `error` with no
+rethrow between it and the report.
+
+**Fix (ADR-427).** When a handler catches a user error whose payload is a heap value, the
+runtime records the payload's handle with the error's position, file and trace
+(`Heap::note_caught`, the newest four per process); `throw` of that same handle takes them back
+(`Heap::take_caught_origin`). The record is a collector root (relocated in both collectors and
+seeded in the verifier), so the handle cannot be freed and reused by another value while it is
+kept — identity is exact. Immediates (keywords, numbers, `nil`) are not recorded: they have no
+identity, and a fresh `(throw :x)` must not inherit an old position; a rethrown immediate is
+located at the rethrow, as before. Where the tree-walker caught an error before any form tagged
+it (raised inside a vector literal), the innermost trace frame's call site stands in.
+Rejected: changing what `catch` binds for `error` (a breaking wave over every string compare),
+and a `%rethrow` primitive with VM-inlined `%try-described` (exact, but only for the sites
+converted).
+
+**Guard.** `tests/rethrow_position_test.blsp` — catch-then-rethrow, `finally`, a catch on the
+way, a collection between catch and rethrow, the trace, a dropped value lending nothing to a
+fresh throw, a failing module three requires deep, and sixteen processes at once; every case
+compared with the same raise caught WITHOUT a rethrow, on all three tiers and under
+`BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`. Sabotage: `throw` ignoring the record turns 7 of 9 red;
+not relocating the record in `flush_roots` turns the collection and module cases red under
+`BROOD_GC_STRESS`. `crates/cli/tests/rethrow_rendering.rs` pins the rendered headline.
+
+Cost: the `errors` benchmark row (throw and catch an int 200 000 times) +1.15% instructions
+against a comment-only control that moved 0%; wall time within the row's noise. `errors-deep`
+unchanged.

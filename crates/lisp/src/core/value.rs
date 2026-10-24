@@ -838,6 +838,30 @@ pub type ValueRef = Value;
 /// without touching the call sites. Today every method is a no-op / direct
 /// variant construct, so the abstraction compiles to the same code (perf-flat).
 impl Value {
+    /// The same heap object as `other`: the same kind of handle with the same id. Always
+    /// `false` for a value that is not on a heap (`nil`, a boolean, number, symbol,
+    /// keyword, pid, …) — it has no identity apart from its value.
+    pub fn same_heap_object(self, other: Value) -> bool {
+        use Value as V;
+        match (self, other) {
+            (V::BigInt(a), V::BigInt(b)) => a.0 == b.0,
+            (V::Str(a), V::Str(b)) => a.0 == b.0,
+            (V::Rope(a), V::Rope(b)) => a.0 == b.0,
+            (V::Pair(a), V::Pair(b)) => a.0 == b.0,
+            (V::Vector(a), V::Vector(b))
+            | (V::Range(a), V::Range(b))
+            | (V::SeqView(a), V::SeqView(b)) => a.0 == b.0,
+            (V::Map(a), V::Map(b)) | (V::Set(a), V::Set(b)) | (V::Failure(a), V::Failure(b)) => {
+                a.0 == b.0
+            }
+            (V::Fn(a), V::Fn(b)) | (V::Macro(a), V::Macro(b)) => a.0 == b.0,
+            (V::Bytes(a), V::Bytes(b)) => a.0 == b.0,
+            (V::Decimal(a), V::Decimal(b)) => a.0 == b.0,
+            (V::Ratio(a), V::Ratio(b)) => a.0 == b.0,
+            _ => false,
+        }
+    }
+
     /// Decode this `Value` into its [`ValueRef`] (unpacked) view for matching.
     /// A no-op copy today (`Value` is `Copy` and `ValueRef` *is* `Value`); the
     /// decode point a later stage hooks.

@@ -3486,3 +3486,11 @@ recorded error; a later require, outside that load, tries again. Loads once at a
 Seen on the way, not fixed: a user `error` rethrown by a catch-cleanup-rethrow (`finally`, the
 loader's journal) loses its position — `catch` binds a user throw's bare payload — so a build
 error from `(error …)` in a required module is reported at the outermost requirer's header (KI-291).
+
+2026-10-24 (KI-291, ADR-427): a rethrown user error keeps where it was raised. `catch` binds a
+user throw's bare payload, so every cleanup-and-rethrow raised it afresh at the rethrow site; a
+module's `(error …)` at load was reported at the outermost requirer's header. A catch now records a
+heap payload's origin per process (rooted for the collector) and `throw` of that payload takes it
+back. Guards `tests/rethrow_position_test.blsp` (all tiers, GC stress; two sabotages) and a
+rendering case in `crates/cli/tests/rethrow_rendering.rs`. `errors` row +1.15% instructions
+against a 0% control, wall time within noise.

@@ -1,0 +1,102 @@
+;;; KI-291: a user error rethrown keeps where it was raised.
+;;;
+;;; `catch` binds a user `throw`'s bare payload, which has nowhere to carry the position and
+;;; trace the error collected, so `(throw e)` used to raise it afresh from the rethrow site —
+;;; a `finally`, a cleanup-then-rethrow, the loader's own journal — and a module's `(error …)`
+;;; at load was reported at the outermost requirer's header. The runtime now records the
+;;; origin of a caught heap payload (`Heap::note_caught`) and `throw` of that payload takes it
+;;; back. Every case compares against the same raise caught WITHOUT a rethrow, so no line
+;;; number is written down here.
+
+(defmodule rethrow-position-test (:use test))
+
+(defn- raise-here (x) (+ 1 (error "rpt: bad " x)))
+
+(defn- described (thunk)
+  "The description of what `thunk` raises (`%try-described`), or `:returned`."
+  (%try-described (fn () (thunk) :returned) (fn (_ d) d)))
+
+(defn- where (d) [(get d :file) (get d :line) (get d :col)])
+
+(def- direct (where (described (fn () (raise-here 1)))))
+
+(describe "a rethrown user error keeps where it was raised (KI-291)"
+  (test "the direct raise is located in this file, so the comparisons below mean something"
+    (is (string/ends-with? (or (first direct) "") "rethrow_position_test.blsp"))
+    (is (int? (second direct))))
+  (test "catch, then (throw e)"
+    (assert= direct (where (described (fn () (try (raise-here 2) (catch e (throw e))))))))
+  (test "finally"
+    (assert= direct (where (described (fn () (try (raise-here 3) (finally nil)))))))
+  (test "catch, clean up — catching something else on the way — then rethrow"
+    (assert= direct
+      (where
+        (described
+          (fn ()
+            (try
+              (raise-here 4)
+              (catch e
+                ;; check-allow :discarded-catch — the inner catch is the point
+                (check-allow :discarded-catch (try (error "inner, swallowed") (catch _ nil)))
+                (throw e))))))))
+  (test "a collection between the catch and the rethrow"
+    (assert= direct
+      (where (described (fn ()
+                          (try
+                            (raise-here 5)
+                            (catch e
+                              (assert= 300000
+                                (count (fold (range 300000) nil (fn (acc x) (cons x acc)))))
+                              (throw e))))))))
+  (test "the trace still names the function the raise passed through"
+    (let (d (described (fn () (try (raise-here 6) (finally nil)))))
+      (is (any? (or (get d :trace) ())
+            (fn (f) (string/ends-with? (or (get f :fn) "") "raise-here"))))))
+  (test "a caught and dropped value lends nothing to a later, fresh throw"
+    ;; `described` catches each raise and drops it. A later raise must report ITS line, not
+    ;; the dropped one's: a keyword is never recorded, and a fresh `error` string is a new
+    ;; object. Not in tail position: a tail-called `error` reuses the thunk's frame and is
+    ;; located at `described`'s `(thunk)`, which would make the two lines equal regardless.
+    (let (dropped (described (fn () (throw :rpt-k)))
+          fresh (described (fn () (throw :rpt-k))))
+      (is (< (second (where dropped)) (second (where fresh)))))
+    (let (dropped (described (fn () (+ 1 (error "rpt: same"))))
+          fresh (described (fn () (+ 1 (error "rpt: same")))))
+      (is (< (second (where dropped)) (second (where fresh)))))))
+
+;; A module that throws at load, under a require chain: reported at its own `(error …)`,
+;; not at the requirer's header (the loader catches and rethrows at every level).
+(purge-stale-temp "rethrowpos-")
+(def- *dir* (temp-dir "rethrowpos-"))
+(file/mkdir *dir*)
+(reflect/add-load-path *dir*)
+
+(describe "a module's error at load (KI-291)"
+  (test "is reported at its own line, through a three-module chain"
+    (let (p (str "rethrowpos-" (os/now-ns))
+          bottom (path/join *dir* (str p "-0.blsp")))
+      (file/spit bottom (str "(defmodule " p "-0)\n" "(def here 1)\n" "(error \"rpt at load\")\n"))
+      (file/spit (path/join *dir* (str p "-1.blsp"))
+        (str "(defmodule " p "-1 (:use " p "-0))\n"))
+      (file/spit (path/join *dir* (str p "-2.blsp"))
+        (str "(defmodule " p "-2 (:use " p "-1))\n"))
+      (let (d (described (fn () (require-one (symbol (str p "-2"))))))
+        (assert= "rpt at load" (get d :message))
+        (assert= [bottom 3] [(get d :file) (get d :line)])))))
+
+(describe "rethrown positions across processes (KI-291)"
+  (test "many workers catch and rethrow at once; each keeps its own raise's position"
+    (let (me (self)
+          n 16)
+      (map (range n)
+        (fn (i)
+          (spawn (send me [:where i (where (described (fn () (try (raise-here i) (finally nil)))))]))))
+      (letrec (collect (fn (left acc)
+                         (if (= left 0)
+                           acc
+                           (receive
+                             ([:where i w] (collect (dec left) (assoc acc i w)))
+                             (after 5000 acc)))))
+        (let (got (collect n {}))
+          (assert= n (count got))
+          (map got (fn ([_ w]) (assert= direct w))))))))
