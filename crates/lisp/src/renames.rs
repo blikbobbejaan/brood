@@ -28,8 +28,16 @@ pub const RENAMES: &[(&str, &str, &str)] = &[
     // are gone. The target is a CALL SHAPE, not a name: rewriting `gen/start-link` to bare
     // `gen/start` would silently drop the link, so `--fix-renames` leaves any target that
     // is not a bare name to a human.
-    ("gen/start-link", "gen/start f state {:link true}", "ADR-433"),
-    ("gen/start-named", "gen/start f state {:name name}", "ADR-433"),
+    (
+        "gen/start-link",
+        "gen/start f state {:link true}",
+        "ADR-433",
+    ),
+    (
+        "gen/start-named",
+        "gen/start f state {:name name}",
+        "ADR-433",
+    ),
     // ADR-398 — `seq/vector-ref` and `seq/vector-length` were `nth` and `count` under
     // other names, so they are deleted. One difference survives the rename: `nth` answers
     // `nil` out of range where `seq/vector-ref` threw.

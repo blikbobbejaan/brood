@@ -1,0 +1,66 @@
+;; A pattern-dispatched clause may take a `& rest` (ADR-434). Its head is a list pattern over
+;; the argument list, where `&` already means "the rest", so the clause stays variadic. That
+;; is the shape a macro's arguments need: `defmacro` forwards to `fn`, so a macro can take one
+;; clause per accepted shape and end with a catch-all that raises its own message.
+
+(defmodule pattern-clause-rest-test (:use test))
+
+(defn- err-of (src)
+  "The message of the error raised by reading and evaluating `src`, or nil if it ran."
+  (check-allow :discarded-catch
+    (try (do (reflect/eval (reflect/read-string src)) nil) (catch e (error-message e)))))
+
+(defn- tagged
+  ((0 & more) [:zero more])
+  ((:all & more) [:all more])
+  ((n & more) [:n n more]))
+
+(defn- with-fallback
+  ((x :else & fallback) [:fallback x fallback])
+  ((x) [:plain x]))
+
+(defmacro swap-pair "One `[a b]` vector literal, swapped at expansion time; anything else is refused with this
+macro's own message."
+  (([a b]) [b a])
+  ((& args) (error "swap-pair: expected one [a b] vector literal, got " (pr-str args))))
+
+(defmacro unless-nil
+  ((x) `(let (v# ~x) (if (nil? v#) nil v#)))
+  ((x :else & fallback) `(let (v# ~x) (if (nil? v#) (do ~@fallback) v#))))
+
+(describe "a & rest in a pattern-dispatched clause"
+  (test "binds the rest of the arguments"
+    (assert= [:zero (list 1 2)] (tagged 0 1 2))
+    (assert= [:all (list :x)] (tagged :all :x))
+    (assert= [:n 5 nil] (tagged 5)))
+  (test "a literal after a positional picks the clause, the rest is everything after it"
+    (assert= [:fallback 1 (list 2 3)] (with-fallback 1 :else 2 3))
+    (assert= [:plain 1] (with-fallback 1)))
+  (test "no clause matching is still a match error"
+    (is (check-allow :discarded-catch (try (do (apply tagged []) false) (catch _ true)))))
+  (test "an &optional in a pattern clause is still refused"
+    (is (includes? (err-of "(defn bad-opt ((0) :zero) ((x &optional y) [x y]))")
+          "`&optional` in the clause"))))
+
+(describe "a macro with one clause per shape"
+  (test "the matching clause expands"
+    (assert= [2 1] (swap-pair [1 2])))
+  (test "a catch-all clause raises the macro's own message"
+    (is (includes? (err-of "(pattern-clause-rest-test/swap-pair 1 2)")
+          "swap-pair: expected one [a b] vector literal")))
+  (test "a variadic clause splices its rest"
+    (assert= 3 (unless-nil 3 :else 9))
+    (assert= 9 (unless-nil nil :else 1 9))
+    (assert= nil (unless-nil nil))))
+
+(defn- pc-worker (parent i) (send parent [:tagged i (tagged i :a :b)]))
+(defn- pc-collect (n acc)
+  (if (= n 0) acc (pc-collect (- n 1) (receive ([:tagged i v] (assoc acc i v))))))
+
+(describe "pattern clauses with a rest across processes"
+  :isolated (test "many processes dispatch the same clauses at once"
+    (let (me (self))
+      (doseq (i (range 0 12)) (spawn (pc-worker me i)))
+      (let (got (pc-collect 12 {}))
+        (assert= [:zero (list :a :b)] (get got 0))
+        (assert= [:n 11 (list :a :b)] (get got 11))))))

@@ -86,18 +86,17 @@ fn is_clause_shaped(heap: &Heap, f: Value) -> bool {
     }
 }
 
-/// Does this clause head carry an `&optional` / `&` **arity** marker? A head that
-/// is dispatched as a *pattern* matches those markers as ordinary literal symbols,
-/// so a clause like `((x &optional (y 5)) …)` silently stops being variadic and
-/// only ever matches a literal `&optional` argument. The two mechanisms don't
-/// combine (`&optional` controls arity, patterns control shape), so mixing them in
-/// one `fn` is rejected rather than reinterpreted.
-fn head_has_amp_marker(heap: &Heap, head: Value) -> bool {
+/// Does this clause head carry an `&optional` marker? A pattern-dispatched head is a
+/// LIST PATTERN over the argument list, where `&optional` means nothing, so a clause like
+/// `((x &optional (y 5)) …)` would only ever match a literal `&optional` argument. That
+/// is rejected rather than reinterpreted. `&` is different: in a list pattern it already
+/// means "the rest" (`(x & more)`), which is exactly a variadic clause, so a pattern clause
+/// may take one (ADR-434) — the shape a macro's argument list needs.
+fn head_has_optional_marker(heap: &Heap, head: Value) -> bool {
     heap.list_or_vector_items(head).is_some_and(|items| {
-        items.iter().any(|&p| {
-            matches!(p.unpack(), ValueRef::Sym(s)
-                if value::symbol_is(s, kw::AMP_OPTIONAL) || value::symbol_is(s, kw::AMP))
-        })
+        items.iter().any(
+            |&p| matches!(p.unpack(), ValueRef::Sym(s) if value::symbol_is(s, kw::AMP_OPTIONAL)),
+        )
     })
 }
 
@@ -227,9 +226,10 @@ pub(super) fn lower_fn(heap: &mut Heap, items: &[Value]) -> Result<Option<Value>
             }
             // At least one literal/destructuring *pattern* clause, or a `:when`
             // *guard* clause (ADR-226) → lower the whole dispatch to the `match*`
-            // engine. An `&optional`/`&` marker in ANY head is now an error rather
-            // than a literal-symbol pattern: the clause would silently stop being
-            // variadic, and `(f 1 2)` would fail with a match-error listing
+            // engine, where each head is a list pattern over the argument list. A `&`
+            // there is that pattern's rest (`(x & more)`), so it stays variadic
+            // (ADR-434). An `&optional` marker is an error rather than a literal-symbol
+            // pattern: `(f 1 2)` would fail with a match-error listing
             // `(x &optional (y 5))` as a *pattern*.
             let guarded = clauses.iter().any(|&c| clause_has_when_guard(heap, c));
             for &clause in clauses {
@@ -237,20 +237,18 @@ pub(super) fn lower_fn(heap: &mut Heap, items: &[Value]) -> Result<Option<Value>
                     ValueRef::Pair(p) => heap.car(p),
                     _ => continue,
                 };
-                if head_has_amp_marker(heap, head) {
+                if head_has_optional_marker(heap, head) {
                     let shown = crate::syntax::printer::print(heap, head);
                     let dispatch = if guarded { "guard" } else { "pattern" };
                     return Err(LispError::runtime(format!(
-                        "fn: `&optional`/`&` in the clause {shown} of a \
-                         {dispatch}-dispatched fn"
+                        "fn: `&optional` in the clause {shown} of a {dispatch}-dispatched fn"
                     ))
                     .with_hint(
-                        "these axes don't combine: `&optional`/`&` control ARITY, while \
-                         patterns and `:when` guards route the fn through the match engine, \
-                         where a head is a pattern and the marker would be a literal symbol. \
-                         Use one mechanism per fn — arity clauses `((x) …) ((x y) …)`, or \
-                         pattern/guard clauses plus a `match` on the optional argument in the \
-                         body.",
+                        "these axes don't combine: `&optional` controls ARITY, while patterns \
+                         and `:when` guards route the fn through the match engine, where a head \
+                         is a list pattern over the arguments and the marker would be a literal \
+                         symbol. A rest is fine — `((x & more) …)` — but an optional argument \
+                         wants arity clauses `((x) …) ((x y) …)`, or a `match` on it in the body.",
                     ));
                 }
             }

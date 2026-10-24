@@ -1598,14 +1598,24 @@ into the optional slot:
 - An `&optional` slot **must be a plain symbol** (with an optional default); it
   **cannot be a pattern**. `(defn k (x &optional ([a b] …)) …)` is a *type
   error* ("expected a symbol").
-- **`&optional`/`&` in a pattern-dispatched `defn` is an error.** A multi-clause
-  `defn` is *either* arity-dispatched (every head is plain symbols, optionally
-  with `&`/`&optional`) *or* pattern-dispatched (some head carries a
-  literal/destructuring form). If any head is a pattern, an `&optional`/`&`
-  marker in *any* head is rejected with a hint — it used to be matched as a
-  literal symbol, so the clause silently stopped being variadic and a call like
-  `(f 1 2)` failed with a `[:match-error …]` listing `(x &optional (y 5))` as a
-  *pattern*. Use one mechanism per `defn`.
+- **`&optional` in a pattern-dispatched `defn` is an error; `&` rest is not.** A
+  multi-clause `defn` is *either* arity-dispatched (every head is plain symbols,
+  optionally with `&`/`&optional`) *or* pattern-dispatched (some head carries a
+  literal/destructuring form). A pattern-dispatched head is a **list pattern over the
+  argument list**, so `&` there is that pattern's rest and the clause stays variadic:
+  `((:all & more) …)`, `((x :else & fallback) …)` (ADR-434). `&optional` has no meaning
+  in a pattern and is rejected with a hint — it used to be matched as a literal symbol,
+  so `(f 1 2)` failed with a `[:match-error …]` listing `(x &optional (y 5))` as a
+  *pattern*.
+- **A macro takes clauses the same way**, since `defmacro` forwards to `fn`: one clause
+  per accepted shape of the arguments, and a final catch-all that raises the macro's own
+  message instead of a generic match error:
+
+  ```clojure
+  (defmacro swap-pair
+    (([a b])   [b a])
+    ((& args)  (error "swap-pair: expected one [a b] vector literal, got " (pr-str args))))
+  ```
 - **Overlapping arity arms resolve most-specific-first**, in this order: an exact
   fixed arity beats a variadic (`&` rest) one; then the most required params;
   then the *fewest* `&optional` slots. So with `((x) :one)` and

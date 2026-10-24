@@ -3638,3 +3638,9 @@ all memo hits.) Not run on this machine.
 `(gen/start f state {:link true :name :k})` composes the two, and an unknown option raises. The
 rename ledger points at the new call shape, and `--fix-renames` leaves a call-shape target to a
 human instead of rewriting it to a bare name and dropping the link. Not run on this machine.
+
+2026-10-24 (ADR-434, `& rest` in pattern clauses): a pattern-dispatched `fn`/`defn`/`defmacro`
+clause may take `& rest`. Its head is a list pattern over the arguments, where `&` already
+meant the rest; `fn` had rejected it alongside `&optional`. Macros can now take one clause per
+shape and end with a catch-all raising their own message, which is what ROADMAP's `:hint` was
+for, so no `:hint` syntax. Not run on this machine.

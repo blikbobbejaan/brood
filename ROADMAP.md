@@ -237,7 +237,10 @@ needs a Brood-specific form to respect an ADR.
   (measured: a `try` is ~100 ns per `transduce` call, the throw ~1 µs once). `xtake-while`
   shipped with it; `xtake` followed with ADR-421 (2026-10-22): state lives in the run's own
   table, which the run drops on every exit — no completion arity.
-- ⬜ **6. Declarative macro argument grammars** *(shape)*. Racket's `syntax-parse` is the
+- ✅ **6. Declarative macro argument grammars** (2026-10-24, ADR-434): a pattern clause may
+  take `& rest`, so a macro takes one clause per shape plus a catch-all with its own
+  message; no `:hint` syntax was needed. Still open: an error located at the offending
+  sub-form, and moving the prelude's hand-rolled checks onto clauses. Original note: *(shape)*. Racket's `syntax-parse` is the
   best macro-error story in any Lisp; Brood has the philosophy (ADR-152) and the match
   compiler but each prelude macro hand-rolls its checks (`%for-check-binds`). Multi-pattern
   clauses on `defmacro` heads (they exist for `defn`) plus a `:hint` per clause, so a
