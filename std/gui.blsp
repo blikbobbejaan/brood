@@ -98,7 +98,8 @@
 (defn latency (id)
   "Window id's recent input-to-present samples, oldest first (at most 64), each a map of milliseconds: `:total` — from the GUI thread receiving an input (a key press, a mouse button, a wheel step) to the paint of the first frame that arrived after it returning from its present — and `:paint`, that paint's share; a frame the GPU render target drew adds its phases `:encode` `:upload` `:acquire` `:submit` `:present`. Which frame answers an input cannot be known across the app's mailbox, so the next frame drawn is taken as its answer; a present returning means the compositor has the frame, not that the panel shows it (up to one refresh more). Empty headless. `BROOD_GUI_TRACE=1` prints each sample as it is taken (ADR-430).
 
-    (gui/latency id)   ;=> [{:total 6.1 :paint 1.2 :encode 0.3 …} …]"
+    (gui/latency id)   ;=> [{:total 6.1 :paint 1.2 :encode 0.3 …} …]
+    (count (or (try (gui/latency 0) (catch e nil)) []))   → 0"
   (%gui-latency id))
 
 (defn draw (id frame)

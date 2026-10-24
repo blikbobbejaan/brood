@@ -273,7 +273,9 @@ node→face function itself."
 (defn open-tree (text lang)
   "A tree handle for the whole document `text` — a rope (read in place, never copied) or a
 string — parsed as the tree-sitter language `lang`. Keep it beside the text it was parsed
-from; hand it to `update-tree` after an edit and to `fontify-tree` to colour a range."
+from; hand it to `update-tree` after an edit and to `fontify-tree` to colour a range.
+
+    (nil? (editor/treesit/open-tree \"x = 1\" :elixir))   → false"
   (%tree-sitter-tree text lang))
 
 (defn update-tree (tree text lang &optional (edits nil))
@@ -283,11 +285,15 @@ text, in char offsets: one `[start old-end new-end]`, a sequence of them in the 
 were made, or nil to have the kernel find the change by comparing the two texts — cheap
 (prefix and suffix, chunk by chunk) and exact for any single contiguous edit, so nil is
 the right default for a caller that does not already know. A splice `[lo hi repl]` is the
-edit `(splice-edit splice)`."
+edit `(splice-edit splice)`.
+
+    (nil? (editor/treesit/update-tree (editor/treesit/open-tree \"x = 1\" :elixir) \"x = 12\" :elixir))   → false"
   (%tree-sitter-tree-reparse tree text lang edits))
 
 (defn free-tree (tree)
-  "Drop `tree`'s handle now. True when it was still held."
+  "Drop `tree`'s handle now. True when it was still held.
+
+    (editor/treesit/free-tree (editor/treesit/open-tree \"x\" :elixir))   → true"
   (%tree-sitter-tree-free tree))
 
 (defn splice-edit (splice)
@@ -303,7 +309,9 @@ disjoint char ranges `[start end]` — the edited text, plus every range whose s
 changed (a quote typed above the screen recolours everything after it, and this says so).
 `[]` when the text did not change, `true` for a tree from a fresh parse (anything may
 differ), nil when the handle is gone. What a span cache invalidates by, instead of dropping
-every cached band on any edit."
+every cached band on any edit.
+
+    (editor/treesit/tree-changes (editor/treesit/open-tree \"x\" :elixir))   → true"
   (%tree-sitter-tree-changes tree))
 
 (defn fontify-tree (tree kind->face-name from to &optional (keywords? true))
@@ -311,7 +319,9 @@ every cached band on any edit."
 ABSOLUTE char offsets, each clipped to the range, for the outermost nodes `kind->face-name`
 colours that reach into it. Parses nothing, and walks only the nodes that reach the range —
 and because the tree is the whole document's, a construct opened above `from` colours as what
-it is. nil when the handle is gone: open a fresh tree."
+it is. nil when the handle is gone: open a fresh tree.
+
+    (let (tree (editor/treesit/open-tree \":ok\" :elixir)) (do (editor/treesit/free-tree tree) (editor/treesit/fontify-tree tree {} 0 3)))   → nil"
   (let (raw (%tree-sitter-tree-spans tree (table-kinds kind->face-name) keywords? from to))
     (when raw (kind-spans->faces raw kind->face-name))))
 
