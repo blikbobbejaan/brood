@@ -45,6 +45,10 @@ const REGISTRY_SNAPSHOT: &str = r#"
           (= r '*impl-from*) (->string (second kv))
           (= r '*impls*) (let (f (get *impl-from* [(first (first path)) (second (first path)) (second path)]))
                            (when f (->string f)))
+          ;; `[ability op id] → {tier [fn ns]}` (ADR-432): each tier's own value names its
+          ;; namespace, so attribute the inner entries by it and descend from the top.
+          (= r '*impl-tiers*) (when (= (count path) 2)
+                                (let (f (second (second kv))) (when f (->string f))))
           else (let (w (%registry-writer r path)) (when w (->string w)))))
       (defn- %mine? (m owner) (or (nil? owner) (= owner m)))
       (defn- %reg-lines (m r v)

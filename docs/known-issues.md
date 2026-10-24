@@ -68,6 +68,22 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 
 (An open entry's `## KI-N` section goes here until it is resolved.)
 
+## KI-298 — should a `get` default suppress `Lookup`? (design question)
+
+`(get coll k default)` with a non-nil default answers the default for a key that is not
+one of the record's FIELDS, without asking `Lookup`. So `(get multimap :k [])` gives `[]`
+for a key holding values, while `(get multimap :k)` gives the values. A fix that sent a
+record's miss to `Lookup` whatever the default (`58fb635d`) was reverted (`00cebadf`), for
+two reasons. `tests/linmap_soundness_test.blsp` pins the current rule on purpose ("`get`
+consults `Lookup` only when the map lookup answers nil — so `(get c :zz 0)` never reaches
+it"). And the linmap rewrite's loop path keeps that rule, so the fix made the fold-literal
+and loop paths disagree.
+
+**Open:** whether a default should suppress `Lookup` is a language decision. Changing it
+means changing `get`'s 3-arity arm, `PrimOp3::MapGet3` (`Heap::map_get3_inline`), the linmap
+tally rewrite's record handling and that test together. Until then a record collection
+gives its own `get` with a default (`sorted/get`; `multimap/get-all`).
+
 ## KI-299 — a self-exit with a soft reason was reported `:normal` (watch)
 
 **Seen once:** CI run 40129996373 (`d191da46`), the breakage job.
