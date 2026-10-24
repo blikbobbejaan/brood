@@ -15,7 +15,10 @@ pub use render::TextAa;
 use render::*;
 // The GPU render target (`gpu.rs`) paints with the same text metric and hairline snap.
 #[cfg(feature = "gui-gpu")]
-pub(crate) use {paint::paint_stall_ms, paint::text_px_width, render::snap_hairline};
+pub(crate) use {
+    paint::paint_stall_ms, paint::text_px_width, render::snap_hairline, render::text_units,
+    render::unit_cells,
+};
 
 use super::{
     CursorShape, Key, KeyRepeat, Mouse, MouseAction, MouseButton, Op, WheelMode, WindowSpec,
@@ -98,7 +101,8 @@ fn shape_at(zones: &[Zone], x: isize, y: isize) -> Option<CursorShape> {
 }
 
 // Bundled monospace font, four styles (see assets/README.md) — the default
-// `:mono` family; a face's :bold/:italic pick the style. No system font discovery.
+// `:mono` family; a face's :bold/:italic pick the style. Installed fonts are found
+// by name only when asked for (`gui-font-register` with `:family-name`, ADR-432).
 const FONT_REGULAR: &[u8] = include_bytes!("../../../assets/DejaVuSansMono.ttf");
 
 const FONT_BOLD: &[u8] = include_bytes!("../../../assets/DejaVuSansMono-Bold.ttf");
@@ -108,13 +112,17 @@ const FONT_ITALIC: &[u8] = include_bytes!("../../../assets/DejaVuSansMono-Obliqu
 const FONT_BOLD_ITALIC: &[u8] = include_bytes!("../../../assets/DejaVuSansMono-BoldOblique.ttf");
 
 // Bundled color emoji font (CBDT), loaded only as a *fallback*: a cluster the mono
-// font can't cover (an emoji, a flag, a CJK char, …) is shaped + rasterised from
+// font can't cover (an emoji, a flag, …) is shaped + rasterised from
 // here by cosmic-text/swash, in color. Not a selectable `:family`. ~11 MB.
 const FONT_EMOJI: &[u8] = include_bytes!("../../../assets/NotoColorEmoji.ttf");
 
 // The family name fontdb assigns the bundled mono faces — what we pass as the
 // primary `Attrs` family; cosmic-text's fallback list then reaches the emoji font.
 const MONO_FAMILY: &str = "DejaVu Sans Mono";
+
+// The family name fontdb assigns the bundled emoji font — a bundled face a missing
+// glyph is looked for in before any system font (`FontShared::fallback_family`).
+const EMOJI_FAMILY: &str = "Noto Color Emoji";
 
 // The default font family keyword (`:mono`), and the default cell pixel size.
 const DEFAULT_FAMILY: &str = "mono";
@@ -362,11 +370,22 @@ enum UserEvent {
     /// every renderer. Behind `gui-font-register`.
     RegisterFamily {
         name: u32,
-        regular: Vec<u8>,
-        bold: Vec<u8>,
-        italic: Vec<u8>,
-        bold_italic: Vec<u8>,
+        faces: Box<[Vec<u8>; 4]>,
+        paths: [String; 4],
     },
+    /// Register a font family (interned `name`) by an INSTALLED family name, found in
+    /// the system font database (scanned on first use) with each style picked by weight
+    /// and slant. Behind `gui-font-register` with `:family-name` (ADR-432).
+    RegisterInstalledFamily { name: u32, family_name: String },
+    /// Report where family `family` (`None` = the global default) got its faces, and
+    /// the fallback fonts loaded so far. Behind `gui-font-info`.
+    FontInfo {
+        family: Option<u32>,
+        reply: Sender<super::FontInfo>,
+    },
+    /// Shape runs of punctuation as one unit so a font's ligatures form — for every
+    /// open window and ones opened later. Behind `gui-ligatures!`. A pure repaint.
+    Ligatures { on: bool },
 }
 
 /// A freshly opened window's wiring, handed back to the Brood side: its id and
@@ -1019,15 +1038,10 @@ pub fn size_px(id: u64) -> Result<(u32, u32), String> {
 }
 
 /// `(gui-font-register …)` — register a font family (interned `name`) from raw
-/// TTF bytes per style; the GUI thread parses + shares it so `:family` can pick
-/// it. Starts the GUI thread if needed (so a family can be registered up front).
-pub fn register_family(
-    name: u32,
-    regular: Vec<u8>,
-    bold: Vec<u8>,
-    italic: Vec<u8>,
-    bold_italic: Vec<u8>,
-) -> Result<(), String> {
+/// TTF bytes per style (regular, bold, italic, bold-italic), read from `paths`; the GUI
+/// thread parses + shares it so `:family` can pick it. Starts the GUI thread if needed
+/// (so a family can be registered up front).
+pub fn register_family(name: u32, faces: [Vec<u8>; 4], paths: [String; 4]) -> Result<(), String> {
     if headless() {
         return Ok(());
     }
@@ -1036,12 +1050,60 @@ pub fn register_family(
         .unwrap_or_else(PoisonError::into_inner)
         .send_event(UserEvent::RegisterFamily {
             name,
-            regular,
-            bold,
-            italic,
-            bold_italic,
+            faces: Box::new(faces),
+            paths,
         })
         .map_err(|_| "gui thread is gone".to_string())
+}
+
+/// `(gui-font-register name {:family-name "…"})` — register family `name` by an
+/// installed font's family name. Resolved on the GUI thread, which scans the system
+/// fonts the first time it is asked; `font_info` reports what it found. Starts the GUI
+/// thread if needed, like `register_family`.
+pub fn register_installed_family(name: u32, family_name: String) -> Result<(), String> {
+    if headless() {
+        return Ok(());
+    }
+    gui()?
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .send_event(UserEvent::RegisterInstalledFamily { name, family_name })
+        .map_err(|_| "gui thread is gone".to_string())
+}
+
+/// `(gui-font-info [family])` — where family `family` (`None` = the global default)
+/// got its faces, and the fallback fonts loaded so far. Answered on the GUI thread,
+/// after every registration sent before it (the proxy is FIFO). Headless there is no
+/// font engine, so this fails, as `cell_size` does.
+pub fn font_info(family: Option<u32>) -> Result<super::FontInfo, String> {
+    if headless() {
+        return Err("gui is headless — no font engine to ask".into());
+    }
+    let (reply_tx, reply_rx) = mpsc::channel();
+    gui()?
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .send_event(UserEvent::FontInfo {
+            family,
+            reply: reply_tx,
+        })
+        .map_err(|_| "gui thread is gone".to_string())?;
+    reply_rx
+        .recv()
+        .map_err(|_| "gui thread did not reply".to_string())
+}
+
+/// `(gui-ligatures! on)` — shape punctuation runs as one unit (programming ligatures)
+/// on every window + the default for ones opened later. No-op (silently) if the GUI
+/// thread never started.
+pub fn ligatures(on: bool) -> Result<(), String> {
+    if headless() {
+        return Ok(());
+    }
+    if let Ok(g) = gui() {
+        let _ = lock(g).send_event(UserEvent::Ligatures { on });
+    }
+    Ok(())
 }
 
 /// One open window's GUI-thread-side state.
@@ -1215,6 +1277,8 @@ struct RenderDefaults {
     text_aa: TextAa,
     /// The text contrast exponent (1.0 = the plain linear-light blend).
     text_contrast: f32,
+    /// Whether punctuation runs are shaped together (programming ligatures).
+    ligatures: bool,
 }
 
 impl Default for RenderDefaults {
@@ -1227,6 +1291,7 @@ impl Default for RenderDefaults {
             line_height: LINE_HEIGHT,
             text_aa: TextAa::Auto,
             text_contrast: 1.0,
+            ligatures: false,
         }
     }
 }
@@ -1300,6 +1365,7 @@ fn build_window(
     renderer.set_line_height(defaults.line_height);
     renderer.set_text_aa(defaults.text_aa);
     renderer.set_text_contrast(defaults.text_contrast);
+    renderer.set_ligatures(defaults.ligatures);
     let inner = window.inner_size();
     Ok(Win {
         window,
@@ -1755,22 +1821,30 @@ impl ApplicationHandler<UserEvent> for GuiApp {
             // Register a font family from raw TTF bytes; parse here and share it
             // with every renderer. A bad font is dropped (the family stays
             // unregistered, so `:family` falls back to the default).
-            UserEvent::RegisterFamily {
-                name,
-                regular,
-                bold,
-                italic,
-                bold_italic,
-            } => {
+            UserEvent::RegisterFamily { name, faces, paths } => {
+                self.families.borrow_mut().register(name, *faces, paths);
+                fonts_changed(&mut self.wins);
+            }
+            // By installed name: resolved against the system font database (scanned on
+            // the first such call), the bundled mono standing in for a name not found.
+            UserEvent::RegisterInstalledFamily { name, family_name } => {
                 self.families
                     .borrow_mut()
-                    .register(name, regular, bold, italic, bold_italic);
-                // a re-registration replaces a family; clear caches keyed by the
-                // old glyphs, forget the retained frame (its ops are unchanged but
-                // their glyphs are not), and repaint.
+                    .register_installed(name, &family_name);
+                fonts_changed(&mut self.wins);
+            }
+            UserEvent::FontInfo { family, reply } => {
+                let family = family
+                    .or(self.defaults.family)
+                    .unwrap_or_else(|| value::intern(DEFAULT_FAMILY));
+                let mut info = self.families.borrow().info(family);
+                info.ligatures = self.defaults.ligatures;
+                let _ = reply.send(info);
+            }
+            UserEvent::Ligatures { on } => {
+                self.defaults.ligatures = on;
                 for w in self.wins.values_mut() {
-                    w.renderer.cache.clear();
-                    w.renderer.invalidate();
+                    w.renderer.set_ligatures(on);
                     w.window.request_redraw();
                 }
             }
@@ -2365,6 +2439,17 @@ fn run_gui(ready: Sender<Result<EventLoopProxy<UserEvent>, String>>) {
         pending_open: Vec::new(),
     };
     let _ = event_loop.run_app(&mut app);
+}
+
+/// A family was (re-)registered: every window drops the glyphs baked from the old
+/// faces, re-measures its cell (its own family may be the one that moved), tells its
+/// app the grid it now has, and repaints.
+fn fonts_changed(wins: &mut HashMap<WindowId, Win>) {
+    for w in wins.values_mut() {
+        w.renderer.fonts_changed();
+        publish_size(w);
+        w.window.request_redraw();
+    }
 }
 
 /// Retune one window's cell font (family and/or px), then recompute its grid,

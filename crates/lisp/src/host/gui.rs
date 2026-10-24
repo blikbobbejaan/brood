@@ -71,6 +71,31 @@ impl Default for Face {
     }
 }
 
+/// What `gui-font-info` reports about one font family: where its faces came from, so a
+/// user who asked for "JetBrains Mono" can see which file they got — or that they got
+/// the bundled DejaVu because nothing by that name is installed (ADR-432). Plain data,
+/// defined here rather than in the backend so the builtin compiles without the GUI.
+#[derive(Clone, Debug, Default)]
+pub struct FontInfo {
+    /// The family name shaping uses (`"DejaVu Sans Mono"` for the bundled `:mono`).
+    pub name: String,
+    /// The installed name a `:family-name` registration asked for, when it was one.
+    pub requested: Option<String>,
+    /// `"bundled"`, `"files"` (registered from paths), `"system"` (found by name) or
+    /// `"not-found"` (asked for by name, not installed: the bundled mono stands in).
+    pub origin: &'static str,
+    /// The file each style resolved to — regular, bold, italic, bold-italic. A bundled
+    /// face reads `"<bundled DejaVuSansMono.ttf>"`.
+    pub faces: [String; 4],
+    /// The system fonts loaded so far to draw glyphs the primary font lacks, as
+    /// `(family, file)`, in the order they were first needed.
+    pub fallbacks: Vec<(String, String)>,
+    /// Whether the system font database has been scanned yet (it is only on demand).
+    pub system_scanned: bool,
+    /// Whether runs of punctuation are shaped together (`gui-ligatures!`).
+    pub ligatures: bool,
+}
+
 /// What `gui-open` can decide about a window only while it is being *built* — as
 /// opposed to the `gui-*!` primitives, which mutate a window that already exists.
 /// One struct rather than a growing positional tail, since every one of these rides
@@ -743,16 +768,16 @@ pub(crate) mod gpu; // the wgpu render target behind `BROOD_GUI_GPU=1`
 
 #[cfg(not(feature = "gui"))]
 pub use disabled::{
-    TextAa, bg, cell_size, close, drag_move, drag_resize, draw, focus, font, fullscreen, grab,
-    held_key, host_main_thread, icon, input_mode, inset, line_height, maximize, minimize,
-    next_texture_id, open, register_family, size, size_px, sound, sound_free, text_aa,
-    text_contrast, texture, texture_free, title,
+    TextAa, bg, cell_size, close, drag_move, drag_resize, draw, focus, font, font_info, fullscreen,
+    grab, held_key, host_main_thread, icon, input_mode, inset, ligatures, line_height, maximize,
+    minimize, next_texture_id, open, register_family, register_installed_family, size, size_px,
+    sound, sound_free, text_aa, text_contrast, texture, texture_free, title,
 };
 
 #[cfg(feature = "gui")]
 pub use backend::{
-    TextAa, bg, cell_size, close, drag_move, drag_resize, draw, focus, font, fullscreen, grab,
-    held_key, host_main_thread, icon, input_mode, inset, line_height, maximize, minimize,
-    next_texture_id, open, register_family, size, size_px, sound, sound_free, text_aa,
-    text_contrast, texture, texture_free, title,
+    TextAa, bg, cell_size, close, drag_move, drag_resize, draw, focus, font, font_info, fullscreen,
+    grab, held_key, host_main_thread, icon, input_mode, inset, ligatures, line_height, maximize,
+    minimize, next_texture_id, open, register_family, register_installed_family, size, size_px,
+    sound, sound_free, text_aa, text_contrast, texture, texture_free, title,
 };

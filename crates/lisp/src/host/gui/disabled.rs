@@ -108,10 +108,17 @@ pub enum TextAa {
 }
 pub fn register_family(
     _name: u32,
-    _regular: Vec<u8>,
-    _bold: Vec<u8>,
-    _italic: Vec<u8>,
-    _bold_italic: Vec<u8>,
+    _faces: [Vec<u8>; 4],
+    _paths: [String; 4],
 ) -> Result<(), String> {
+    Err(NOT_COMPILED.into())
+}
+pub fn register_installed_family(_name: u32, _family_name: String) -> Result<(), String> {
+    Err(NOT_COMPILED.into())
+}
+pub fn font_info(_family: Option<u32>) -> Result<super::FontInfo, String> {
+    Err(NOT_COMPILED.into())
+}
+pub fn ligatures(_on: bool) -> Result<(), String> {
     Err(NOT_COMPILED.into())
 }

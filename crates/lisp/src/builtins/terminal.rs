@@ -284,7 +284,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![kw, map_ty], kw),
         &["name", "styles"],
-        "Register font family name (a keyword) from styles, a map of style → TTF file path {:regular \"…\" :bold \"…\" :italic \"…\" :bold-italic \"…\"}. Only :regular is required; a missing style reuses the regular file. Afterwards a face's :family <name> (or gui-font!) selects it. Needs --features gui. Returns name.",
+        "Register font family name (a keyword) from styles: either an INSTALLED family by its name, {:family-name \"JetBrains Mono\"} — looked up (case-insensitively) in the system fonts, which are scanned the first time one is asked for and never at startup, with the bold / italic / bold-italic faces picked by weight and slant, and the bundled DejaVu Sans Mono standing in when nothing by that name is installed (gui-font-info says which file each style got, or :not-found) — or a map of style → TTF file path {:regular \"…\" :bold \"…\" :italic \"…\" :bold-italic \"…\"}, where only :regular is required and a missing style reuses the regular file. :family-name wins when both are given. Afterwards a face's :family <name> (or gui-font!) selects it; re-registering a family a window already uses re-measures its cell. Needs --features gui. Returns name.",
         gui_font_register);
     // The window content inset (`gui-inset!`): a blank pixel margin before the cell
     // grid on every edge, so a GUI app's text breathes instead of sitting flush.

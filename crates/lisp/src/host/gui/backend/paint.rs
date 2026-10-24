@@ -902,7 +902,9 @@ pub(super) fn render_ops(
                 let render_top = top_signed.max(oy as isize) as usize;
                 let mut cx = *col as usize;
                 let bg_packed = pack(bg);
-                for g in s.graphemes(true) {
+                // With `gui-ligatures!` on, a punctuation run is ONE unit — shaped together
+                // so the font's ligatures form, one canvas spanning its cells (ADR-432).
+                for g in text_units(s, r.ligatures()) {
                     // A raw tab — the frontend has no line column to measure from, so
                     // it advances to the next SCREEN stop, as a terminal would (an app
                     // that wants the line's stops expands first: `string/expand-tabs`).
@@ -916,7 +918,7 @@ pub(super) fn render_ops(
                         cx += cells;
                         continue;
                     }
-                    let cells = cluster_cells(g);
+                    let cells = unit_cells(g);
                     if cells == 0 {
                         // zero-width (a lone combining mark): nothing to advance.
                         continue;

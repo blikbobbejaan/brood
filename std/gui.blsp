@@ -110,8 +110,16 @@
     (%gui-font! id-or-spec spec)))
 
 (defn font-register (name styles)
-  "Register font family name (a keyword) from styles, a map of style → TTF file path {:regular \"…\" :bold \"…\" :italic \"…\" :bold-italic \"…\"}. Only :regular is required; a missing style reuses the regular file. Afterwards a face's :family <name> (or gui/font) selects it. Needs --features gui. Returns name."
+  "Register font family name (a keyword) from styles: either an INSTALLED family by its name, {:family-name \"JetBrains Mono\"} — looked up (case-insensitively) in the system fonts, which are scanned the first time one is asked for and never at startup, with the bold / italic / bold-italic faces picked by weight and slant, and the bundled DejaVu Sans Mono standing in when nothing by that name is installed (gui/font-info says which file each style got, or :not-found) — or a map of style → TTF file path {:regular \"…\" :bold \"…\" :italic \"…\" :bold-italic \"…\"}, where only :regular is required and a missing style reuses the regular file. :family-name wins when both are given. Afterwards a face's :family <name> (or gui/font) selects it; re-registering a family a window already uses re-measures its cell. Needs --features gui. Returns name.
+
+    (gui/font-register :code {:family-name \"JetBrains Mono\"})   ;=> :code"
   (%gui-font-register name styles))
+
+(defn font-info (&optional family)
+  "Where font family `family` (a keyword; the window default when omitted) got its faces, as a map: :name (the family shaping uses), :requested (the installed name a :family-name registration asked for, or nil), :origin (:bundled, :files, :system, or :not-found — asked for by name, not installed, the bundled DejaVu standing in), :regular / :bold / :italic / :bold-italic (the file each style resolved to), :fallbacks (a vector of {:name :file} — the installed fonts loaded so far to draw glyphs the primary font lacks, CJK or symbols, in the order first needed), :system-scanned (whether the installed fonts have been scanned yet: only on demand) and :ligatures. The diagnostic for \"I asked for Iosevka, why does it look like DejaVu\". Answered on the GUI thread after every registration sent before it. Errors headless and without --features gui.
+
+    (map? (try (gui/font-info) (catch e {})))   → true"
+  (%gui-font-info family))
 
 (defn inset (px)
   "Set the window content inset to px logical pixels: a blank margin before the cell grid on every window edge, so a GUI app's text breathes instead of sitting flush against the frame. Applies to every open window and the default for ones opened later; the grid loses 2*px per axis (fewer cells) and re-renders. The inset is shared by the renderer and mouse hit-testing, so clicks stay aligned. Needs --features gui. Returns nil.
@@ -130,6 +138,12 @@
 
     (gui/line-height 1.2)   ;=> nil; every window re-renders at its new row count"
   (%gui-line-height! mult))
+
+(defn ligatures (on)
+  "Turn programming ligatures on (any truthy value) or off (nil / false, the default): with them on, a run of two or more punctuation chars in a :text op (-> != === <=> |> :: /* &&) is shaped as one unit so the font's ligatures form, still occupying exactly one cell per char — the grid never moves. A font without ligatures (the bundled DejaVu) draws the same either way; register one that has them (gui/font-register with :family-name \"JetBrains Mono\", \"Fira Code\", \"Iosevka\"). Every open window and the default for ones opened later; a pure repaint. Needs --features gui. Returns nil.
+
+    (try (gui/ligatures false) (catch e nil))   → nil"
+  (%gui-ligatures! on))
 
 (defn text-aa (mode)
   "Set how monochrome text is anti-aliased: :gray (one coverage value per pixel), :subpixel (one per colour channel, each a third of a pixel apart — LCD text, three times the horizontal resolution of every stem, for a panel whose subpixels run red-green-blue), :bgr (the same for a blue-first panel), or :auto (the default: subpixel at a 1× scale where text has the fewest pixels to spend, gray on HiDPI where grayscale is already sharp and a scaled or rotated surface would turn subpixel fringes into colour noise). Applies to every open window and the default for ones opened later; a pure repaint. Needs --features gui. Returns nil.

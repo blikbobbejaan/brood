@@ -2066,11 +2066,14 @@ pub(in crate::builtins) fn gui_text_aa(args: &[Value], _: EnvId, heap: &mut Heap
 }
 
 /// `(gui-font-register name styles)` — register font family `name` (a keyword) from
-/// `styles`, a map of style → TTF file path: `{:regular "…" :bold "…" :italic "…"
-/// :bold-italic "…"}`. Only `:regular` is required; a missing style reuses the
-/// regular file (so a single-file family works). The fonts are read here and parsed
-/// on the GUI thread; afterwards a face's `:family <name>` selects them. Returns
-/// `name`.
+/// `styles`, either an installed family by name — `{:family-name "JetBrains Mono"}`,
+/// resolved on the GUI thread against the system fonts, bold/italic picked by weight and
+/// slant, the bundled DejaVu standing in when nothing by that name is installed
+/// (`gui-font-info` says which) — or a map of style → TTF file path: `{:regular "…"
+/// :bold "…" :italic "…" :bold-italic "…"}`. With paths only `:regular` is required; a
+/// missing style reuses the regular file (so a single-file family works). The fonts are
+/// read here and parsed on the GUI thread; afterwards a face's `:family <name>` selects
+/// them. `:family-name` wins when both are given. Returns `name`.
 pub(in crate::builtins) fn gui_font_register(
     args: &[Value],
     _: EnvId,
@@ -2091,7 +2094,7 @@ pub(in crate::builtins) fn gui_font_register(
         return Err(LispError::wrong_type(
             heap,
             "%gui-font-register",
-            "map (style → path)",
+            "map (style → path, or {:family-name \"…\"})",
             arg(args, 1),
         ));
     };
@@ -2102,24 +2105,34 @@ pub(in crate::builtins) fn gui_font_register(
             Some(v) => Ok(Some(expect_string(heap, "%gui-font-register", v)?)),
         }
     };
+    if let Some(family_name) = path("family-name")? {
+        crate::host::gui::register_installed_family(name, family_name)
+            .map_err(LispError::runtime)?;
+        return Ok(Value::keyword(name));
+    }
     let read = |p: &str| -> Result<Vec<u8>, LispError> {
         std::fs::read(p).map_err(|e| LispError::runtime(format!("%gui-font-register: {p}: {e}")))
     };
-    let regular_path = path("regular")?
-        .ok_or_else(|| LispError::runtime("%gui-font-register: a :regular path is required"))?;
+    let regular_path = path("regular")?.ok_or_else(|| {
+        LispError::runtime("%gui-font-register: a :regular path (or a :family-name) is required")
+    })?;
     let regular = read(&regular_path)?;
-    // each missing style falls back to the regular file's bytes
-    let style = |key: &str| -> Result<Vec<u8>, LispError> {
+    // each missing style falls back to the regular file's bytes (and its path)
+    let style = |key: &str| -> Result<(Vec<u8>, String), LispError> {
         match path(key)? {
-            Some(p) => read(&p),
-            None => Ok(regular.clone()),
+            Some(p) => Ok((read(&p)?, p)),
+            None => Ok((regular.clone(), regular_path.clone())),
         }
     };
-    let bold = style("bold")?;
-    let italic = style("italic")?;
-    let bold_italic = style("bold-italic")?;
-    crate::host::gui::register_family(name, regular, bold, italic, bold_italic)
-        .map_err(LispError::runtime)?;
+    let (bold, bold_path) = style("bold")?;
+    let (italic, italic_path) = style("italic")?;
+    let (bold_italic, bold_italic_path) = style("bold-italic")?;
+    crate::host::gui::register_family(
+        name,
+        [regular, bold, italic, bold_italic],
+        [regular_path, bold_path, italic_path, bold_italic_path],
+    )
+    .map_err(LispError::runtime)?;
     Ok(Value::keyword(name))
 }
 

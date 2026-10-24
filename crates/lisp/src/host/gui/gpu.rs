@@ -39,7 +39,7 @@ use winit::window::Window;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::host::gui::backend::{
-    CURSOR_FG, Renderer, paint_stall_ms, snap_hairline, text_px_width,
+    CURSOR_FG, Renderer, paint_stall_ms, snap_hairline, text_px_width, text_units, unit_cells,
 };
 use crate::host::gui::effects::{EmitterStep, FrameEffects};
 use crate::host::gui::{Align, CursorStyle, MAX_PARTICLES, Op};
@@ -1773,7 +1773,15 @@ impl GpuWindow {
         italic: bool,
         scale: u16,
     ) -> Option<AtlasGlyph> {
-        let key = glyph_key(g, family, bold, italic, scale, renderer.metrics().px);
+        let key = glyph_key(
+            g,
+            family,
+            bold,
+            italic,
+            scale,
+            renderer.metrics().px,
+            renderer.font_generation(),
+        );
         if let Some(slot) = self.glyphs.get(&key) {
             return *slot;
         }
@@ -1865,7 +1873,9 @@ impl GpuWindow {
                     let top = g.oy + *row as f32 * g.ch - g.scroll_dy;
                     let mut clusters: Vec<(f32, f32, &str)> = Vec::new();
                     let mut cx = *col as usize;
-                    for cluster in s.graphemes(true) {
+                    // Ligature units when `gui-ligatures!` is on: a punctuation run is one
+                    // glyph canvas spanning its cells (`text_units`, ADR-432).
+                    for cluster in text_units(s, renderer.ligatures()) {
                         // A raw tab advances to the next SCREEN stop, background only.
                         if cluster == "\t" {
                             let cells = cluster_cells_at(cluster, cx, TAB_WIDTH);
@@ -1881,7 +1891,7 @@ impl GpuWindow {
                             cx += cells;
                             continue;
                         }
-                        let cells = cluster_cells(cluster);
+                        let cells = unit_cells(cluster);
                         if cells == 0 {
                             continue;
                         }
@@ -2558,8 +2568,18 @@ fn render_pass<'e>(
 
 /// The atlas key of a cluster under a face at a font size: what it is drawn from depends
 /// on the cluster, the family, the weight/slant, the scale and the pixel size (a cell
-/// region rasterises at its own px) — not the colour, which is a per-instance tint.
-fn glyph_key(g: &str, family: Option<u32>, bold: bool, italic: bool, scale: u16, px: f32) -> u64 {
+/// region rasterises at its own px) and the font registration it was baked under (a
+/// re-registered family keyword names other faces) — not the colour, which is a
+/// per-instance tint.
+fn glyph_key(
+    g: &str,
+    family: Option<u32>,
+    bold: bool,
+    italic: bool,
+    scale: u16,
+    px: f32,
+    generation: u64,
+) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     g.hash(&mut h);
@@ -2568,6 +2588,7 @@ fn glyph_key(g: &str, family: Option<u32>, bold: bool, italic: bool, scale: u16,
     italic.hash(&mut h);
     scale.hash(&mut h);
     px.to_bits().hash(&mut h);
+    generation.hash(&mut h);
     h.finish()
 }
 
