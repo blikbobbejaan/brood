@@ -1786,6 +1786,26 @@ line but more than twice its floor and four times the control's +0.8% — the on
 re-measure on a quiet box (a kept baseline binary, `taskset`-pinned best-of-15 base, base,
 new at `BROOD_TIER=1` — benchmarking.md §6) before calling the VM call path flat.
 
+**`fib` at tier 1, re-measured 2026-10-24 — five runners, and the sign follows the CPU.**
+`scripts/ab-bench.sh --tier 1 --floor -b 32e71066 -n 21 fib` on five fresh GitHub runners
+(`11f48010` against `32e71066`, nothing else in between), plus the same at the default tier:
+
+| runner | tier-1 base | tier-1 delta | floor | verdict | default-tier delta |
+|---|---|---|---|---|---|
+| 1 | 2417 ms | +3.3% | 0.2% | noise | +0.0% |
+| 2 | 4197 ms | −7.3% | 0.3% | improved | −0.9% |
+| 3 | 4138 ms | −6.2% | 0.1% | improved | −0.9% |
+| 4 | 2874 ms | +5.6% | 0.0% | regressed | +0.0% |
+| 5 | 3809 ms | +2.8% | 1.3% | noise | +0.0% |
+
+The base time itself spans 2.4–4.2 s, so these are different CPU models, and each runner's own
+floor is tiny — the spread is between machines, not within a run. The two slow machines got
+~7% faster and two of the three fast ones 3–6% slower; the default tier is flat on all five.
+Not a regression to bisect — a few-percent effect whose sign depends on the microarchitecture
+cannot be bisected on runners that differ by CPU. If the VM call path needs a verdict, it is a
+pinned best-of-15 on ONE known machine (benchmarking.md §6), and the candidates are the
+VM-call commits of the batch: the staged self-tail probe (`vm_call_ic_self`), the single
+`vm_direct_eligible` read, and natives skipping `dispatch` (`NativeFn::is_apply`).
 
 ### 7.9 `row-sum`'s `call-mediated-boxed` bail — CLOSED 2026-09-20: the float-slot clause is removed
 
