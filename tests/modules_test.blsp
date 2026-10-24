@@ -165,6 +165,43 @@
         (file/rm b-path)
         (assert= [results stuck] [[[:a :b] [:a :b]] nil]))))
 
+  ;; The same cycle met under HEADER clauses, as real projects meet it (`(:use …)`): P holds
+  ;; `hcyc-a`, whose header chain `hcyc-c1` → `hcyc-c2` waits on `hcyc-b`, which Q holds while
+  ;; it waits on `hcyc-a`. P is the one that backs out. The header pass's quiet require used
+  ;; to swallow the cycle error, so each header level met the cycle again on its own require
+  ;; and the waits doubled per level — `hcyc-c2`'s body ran four times before the break got
+  ;; out, and a deeper chain outlasted Q's 30 s backstop. Broken once, it runs twice: the
+  ;; load the break abandoned and the retry.
+  (test "a require cycle met under header clauses backs out once, not once per level"
+    (let (dir "/tmp"
+          saved-path *load-path*
+          me (self)
+          spit (fn (name src) (file/spit (str dir "/" name ".blsp") src)))
+      (proc/register :hcyc-runs me)
+      (spit "hcyc-a" "(defmodule hcyc-a (:use hcyc-c1))\n(defn a () :a)\n")
+      (spit "hcyc-c1" "(defmodule hcyc-c1 (:use hcyc-c2))\n(defn c1 () :c1)\n")
+      (spit "hcyc-c2"
+        (str "(defmodule hcyc-c2)\n(send (proc/whereis :hcyc-runs) :hcyc-c2-ran)\n"
+          "(receive (after 300 nil))\n(require-one 'hcyc-b)\n(defn c2 () :c2)\n"))
+      (spit "hcyc-b"
+        "(defmodule hcyc-b)\n(receive (after 300 nil))\n(require-one 'hcyc-a)\n(defn b () :b)\n")
+      (reflect/set-load-path (cons dir *load-path*))
+      (map ['hcyc-a 'hcyc-b]
+        (fn (first-module)
+          (spawn (send me
+                   [:hcyc
+                     (try
+                       (do (require-one first-module) [(hcyc-a/a) (hcyc-b/b) (hcyc-c2/c2)])
+                       (catch e [:err (error-message e)]))]))))
+      (let (results (mapv (range 2) (fn (_) (receive ([:hcyc r] r) (after 20000 :timeout))))
+            runs (letrec (count-runs (fn (n)
+                                       (receive (:hcyc-c2-ran (count-runs (inc n))) (after 0 n))))
+                   (count-runs 0)))
+        (proc/unregister :hcyc-runs)
+        (reflect/set-load-path saved-path)
+        (doseq (m ["hcyc-a" "hcyc-c1" "hcyc-c2" "hcyc-b"]) (file/rm (str dir "/" m ".blsp")))
+        (assert= [results runs] [[[:a :b :c2] [:a :b :c2]] 2]))))
+
   ;; A refer-all against a module ANOTHER process is mid-load is not a cycle. `require-one`
   ;; waits for that load and returns on its `provide`, which lands inside `%require-force` a
   ;; few instructions before the loader clears its marker — so a `(:use m)` evaluated in that

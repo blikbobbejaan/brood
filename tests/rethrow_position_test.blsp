@@ -20,6 +20,8 @@
 
 (def- direct (where (described (fn () (raise-here 1)))))
 
+(def- rpt-sentinel "rpt: a shared sentinel")
+
 (describe "a rethrown user error keeps where it was raised (KI-291)"
   (test "the direct raise is located in this file, so the comparisons below mean something"
     (is (string/ends-with? (or (first direct) "") "rethrow_position_test.blsp"))
@@ -62,6 +64,13 @@
       (is (< (second (where dropped)) (second (where fresh)))))
     (let (dropped (described (fn () (+ 1 (error "rpt: same"))))
           fresh (described (fn () (+ 1 (error "rpt: same")))))
+      (is (< (second (where dropped)) (second (where fresh))))))
+  (test "a shared payload thrown by two raises is two errors, not one rethrown"
+    ;; A `def`'d sentinel is ONE object in a shared region, so every raise of it holds the
+    ;; same handle: recorded at the first (caught, dropped) raise, it would lend that raise's
+    ;; line to the second, independent one.
+    (let (dropped (described (fn () (+ 1 (throw rpt-sentinel))))
+          fresh (described (fn () (+ 1 (throw rpt-sentinel)))))
       (is (< (second (where dropped)) (second (where fresh)))))))
 
 ;; A module that throws at load, under a require chain: reported at its own `(error …)`,

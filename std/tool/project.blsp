@@ -679,55 +679,39 @@ only; `tests/` files come from [[collect-tests]].
         (project-load-worker-loop driver)))
     (:stop nil)))
 
-;; The driver: hand each idle worker the next `[feature file]`, gather outcomes until every
-;; worker has stopped. Answers `[failures missing]` — `missing` are files whose module
-;; `require-one` could not resolve by key (loaded sequentially afterwards).
-(defn- project-load-drive (jobs live downs failures missing)
-  ;; `live`: workers not yet told to stop. `downs`: worker exits seen. Every worker is
-  ;; monitored, so each exit — a normal one after `:stop` included — sends one `[:down …]`;
-  ;; all of them are taken here, so none is left in the caller's mailbox for a later
-  ;; `(receive (m m))` to mistake for its own.
-  (cond
-    (and (= live 0) (= downs 0)) [failures missing]
-    (= live 0)
-      (receive
-        ([:down _ _ reason] (project-load-drive jobs
-                              0
-                              (dec downs)
-                              (if (= reason :normal)
-                                failures
-                                (conj failures [:failed "a load worker" reason]))
-                              missing)))
-    else
-      (receive
-        ([:next pid outcome]
-          (let (failed? (and outcome (= (first outcome) :failed))
-                not-found? (and failed? (project-load-missing? (third outcome)))
-                failures (if (and failed? (not not-found?))
-                           (conj failures outcome)
-                           failures)
-                missing (if not-found? (conj missing (second outcome)) missing))
-            ;; Fail fast: after the first real failure hand out nothing more —
-            ;; every dependent of the broken module would only retry its load
-            ;; and fail the same way.
-            (if (or (empty? jobs) (not (empty? failures)))
-              (do
-                (send pid :stop)
-                (project-load-drive jobs (dec live) downs failures missing))
-              (do
-                (send pid
-                  (let ([feature file] (first jobs)) [:job feature file]))
-                (project-load-drive (rest jobs) live downs failures missing)))))
-        ;; a down while workers are still live: a NORMAL exit is a worker already counted out at
-        ;; `:stop`; anything else died mid-job — its module's waiters were released by
-        ;; `require-one`, its outcome is lost, so report it and count it out
-        ([:down _ _ reason] (if (= reason :normal)
-                              (project-load-drive jobs live (dec downs) failures missing)
-                              (project-load-drive jobs
-                                (dec live)
-                                (dec downs)
-                                (conj failures [:failed "a load worker" reason])
-                                missing))))))
+;; The driver: hand each idle worker the next `[feature file]` until every worker has exited.
+;; `workers` are the pids not yet down, `stopped` those told to stop; `failed?` turns on at the
+;; first real failure. Answers the abnormal exit reasons seen. Every worker is monitored, so
+;; each exit — a normal one after `:stop` included — sends one `[:down …]`; all are taken here,
+;; so none is left in the caller's mailbox for a later `(receive (m m))` to mistake for its own.
+;; A worker is counted out by its pid, never by the order of messages: one told to stop may
+;; still die abnormally (a process its module linked to crashed), and one may exit `:normal`
+;; mid-job (its module called `exit`).
+(defn- project-load-drive (jobs workers stopped failed? deaths)
+  (if (empty? workers)
+    deaths
+    (receive
+      ([:next pid outcome]
+        (let (failed? (or failed?
+                        (and outcome
+                          (= (first outcome) :failed)
+                          (not (project-load-missing? (third outcome))))))
+          ;; Fail fast: after the first real failure hand out nothing more — every dependent
+          ;; of the broken module would only retry its load and fail the same way.
+          (if (or (empty? jobs) failed?)
+            (do
+              (send pid :stop)
+              (project-load-drive jobs workers (conj stopped pid) failed? deaths))
+            (do
+              (send pid (let ([feature file] (first jobs)) [:job feature file]))
+              (project-load-drive (rest jobs) workers stopped failed? deaths)))))
+      ;; a worker that died mid-job left its module unloaded (`require-one` released its
+      ;; waiters); the sequential pass after the pool loads it
+      ([:down _ pid reason] (project-load-drive jobs
+                              (disj workers pid)
+                              stopped
+                              failed?
+                              (if (= reason :normal) deaths (conj deaths reason)))))))
 
 ;; A module the pool could not load by key, or whose load met a require cycle across two
 ;; workers that the loader did not settle itself (`%require-cycle?` in the prelude) — either
@@ -758,19 +742,22 @@ only; `tests/` files come from [[collect-tests]].
   (let (jobs (map (seq/filter entries second) (fn (e) [(second e) (first e)]))
         n (math/min (project-load-pool-size) (count jobs))
         me (self))
-    (doseq (_ (range n))
-      (monitor (spawn (project-load-worker me))))
-    (let ([failures missing] (project-load-drive jobs n n [] []))
-      (doseq (f missing)
-        (binding (*require-parent* "") (reflect/load f)))
-      ;; The ORIGINAL error, location and all. A worker's `catch` holds only the message, and
-      ;; the worker that reports first is often a dependent of the module that failed — so
-      ;; re-load that file the sequential way, which raises exactly what a sequential build
-      ;; would have, where it was raised.
-      (when (not (empty? failures))
-        (let ([_ file e] (first failures))
-          (when (string? file) (binding (*require-parent* "") (reflect/load file)))
-          (error "loading " file ": " e))))))
+    (let (workers (into #{}
+                    (map (range n) (fn (_) (first (spawn-monitor (project-load-worker me))))))
+          deaths (project-load-drive jobs workers #{} false []))
+      ;; The pool is a prefetch; this pass is the build. Every module the pool did not leave
+      ;; loaded — one `require-one` could not find by key, one whose load failed or met a
+      ;; cross-process cycle, one fail-fast never handed out, one whose worker died — is loaded
+      ;; the sequential way, in walk order. A failure raises exactly what a sequential build
+      ;; would have, where it was raised (a worker's `catch` held only the message, and the
+      ;; worker that reports first is often a dependent of the module that failed); a load the
+      ;; race alone broke succeeds here, and the build goes on.
+      (doseq (e entries)
+        (when (and (second e) (not (%registry-member? '*features* (second e))))
+          (binding (*require-parent* "") (reflect/load (first e)))))
+      ;; A worker that died abnormally would have taken a sequential build down with it.
+      (when (not (empty? deaths))
+        (error "a parallel load worker exited: " (first deaths))))))
 
 (defn load-sources (root & opts)
   "Load every source file under `root`'s source paths, attributing each file's load-time requires to the root section (KI-37). `:skip-loaded` skips files whose feature is already loaded. A cold walk of many modules can load them in parallel, opt-in with `BROOD_LOAD_PARALLEL=1` (ADR-426).

@@ -579,9 +579,10 @@ pub(crate) struct HeapExtras {
     /// the error collected; without this a rethrow (`finally`, a cleanup then `(throw e)`)
     /// raised it afresh from the rethrow site, and a module's `(error …)` at load was
     /// reported at the outermost requirer's header. `throw` of a recorded payload takes its
-    /// origin back ([`Heap::take_caught_origin`]). Only heap payloads, matched by handle:
-    /// the record is GC-traced where `dynamics` is, so no other value can come to share
-    /// the handle while it is kept.
+    /// origin back ([`Heap::take_caught_origin`]). Only LOCAL heap payloads — objects this
+    /// process minted, never a shared literal or global — matched by handle: the record is
+    /// GC-traced where `dynamics` is, so no other value can come to share the handle while
+    /// it is kept.
     pub(crate) caught: Vec<crate::error::CaughtOrigin>,
 }
 
@@ -1645,7 +1646,13 @@ impl Heap {
     pub(crate) fn note_caught(&mut self, error: crate::error::LispError, caught: Value) {
         // A contract violation binds a map rebuilt from its payload, not the payload.
         let Some(payload) = error.payload else { return };
+        // Only a payload this process minted: a literal or a `def`'d sentinel lives in a
+        // shared region, one object to every raise of it, so a swallowed raise would lend
+        // its origin to a later, unrelated one.
         if !payload.same_heap_object(caught)
+            || payload
+                .heap_handle()
+                .is_none_or(|h| h.region() != crate::core::value::LOCAL)
             || (error.pos.is_none() && error.file.is_none() && error.trace.is_empty())
         {
             return;

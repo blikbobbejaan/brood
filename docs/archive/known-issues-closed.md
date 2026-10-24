@@ -14945,6 +14945,68 @@ looking for".
 Runs: [39950556262](https://github.com/broodlang/brood/actions/runs/39950556262) (`7ed008cf`),
 [39954644031](https://github.com/broodlang/brood/actions/runs/39954644031) (`e9e1af8b`).
 
+## KI-294 — the parallel cold load's driver counted workers by message order ✅ FIXED 2026-10-24
+
+**Symptom.** Found by review, never observed. Opt-in path only (`BROOD_LOAD_PARALLEL=1`).
+
+**Cause.** `project-load-drive` kept one count, `live`, lowered when it sent a worker `:stop`
+and again at any non-normal `[:down …]` while `live` was above zero (taken to mean "died
+mid-job"). A worker that died abnormally after its `:stop` (a process its module linked to
+crashed) was counted out twice: `live` reached 0 while another worker still waited on its
+`[:next …]`, and the driver, now only taking downs, blocked for good. A worker that exited
+`:normal` mid-job was never counted out. A worker's death was recorded as
+`[:failed "a load worker" reason]`, and the error path `reflect/load`ed that "file" — a
+file-not-found error in place of the exit reason. And after re-loading the first failed file
+sequentially the build raised regardless, so a failure only the race caused failed a build the
+re-load had just fixed.
+
+**Fix.** Workers are tracked by pid (`spawn-monitor`), each counted out by its own `:down`;
+the driver waits until the set is empty. The pool is a prefetch: a sequential pass after it
+loads, in walk order, every module whose feature is not provided, so a failure raises what a
+sequential build would, where it was raised. An abnormal worker exit is reported with its
+reason after that pass (it would have taken a sequential build down too).
+
+**Guard.** By construction — the double count needs a death between a worker receiving `:stop`
+and exiting, which no test can schedule. `crates/nest/tests/parallel_load.rs` green on the new
+driver.
+
+## KI-293 — a cross-process require cycle met under header clauses doubled its waits per level ✅ FIXED 2026-10-24
+
+**Symptom.** Found by review. P holds `a`, whose header chain `a → c1 → … → cd` reaches `b`,
+which Q holds while it waits on `a`. P backs out, but only after 2^(d+1) cycle waits of
+~250 ms, re-running `c1…cd`'s bodies each time; from d ≥ 6 Q's 30 s backstop force-loads `a`
+while P's load is in flight — KI-290's double load again.
+
+**Cause.** The header pre-pass (`%require-each-quietly`) catches every dependency error. It
+left a cycle error out of `*require-failed*` (it is meant to be retried) but did not rethrow
+it, so the error never reached the outermost `require-one`, which is what releases the claims
+Q waits on. The module's own header require then met the same cycle, and every level on the
+way out did the same. KI-290's guard requires in a module BODY, never under the pre-pass.
+
+**Fix.** The pre-pass rethrows a cycle error.
+
+**Guard.** `tests/modules_test.blsp` "a require cycle met under header clauses backs out once,
+not once per level": `hcyc-a → hcyc-c1 → hcyc-c2` (header `:use`s) against `hcyc-b`; the middle
+module reports each run of its body. Sabotaged (the cycle error swallowed again): 5 runs, not 2.
+
+## KI-292 — a shared constant thrown by two raises reported the first one's origin ✅ FIXED 2026-10-24
+
+**Symptom.** Found by review of ADR-427. `(def bad "bad")`, `(defn a () (throw bad))`,
+`(defn b () (throw bad))`: after `(try (a) (catch _ nil))`, an uncaught `(b)` was reported at
+`a`'s line with `a`'s trace.
+
+**Cause.** ADR-427 recorded the origin of any heap payload, keyed by handle. A literal or a
+`def`'d global lives in a shared region — one object to every raise of it — so two independent
+raises looked like one error caught and rethrown. A parked process's record of such a payload
+also kept an old RUNTIME code generation referenced.
+
+**Fix.** Only LOCAL payloads are recorded (`Heap::note_caught`). `error` builds its message
+with `str`, always a fresh LOCAL string, so ADR-427's cases keep their origin; a constant
+thrown and rethrown is located at the rethrow, as before ADR-427.
+
+**Guard.** `tests/rethrow_position_test.blsp` "a shared payload thrown by two raises is two
+errors, not one rethrown" — red with the region test removed.
+
 ## KI-291 — a user `error` rethrown by a catch-and-rethrow lost its position ✅ FIXED 2026-10-24
 
 **Symptom.** A module that calls `(error "boom")` while it loads, required through a chain, is

@@ -969,16 +969,19 @@ not a header, or does not read: the load itself reports a malformed one."
     (if (string? src) (%with-header-deps src load) (load))))
 
 ;; `failed` gains each module whose load threw, for the header's own require to raise again in
-;; context (`*require-failed*`). Not a broken cross-process cycle: that one is meant to be
-;; retried (`%require-after-break`).
+;; context (`*require-failed*`). Not a broken cross-process cycle: that one is RETHROWN, so it
+;; reaches the outermost `require-one` at once, which releases the claims the other processes
+;; wait on and retries (`%require-after-break`). Swallowed here, the header's own require met
+;; the cycle again, every header level on the way out doubled the waits (2^depth), and a deep
+;; enough chain held its claim past the other process's 30 s backstop — KI-290's double load.
 (defn- %require-each-quietly (modules failed)
   (if (empty? modules)
     failed
     (let (e (try (do (require-one (first modules)) nil) (catch e e)))
-      (%require-each-quietly (rest modules)
-        (if (and e (not (includes? (error-message e) *require-cycle*)))
-          (assoc failed (->string (first modules)) e)
-          failed)))))
+      (cond
+        (not e) (%require-each-quietly (rest modules) failed)
+        (includes? (error-message e) *require-cycle*) (throw e)
+        else (%require-each-quietly (rest modules) (assoc failed (->string (first modules)) e))))))
 
 ;; `%require-force`'s body, split out only so the dynamic binding above wraps every branch.
 (defn- %require-force-in (key)

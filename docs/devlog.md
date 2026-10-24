@@ -3513,3 +3513,15 @@ discards such an attempt and retries in a fresh interpreter, up to five times. T
 upgrade field reads the code pointers, not `inline_installed`, which
 `jit_tier_frame_pairing` keeps to an allowlist (the first cut tripped it). Not run on this
 machine.
+
+2026-10-24 (review cycle 1: KI-292, KI-293, KI-294): four read-only reviews of the week's
+riskiest commits — ADR-427's record, KI-290's cycle break, the parallel cold load, the GC and
+process perf commits (the last clean). Three defects. KI-292: ADR-427 recorded shared payloads,
+so a dropped raise of a literal or `def`'d sentinel lent its origin to a later, independent raise
+of it; only LOCAL payloads are recorded now. KI-293: the header pre-pass swallowed a
+cross-process cycle error, so the backing-out process met the cycle again at every header level
+(2^depth waits, module bodies re-run, a deep chain past the 30 s backstop); it rethrows now.
+KI-294: the parallel driver counted workers by message order and reported a dead worker as a
+missing file; it tracks pids, and a sequential pass over whatever the pool left unloaded is the
+build. The first two guards sabotage-verified locally (red, the cycle case at exactly the 5 runs
+the trace predicted), the third by construction.
