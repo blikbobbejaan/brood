@@ -120,7 +120,7 @@ impl<'a> Canvas<'a> {
 /// through. Shared by every window's renderer (so `gui-font-register` reaches them
 /// all), like the old family registry.
 ///
-/// Two font databases, on purpose (ADR-432). The SHAPING one (`fs`) holds only the faces
+/// Two font databases, on purpose (ADR-442). The SHAPING one (`fs`) holds only the faces
 /// in use: the bundled DejaVu and emoji, the families registered, and the fallback faces
 /// a missing glyph pulled in. The SYSTEM one (`system`) is every installed face, scanned
 /// from the fontconfig directories the first time something needs it — a family asked
@@ -586,7 +586,7 @@ pub(crate) struct Renderer {
     /// `cov -> lifted cov` for the current `text_contrast`, 256 entries; identity at 1.0.
     cov_lut: Box<[u8; 256]>,
     /// Whether runs of punctuation are shaped as one unit, so a font's programming
-    /// ligatures (`->`, `!=`, `===`) form (`gui-ligatures!`, ADR-432). Off by default.
+    /// ligatures (`->`, `!=`, `===`) form (`gui-ligatures!`, ADR-442). Off by default.
     ligatures: bool,
 
     // Keyed by (cluster, family id, bold, italic, scale, subpixel, PX BITS): the same
@@ -1028,7 +1028,7 @@ impl Renderer {
         let mut shared = self.families.borrow_mut();
         let shared = &mut *shared;
         // A glyph neither the family nor a bundled face has is drawn from an installed
-        // font that has it, on the same baseline and in the same cell span (ADR-432).
+        // font that has it, on the same baseline and in the same cell span (ADR-442).
         let fam = shared.fallback_family(g, &fam, bold, italic).unwrap_or(fam);
         // A ligature unit (several clusters, `text_units`) puts each cluster's glyph at
         // its own cell, not at the font's fractional pen position.
@@ -2094,7 +2094,7 @@ mod grid_stability_tests {
 
 #[cfg(test)]
 mod font_tests {
-    //! ADR-432: system fonts by name, fallback by coverage, ligature units. Written for CI
+    //! ADR-442: system fonts by name, fallback by coverage, ligature units. Written for CI
     //! (they read no font a stock runner might lack, except where noted), never run on
     //! the desktop they were written on.
     use super::*;

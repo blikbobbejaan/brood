@@ -55,7 +55,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["source", "lang", "kinds", "keywords?"],
         "The fontify query: [start end kind] for the OUTERMOST nodes whose :kind is in `kinds` (a list/vector of keywords), in source order, not descending into one that matched. With keywords? true, an anonymous token beginning with a letter is also reported, as kind :__keyword__ — the cross-language keyword rule, which no grammar names. Which kinds get which face stays with the caller; what this avoids is projecting every node into a map to read its kind and discard the rest, which is what a windowed fontify did on every keystroke.",
         tree_sitter_spans);
-    // Tree HANDLES (ADR-433): a whole document's parse tree, held across edits and
+    // Tree HANDLES (ADR-443): a whole document's parse tree, held across edits and
     // reparsed incrementally, queried over a range — what an editor's view keeps per
     // buffer instead of re-parsing a window of text on every keystroke.
     primitives.def(
@@ -189,7 +189,7 @@ pub(super) fn tree_sitter_load_grammar(args: &[Value], _: EnvId, heap: &mut Heap
     crate::host::treesit::load_grammar(&path, &lang)
 }
 
-// ---- tree handles (ADR-433) ----------------------------------------------------------
+// ---- tree handles (ADR-443) ----------------------------------------------------------
 
 /// The keyword list a span query names, as strings.
 fn ts_kinds(heap: &Heap, who: &'static str, v: Value) -> Result<Vec<String>, LispError> {

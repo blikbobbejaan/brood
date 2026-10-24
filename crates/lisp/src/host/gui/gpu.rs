@@ -11,7 +11,7 @@
 //! clusters are packed into as they first appear), so a page of text is one batch, not
 //! one draw per glyph. The swapchain presents MAILBOX by default (low latency, no
 //! tearing), FIFO under `{:vsync true}`, and IMMEDIATE only under `{:vsync false}`, so a
-//! sim that asks can still run at the rate its work allows (ADR-430).
+//! sim that asks can still run at the rate its work allows (ADR-440).
 //!
 //! The op walk mirrors the CPU painter's (`paint::render_ops`) arm for arm — the same
 //! grid origin, the same scroll shift, the same region metrics and clip band, the same
@@ -21,7 +21,7 @@
 //! the fragment shader discards outside of. The one visible difference is text
 //! anti-aliasing: the GPU samples one coverage per pixel (grey AA) where the CPU path
 //! can render subpixel (LCD) text at 1× — a per-channel blend wants dual-source blending
-//! and a subpixel order the compositor may scale away (ADR-430). The blending otherwise
+//! and a subpixel order the compositor may scale away (ADR-440). The blending otherwise
 //! matches: text lerps in the encoded space with the contrast lift in the shader, and
 //! translucent geometry blends in linear light through an sRGB view of the frame.
 //!
@@ -869,7 +869,7 @@ impl FrameBuilder {
     }
 }
 
-// ---- the run cache: damage tracking for the GPU target (ADR-430) -------------------
+// ---- the run cache: damage tracking for the GPU target (ADR-440) -------------------
 //
 // The CPU painter retains its canvas and re-rasterises only the rows a frame changed
 // (`paint::strip_diff`). A swapchain image is not retained — every frame is drawn whole
@@ -930,7 +930,7 @@ struct RunContext {
     /// the window background: the ground a run without `:bg` is lifted against
     ground: [u8; 3],
     /// the font registration the glyphs were baked under, and whether ligature units
-    /// were shaped (ADR-432): either changes the quads a run produces
+    /// were shaped (ADR-442): either changes the quads a run produces
     fonts: (u64, bool),
 }
 
@@ -1692,7 +1692,7 @@ pub struct GpuWindow {
     /// The particle systems, made the first time a frame carries an emitter.
     particles: Option<ParticlesGpu>,
     /// Every text run the last frame drew, as quads — what a frame that repeats a run
-    /// reuses instead of re-shaping it (`RunCache`, ADR-430).
+    /// reuses instead of re-shaping it (`RunCache`, ADR-440).
     runs: RunCache,
 }
 
@@ -1729,7 +1729,7 @@ fn pick_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
         .or_else(|| formats.first().copied())
 }
 
-/// The present mode for the window's `:vsync` option (ADR-430):
+/// The present mode for the window's `:vsync` option (ADR-440):
 ///
 /// - `None` (the default) — MAILBOX where the platform has it, else FIFO. Mailbox is the
 ///   low-latency mode that never tears: a frame replaces the one waiting for the next
@@ -1871,7 +1871,7 @@ impl GpuWindow {
             // One frame in flight: the CPU never runs more than a frame ahead of the
             // display, so a keystroke's frame is the next one shown, not the one after.
             // An editor's frames are cheap; the throughput a deeper queue buys a game is
-            // latency here (ADR-430).
+            // latency here (ADR-440).
             desired_maximum_frame_latency: 1,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: linear_format.into_iter().collect(),
@@ -2308,7 +2308,7 @@ impl GpuWindow {
         // The contrast lift applies to text lighter than what it lands on. The CPU
         // compares per pixel; here the ground is the run's own background, or — for a
         // transparent face — the window's, since what else lies under it is not known
-        // until the blend (ADR-430).
+        // until the blend (ADR-440).
         let lift = luma(fg) > luma(if paint_bg { bg } else { ground });
         let scale = face.scale.max(1) as usize;
         let ch_s = scale as f32 * ch;
@@ -2318,7 +2318,7 @@ impl GpuWindow {
             RunPlace::Cell { col } => {
                 let mut cx = col as usize;
                 // Ligature units when `gui-ligatures!` is on: a punctuation run is one
-                // glyph canvas spanning its cells (`text_units`, ADR-432).
+                // glyph canvas spanning its cells (`text_units`, ADR-442).
                 for cluster in text_units(s, renderer.ligatures()) {
                     if cluster == "\t" {
                         let cells = cluster_cells_at(cluster, cx, TAB_WIDTH);
@@ -2982,7 +2982,7 @@ impl GpuWindow {
 }
 
 /// Where one GPU paint's time went, in microseconds —
-/// what the input-to-present trace splits a latency sample by (ADR-430). `encode` is the
+/// what the input-to-present trace splits a latency sample by (ADR-440). `encode` is the
 /// op walk (shaping the runs that changed), `upload` the instance writes, `acquire`
 /// waiting for a swapchain image (where a FIFO present blocks), `submit` recording and
 /// submitting the passes, `present` handing the image to the compositor.

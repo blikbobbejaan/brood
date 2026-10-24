@@ -201,7 +201,7 @@
           (r-display me))
         :left)
       ;; a, b, (bad throws — no render; rolled back to b, which is already on screen, so
-      ;; nothing is redrawn — ADR-434), c: the loop recovered to the last good frame.
+      ;; nothing is redrawn — ADR-444), c: the loop recovered to the last good frame.
       (assert= (drain-saw []) (list :a :b :c))))
 
   (test "a throwing update drops the bad input and keeps the current model"
@@ -413,7 +413,7 @@
         (ci-display me))
       (assert= (drain-saw []) (list 0 1 2))))) ; per-input frames: 0, 1, 2
 
-;; ADR-434: a turn whose model comes back `=` to the one on screen renders nothing.
+;; ADR-444: a turn whose model comes back `=` to the one on screen renders nothing.
 (describe "ui-run — a turn that changes nothing draws nothing"
   (test "inputs that leave the model unchanged cost no view and no draw"
     (let (me (self))

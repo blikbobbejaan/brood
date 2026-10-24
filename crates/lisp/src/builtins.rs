@@ -194,7 +194,7 @@ pub fn register(heap: &mut Heap, root: EnvId) {
     tab::register(&mut primitives);
     // And again: the native half of `json/encode`.
     json::register(&mut primitives);
-    // And again: the GUI font natives of ADR-432 (`%gui-font-info`, `%gui-ligatures!`).
+    // And again: the GUI font natives of ADR-442 (`%gui-font-info`, `%gui-ligatures!`).
     gui_fonts::register(&mut primitives);
 }
 

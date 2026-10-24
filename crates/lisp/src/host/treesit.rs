@@ -542,7 +542,7 @@ pub fn spans(
     Ok(heap.alloc_vector(out))
 }
 
-// ---- tree handles: a parse tree a caller keeps, edits and queries (ADR-433) ----------
+// ---- tree handles: a parse tree a caller keeps, edits and queries (ADR-443) ----------
 //
 // The slice-based queries above take TEXT and find the tree themselves, which is the
 // right shape for a one-off question and the wrong one for an editor's view: the text has

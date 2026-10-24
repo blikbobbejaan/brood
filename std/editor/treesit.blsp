@@ -31,7 +31,7 @@ point` — `point-forward` / `point-backward` (every named node),
 `register-definitions`. `face-of` is built with `(face-of-kinds {kind face-name})`.
 A view keeps a TREE per document instead: `open-tree` parses it once, `update-tree`
 reparses it incrementally after an edit, `fontify-tree` colours a char range of it without
-parsing, and `tree-changes` says which ranges an edit recoloured (ADR-433).
+parsing, and `tree-changes` says which ranges an edit recoloured (ADR-443).
 Per-language face tables + keymaps are policy in the editor. `(require
 'editor/treesit)`."
   (:use editor/face)
@@ -255,7 +255,7 @@ node→face function itself."
     kind->face-name))
 (sig fontify (string keyword any -> any))
 
-;; ---- a tree per document: incremental parsing (ADR-433) ----------------------------
+;; ---- a tree per document: incremental parsing (ADR-443) ----------------------------
 ;; `fontify` takes TEXT, which makes it a pure service and a poor fit for a view: the
 ;; caller slices a window out of the buffer, the kernel re-derives what changed by
 ;; diffing it against whatever it parsed last, and the window has no context above it —

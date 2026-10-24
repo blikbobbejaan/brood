@@ -882,7 +882,7 @@ code paints to a terminal or a GUI window unchanged.
 - **Where a turn's time goes** = `BROOD_UI_TRACE=1`: one stderr line per phase —
   `ui-run: view=4.71ms 236 ops`, `draw=`, `update=… <input>` — the Brood side of a
   keystroke; `BROOD_GUI_TRACE=1` is the window's paint, the other half, plus
-  `[gui-latency] input->present` per answered input (`gui/latency id` returns them, ADR-430).
+  `[gui-latency] input->present` per answered input (`gui/latency id` returns them, ADR-440).
 - **A fragment that need not re-render** = `(ui-memo key deps thunk)` (ADR-336): inside
   a running loop the previous turn's ops are reused while `deps` are `=` — a buffer
   line of its rope and spans, a status bar of its segments — else `(thunk)` runs. Name

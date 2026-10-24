@@ -862,7 +862,7 @@ pub(in crate::builtins) fn gui_open(args: &[Value], _: EnvId, heap: &mut Heap) -
     //     (at most one undelivered at a time); `:app` (the default) drops it (ADR-086).
     //   :ime false         — no input method in this window (on by default).
     //   :wheel :glide      — a wheel notch glides; `:lines` (the default) scrolls its
-    //     three lines at once (ADR-431).
+    //     three lines at once (ADR-441).
     let keyword_option = |key: &str, allowed: &[&str]| -> Result<Option<String>, LispError> {
         match opts.and_then(|id| heap.map_get(id, value::kw(key))) {
             None | Some(Value::Nil) => Ok(None),
@@ -917,7 +917,7 @@ pub(in crate::builtins) fn gui_size_px(args: &[Value], _: EnvId, heap: &mut Heap
 /// `(%gui-latency id)` — window `id`'s recent input-to-present samples, oldest first, as
 /// maps of milliseconds: `:total` (input to present) and `:paint` (the paint's share),
 /// plus the GPU paint's `:encode` `:upload` `:acquire` `:submit` `:present` phases when
-/// the GPU target drew it (ADR-430). GC-safe: a builtin never fires GC mid-execution,
+/// the GPU target drew it (ADR-440). GC-safe: a builtin never fires GC mid-execution,
 /// so the maps stay live until the vector holds them.
 pub(in crate::builtins) fn gui_latency(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let id = gui_window_id(heap, "%gui-latency", arg(args, 0))?;
@@ -2454,7 +2454,7 @@ mod key_to_value_tests {
     }
 
     // Function keys, Insert and Super spell the way the GUI frontend spells them
-    // (ADR-431), so `<f5>`, `C-<f5>`, `<insert>` and `s-x` bind the same in both.
+    // (ADR-441), so `<f5>`, `C-<f5>`, `<insert>` and `s-x` bind the same in both.
     #[test]
     fn function_keys_insert_and_super_are_named() {
         assert_eq!(kw_of(KeyCode::F(5), KeyModifiers::NONE), "f5");

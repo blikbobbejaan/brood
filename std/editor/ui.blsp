@@ -116,7 +116,7 @@ suits it: `:title` names it, `:width`/`:height` size it (logical pixels), `:inpu
 and `:vsync true` are the game options (ADR-374), `:key-repeat :os` hands a held key's repeat
 to the OS (the user's delay and rate; at most one undelivered), `:ime false` turns the input
 method off and `:wheel :glide` makes a wheel notch glide instead of scrolling its three lines
-at once (ADR-431), and `{:decorations false}` drops the OS title bar and
+at once (ADR-441), and `{:decorations false}` drops the OS title bar and
 frame for an app that draws its own chrome (a browser's tab strip and toolbar) and
 would otherwise sit under a redundant second title. A shipped app should also pass
 `:app-id` — the desktop application id the installed `<app-id>.desktop` entry is
@@ -712,7 +712,7 @@ anyway; a throwing `update` still drops just its one input, and a `:close`/`:foc
 mid-burst is still honoured. Off leaves the per-input behaviour (and every existing app)
 exactly as before.
 
-**A turn that changes nothing renders nothing (ADR-434).** When the model after a turn
+**A turn that changes nothing renders nothing (ADR-444).** When the model after a turn
 is `=` to the one last drawn, at the same grid, the loop skips `view` and `:draw` and goes
 straight back to the poll. A key release or a timer that found no work costs no frame.
 This is why `view` has to be a function of the model and the grid alone. A view that

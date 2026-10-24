@@ -103,7 +103,7 @@ fn shape_at(zones: &[Zone], x: isize, y: isize) -> Option<CursorShape> {
 
 // Bundled monospace font, four styles (see assets/README.md) — the default
 // `:mono` family; a face's :bold/:italic pick the style. Installed fonts are found
-// by name only when asked for (`gui-font-register` with `:family-name`, ADR-432).
+// by name only when asked for (`gui-font-register` with `:family-name`, ADR-442).
 const FONT_REGULAR: &[u8] = include_bytes!("../../../assets/DejaVuSansMono.ttf");
 
 const FONT_BOLD: &[u8] = include_bytes!("../../../assets/DejaVuSansMono-Bold.ttf");
@@ -376,7 +376,7 @@ enum UserEvent {
     },
     /// Register a font family (interned `name`) by an INSTALLED family name, found in
     /// the system font database (scanned on first use) with each style picked by weight
-    /// and slant. Behind `gui-font-register` with `:family-name` (ADR-432).
+    /// and slant. Behind `gui-font-register` with `:family-name` (ADR-442).
     RegisterInstalledFamily { name: u32, family_name: String },
     /// Report where family `family` (`None` = the global default) got its faces, and
     /// the fallback fonts loaded so far. Behind `gui-font-info`.
@@ -413,7 +413,7 @@ struct WinHandle {
     /// source of truth for a held key — immune to a missed key-up (ADR-086).
     held_key: Arc<Mutex<Option<Key>>>,
     /// The last `LATENCY_SAMPLES` input-to-present samples, newest last, for
-    /// `gui-latency` (ADR-430).
+    /// `gui-latency` (ADR-440).
     latency: Arc<Mutex<VecDeque<LatencySample>>>,
 }
 
@@ -798,7 +798,7 @@ pub fn held_key(id: u64) -> Result<Option<Key>, String> {
 }
 
 /// `(gui-latency id)` — window `id`'s recent input-to-present samples, oldest first
-/// (at most `LATENCY_SAMPLES`; empty headless, where nothing is painted). ADR-430.
+/// (at most `LATENCY_SAMPLES`; empty headless, where nothing is painted). ADR-440.
 pub fn latency(id: u64) -> Result<Vec<LatencySample>, String> {
     let w = lock(windows());
     let h = w.get(&id).ok_or("gui window not open")?;
@@ -1253,7 +1253,7 @@ struct Win {
     /// even when Brood's render pipeline is slower than the 12 ms tick rate.
     scroll_pending: bool,
     /// Who repeats a held key (`WindowSpec::key_repeat`), and — under `KeyRepeat::Os` —
-    /// the gate that keeps at most one OS repeat undelivered (ADR-431).
+    /// the gate that keeps at most one OS repeat undelivered (ADR-441).
     key_repeat: KeyRepeat,
     repeat_gate: Arc<RepeatGate>,
     /// Whether an input method may compose in this window (`WindowSpec::ime`); whether
@@ -1275,7 +1275,7 @@ struct Win {
     /// Whether the window has been made visible. It is built hidden and shown once its
     /// first real frame (one the app drew) has been painted, or after `SHOW_TIMEOUT`
     /// with whatever it has — so opening never flashes an empty background, and a
-    /// window whose app never draws still appears (ADR-430).
+    /// window whose app never draws still appears (ADR-440).
     shown: bool,
     /// Whether the app has drawn a frame yet. Until it has, a redraw paints nothing:
     /// the only thing to paint would be the bare background.
@@ -1283,7 +1283,7 @@ struct Win {
     /// When the window was built, for `SHOW_TIMEOUT`.
     opened_at: Instant,
     /// When the earliest input not yet answered by a frame arrived (a key press, a
-    /// button, a wheel step) — consumed by the next `UserEvent::Draw` (ADR-430).
+    /// button, a wheel step) — consumed by the next `UserEvent::Draw` (ADR-440).
     input_at: Option<Instant>,
     /// The input stamp the frame waiting to be painted answers, carried to the paint so
     /// it can report input -> present.
@@ -1293,7 +1293,7 @@ struct Win {
 }
 
 /// How long a window waits, hidden, for its app's first frame before it is shown
-/// anyway (ADR-430). Long enough that a Brood app's first draw normally lands inside
+/// anyway (ADR-440). Long enough that a Brood app's first draw normally lands inside
 /// it; short enough that a slow one still gets a window promptly.
 const SHOW_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -1384,7 +1384,7 @@ fn build_window(
     let window = Rc::new(window);
     // An input method composes in the window unless the app opted out (`{:ime false}`):
     // winit allows none by default, which left dead keys, compose and every CJK input
-    // method unable to type here at all (ADR-431).
+    // method unable to type here at all (ADR-441).
     window.set_ime_allowed(spec.ime);
     // A `gui-gpu` build draws on the GPU unless BROOD_GUI_GPU=0; a GPU that cannot be
     // brought up (no adapter, no surface) is reported once and the window falls back to
@@ -1704,7 +1704,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     // Brood finished rendering; the next momentum step may fire.
                     w.scroll_pending = false;
                     // The first frame to arrive after an input is taken as the one that
-                    // answers it (ADR-430): the mailbox between hides which turn of the
+                    // answers it (ADR-440): the mailbox between hides which turn of the
                     // app's loop the input caused, so this is the honest approximation.
                     let input_at = w.input_at.take();
                     // A frame identical to the one on screen — a timer that fired and
@@ -1929,7 +1929,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
         let Some(w) = self.wins.get_mut(&window_id) else {
             return;
         };
-        // Stamp the input this event is (ADR-430): a key press, a button, a wheel step.
+        // Stamp the input this event is (ADR-440): a key press, a button, a wheel step.
         // The earliest unanswered one is kept; the next frame to arrive answers it. A
         // press the arms below drop (an auto-repeat) is stamped too — the frame the
         // app's own repeat draws answers it, which is what the user waits on.
@@ -1993,7 +1993,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // the original bug: it outran the mailbox drain, so a backlog kept
                 // "playing" after key-up (the cursor scrolling on past).
                 //
-                // Under `{:key-repeat :os}` (ADR-431) the repeat is not dropped but
+                // Under `{:key-repeat :os}` (ADR-441) the repeat is not dropped but
                 // delivered as another press of the held key — through `RepeatGate`, so
                 // at most one is ever undelivered and a slow frame cannot rebuild that
                 // backlog. A keystroke that typed several characters (a compose
@@ -2070,7 +2070,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     );
                 }
             }
-            // Focus GAIN, as `:focus-in` — the pair of `:blur` (ADR-431). What an app
+            // Focus GAIN, as `:focus-in` — the pair of `:blur` (ADR-441). What an app
             // needs to repaint focus-dependent chrome (a hollow cursor turned solid), to
             // re-check files changed while it was away, and to know the held-key state it
             // dropped on `:blur` starts clean. Not `:focus`: that is `ui-run`'s
@@ -2078,7 +2078,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
             WindowEvent::Focused(true) => {
                 deliver(w.subscriber, Message::Keyword(value::intern("focus-in")));
             }
-            // The input method (ADR-431). A composition in progress is `[:preedit text
+            // The input method (ADR-441). A composition in progress is `[:preedit text
             // range]` — shown at point by the app, not inserted — and an empty one clears
             // it; a commit is `[:text …]`, or a plain key when the IME merely passed one
             // character through (`commit_message`). A disabled IME drops whatever
@@ -2296,7 +2296,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                         if dy == 0.0 {
                             return;
                         }
-                        // `{:wheel :lines}` (the default, ADR-431): the notch's whole
+                        // `{:wheel :lines}` (the default, ADR-441): the notch's whole
                         // distance at once, as a terminal and Emacs scroll — no glide, no
                         // streak. A notch the app has not drawn the last one of yet joins
                         // the backlog (`flush_wheel`), so a spun wheel is one message per
@@ -2393,7 +2393,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // "quantum" guard, so it gets its own guard here.
                 // Nothing drawn yet and still hidden: painting now would present the bare
                 // background, the flash on open. `about_to_wait` shows the window after
-                // `SHOW_TIMEOUT` if the app never draws (ADR-430).
+                // `SHOW_TIMEOUT` if the app never draws (ADR-440).
                 if !w.drawn && !w.shown {
                     return;
                 }
@@ -2450,7 +2450,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
         let mut next_wakeup: Option<Instant> = None;
         for w in self.wins.values_mut() {
             // A window whose app has not drawn within `SHOW_TIMEOUT` is shown anyway,
-            // painted with what it has: never an invisible window (ADR-430).
+            // painted with what it has: never an invisible window (ADR-440).
             if !w.shown {
                 let due = w.opened_at + SHOW_TIMEOUT;
                 if now >= due {
@@ -2585,7 +2585,7 @@ fn apply_font(w: &mut Win, family: Option<u32>, px: Option<f32>) {
 }
 
 /// Tell the input method where the caret is, so its candidate window opens beside it
-/// rather than in a screen corner (ADR-431): the frame's `Op::Cursor` cell
+/// rather than in a screen corner (ADR-441): the frame's `Op::Cursor` cell
 /// (`ime_cursor_area`), offset by the grid origin into window pixels. Only when it moved —
 /// a frame per keystroke must not cost an IME round trip each.
 fn update_ime_area(w: &mut Win) {
@@ -2615,7 +2615,7 @@ fn update_ime_area(w: &mut Win) {
     );
 }
 
-/// Record one input-to-present sample (ADR-430): from `input_at` (the GUI thread
+/// Record one input-to-present sample (ADR-440): from `input_at` (the GUI thread
 /// received the input) to `presented` (the paint of the first frame that arrived after
 /// it returned from its present), with the paint's own share and, on the GPU target,
 /// its phases. Kept for `gui-latency`; printed under `BROOD_GUI_TRACE=1` (or a

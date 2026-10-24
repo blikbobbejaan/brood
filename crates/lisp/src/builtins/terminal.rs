@@ -216,7 +216,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![int], vec_ty),
         &["id"],
-        "Window id's recent input-to-present samples, oldest first (at most 64), each a map of milliseconds: :total — from the GUI thread receiving an input (a key press, a mouse button, a wheel step) to the paint of the first frame that arrived after it returning from its present — and :paint, that paint's share; a frame drawn by the GPU render target adds its phases :encode :upload :acquire :submit :present. Which frame answers an input cannot be known across the app's mailbox, so the next frame drawn is taken as the answer; a present returning means the compositor has the frame, not that the panel shows it (up to one refresh more). Empty headless. BROOD_GUI_TRACE=1 prints each sample as it is taken. ADR-430.",
+        "Window id's recent input-to-present samples, oldest first (at most 64), each a map of milliseconds: :total — from the GUI thread receiving an input (a key press, a mouse button, a wheel step) to the paint of the first frame that arrived after it returning from its present — and :paint, that paint's share; a frame drawn by the GPU render target adds its phases :encode :upload :acquire :submit :present. Which frame answers an input cannot be known across the app's mailbox, so the next frame drawn is taken as the answer; a present returning means the compositor has the frame, not that the panel shows it (up to one refresh more). Empty headless. BROOD_GUI_TRACE=1 prints each sample as it is taken. ADR-440.",
         gui_latency);
     primitives.def(
         "%gui-texture",

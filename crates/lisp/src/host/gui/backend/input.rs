@@ -221,7 +221,7 @@ pub(super) fn key_modifiers(mods: ModifiersState) -> KeyModifiers {
 
 /// The base name of a named key that carries its modifiers in the name — the arrows,
 /// editing keys, F1–F24 and the rest of the keys a keyboard has beyond the typewriter
-/// ones (ADR-431). Tab, Escape and Space are not here: each has its own rule in
+/// ones (ADR-441). Tab, Escape and Space are not here: each has its own rule in
 /// `translate_key`. The names are the terminal frontend's (`builtins::key_to_value`)
 /// and `std/vt`'s, so a key reads the same in a window, in a terminal and to a program
 /// under a pty. Lock keys, PrintScreen and bare modifiers are not keys an app binds.
@@ -308,7 +308,7 @@ pub(super) fn shifted_chord_char(logical: Option<char>, base: char) -> char {
 /// The text a plain keystroke (no Control / Alt / Super) typed, when it is MORE than one
 /// character — a compose sequence or a layout key that types several. Delivered as
 /// `[:text "…"]` rather than squeezed into one key (the first character was all that
-/// survived before ADR-431). A one-character keystroke is not text: it stays the 1-char
+/// survived before ADR-441). A one-character keystroke is not text: it stays the 1-char
 /// key string `translate_key` makes of it, so every keymap that binds a character binds
 /// it however it was typed.
 pub(super) fn typed_text(ke: &KeyEvent, mods: ModifiersState) -> Option<String> {
@@ -505,7 +505,7 @@ fn find_cursor(
 }
 
 /// The gate that keeps at most ONE OS auto-repeat undelivered per window
-/// (`{:key-repeat :os}`, ADR-431). A repeat is delivered with a credit charged here; the
+/// (`{:key-repeat :os}`, ADR-441). A repeat is delivered with a credit charged here; the
 /// credit comes back when the message leaves the mailbox (`process::deliver_credited`),
 /// and until it does, further repeats are dropped. So an app whose frame is slower than
 /// the repeat rate repeats once per turn instead of queueing a burst that plays on after

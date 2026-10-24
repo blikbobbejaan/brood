@@ -73,7 +73,7 @@ impl Default for Face {
 
 /// What `gui-font-info` reports about one font family: where its faces came from, so a
 /// user who asked for "JetBrains Mono" can see which file they got — or that they got
-/// the bundled DejaVu because nothing by that name is installed (ADR-432). Plain data,
+/// the bundled DejaVu because nothing by that name is installed (ADR-442). Plain data,
 /// defined here rather than in the backend so the builtin compiles without the GUI.
 #[derive(Clone, Debug, Default)]
 pub struct FontInfo {
@@ -134,20 +134,20 @@ pub struct WindowSpec {
     /// allowed (IMMEDIATE where the platform has it); `None`, the default, is the
     /// low-latency choice that never tears (MAILBOX where available, else FIFO).
     /// Only the GPU render target honours it: the CPU path presents synchronously
-    /// whatever this says (ADR-430).
+    /// whatever this says (ADR-440).
     pub vsync: Option<bool>,
-    /// Who repeats a held key (the `{:key-repeat …}` open option, ADR-431).
+    /// Who repeats a held key (the `{:key-repeat …}` open option, ADR-441).
     pub key_repeat: KeyRepeat,
     /// True to let an input method compose text in this window (the `{:ime …}` open
     /// option, on by default): its preedit arrives as `[:preedit text range]`, its
     /// commits as `[:text text]`, and the candidate window is placed at the frame's
     /// cursor. A game that reads raw keys can turn it off.
     pub ime: bool,
-    /// What a mouse-wheel notch does (the `{:wheel …}` open option, ADR-431).
+    /// What a mouse-wheel notch does (the `{:wheel …}` open option, ADR-441).
     pub wheel: WheelMode,
 }
 
-/// Who repeats a held key in a GUI window (ADR-431).
+/// Who repeats a held key in a GUI window (ADR-441).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum KeyRepeat {
     /// The app does (`{:key-repeat :app}`, the default): the OS auto-repeat is dropped and
@@ -161,7 +161,7 @@ pub enum KeyRepeat {
     Os,
 }
 
-/// What one mouse-wheel notch does in a GUI window (ADR-431). A trackpad's pixel deltas
+/// What one mouse-wheel notch does in a GUI window (ADR-441). A trackpad's pixel deltas
 /// and their momentum are the same under both.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum WheelMode {
@@ -193,7 +193,7 @@ impl Default for WindowSpec {
     }
 }
 
-/// One input-to-present measurement of a window (ADR-430, `gui-latency`): from the GUI
+/// One input-to-present measurement of a window (ADR-440, `gui-latency`): from the GUI
 /// thread receiving an input (a key press, a mouse button, a wheel step) to the paint
 /// of the first frame that ARRIVED after it returning from its present. Which frame
 /// answers which input cannot be known across the app's mailbox, so "the next frame

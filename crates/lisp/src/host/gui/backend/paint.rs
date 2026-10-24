@@ -912,7 +912,7 @@ pub(super) fn render_ops(
                 let mut cx = *col as usize;
                 let bg_packed = pack(bg);
                 // With `gui-ligatures!` on, a punctuation run is ONE unit — shaped together
-                // so the font's ligatures form, one canvas spanning its cells (ADR-432).
+                // so the font's ligatures form, one canvas spanning its cells (ADR-442).
                 for g in text_units(s, r.ligatures()) {
                     // A raw tab — the frontend has no line column to measure from, so
                     // it advances to the next SCREEN stop, as a terminal would (an app

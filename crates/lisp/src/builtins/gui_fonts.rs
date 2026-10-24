@@ -1,4 +1,4 @@
-//! The GUI font natives added by ADR-432, registered last for the intern-order reason
+//! The GUI font natives added by ADR-442, registered last for the intern-order reason
 //! `editor_native` gives: `%gui-font-info` (where a family's faces came from — the file
 //! an installed name resolved to, or that it was not found — and the fallback fonts
 //! loaded so far) and `%gui-ligatures!` (shape punctuation runs together, so a
