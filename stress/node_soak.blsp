@@ -1,0 +1,128 @@
+;; The node soak (stress/node_soak.sh, ROADMAP Supervision "G. Soak"): a token passed around a
+;; ring of three nodes for hours, while the driver hard-kills a node every few minutes and
+;; restarts it. What it exercises, together and for a long time: the handshake and reconnect,
+;; nodedown and remote sends to a node that has gone, remote registered names, a supervisor
+;; restarting a crashing child, and GC under all of it.
+;;
+;; Two roles, chosen by the first script argument:
+;;
+;;   brood stress/node_soak.blsp -- relay NAME
+;;     A node named NAME. A supervisor keeps a `:relay` process registered: it forwards each
+;;     `[:hop hub lap route]` to the next node in `route`, or answers the hub at the end.
+;;     `[:crash]` makes it raise, so the supervisor restarts it.
+;;
+;;   brood stress/node_soak.blsp -- hub SECONDS NAME…
+;;     The coordinator. It reconnects to every relay it is not linked to, sends one lap at a
+;;     time around the ring (starting at a different relay each lap), and tells a relay to
+;;     crash every `*crash-every*` laps. A lap that does not come back in `*lap-ms*` is LOST:
+;;     expected while a node is down. It FAILS (exit 1) when no lap completes for
+;;     `*stall-ms*` — longer than the driver ever keeps a node down — and PASSES (exit 0)
+;;     after SECONDS with a summary line.
+
+;; `SOAK_LAP_MS` / `SOAK_STALL_MS` stretch both for a run under `BROOD_GC_STRESS`, where
+;; every step is many times slower.
+(defn- number-or (text default)
+  (let (n (if (nil? text) nil (string/->number text))) (if (number? n) n default)))
+(defn- env-ms (name default) (number-or (os/env name) default))
+(def *lap-ms* (env-ms "SOAK_LAP_MS" 2000))
+(def *stall-ms* (env-ms "SOAK_STALL_MS" 90000))
+(def *crash-every* 97)
+
+;; ---- relay ------------------------------------------------------------------------------
+
+(defn- relay-loop ()
+  (receive
+    ([:hop hub lap route] (do
+                            (if (empty? route)
+                              (send hub [:lap lap])
+                              (send {:name :relay :node (first route)} [:hop hub lap (rest route)]))
+                            (relay-loop)))
+    ([:crash] (error "node-soak: relay told to crash"))
+    (_ (relay-loop))))
+
+(defn- start-relay ()
+  (let (pid (spawn-link (relay-loop)))
+    (proc/register :relay pid)
+    pid))
+
+(defn- park () (receive (after 3600000 (park))))
+
+(defn- relay-main (name)
+  (node/start (keyword name))
+  (supervisor/start [{:id :relay :start start-relay}] {:max-restarts 1000 :max-seconds 1})
+  (io/puts "node-soak: relay" name "up")
+  (park))
+
+;; ---- hub --------------------------------------------------------------------------------
+
+;; Connect to every relay not already linked, returning the qualified names now linked.
+;; A relay that is down refuses; it is retried on the next lap.
+(defn- connect-all (names)
+  (let (linked (into #{} (node/list)))
+    (seq/keep names
+      (fn (name)
+        (let (qualified (keyword (str name "@" (os/hostname))))
+          (if (contains? linked qualified)
+            qualified
+            (check-allow :discarded-catch
+              (try (node/connect name) (catch _ nil)))))))))
+
+(defn- drain-laps () (receive ([:lap _] (drain-laps)) (after 0 nil)))
+
+;; The ring for lap `lap`, rotated so each relay starts some laps.
+(defn- ring-for (nodes lap)
+  (let (k (math/mod lap (count nodes)))
+    (append (drop nodes k) (take nodes k))))
+
+(defn- send-lap (ring lap)
+  (check-allow :discarded-catch
+    (try
+      (do (send {:name :relay :node (first ring)} [:hop (self) lap (rest ring)]) true)
+      (catch _ false))))
+
+(defn- hub-loop (names deadline lap stats)
+  (let (now (os/now))
+    (cond
+      (>= now deadline)
+        (do
+          (io/puts "node-soak: PASS" (pr-str stats))
+          (system/halt 0))
+      (> (- now (get stats :last-lap-at)) *stall-ms*)
+        (do
+          (io/puts "node-soak: FAIL no lap completed for" *stall-ms* "ms" (pr-str stats))
+          (system/halt 1))
+      else
+        (let (nodes (connect-all names)
+              ring (ring-for nodes lap)
+              crash? (and (= (count nodes) 3) (= 0 (math/mod lap *crash-every*))))
+          (when crash?
+            (check-allow :discarded-catch
+              (try (send {:name :relay :node (first ring)} [:crash]) (catch _ nil))))
+          (let (done (and (= (count nodes) 3)
+                       (send-lap ring lap)
+                       (receive ([:lap ^lap] true) (after *lap-ms* false)))
+                counted (if done
+                          (assoc (assoc stats :laps (inc (get stats :laps))) :last-lap-at (os/now))
+                          (assoc stats :lost (inc (get stats :lost))))
+                next-stats (if crash? (assoc counted :crashes (inc (get counted :crashes))) counted))
+            (drain-laps)
+            (when (= 0 (math/mod (inc lap) 500)) (io/puts "node-soak:" (pr-str next-stats)))
+            (when (not done) (sleep 200))
+            (hub-loop names deadline (inc lap) next-stats))))))
+
+(defn- hub-main (seconds names)
+  (node/start :hub)
+  (hub-loop names
+    (+ (os/now) (* 1000 seconds))
+    1
+    {:laps 0 :lost 0 :crashes 0 :last-lap-at (os/now)}))
+
+;; ---- entry ------------------------------------------------------------------------------
+
+(let (args (system/script-args))
+  (case (first args)
+    "relay" (relay-main (second args))
+    "hub" (hub-main (number-or (second args) 600) (drop args 2))
+    (do
+      (io/puts "usage: node_soak.blsp -- relay NAME | hub SECONDS NAME…" :to *err*)
+      (system/halt 2))))

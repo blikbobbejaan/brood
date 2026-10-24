@@ -192,6 +192,35 @@ jobs:
           path: target/runtime-soak/
           if-no-files-found: warn
 
+  # ROADMAP Supervision G: the gap that remains is duration, not features. Three relay nodes
+  # and a hub pass a token around a ring for two hours while a relay is hard-killed every two
+  # minutes and restarted; each relay's supervisor also restarts a child told to crash. The
+  # weekly `Soak` workflow runs the same thing under GC stress.
+  node-soak:
+    name: node soak (3-node ring, a node killed every 2 min, 2 h)
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build (release, debug-assertions armed)
+        run: RUSTFLAGS="-C debug-assertions=on" cargo build --release -p cli
+
+      - name: Soak
+        run: ./stress/node_soak.sh 7200 120
+
+      - name: Upload the soak logs (always — a clean hunt is evidence too)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: node-soak-logs
+          path: target/node-soak/
+          if-no-files-found: warn
+
   # The `perf-stats` feature compiles counter increments into the VM/JIT hot paths
   # (vm_run_bc, deopt, the JIT call lowering, the background compiler). No other job
   # builds it, so a cfg'd seam there could rot — or a counter could perturb an engine —

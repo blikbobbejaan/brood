@@ -1,0 +1,52 @@
+name: Soak
+
+# The weekly long hunt (ROADMAP Supervision G). The nightly runs the node soak for two hours
+# at speed; this runs it for five under `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`, where every
+# safepoint collects and the verifier walks the live graph first, so a handle held across a
+# collection anywhere in the handshake, reconnect, remote-send or supervisor-restart paths is
+# caught rather than surviving by luck. Laps are far slower under stress, so the hub's lap and
+# stall limits are stretched to match.
+#
+# `make green` reports this workflow's newest completed run beside CI's and the nightly's.
+
+on:
+  schedule:
+    # Sunday 04:00 UTC, after Saturday's nightly.
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: soak
+  cancel-in-progress: false
+
+jobs:
+  node-soak-gc-stress:
+    name: node soak under GC stress + verify (5 h)
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build (release, debug-assertions armed)
+        run: RUSTFLAGS="-C debug-assertions=on" cargo build --release -p cli
+
+      - name: Soak
+        env:
+          BROOD_GC_STRESS: "1"
+          BROOD_GC_VERIFY: "1"
+          SOAK_LAP_MS: "30000"
+          SOAK_STALL_MS: "900000"
+          DOWN_SECONDS: "20"
+        run: ./stress/node_soak.sh 18000 600
+
+      - name: Upload the soak logs (always — a clean hunt is evidence too)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: node-soak-gc-stress-logs
+          path: target/node-soak/
+          if-no-files-found: warn
