@@ -14988,3 +14988,46 @@ not relocating the record in `flush_roots` turns the collection and module cases
 Cost: the `errors` benchmark row (throw and catch an int 200 000 times) +1.15% instructions
 against a comment-only control that moved 0%; wall time within the row's noise. `errors-deep`
 unchanged.
+
+## KI-290 — a require cycle split across two processes deadlocked until the backstop loaded one end twice ✅ FIXED 2026-10-24
+
+**Fixed 2026-10-24: green in CI on `3c21217c` (every job), and red with the fix disabled.** The
+bedit downstream smoke went red once on `14232c96`: 13 of bedit's tests `unbound symbol:
+ed-layout-now`, in `aside`, which does `(:use panes)`. The build before them printed
+`[require] BUG: waited 30s for an in-flight load of 'bedit/panes'` (also `bedit/commands`,
+`bedit/view`). The parallel cold build (ADR-426) had started the two ends of a require cycle in
+two workers: P held one end and waited for the other, Q the reverse, so neither load could
+finish and no completion was ever sent. The 30 s backstop then loaded `panes` a second time
+while its first load was still in flight, and `aside` was compiled against that copy. The
+project image kept it, so every test that reached it failed. The two green runs of the same
+commit printed no backstop line: it is a race.
+
+The fix (`%require-cycle?` in `std/prelude/modules.blsp`): a waiter walks the wait-for chain
+every 250 ms: the holder of its key, the key that holder waits for, that key's holder, and so
+on. A chain that comes back to the waiter is the cycle. Every process on it sees it, so only
+the one waiting on the greatest key breaks it. That process raises, and its claims are
+discarded and released as the raise unwinds. The others finish the cycle on their own as one
+process would, and the breaker's outermost load requires its module again. The parallel driver
+also reloads a file sequentially should the error reach it.
+
+The first cut let every member break it. CI's contracts job timed the guard out at
+`[:timeout :timeout]`: its two fixture processes start waiting on the same tick, so both backed
+out, both retried and met the same cycle again. That is a livelock, and the tie-break is the
+second cut.
+
+The second cut timed out too, in the contracts job only. The guard's diagnostics (`855d4b53`)
+showed why: the breaker held `xcyc-a` again and was waiting on nothing, the other process was
+still waiting on `xcyc-a`, and neither module was provided. The breaker's retry had re-claimed
+its module the moment it released it, before the process it released could take it. So it met
+the same cycle and broke it again, over and over. The third cut (`%require-after-break`) has a
+breaker leave its module to the others. It is done when one of them loads the module, waits
+when one of them claims it, and loads the module itself only when nobody has taken it after
+about a second.
+
+Guard: `tests/modules_test.blsp` "a require cycle split across two processes resolves, both
+modules whole". Two fixture modules each pause after their claim, so the cycle forms on every
+run. Sabotage: with `%require-cycle?` never true (`bf6607c2`, a throwaway CI ref, run
+[40072510464](https://github.com/broodlang/brood/actions/runs/40072510464)) it timed out in
+both jobs that run it, the contracts suite and nextest's suite (both tries). Each fixture
+process held its own module and was waiting on the other's, neither provided, and nothing else
+failed.

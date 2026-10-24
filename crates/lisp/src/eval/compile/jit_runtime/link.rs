@@ -492,7 +492,7 @@ mod tests {
                 };
                 format!(
                     "{} uid {} nsites {} {state} compile-epoch {} stale {} calls {} deopts {} \
-                     (total {}) entry-deopts {}",
+                     (total {}) entry-deopts {} inline-installed {}",
                     arm.dbg_label(),
                     arm.uid,
                     arm.nsites,
@@ -502,6 +502,7 @@ mod tests {
                     arm.jit_deopts.load(Relaxed),
                     arm.jit_deopts_total.load(Relaxed),
                     arm.jit_entry_deopts.load(Relaxed),
+                    arm.inline_installed.load(Relaxed),
                 )
             })
             .collect();

@@ -3494,3 +3494,12 @@ heap payload's origin per process (rooted for the collector) and `throw` of that
 back. Guards `tests/rethrow_position_test.blsp` (all tiers, GC stress; two sabotages) and a
 rendering case in `crates/cli/tests/rethrow_rendering.rs`. `errors` row +1.15% instructions
 against a 0% control, wall time within noise.
+
+2026-10-24 (KI-290 closed; KI-281 seen again): KI-290's guard was sabotaged on a throwaway CI ref
+(`%require-cycle?` never true) and timed out in both suites that run it, each fixture process
+waiting on the other's module and nothing else red, so it is closed. A second throwaway ref
+switched the parallel cold load back on by default over that fix, and bedit's downstream smoke
+passed on it. Its tree-walker job met KI-281 for the second time: the dump shows the caller's IC
+entry linkable and both arms native, so the link's gating is ruled out and the question is what
+the native caller runs instead. The dump now prints whether each entry links at that moment and
+whether each arm's inlined upgrade is installed.
