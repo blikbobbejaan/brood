@@ -3581,3 +3581,12 @@ registry is bounded (32, LRU); a gone handle reads nil and reparses as a full pa
 `free-tree`, `splice-edit`); `fontify` and every slice-based primitive are unchanged, and bedit
 is not yet moved onto them. Rust tests and a reparse-equals-fresh-parse test written; **no
 tests were run on this machine** (built, clippy clean, `nest check --strict` clean).
+2026-10-24 (ADR-431 the GUI keyboard): a window's input is the user's. `{:key-repeat :os}` hands
+a held key's repeat to the OS (each repeat a press, gated by a mailbox delivery credit so at most
+one is ever queued; `:app` stays the default). Super (`:super-x`, `[…][shift-][super-]<name>`),
+F1–F24, `:insert`, `:menu` and the other named keys, in both frontends. A shifted chord takes the
+layout's glyph, not the US table. `ke.text` for typing, `[:text …]` for multi-character text and
+IME commits, `[:preedit text range]`, the IME candidate window at the frame's cursor, `:focus-in`
+on focus gain. `{:wheel :lines}` — three lines a notch at once — is the default; `{:wheel
+:glide}` keeps the glide. Built and clippy-clean with `gui,gui-gpu`; the tests were written but
+NOT run on this machine, and no window was opened.
