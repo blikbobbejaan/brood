@@ -254,7 +254,10 @@ fn ts_edits(
             ts_offset(heap, who, parts[2])?,
         ))
     };
-    if items.first().is_some_and(|first| matches!(first, Value::Int(_))) {
+    if items
+        .first()
+        .is_some_and(|first| matches!(first, Value::Int(_)))
+    {
         return Ok(Some(vec![triple(heap, v)?]));
     }
     let edits = items

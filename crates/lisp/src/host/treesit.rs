@@ -1033,7 +1033,6 @@ pub fn tree_free(_handle: u64) -> bool {
     false
 }
 
-
 #[cfg(not(feature = "treesit"))]
 pub fn spans(
     heap: &mut crate::core::heap::Heap,
@@ -1392,20 +1391,11 @@ mod tree_handle_edit_tests {
     #[test]
     fn edits_in_sequence_compose_into_one_covering_edit() {
         // "abcdef" -> "aXYZdef" (bc -> XYZ) -> "aXYZdeQf" (insert Q before f)
-        assert_eq!(
-            compose_char_edits(&[(1, 3, 4), (6, 6, 7)]),
-            Some((1, 5, 7))
-        );
+        assert_eq!(compose_char_edits(&[(1, 3, 4), (6, 6, 7)]), Some((1, 5, 7)));
         // an insert BEFORE the first edit widens the start, not the end
-        assert_eq!(
-            compose_char_edits(&[(1, 3, 4), (0, 0, 1)]),
-            Some((0, 3, 5))
-        );
+        assert_eq!(compose_char_edits(&[(1, 3, 4), (0, 0, 1)]), Some((0, 3, 5)));
         // a delete overlapping the first edit's front
-        assert_eq!(
-            compose_char_edits(&[(1, 3, 4), (0, 2, 0)]),
-            Some((0, 3, 2))
-        );
+        assert_eq!(compose_char_edits(&[(1, 3, 4), (0, 2, 0)]), Some((0, 3, 2)));
         assert_eq!(compose_char_edits(&[]), None);
     }
 
@@ -1415,7 +1405,10 @@ mod tree_handle_edit_tests {
     fn a_rope_diff_finds_the_change_and_never_splits_a_character() {
         let base: String = "fn main() { let x = 1; }\n".repeat(400);
         let old = ropey::Rope::from_str(&base);
-        assert!(old.chunks().count() > 1, "the test must cross a chunk boundary");
+        assert!(
+            old.chunks().count() > 1,
+            "the test must cross a chunk boundary"
+        );
         let mut edited = base.clone();
         edited.insert_str(5000, "yy");
         let new = ropey::Rope::from_str(&edited);
