@@ -15028,6 +15028,6 @@ Guard: `tests/modules_test.blsp` "a require cycle split across two processes res
 modules whole". Two fixture modules each pause after their claim, so the cycle forms on every
 run. Sabotage: with `%require-cycle?` never true (`bf6607c2`, a throwaway CI ref, run
 [40072510464](https://github.com/broodlang/brood/actions/runs/40072510464)) it timed out in
-both jobs that run it, the contracts suite and nextest's suite (both tries). Each fixture
+all three jobs that run it: the contracts suite, nextest's suite and the tree-walker's (both tries each). Each fixture
 process held its own module and was waiting on the other's, neither provided, and nothing else
 failed.
