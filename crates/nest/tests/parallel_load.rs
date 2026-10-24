@@ -1,7 +1,7 @@
-//! The parallel cold load (ADR-426, opt-in with `BROOD_LOAD_PARALLEL=1` since 2026-10-24): a
+//! The parallel cold load (ADR-426, the default; `BROOD_LOAD_SEQUENTIAL=1` opts out): a
 //! cold `nest run` of a project with many modules loads them in a pool of processes, each
 //! `require-one`ing modules off a queue. It must build the SAME project as the sequential walk
-//! — the default, and the control arm here — so every case runs both and compares:
+//! — the opt-out, and the control arm here — so every case runs both and compares:
 //!
 //! - the program's answer, over modules that depend on each other through `(:use …)`, a
 //!   macro whose expansion names another module, a registry another module reads, and a
@@ -79,9 +79,9 @@ fn nest(dir: &Path, args: &[&str], sequential: bool) -> Output {
         .current_dir(dir)
         .env("BROOD_NO_CRASH_REPORT", "1");
     if sequential {
-        cmd.env_remove("BROOD_LOAD_PARALLEL");
+        cmd.env("BROOD_LOAD_SEQUENTIAL", "1");
     } else {
-        cmd.env("BROOD_LOAD_PARALLEL", "1");
+        cmd.env_remove("BROOD_LOAD_SEQUENTIAL");
     }
     cmd.output().expect("spawn nest")
 }

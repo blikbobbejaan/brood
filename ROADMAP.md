@@ -495,12 +495,11 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
       persistent-map garbage in the lints, sequential 1.15 → 0.81 GB, parallel 1.75 → 1.5 GB);
       an edit reloads only the edited modules and their dependents (ADR-419: 13.2 → 2.7 s on
       the 302 × 3k rig; with unchanged sections copied, `nest run` after an edit 0.30 s). A COLD
-      build CAN load in a pool of processes (ADR-426: 8.5 s → 2.1 s) — opt-in
-      (`BROOD_LOAD_PARALLEL=1`) since bedit's pool-built image differed (89 of 116 sections;
-      mdpreview red on a warm run). **Open, and bigger than first thought:** the pool also
-      DEADLOCKS on cross-process require cycles (bedit hung 2 runs in 4). Next design: schedule
-      by the header require graph — one worker per strongly-connected component, a component
-      only after its dependencies (ADR-426's amendment).
+      build loads in a pool of processes (ADR-426: 8.5 s → 2.1 s), the default again
+      (`BROOD_LOAD_SEQUENTIAL=1` opts out). It was opt-in for a day: bedit's pool-built image
+      differed and the pool deadlocked on cross-process require cycles. Both were KI-290,
+      now closed. Still possible later: schedule by the header require graph, one worker per
+      strongly-connected component, so a cycle never spans workers.
 - [x] **Inline `sig` signatures** — DONE 2026-10-22 (ADR-420) as typed parameters,
       `(defn area (w:number h:number -> number) …)`: the planned `((x int) -> int)` collided
       with list patterns and `&optional` defaults. `_` marks an open position, and a missing

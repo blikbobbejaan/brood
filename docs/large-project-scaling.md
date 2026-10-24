@@ -288,8 +288,8 @@ allocator's per-thread pages.
 
 ## Finding 3 — cold load is one thread (fixed 2026-10-23, ADR-426)
 
-**A pool, opt-in** (`BROOD_LOAD_PARALLEL=1` since 2026-10-24 — bedit's image built in the
-pool differed from a sequential one; see ADR-426's amendment). A cold walk `require-one`s its
+**A pool, the default** (`BROOD_LOAD_SEQUENTIAL=1` opts out; it was opt-in for a day while
+bedit's pool-built image differed, which was KI-290 — see ADR-426's amendments). A cold walk `require-one`s its
 modules from a pool of processes: on the
 302 × 3k rig the load 8.5 s → 2.1 s on 12 cores, a cold `--check-boot` 12.9 s → 6.5 s. The
 image write (1.7 s) is now the largest single step. The original finding:

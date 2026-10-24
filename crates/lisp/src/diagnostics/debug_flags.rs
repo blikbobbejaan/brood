@@ -481,9 +481,9 @@ pub const FLAGS: &[DebugFlag] = &[
         "opt OUT of fanning `nest check`'s per-file walk across the worker pool: check every file in this process, whatever the project's size (the A/B and bisect lever; the control arm of the parallel/sequential warning differential)",
     ),
     f(
-        "BROOD_LOAD_PARALLEL",
-        ENGINE,
-        "opt IN to the parallel cold load (ADR-426): a cold project build loads its modules across a pool of processes instead of in walk order in this one. EXPERIMENTAL: a module computing load-time values from state other modules write can build differently, and cross-module require cycles can deadlock the pool (bedit did both)",
+        "BROOD_LOAD_SEQUENTIAL",
+        OPTOUT,
+        "opt OUT of the parallel cold load (ADR-426): a cold project build loads its modules in walk order in this process instead of prefetching them across a pool of processes (the A/B and bisect lever; the control arm of `crates/nest/tests/parallel_load.rs`)",
     ),
     f(
         "BROOD_NO_CHECK_CACHE",

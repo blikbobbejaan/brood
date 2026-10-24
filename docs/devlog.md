@@ -3536,3 +3536,10 @@ and ones it was given (ADR-425's "Not done", amended). KI-297: a require waiter 
 claimant's pid had no death watch; it takes one each tick. Refuted: the stale-cache read in
 `%require-await` (ordered by the registry lock) and the macro `GLOBAL` lookup on a builder heap
 (no namespaced module is ever compiled there).
+
+2026-10-24 (ADR-426 the default again): the parallel cold load is on unless
+`BROOD_LOAD_SEQUENTIAL=1` (the opt-in `BROOD_LOAD_PARALLEL` is gone; the new name matches
+`BROOD_CHECK_SEQUENTIAL`). Both reasons for the opt-in are gone. The cross-worker deadlock was
+KI-290, now closed and sabotage-verified. Since KI-294 the pool is a prefetch with a sequential
+pass behind it. With the pool on by default, bedit's smoke passed 3 attempts of 3. Not run on
+this machine.
