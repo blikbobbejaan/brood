@@ -49,6 +49,7 @@ wasm_unsupported_builtins!(
     gui_maximize,
     gui_size,
     gui_size_px,
+    gui_latency,
     gui_texture,
     gui_texture_free,
     gui_input,

@@ -398,15 +398,18 @@ fn leaf_translates(
                 row: nr,
                 col: nc,
                 style: nst,
+                color: ncolor,
             },
             Op::Cursor {
                 row: or,
                 col: oc,
                 style: ost,
+                color: ocolor,
             },
         ) => {
             nc == oc
                 && nst == ost
+                && ncolor == ocolor
                 && oy as isize + *nr as isize * ch_i - new.dy
                     == oy as isize + *or as isize * ch_i - old.dy + delta
         }
@@ -532,12 +535,18 @@ fn blit_deltas(new: &Leaves, old: &Leaves, k: usize, oy: usize, ch: usize) -> Ve
                 ) => a == b && fa == fb && sa == sb,
                 (
                     Op::Cursor {
-                        col: a, style: sa, ..
+                        col: a,
+                        style: sa,
+                        color: ca,
+                        ..
                     },
                     Op::Cursor {
-                        col: b, style: sb, ..
+                        col: b,
+                        style: sb,
+                        color: cb,
+                        ..
                     },
-                ) => a == b && sa == sb,
+                ) => a == b && sa == sb && ca == cb,
                 (
                     Op::Rect {
                         col: a,
@@ -1027,7 +1036,12 @@ pub(super) fn render_ops(
                     );
                 }
             }
-            Op::Cursor { row, col, style } => {
+            Op::Cursor {
+                row,
+                col,
+                style,
+                color,
+            } => {
                 // Compute the logical cell bounds in framebuffer pixels. `cell_top`
                 // may be < oy (partially scrolled off the viewport top) — clip the
                 // draw range to [oy, fb_h) rather than suppressing the cursor entirely,
@@ -1046,6 +1060,7 @@ pub(super) fn render_ops(
                         ch,
                         cell_top,
                         *style,
+                        *color,
                     );
                 }
             }
@@ -1771,6 +1786,7 @@ mod render_robustness {
                         row: 2,
                         col: 2,
                         style: CursorStyle::Block,
+                        color: None,
                     },
                     Op::Text {
                         row: 1,
@@ -1836,6 +1852,7 @@ mod render_robustness {
                 row: big,
                 col: big,
                 style: CursorStyle::Bar,
+                color: None,
             },
         ]);
     }
@@ -1937,6 +1954,7 @@ mod strip_diff_tests {
             row,
             col: 2,
             style: CursorStyle::Block,
+            color: None,
         }
     }
 

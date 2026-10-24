@@ -432,7 +432,7 @@ pub(in crate::builtins) fn term_draw(args: &[Value], _: EnvId, heap: &mut Heap) 
                 CursorStyle::Underline => {
                     crossterm::queue!(out, SetCursorStyle::SteadyUnderScore).map_err(term_err)?
                 }
-                CursorStyle::Block => {
+                CursorStyle::Block | CursorStyle::Hollow => {
                     crossterm::queue!(out, SetCursorStyle::SteadyBlock).map_err(term_err)?
                 }
             }
@@ -847,15 +847,17 @@ pub(in crate::builtins) fn gui_open(args: &[Value], _: EnvId, heap: &mut Heap) -
     };
     //   :input :pixels     — mouse messages carry the pointer in physical pixels and
     //     `[:resize w h]` the pixel size; `:move`/`:drag` fire per pixel of motion.
-    //   :vsync true        — present in step with the monitor (the GPU target only).
+    //   :vsync true        — present in step with the monitor (FIFO; the GPU target only).
+    //   :vsync false       — the work-bound rate, tearing allowed (IMMEDIATE).
+    //   absent             — low latency without tearing (MAILBOX, else FIFO).
     let pixel_input = matches!(
         opts.and_then(|id| heap.map_get(id, value::kw("input"))),
         Some(Value::Keyword(s)) if s == value::intern("pixels")
     );
-    let vsync = match opts.and_then(|id| heap.map_get(id, value::kw("vsync"))) {
-        Some(v) => crate::eval::truthy(v),
-        None => false,
-    };
+    let vsync = opts
+        .and_then(|id| heap.map_get(id, value::kw("vsync")))
+        .filter(|v| !matches!(v, Value::Nil))
+        .map(crate::eval::truthy);
     //   :key-repeat :os    — the OS auto-repeat reaches the app as presses of the held key
     //     (at most one undelivered at a time); `:app` (the default) drops it (ADR-086).
     //   :ime false         — no input method in this window (on by default).
@@ -910,6 +912,34 @@ pub(in crate::builtins) fn gui_size_px(args: &[Value], _: EnvId, heap: &mut Heap
     let id = gui_window_id(heap, "%gui-size-px", arg(args, 0))?;
     let (w, h) = crate::host::gui::size_px(id).map_err(LispError::runtime)?;
     Ok(heap.alloc_vector2(Value::int(w as i64), Value::int(h as i64)))
+}
+
+/// `(%gui-latency id)` — window `id`'s recent input-to-present samples, oldest first, as
+/// maps of milliseconds: `:total` (input to present) and `:paint` (the paint's share),
+/// plus the GPU paint's `:encode` `:upload` `:acquire` `:submit` `:present` phases when
+/// the GPU target drew it (ADR-430). GC-safe: a builtin never fires GC mid-execution,
+/// so the maps stay live until the vector holds them.
+pub(in crate::builtins) fn gui_latency(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let id = gui_window_id(heap, "%gui-latency", arg(args, 0))?;
+    let samples = crate::host::gui::latency(id).map_err(LispError::runtime)?;
+    let ms = |us: u64| Value::float(us as f64 / 1000.0);
+    let mut maps = Vec::with_capacity(samples.len());
+    for sample in samples {
+        let mut pairs = vec![
+            (value::kw("total"), ms(sample.total_us)),
+            (value::kw("paint"), ms(sample.paint_us)),
+        ];
+        if let Some(split) = sample.split {
+            for (name, us) in ["encode", "upload", "acquire", "submit", "present"]
+                .into_iter()
+                .zip(split)
+            {
+                pairs.push((value::kw(name), ms(us)));
+            }
+        }
+        maps.push(heap.map_from_pairs(pairs));
+    }
+    Ok(heap.alloc_vector(maps))
 }
 
 /// `(%gui-texture id tex rgba w h)` — upload `rgba` (`w*h*4` bytes, row-major straight
@@ -1337,10 +1367,15 @@ fn parse_gui_ops(
                 continue;
             };
             let style = cursor_style_from(parts.get(3).copied().unwrap_or(Value::nil()));
+            // `[:cursor row col style color]`: the colour a face colour takes (a
+            // keyword, `[r g b]` or `"#rrggbb"`); absent, nil or unreadable is the
+            // painters' default. The style slot may be nil to colour a block.
+            let color = parts.get(4).and_then(|v| face_rgb(heap, *v));
             ops.push(crate::host::gui::Op::Cursor {
                 row: clamp_u16(row_i),
                 col: clamp_u16(col_i),
                 style,
+                color,
             });
         } else if tag == tags.rect_t {
             let Ok(row_i) = expect_int(heap, "%gui-draw", arg(&parts, 1)) else {
@@ -1909,7 +1944,7 @@ pub(in crate::builtins) fn span_color(heap: &Heap, v: Value) -> Option<[u8; 3]> 
 }
 
 /// The cursor style from a `[:cursor row col style]` op's optional 4th element: a
-/// `:bar` / `:underline` keyword, else (`:block`, nil, or anything unknown) the
+/// `:bar` / `:underline` / `:hollow` keyword, else (`:block`, nil, or anything unknown) the
 /// default `Block`. Shared by both frontends so the caret shape agrees.
 pub(in crate::builtins) fn cursor_style_from(v: Value) -> crate::host::gui::CursorStyle {
     use crate::host::gui::CursorStyle;
@@ -1917,6 +1952,7 @@ pub(in crate::builtins) fn cursor_style_from(v: Value) -> crate::host::gui::Curs
         Value::Keyword(s) => match value::symbol_name(s).as_str() {
             "bar" => CursorStyle::Bar,
             "underline" => CursorStyle::Underline,
+            "hollow" => CursorStyle::Hollow,
             _ => CursorStyle::Block,
         },
         _ => CursorStyle::Block,
@@ -2253,6 +2289,7 @@ mod cursor_style_tests {
             CursorStyle::Underline
         );
         assert_eq!(cursor_style_from(value::kw("block")), CursorStyle::Block);
+        assert_eq!(cursor_style_from(value::kw("hollow")), CursorStyle::Hollow);
         // a bare `[:cursor row col]` (no style) and any unknown keyword → Block
         assert_eq!(cursor_style_from(Value::Nil), CursorStyle::Block);
         assert_eq!(cursor_style_from(value::kw("wat")), CursorStyle::Block);

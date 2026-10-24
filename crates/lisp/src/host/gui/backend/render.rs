@@ -708,6 +708,19 @@ impl Renderer {
         &self.cache[&key]
     }
 
+    /// The family a face without `:family` is drawn in — part of the GPU atlas's glyph
+    /// key, since `gui-font!` changes it at the same px.
+    #[cfg_attr(not(feature = "gui-gpu"), allow(dead_code))]
+    pub(crate) fn default_family(&self) -> u32 {
+        self.default_family
+    }
+
+    /// The text contrast exponent γ (`gui-text-contrast!`) — the GPU shader's lift.
+    #[cfg_attr(not(feature = "gui-gpu"), allow(dead_code))]
+    pub(crate) fn text_contrast(&self) -> f32 {
+        self.text_contrast
+    }
+
     /// Set the content inset (logical px). The cell metrics don't change — only the
     /// grid's origin and how many cells fit — so the caller recomputes the grid
     /// (`update_cells`) and repaints; no glyph-cache drop (unlike `set_font`).
@@ -1735,16 +1748,21 @@ pub(crate) fn snap_hairline(
 ///     rim around the cell so the cursor reads unambiguously against any
 ///     background (a translucent fill alone sinks into a busy highlight —
 ///     e.g. the bracket-match block — and the eye loses which cell owns it);
+///   * `Hollow` — the rim alone, thinner: an outline box, the cursor of a window
+///     without focus (Emacs's and kitty's unfocused caret);
 ///   * `Bar` — a thin, solid vertical line on the cell's left edge (a modern
 ///     GUI insertion caret) that doesn't obscure the glyph;
 ///   * `Underline` — a thin solid rule along the cell bottom.
+/// `color` is the op's caret colour: the block's wash and every solid stroke take
+/// it; `None` keeps the defaults (a white wash, `CURSOR_FG` strokes).
 /// The bar/underline thickness scales with the cell so it stays proportional on
-/// HiDPI (≥2 physical px). They paint solid `CURSOR_FG` rather than a blend, so a
-/// 2px caret reads crisply.
+/// HiDPI (≥2 physical px). They paint solid rather than a blend, so a 2px caret
+/// reads crisply.
 /// `draw_top`/`draw_bottom` are already clamped to the visible region `[oy, fb_h)`.
 /// `cell_top` is the logical (unclipped) top of the cursor cell in framebuffer pixels;
 /// it may be negative or above `oy` when the cursor is partially scrolled off the top.
-/// Used only for `Underline` to locate the baseline inside the cell.
+/// Used for the rim's horizontal edges and the underline, which sit on the logical cell.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn cursor_cell(
     canvas: &mut Canvas,
     left: usize,
@@ -1754,37 +1772,43 @@ pub(super) fn cursor_cell(
     h: usize,
     cell_top: isize,
     style: crate::host::gui::CursorStyle,
+    color: Option<[u8; 3]>,
 ) {
+    use crate::host::gui::CursorStyle;
     // The band clips the visible slice further; everything below derives from it.
     let draw_top = draw_top.max(canvas.y0);
     let draw_bottom = draw_bottom.min(canvas.y1);
     if draw_top >= draw_bottom {
         return;
     }
+    let stroke = pack(color.unwrap_or(CURSOR_FG));
     let fb_w = canvas.w;
-    let buf = &mut *canvas.buf;
     match style {
-        crate::host::gui::CursorStyle::Block => {
-            for y in draw_top..draw_bottom {
-                let row = y * fb_w;
-                for x in left..(left + w).min(fb_w) {
-                    buf[row + x] = blend(buf[row + x], [0xff, 0xff, 0xff], 128);
+        CursorStyle::Block | CursorStyle::Hollow => {
+            let buf = &mut *canvas.buf;
+            if style == CursorStyle::Block {
+                let wash = color.unwrap_or([0xff, 0xff, 0xff]);
+                for y in draw_top..draw_bottom {
+                    let row = y * fb_w;
+                    for x in left..(left + w).min(fb_w) {
+                        buf[row + x] = blend(buf[row + x], wash, 128);
+                    }
                 }
             }
-            // The rim: solid CURSOR_FG, scaled like the bar caret so it stays
-            // proportional on HiDPI. Vertical edges span the visible slice;
-            // horizontal edges sit at the LOGICAL cell top/bottom (cell_top may
-            // be off-screen when the cursor is partially scrolled off).
-            let t = (w / 10).max(2);
+            // The rim, scaled like the bar caret so it stays proportional on HiDPI.
+            // Vertical edges span the visible slice; horizontal edges sit at the
+            // LOGICAL cell top/bottom (cell_top may be off-screen when the cursor is
+            // partially scrolled off).
+            let t = cursor_rim(w, style);
             let x0 = left;
             let x1 = (left + w).min(fb_w);
             for y in draw_top..draw_bottom {
                 let row = y * fb_w;
                 for x in x0..(x0 + t).min(fb_w) {
-                    buf[row + x] = pack(CURSOR_FG);
+                    buf[row + x] = stroke;
                 }
                 for x in x1.saturating_sub(t)..x1 {
-                    buf[row + x] = pack(CURSOR_FG);
+                    buf[row + x] = stroke;
                 }
             }
             let edges = [
@@ -1797,12 +1821,12 @@ pub(super) fn cursor_cell(
                 for y in y0..y1 {
                     let row = y * fb_w;
                     for x in x0..x1 {
-                        buf[row + x] = pack(CURSOR_FG);
+                        buf[row + x] = stroke;
                     }
                 }
             }
         }
-        crate::host::gui::CursorStyle::Bar => {
+        CursorStyle::Bar => {
             let thickness = (w / 8).max(2);
             fill_cell(
                 canvas,
@@ -1810,10 +1834,10 @@ pub(super) fn cursor_cell(
                 draw_top,
                 thickness,
                 draw_bottom - draw_top,
-                pack(CURSOR_FG),
+                stroke,
             );
         }
-        crate::host::gui::CursorStyle::Underline => {
+        CursorStyle::Underline => {
             let thickness = (h / 10).max(2);
             // Underline sits at the bottom of the logical cell regardless of clipping.
             let uy = (cell_top + h as isize).saturating_sub(thickness as isize);
@@ -1821,10 +1845,21 @@ pub(super) fn cursor_cell(
                 let uy = uy as usize;
                 if uy >= draw_top && uy < draw_bottom {
                     let visible = thickness.min(draw_bottom - uy);
-                    fill_cell(canvas, left, uy, w, visible, pack(CURSOR_FG));
+                    fill_cell(canvas, left, uy, w, visible, stroke);
                 }
             }
         }
+    }
+}
+
+/// The rim thickness of a block or hollow cursor `w` px wide: a tenth of the cell
+/// (never under 2 px) for a block, a twelfth (never under 1 px) for the hollow box,
+/// which is an outline and reads as one only when thinner than the focused caret.
+/// Shared with the GPU target (`gpu::cursor_quads`), so both paint the same box.
+pub(crate) fn cursor_rim(w: usize, style: crate::host::gui::CursorStyle) -> usize {
+    match style {
+        crate::host::gui::CursorStyle::Hollow => (w / 12).max(1),
+        _ => (w / 10).max(2),
     }
 }
 

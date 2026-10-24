@@ -16,12 +16,13 @@ use render::*;
 // The GPU render target (`gpu.rs`) paints with the same text metric and hairline snap.
 #[cfg(feature = "gui-gpu")]
 pub(crate) use {
-    paint::paint_stall_ms, paint::text_px_width, render::snap_hairline, render::text_units,
-    render::unit_cells,
+    paint::paint_stall_ms, paint::text_px_width, render::cursor_rim, render::snap_hairline,
+    render::text_units, render::unit_cells,
 };
 
 use super::{
-    CursorShape, Key, KeyRepeat, Mouse, MouseAction, MouseButton, Op, WheelMode, WindowSpec,
+    CursorShape, Key, KeyRepeat, LatencySample, Mouse, MouseAction, MouseButton, Op, WheelMode,
+    WindowSpec,
 };
 
 use crate::core::sync::lock;
@@ -31,7 +32,7 @@ use crate::process::{Message, deliver, deliver_credited};
 
 use std::cell::RefCell;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use std::num::NonZeroU32;
 
@@ -396,6 +397,7 @@ struct OpenReply {
     size: Arc<Mutex<(u16, u16)>>,
     size_px: Arc<Mutex<(u32, u32)>>,
     held_key: Arc<Mutex<Option<Key>>>,
+    latency: Arc<Mutex<VecDeque<LatencySample>>>,
 }
 
 /// What the Brood side keeps per open window (keyed by the id `open` returns) —
@@ -410,6 +412,9 @@ struct WinHandle {
     /// cleared on release / focus loss), so `gui-held-key` can be polled as the
     /// source of truth for a held key — immune to a missed key-up (ADR-086).
     held_key: Arc<Mutex<Option<Key>>>,
+    /// The last `LATENCY_SAMPLES` input-to-present samples, newest last, for
+    /// `gui-latency` (ADR-430).
+    latency: Arc<Mutex<VecDeque<LatencySample>>>,
 }
 
 /// The one GUI thread's event-loop proxy, started lazily on the first `open`.
@@ -630,6 +635,7 @@ pub fn open(subscriber: u64, spec: WindowSpec) -> Result<u64, String> {
                 size: Arc::new(Mutex::new(headless_cells(spec.size))),
                 size_px: Arc::new(Mutex::new(headless_px(spec.size))),
                 held_key: Arc::new(Mutex::new(None)),
+                latency: Arc::default(),
             },
         );
         return Ok(id);
@@ -651,6 +657,7 @@ pub fn open(subscriber: u64, spec: WindowSpec) -> Result<u64, String> {
         size,
         size_px,
         held_key,
+        latency,
     } = reply_rx
         .recv()
         .map_err(|_| "gui thread did not reply".to_string())??;
@@ -660,6 +667,7 @@ pub fn open(subscriber: u64, spec: WindowSpec) -> Result<u64, String> {
             size,
             size_px,
             held_key,
+            latency,
         },
     );
     Ok(id)
@@ -787,6 +795,15 @@ pub fn held_key(id: u64) -> Result<Option<Key>, String> {
     let h = w.get(&id).ok_or("gui window not open")?;
     let k = *lock(&h.held_key);
     Ok(k)
+}
+
+/// `(gui-latency id)` — window `id`'s recent input-to-present samples, oldest first
+/// (at most `LATENCY_SAMPLES`; empty headless, where nothing is painted). ADR-430.
+pub fn latency(id: u64) -> Result<Vec<LatencySample>, String> {
+    let w = lock(windows());
+    let h = w.get(&id).ok_or("gui window not open")?;
+    let samples = lock(&h.latency).iter().copied().collect();
+    Ok(samples)
 }
 
 /// `(gui-draw id ops)` — paint a frame to window `id`.
@@ -1255,7 +1272,33 @@ struct Win {
     wheel: WheelMode,
     wheel_backlog: f64,
     wheel_sent: Option<Instant>,
+    /// Whether the window has been made visible. It is built hidden and shown once its
+    /// first real frame (one the app drew) has been painted, or after `SHOW_TIMEOUT`
+    /// with whatever it has — so opening never flashes an empty background, and a
+    /// window whose app never draws still appears (ADR-430).
+    shown: bool,
+    /// Whether the app has drawn a frame yet. Until it has, a redraw paints nothing:
+    /// the only thing to paint would be the bare background.
+    drawn: bool,
+    /// When the window was built, for `SHOW_TIMEOUT`.
+    opened_at: Instant,
+    /// When the earliest input not yet answered by a frame arrived (a key press, a
+    /// button, a wheel step) — consumed by the next `UserEvent::Draw` (ADR-430).
+    input_at: Option<Instant>,
+    /// The input stamp the frame waiting to be painted answers, carried to the paint so
+    /// it can report input -> present.
+    draw_input: Option<Instant>,
+    /// The last `LATENCY_SAMPLES` input-to-present samples, shared with `gui-latency`.
+    latency: Arc<Mutex<VecDeque<LatencySample>>>,
 }
+
+/// How long a window waits, hidden, for its app's first frame before it is shown
+/// anyway (ADR-430). Long enough that a Brood app's first draw normally lands inside
+/// it; short enough that a slow one still gets a window promptly.
+const SHOW_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// How many input-to-present samples a window keeps for `gui-latency`.
+const LATENCY_SAMPLES: usize = 64;
 
 /// The global renderer settings a window opens with — each behind a `gui-*!`
 /// primitive whose `id`-less form sets the default for windows opened later as well
@@ -1309,7 +1352,12 @@ fn build_window(
     let attributes = Window::default_attributes()
         .with_title(spec.title.unwrap_or_else(|| "Brood".to_string()))
         .with_decorations(spec.decorations)
-        .with_inner_size(LogicalSize::new(w, h));
+        .with_inner_size(LogicalSize::new(w, h))
+        // Hidden until its first real frame is painted (`Win::shown`), so the desktop
+        // never maps an empty window that a frame then replaces. Wayland ignores the
+        // flag, but maps a surface only at its first commit — which the paint gating
+        // in `RedrawRequested` makes the first real frame too.
+        .with_visible(false);
     // The desktop app id, on the platforms that have one. There is no protocol for
     // changing it afterwards, which is why it belongs to the build and not to a
     // `gui-*!` op. winit keeps ONE `platform_specific.name`, read by whichever
@@ -1385,6 +1433,12 @@ fn build_window(
         held: None,
         last_click: None,
         held_key: Arc::new(Mutex::new(None)),
+        shown: false,
+        drawn: false,
+        opened_at: Instant::now(),
+        input_at: None,
+        draw_input: None,
+        latency: Arc::default(),
         held_physical: None,
         zones: Vec::new(),
         shape: None,
@@ -1463,6 +1517,7 @@ impl GuiApp {
                     size: win.size.clone(),
                     size_px: win.size_px.clone(),
                     held_key: win.held_key.clone(),
+                    latency: win.latency.clone(),
                 }));
                 self.ids.insert(id, wid);
                 self.wins.insert(wid, win);
@@ -1648,12 +1703,23 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 if let Some(w) = self.ids.get(&id).and_then(|wid| self.wins.get_mut(wid)) {
                     // Brood finished rendering; the next momentum step may fire.
                     w.scroll_pending = false;
+                    // The first frame to arrive after an input is taken as the one that
+                    // answers it (ADR-430): the mailbox between hides which turn of the
+                    // app's loop the input caused, so this is the honest approximation.
+                    let input_at = w.input_at.take();
                     // A frame identical to the one on screen — a timer that fired and
                     // changed nothing, a model turn whose view is unchanged — costs no
                     // repaint at all. The op vocabulary is plain data, so equality is exact.
-                    if ops == w.frame {
+                    // A window still hidden paints it anyway: it is the app's first frame,
+                    // and the window waits for one to show itself.
+                    if ops == w.frame && w.shown {
                         return;
                     }
+                    // Two frames before one paint keep the EARLIER input's stamp: the
+                    // paint answers both.
+                    w.draw_input = w.draw_input.or(input_at);
+                    // Painting before this frame arrived would present the bare background.
+                    w.drawn = true;
                     // Sounds are ops of the frame: each `[:sound …]` plays once, here, as
                     // the frame arrives — not on repaints, and (by the equality above) not
                     // for a frame that repeats the last one verbatim.
@@ -1863,6 +1929,23 @@ impl ApplicationHandler<UserEvent> for GuiApp {
         let Some(w) = self.wins.get_mut(&window_id) else {
             return;
         };
+        // Stamp the input this event is (ADR-430): a key press, a button, a wheel step.
+        // The earliest unanswered one is kept; the next frame to arrive answers it. A
+        // press the arms below drop (an auto-repeat) is stamped too — the frame the
+        // app's own repeat draws answers it, which is what the user waits on.
+        if w.input_at.is_none()
+            && match &event {
+                WindowEvent::KeyboardInput {
+                    event: key_event,
+                    is_synthetic,
+                    ..
+                } => key_event.state == ElementState::Pressed && !is_synthetic,
+                WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => true,
+                _ => false,
+            }
+        {
+            w.input_at = Some(Instant::now());
+        }
         match event {
             // The window's close button → a dedicated `:close` message,
             // distinct from the Escape *key* (`:escape`): a frontend signal
@@ -2308,15 +2391,38 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // thread, outside the green-process scheduler — a slow frame (glyph
                 // rasterization, softbuffer present, vsync block) is invisible to the
                 // "quantum" guard, so it gets its own guard here.
+                // Nothing drawn yet and still hidden: painting now would present the bare
+                // background, the flash on open. `about_to_wait` shows the window after
+                // `SHOW_TIMEOUT` if the app never draws (ADR-430).
+                if !w.drawn && !w.shown {
+                    return;
+                }
                 let _sg = crate::core::heap::stall_guard("gui-paint");
-                match &mut w.backend {
+                let paint_start = Instant::now();
+                let split = match &mut w.backend {
                     Backend::Cpu { surface, .. } => {
-                        paint(surface, &w.window, &mut w.renderer, &w.frame)
+                        paint(surface, &w.window, &mut w.renderer, &w.frame);
+                        None
                     }
                     #[cfg(feature = "gui-gpu")]
-                    Backend::Gpu(gpu) => {
-                        gpu.paint(&w.frame, &mut w.renderer);
-                    }
+                    Backend::Gpu(gpu) => gpu.paint(&w.frame, &mut w.renderer).map(|times| {
+                        [
+                            times.encode_us,
+                            times.upload_us,
+                            times.acquire_us,
+                            times.submit_us,
+                            times.present_us,
+                        ]
+                    }),
+                };
+                let presented = Instant::now();
+                // The frame is on its way to the compositor: now the window may appear.
+                if !w.shown {
+                    w.shown = true;
+                    w.window.set_visible(true);
+                }
+                if let Some(input_at) = w.draw_input.take() {
+                    record_latency(w, input_at, paint_start, presented, split);
                 }
                 w.particles_next = w
                     .renderer
@@ -2343,6 +2449,18 @@ impl ApplicationHandler<UserEvent> for GuiApp {
         let now = Instant::now();
         let mut next_wakeup: Option<Instant> = None;
         for w in self.wins.values_mut() {
+            // A window whose app has not drawn within `SHOW_TIMEOUT` is shown anyway,
+            // painted with what it has: never an invisible window (ADR-430).
+            if !w.shown {
+                let due = w.opened_at + SHOW_TIMEOUT;
+                if now >= due {
+                    w.shown = true;
+                    w.window.set_visible(true);
+                    w.window.request_redraw();
+                } else {
+                    next_wakeup = Some(next_wakeup.map_or(due, |t| t.min(due)));
+                }
+            }
             if let Some(due) = w.particles_next {
                 if now >= due {
                     // the paint sets the next one while particles remain
@@ -2495,6 +2613,52 @@ fn update_ime_area(w: &mut Win) {
         PhysicalPosition::new(area.0.max(0) as i32, area.1.max(0) as i32),
         winit::dpi::PhysicalSize::new(width as u32, height as u32),
     );
+}
+
+/// Record one input-to-present sample (ADR-430): from `input_at` (the GUI thread
+/// received the input) to `presented` (the paint of the first frame that arrived after
+/// it returned from its present), with the paint's own share and, on the GPU target,
+/// its phases. Kept for `gui-latency`; printed under `BROOD_GUI_TRACE=1` (or a
+/// `BROOD_STALL_MS` threshold the sample exceeds).
+fn record_latency(
+    w: &Win,
+    input_at: Instant,
+    paint_start: Instant,
+    presented: Instant,
+    split: Option<[u64; 5]>,
+) {
+    let sample = LatencySample {
+        total_us: presented.duration_since(input_at).as_micros() as u64,
+        paint_us: presented.duration_since(paint_start).as_micros() as u64,
+        split,
+    };
+    if let Some(threshold_ms) = paint_stall_ms()
+        && u128::from(sample.total_us) >= threshold_ms * 1000
+    {
+        let ms = |us: u64| us as f64 / 1000.0;
+        let phases = match sample.split {
+            Some([encode, upload, acquire, submit, present]) => format!(
+                " | encode={:.2}ms upload={:.2}ms acquire={:.2}ms submit={:.2}ms present={:.2}ms",
+                ms(encode),
+                ms(upload),
+                ms(acquire),
+                ms(submit),
+                ms(present)
+            ),
+            None => String::new(),
+        };
+        eprintln!(
+            "[gui-latency] input->present {:.2}ms (to paint {:.2}ms, paint {:.2}ms){phases}",
+            ms(sample.total_us),
+            ms(sample.total_us.saturating_sub(sample.paint_us)),
+            ms(sample.paint_us),
+        );
+    }
+    let mut samples = lock(&w.latency);
+    if samples.len() == LATENCY_SAMPLES {
+        samples.pop_front();
+    }
+    samples.push_back(sample);
 }
 
 /// Republish a window's size to the Brood side and wake its app loop with the

@@ -129,11 +129,13 @@ pub struct WindowSpec {
     /// game drawing with the pixel-space ops (`:sprite`, `:px-rect`, `:line`) needs — a
     /// cell is the wrong grain for a sprite under the pointer.
     pub pixel_input: bool,
-    /// True to present in step with the monitor refresh (the `{:vsync true}` open
-    /// option). Only the GPU render target honours it: the CPU path presents
-    /// synchronously whatever this says. Off by default, as the GPU path always was —
-    /// a sim measuring its own frame rate wants the work-bound rate.
-    pub vsync: bool,
+    /// The `:vsync` open option, as asked: `Some(true)` presents in step with the
+    /// monitor refresh (FIFO); `Some(false)` asks for the work-bound rate, tearing
+    /// allowed (IMMEDIATE where the platform has it); `None`, the default, is the
+    /// low-latency choice that never tears (MAILBOX where available, else FIFO).
+    /// Only the GPU render target honours it: the CPU path presents synchronously
+    /// whatever this says (ADR-430).
+    pub vsync: Option<bool>,
     /// Who repeats a held key (the `{:key-repeat …}` open option, ADR-431).
     pub key_repeat: KeyRepeat,
     /// True to let an input method compose text in this window (the `{:ime …}` open
@@ -183,12 +185,29 @@ impl Default for WindowSpec {
             decorations: true,
             app_id: None,
             pixel_input: false,
-            vsync: false,
+            vsync: None,
             key_repeat: KeyRepeat::App,
             ime: true,
             wheel: WheelMode::Lines,
         }
     }
+}
+
+/// One input-to-present measurement of a window (ADR-430, `gui-latency`): from the GUI
+/// thread receiving an input (a key press, a mouse button, a wheel step) to the paint
+/// of the first frame that ARRIVED after it returning from its present. Which frame
+/// answers which input cannot be known across the app's mailbox, so "the next frame
+/// drawn" is the approximation; a present returning is when the compositor has the
+/// frame, not when the panel lights it (add up to one refresh for that).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LatencySample {
+    /// input -> present, microseconds
+    pub total_us: u64,
+    /// the paint's share of it (op walk to present), microseconds
+    pub paint_us: u64,
+    /// the GPU paint's phases — encode, upload, acquire, submit, present — in
+    /// microseconds; `None` on the CPU painter
+    pub split: Option<[u64; 5]>,
 }
 
 /// The pointer shape a cursor zone requests — frontend-neutral (mapped to a winit
@@ -218,15 +237,18 @@ pub enum Align {
 /// How the text cursor is drawn at its cell. `Block` (the default) overlays the
 /// whole cell — the terminal-style caret; `Bar` is a thin vertical line on the
 /// cell's left edge (a modern GUI insertion caret); `Underline` a thin rule along
-/// the cell bottom. A `[:cursor row col]` op with no style is `Block`, so existing
-/// callers are unchanged. The terminal frontend maps these to crossterm's steady
-/// cursor styles.
+/// the cell bottom; `Hollow` an outline box around the cell — the cursor of a window
+/// that does not have focus, as Emacs and kitty draw it. A `[:cursor row col]` op with
+/// no style is `Block`, so existing callers are unchanged. The terminal frontend maps
+/// these to crossterm's steady cursor styles (`Hollow` to a block: a terminal has no
+/// outline cursor).
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum CursorStyle {
     #[default]
     Block,
     Bar,
     Underline,
+    Hollow,
 }
 
 /// One render op, parsed out of a frame vector into plain (Send) data so it can
@@ -248,6 +270,11 @@ pub enum Op {
         row: u16,
         col: u16,
         style: CursorStyle,
+        /// The caret's colour (the op's optional 5th element); `None` is the
+        /// painters' default — a near-white rim over a 50% white wash for a block,
+        /// `CURSOR_FG` for the thin shapes. A block with a colour washes the cell in
+        /// it at 50% and rims it solid; every other shape is drawn solid in it.
+        color: Option<[u8; 3]>,
     },
     /// Fill a `w`×`h` block of cells from `(row, col)` with `face`'s background — a
     /// solid panel (a popup card, a selection band, a gutter wash). Like a multi-row
@@ -769,15 +796,15 @@ pub(crate) mod gpu; // the wgpu render target behind `BROOD_GUI_GPU=1`
 #[cfg(not(feature = "gui"))]
 pub use disabled::{
     TextAa, bg, cell_size, close, drag_move, drag_resize, draw, focus, font, font_info, fullscreen,
-    grab, held_key, host_main_thread, icon, input_mode, inset, ligatures, line_height, maximize,
-    minimize, next_texture_id, open, register_family, register_installed_family, size, size_px,
-    sound, sound_free, text_aa, text_contrast, texture, texture_free, title,
+    grab, held_key, host_main_thread, icon, input_mode, inset, latency, ligatures, line_height,
+    maximize, minimize, next_texture_id, open, register_family, register_installed_family, size,
+    size_px, sound, sound_free, text_aa, text_contrast, texture, texture_free, title,
 };
 
 #[cfg(feature = "gui")]
 pub use backend::{
     TextAa, bg, cell_size, close, drag_move, drag_resize, draw, focus, font, font_info, fullscreen,
-    grab, held_key, host_main_thread, icon, input_mode, inset, ligatures, line_height, maximize,
-    minimize, next_texture_id, open, register_family, register_installed_family, size, size_px,
-    sound, sound_free, text_aa, text_contrast, texture, texture_free, title,
+    grab, held_key, host_main_thread, icon, input_mode, inset, latency, ligatures, line_height,
+    maximize, minimize, next_texture_id, open, register_family, register_installed_family, size,
+    size_px, sound, sound_free, text_aa, text_contrast, texture, texture_free, title,
 };
