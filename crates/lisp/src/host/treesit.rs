@@ -384,46 +384,126 @@ pub fn errors(heap: &mut Heap, src: &str, lang: &str) -> LispResult {
     Ok(heap.alloc_vector(out))
 }
 
-/// Collect `[start end kind]` for the OUTERMOST nodes whose kind is wanted.
+/// The text a span walk reads positions and keyword letters from: a flat string with its
+/// byte→char table (the slice-based `spans`), or a rope (a tree handle's text). The walk
+/// itself is the same either way, so it is written once over this.
 #[cfg(feature = "treesit")]
-fn spans_into(
+trait SpanText {
+    /// The char offset of byte `byte`.
+    fn char_of(&self, byte: usize) -> usize;
+    /// Does the text in `[start, end)` begin with a letter? (the keyword rule)
+    fn starts_alphabetic(&self, start: usize, end: usize) -> bool;
+}
+
+#[cfg(feature = "treesit")]
+struct FlatText<'a> {
+    src: &'a str,
+    b2c: &'a [u32],
+}
+
+#[cfg(feature = "treesit")]
+impl SpanText for FlatText<'_> {
+    fn char_of(&self, byte: usize) -> usize {
+        self.b2c[byte] as usize
+    }
+    fn starts_alphabetic(&self, start: usize, end: usize) -> bool {
+        self.src[start..end]
+            .chars()
+            .next()
+            .is_some_and(char::is_alphabetic)
+    }
+}
+
+#[cfg(feature = "treesit")]
+impl SpanText for ropey::Rope {
+    fn char_of(&self, byte: usize) -> usize {
+        self.byte_to_char(byte.min(self.len_bytes()))
+    }
+    fn starts_alphabetic(&self, start: usize, end: usize) -> bool {
+        start < end
+            && start < self.len_bytes()
+            && self.char(self.byte_to_char(start)).is_alphabetic()
+    }
+}
+
+/// What one span walk is asked for: the kinds to colour, the keyword flag, and the byte
+/// window `[from, to)` to report — `None` for the whole tree, unclipped.
+#[cfg(feature = "treesit")]
+struct SpanQuery<'a> {
+    wanted: &'a std::collections::HashSet<String>,
+    keywords: bool,
+    window: Option<(usize, usize)>,
+}
+
+#[cfg(feature = "treesit")]
+impl SpanQuery<'_> {
+    /// Does `node` reach into the window? Zero-width nodes count when they sit inside it.
+    fn touches(&self, node: &tree_sitter::Node) -> bool {
+        match self.window {
+            None => true,
+            Some((from, to)) => {
+                let (start, end) = (node.start_byte(), node.end_byte());
+                (start < to && end > from) || (start == end && from <= start && start < to)
+            }
+        }
+    }
+}
+
+/// Collect `[start end kind]` for the OUTERMOST nodes whose kind is wanted, in source
+/// order, descending only into children that reach the query's window. A span is clipped
+/// to the window, so a string opened above it reports only its visible part.
+#[cfg(feature = "treesit")]
+fn spans_into<T: SpanText>(
     heap: &mut Heap,
     node: tree_sitter::Node,
-    src: &str,
-    b2c: &[u32],
-    wanted: &std::collections::HashSet<String>,
-    keywords: bool,
+    text: &T,
+    query: &SpanQuery,
     out: &mut Vec<Value>,
 ) {
     let kind = node.kind();
     // An anonymous token whose text starts with a letter is a language keyword — the
     // cross-language rule, so a table need only name the handful of NAMED nodes it
     // colours. Reported under its own kind so the caller maps it like any other.
-    let is_keyword = keywords
+    let wanted = query.wanted.contains(kind);
+    let is_keyword = !wanted
+        && query.keywords
         && !node.is_named()
-        && src[node.start_byte()..node.end_byte()]
-            .chars()
-            .next()
-            .is_some_and(char::is_alphabetic);
-    if wanted.contains(kind) || is_keyword {
-        let k = if wanted.contains(kind) {
-            kind
-        } else {
-            "__keyword__"
+        && text.starts_alphabetic(node.start_byte(), node.end_byte());
+    if wanted || is_keyword {
+        let reported = if wanted { kind } else { "__keyword__" };
+        let (start, end) = match query.window {
+            None => (node.start_byte(), node.end_byte()),
+            Some((from, to)) => (
+                node.start_byte().max(from),
+                node.end_byte().min(to).max(node.start_byte().max(from)),
+            ),
         };
         let span = vec![
-            Value::int(b2c[node.start_byte()] as i64),
-            Value::int(b2c[node.end_byte()] as i64),
-            Value::keyword(value::intern(k)),
+            Value::int(text.char_of(start) as i64),
+            Value::int(text.char_of(end) as i64),
+            Value::keyword(value::intern(reported)),
         ];
         let v = heap.alloc_vector(span);
         out.push(v);
         return; // coloured whole: do not descend
     }
     let mut cursor = node.walk();
-    let children: Vec<tree_sitter::Node> = node.children(&mut cursor).collect();
-    for c in children {
-        spans_into(heap, c, src, b2c, wanted, keywords, out);
+    if !cursor.goto_first_child() {
+        return;
+    }
+    loop {
+        let child = cursor.node();
+        if let Some((_, to)) = query.window
+            && child.start_byte() >= to
+        {
+            break; // children are in source order: nothing after this reaches the window
+        }
+        if query.touches(&child) {
+            spans_into(heap, child, text, query, out);
+        }
+        if !cursor.goto_next_sibling() {
+            break;
+        }
     }
 }
 
@@ -451,18 +531,508 @@ pub fn spans(
     let tree = parse_cached(src, lang)?;
     let b2c = byte_to_char_offsets(src);
     let wanted: std::collections::HashSet<String> = kinds.into_iter().collect();
-    let mut out: Vec<Value> = Vec::new();
-    spans_into(
-        heap,
-        tree.root_node(),
-        src,
-        &b2c,
-        &wanted,
+    let query = SpanQuery {
+        wanted: &wanted,
         keywords,
-        &mut out,
-    );
+        window: None,
+    };
+    let mut out: Vec<Value> = Vec::new();
+    let text = FlatText { src, b2c: &b2c };
+    spans_into(heap, tree.root_node(), &text, &query, &mut out);
     Ok(heap.alloc_vector(out))
 }
+
+// ---- tree handles: a parse tree a caller keeps, edits and queries (ADR-433) ----------
+//
+// The slice-based queries above take TEXT and find the tree themselves, which is the
+// right shape for a one-off question and the wrong one for an editor's view: the text has
+// to be copied out of the buffer on every keystroke, the edit has to be rediscovered by
+// diffing it against whatever was parsed last, and a view that colours a window parses
+// the window — a slice with no context above it, so a string opened off screen is code.
+//
+// A handle is the tree of a WHOLE document, held across edits. It is a `Ref`: opaque,
+// compared by identity, sendable by value (the registry is runtime-wide, so a task can
+// parse off the loop and hand the editor the result). Each handle is IMMUTABLE — a reparse
+// returns a NEW handle and leaves the old one answering exactly as before, so a model that
+// keeps one beside a rope can never see it change underneath it. What a handle costs is a
+// registry slot, and the registry is bounded: past `TREE_HANDLE_CAP` the least recently
+// used is dropped. A dropped handle is not an error to reparse from (that is a full parse)
+// and reads as `nil` from every query — the caller opens a fresh tree. `%tree-sitter-tree-
+// free` drops one eagerly; a caller that replaces its tree per edit should free the old one,
+// and successive versions share almost all of their subtrees, so the ones it forgets cost
+// little until the cap reclaims them.
+
+/// The most tree handles kept at once. Each is one document version; consecutive versions
+/// of one document share their unchanged subtrees, so the cost is mostly distinct documents.
+#[cfg(feature = "treesit")]
+const TREE_HANDLE_CAP: usize = 32;
+
+/// Bumped by every `%tree-sitter-load-grammar`. A tree parsed under an older grammar is
+/// never handed to the new grammar's parser as the tree to reparse from: that is not stale
+/// but ill-formed, and fails the parse outright (see `load_grammar`).
+#[cfg(feature = "treesit")]
+static GRAMMAR_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(feature = "treesit")]
+fn grammar_epoch() -> u64 {
+    GRAMMAR_EPOCH.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// One handle's document: the tree, the text it was parsed from (a rope clone — ropey
+/// shares structure, so this is a reference count, not a copy), and what changed since the
+/// tree it was reparsed from.
+#[cfg(feature = "treesit")]
+#[derive(Clone)]
+struct TreeEntry {
+    tree: tree_sitter::Tree,
+    text: ropey::Rope,
+    lang: String,
+    epoch: u64,
+    /// Byte ranges of THIS text whose highlighting may differ from the previous version's:
+    /// the edited text plus tree-sitter's `changed_ranges`. `None` for a fresh parse.
+    changed: Option<Vec<(usize, usize)>>,
+    last_used: u64,
+}
+
+#[cfg(feature = "treesit")]
+#[derive(Default)]
+struct TreeHandles {
+    entries: HashMap<u64, TreeEntry>,
+    clock: u64,
+}
+
+#[cfg(feature = "treesit")]
+static TREE_HANDLES: LazyLock<Mutex<TreeHandles>> =
+    LazyLock::new(|| Mutex::new(TreeHandles::default()));
+
+/// A clone of handle `id`'s entry (cheap: a tree refcount and a rope refcount), marking it
+/// used; `None` when the handle was freed or evicted.
+#[cfg(feature = "treesit")]
+fn tree_entry(id: u64) -> Option<TreeEntry> {
+    let mut handles = crate::core::sync::lock(&TREE_HANDLES);
+    handles.clock += 1;
+    let now = handles.clock;
+    handles.entries.get_mut(&id).map(|entry| {
+        entry.last_used = now;
+        entry.clone()
+    })
+}
+
+/// Register `entry` under a fresh ref id, evicting the least recently used past the cap.
+#[cfg(feature = "treesit")]
+fn tree_register(mut entry: TreeEntry) -> u64 {
+    let id = crate::process::monitor::next_ref();
+    let mut handles = crate::core::sync::lock(&TREE_HANDLES);
+    handles.clock += 1;
+    entry.last_used = handles.clock;
+    while handles.entries.len() >= TREE_HANDLE_CAP {
+        let oldest = handles
+            .entries
+            .iter()
+            .min_by_key(|(_, e)| e.last_used)
+            .map(|(k, _)| *k);
+        match oldest {
+            Some(k) => handles.entries.remove(&k),
+            None => break,
+        };
+    }
+    handles.entries.insert(id, entry);
+    id
+}
+
+/// Parse `text` (a rope, read chunk by chunk — never flattened) with `lang`, from `old`.
+#[cfg(feature = "treesit")]
+fn parse_rope(
+    text: &ropey::Rope,
+    lang: &str,
+    old: Option<&tree_sitter::Tree>,
+) -> Result<tree_sitter::Tree, LispError> {
+    let language = language_for(lang)?;
+    let mut parser = checkout_parser(lang, &language)?;
+    let length = text.len_bytes();
+    let tree = parser.parse_with_options(
+        &mut |byte: usize, _point: tree_sitter::Point| -> &[u8] {
+            if byte >= length {
+                return &[];
+            }
+            let (chunk, chunk_start, _, _) = text.chunk_at_byte(byte);
+            &chunk.as_bytes()[byte - chunk_start..]
+        },
+        old,
+        None,
+    );
+    return_parser(lang, parser);
+    tree.ok_or_else(|| LispError::runtime(format!("tree-sitter: {lang}: parse failed")))
+}
+
+/// The tree-sitter `Point` of `byte` in `text`: its line, and its byte column in that line.
+/// Lines are ropey's (which also breaks on `\r` alone and the Unicode separators, where
+/// tree-sitter breaks on `\n`); the parse itself is byte-addressed, so a row that differs on
+/// such text skews only a point-based query, which nothing here makes.
+#[cfg(feature = "treesit")]
+fn point_of(text: &ropey::Rope, byte: usize) -> tree_sitter::Point {
+    let byte = byte.min(text.len_bytes());
+    let row = text.byte_to_line(byte);
+    tree_sitter::Point::new(row, byte - text.line_to_byte(row))
+}
+
+/// The common prefix of two ropes in bytes, compared chunk run by chunk run (a `memcmp`
+/// per run, not a loop per byte).
+#[cfg(feature = "treesit")]
+fn common_prefix(old: &ropey::Rope, new: &ropey::Rope) -> usize {
+    let mut old_chunks = old.chunks();
+    let mut new_chunks = new.chunks();
+    let mut old_run: &[u8] = &[];
+    let mut new_run: &[u8] = &[];
+    let mut total = 0usize;
+    loop {
+        if old_run.is_empty() {
+            match old_chunks.next() {
+                Some(chunk) => old_run = chunk.as_bytes(),
+                None => return total,
+            }
+            continue;
+        }
+        if new_run.is_empty() {
+            match new_chunks.next() {
+                Some(chunk) => new_run = chunk.as_bytes(),
+                None => return total,
+            }
+            continue;
+        }
+        let n = old_run.len().min(new_run.len());
+        if old_run[..n] == new_run[..n] {
+            total += n;
+            old_run = &old_run[n..];
+            new_run = &new_run[n..];
+        } else {
+            let first = old_run[..n]
+                .iter()
+                .zip(&new_run[..n])
+                .position(|(a, b)| a != b)
+                .unwrap_or(n);
+            return total + first;
+        }
+    }
+}
+
+/// The common suffix of two ropes in bytes, at most `limit` — the same run comparison as
+/// [`common_prefix`], walking the chunks from the end.
+#[cfg(feature = "treesit")]
+fn common_suffix(old: &ropey::Rope, new: &ropey::Rope, limit: usize) -> usize {
+    let mut old_chunks = old.chunks_at_byte(old.len_bytes()).0.reversed();
+    let mut new_chunks = new.chunks_at_byte(new.len_bytes()).0.reversed();
+    let mut old_run: &[u8] = &[];
+    let mut new_run: &[u8] = &[];
+    let mut total = 0usize;
+    while total < limit {
+        if old_run.is_empty() {
+            match old_chunks.next() {
+                Some(chunk) => old_run = chunk.as_bytes(),
+                None => break,
+            }
+            continue;
+        }
+        if new_run.is_empty() {
+            match new_chunks.next() {
+                Some(chunk) => new_run = chunk.as_bytes(),
+                None => break,
+            }
+            continue;
+        }
+        let n = old_run.len().min(new_run.len()).min(limit - total);
+        let old_tail = &old_run[old_run.len() - n..];
+        let new_tail = &new_run[new_run.len() - n..];
+        if old_tail == new_tail {
+            total += n;
+            old_run = &old_run[..old_run.len() - n];
+            new_run = &new_run[..new_run.len() - n];
+        } else {
+            let same = old_tail
+                .iter()
+                .rev()
+                .zip(new_tail.iter().rev())
+                .position(|(a, b)| a != b)
+                .unwrap_or(n);
+            return total + same;
+        }
+    }
+    total.min(limit)
+}
+
+/// The `[start old-end new-end)` byte edit turning `old` into `new`, from their common
+/// prefix and suffix — [`derive_edit`] over ropes. Widened to whole characters, so the
+/// edit never splits a UTF-8 sequence. `None` when the texts are equal.
+#[cfg(feature = "treesit")]
+fn derive_rope_edit(old: &ropey::Rope, new: &ropey::Rope) -> Option<(usize, usize, usize)> {
+    let prefix = common_prefix(old, new);
+    let shorter = old.len_bytes().min(new.len_bytes());
+    let suffix = common_suffix(old, new, shorter - prefix.min(shorter));
+    let start = old.char_to_byte(old.byte_to_char(prefix));
+    let old_end_raw = old.len_bytes() - suffix;
+    // round the end UP to a char boundary: the suffix bytes are identical in both texts, so a
+    // boundary in one is a boundary in the other at the same distance from the end
+    let old_end_char = old.byte_to_char(old_end_raw);
+    let old_end = if old.char_to_byte(old_end_char) == old_end_raw {
+        old_end_raw
+    } else {
+        old.char_to_byte(old_end_char + 1)
+    };
+    let new_end = new.len_bytes() - (old.len_bytes() - old_end);
+    if start == old_end && start == new_end {
+        return None;
+    }
+    Some((start, old_end, new_end.max(start)))
+}
+
+/// Compose a sequence of CHAR edits `[start old-end new-end]`, each in the coordinates of the
+/// text the previous ones produced, into the one edit that covers them all: `start` and
+/// `old-end` in the original text, `new-end` in the final one. tree-sitter is told one edit
+/// per reparse, and a wider one is only a wider reparse — never a wrong tree.
+#[cfg(feature = "treesit")]
+fn compose_char_edits(edits: &[(usize, usize, usize)]) -> Option<(usize, usize, usize)> {
+    let mut iter = edits.iter();
+    let (mut start, mut old_end, mut new_end) = *iter.next()?;
+    for &(next_start, next_old_end, next_new_end) in iter {
+        // the covered range in CURRENT coordinates is [start, new_end); the next edit replaces
+        // [next_start, next_old_end) of the current text
+        let covered_end = new_end.max(next_old_end);
+        // map the covered end back to the ORIGINAL text: past the cover the two differ by
+        // the cover's own growth
+        let original_end = if covered_end == new_end {
+            old_end
+        } else {
+            covered_end + old_end - new_end
+        };
+        let shifted_end = covered_end + next_new_end - next_old_end;
+        start = start.min(next_start);
+        old_end = original_end.max(old_end);
+        new_end = shifted_end;
+    }
+    Some((start, old_end, new_end))
+}
+
+/// A byte `InputEdit` from a `[start old-end new-end)` byte triple and both texts.
+#[cfg(feature = "treesit")]
+fn input_edit(
+    old: &ropey::Rope,
+    new: &ropey::Rope,
+    (start, old_end, new_end): (usize, usize, usize),
+) -> tree_sitter::InputEdit {
+    tree_sitter::InputEdit {
+        start_byte: start,
+        old_end_byte: old_end,
+        new_end_byte: new_end,
+        start_position: point_of(old, start),
+        old_end_position: point_of(old, old_end),
+        new_end_position: point_of(new, new_end),
+    }
+}
+
+/// `(%tree-sitter-tree text lang)` — parse a whole document into a fresh handle.
+#[cfg(feature = "treesit")]
+pub fn tree_open(text: ropey::Rope, lang: &str) -> Result<u64, LispError> {
+    let tree = parse_rope(&text, lang, None)?;
+    Ok(tree_register(TreeEntry {
+        tree,
+        text,
+        lang: lang.to_string(),
+        epoch: grammar_epoch(),
+        changed: None,
+        last_used: 0,
+    }))
+}
+
+/// `(%tree-sitter-tree-reparse tree text lang edits)` — the handle for `text`, reparsed
+/// incrementally from `old`'s tree. `edits` is the caller's account of what changed, as CHAR
+/// triples `[start old-end new-end]` applied in order; `None` derives the edit by comparing
+/// the ropes (prefix and suffix, chunk by chunk). An edit that does not fit the two texts —
+/// whose unchanged tails differ in length — is an error, never a silently wrong tree.
+#[cfg(feature = "treesit")]
+pub fn tree_reparse(
+    old: u64,
+    text: ropey::Rope,
+    lang: &str,
+    edits: Option<Vec<(usize, usize, usize)>>,
+) -> Result<u64, LispError> {
+    let previous = tree_entry(old).filter(|e| e.lang == lang && e.epoch == grammar_epoch());
+    let Some(previous) = previous else {
+        return tree_open(text, lang); // gone, another language, or another grammar
+    };
+    let byte_edit = match edits {
+        None => derive_rope_edit(&previous.text, &text),
+        Some(edits) => match compose_char_edits(&edits) {
+            None => derive_rope_edit(&previous.text, &text),
+            Some((start, old_end, new_end)) => {
+                let old_chars = previous.text.len_chars();
+                let new_chars = text.len_chars();
+                if start > old_end
+                    || old_end > old_chars
+                    || start > new_end
+                    || new_end > new_chars
+                    || old_chars - old_end != new_chars - new_end
+                {
+                    return Err(LispError::runtime(format!(
+                        "%tree-sitter-tree-reparse: edit [{start} {old_end} {new_end}] does \
+                         not turn the tree's text ({old_chars} chars) into this one \
+                         ({new_chars} chars)"
+                    )));
+                }
+                Some((
+                    previous.text.char_to_byte(start),
+                    previous.text.char_to_byte(old_end),
+                    text.char_to_byte(new_end),
+                ))
+            }
+        },
+    };
+    let Some(byte_edit) = byte_edit else {
+        // the same text: a new handle on the same tree, nothing changed
+        return Ok(tree_register(TreeEntry {
+            changed: Some(Vec::new()),
+            text,
+            ..previous
+        }));
+    };
+    let (start, old_end, new_end) = byte_edit;
+    let old_length = previous.text.len_bytes();
+    // the same rule as `derive_edit`: an edit spanning most of a large document is a new
+    // document, and reparsing from the old tree buys nothing
+    if (old_end - start) * 4 > old_length && old_length > 4096 {
+        return tree_open(text, lang);
+    }
+    let mut edited = previous.tree.clone();
+    edited.edit(&input_edit(&previous.text, &text, byte_edit));
+    let tree = parse_rope(&text, lang, Some(&edited))?;
+    let mut changed: Vec<(usize, usize)> = edited
+        .changed_ranges(&tree)
+        .map(|range| (range.start_byte, range.end_byte))
+        .collect();
+    changed.push((start, new_end));
+    changed.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(changed.len());
+    for (from, to) in changed {
+        match merged.last_mut() {
+            Some(last) if from <= last.1 => last.1 = last.1.max(to),
+            _ => merged.push((from, to)),
+        }
+    }
+    Ok(tree_register(TreeEntry {
+        tree,
+        text,
+        lang: lang.to_string(),
+        epoch: previous.epoch,
+        changed: Some(merged),
+        last_used: 0,
+    }))
+}
+
+/// `(%tree-sitter-tree-spans tree kinds keywords? from to)` — the fontify walk over a held
+/// tree, restricted to chars `[from, to)` and clipped to it; `Nil` for a gone handle.
+#[cfg(feature = "treesit")]
+pub fn tree_spans(
+    heap: &mut Heap,
+    handle: u64,
+    kinds: Vec<String>,
+    keywords: bool,
+    from: i64,
+    to: i64,
+) -> LispResult {
+    let Some(entry) = tree_entry(handle) else {
+        return Ok(Value::Nil);
+    };
+    let chars = entry.text.len_chars();
+    let from = (from.max(0) as usize).min(chars);
+    let to = (to.max(0) as usize).min(chars).max(from);
+    let window = (entry.text.char_to_byte(from), entry.text.char_to_byte(to));
+    let wanted: std::collections::HashSet<String> = kinds.into_iter().collect();
+    let query = SpanQuery {
+        wanted: &wanted,
+        keywords,
+        window: Some(window),
+    };
+    let mut out: Vec<Value> = Vec::new();
+    spans_into(heap, entry.tree.root_node(), &entry.text, &query, &mut out);
+    Ok(heap.alloc_vector(out))
+}
+
+/// `(%tree-sitter-tree-changes tree)` — the char ranges `[start end]` of `tree`'s text whose
+/// colouring may differ from the tree it was reparsed from; `Bool(true)` when it was a fresh
+/// parse (everything may differ), `Nil` for a gone handle.
+#[cfg(feature = "treesit")]
+pub fn tree_changes(heap: &mut Heap, handle: u64) -> LispResult {
+    let Some(entry) = tree_entry(handle) else {
+        return Ok(Value::Nil);
+    };
+    let Some(changed) = entry.changed else {
+        return Ok(Value::Bool(true));
+    };
+    let ranges: Vec<Value> = changed
+        .into_iter()
+        .map(|(from, to)| {
+            let pair = vec![
+                Value::int(entry.text.char_of(from) as i64),
+                Value::int(entry.text.char_of(to) as i64),
+            ];
+            heap.alloc_vector(pair)
+        })
+        .collect();
+    Ok(heap.alloc_vector(ranges))
+}
+
+/// `(%tree-sitter-tree-free tree)` — drop a handle now; true when it was still held.
+#[cfg(feature = "treesit")]
+pub fn tree_free(handle: u64) -> bool {
+    crate::core::sync::lock(&TREE_HANDLES)
+        .entries
+        .remove(&handle)
+        .is_some()
+}
+
+#[cfg(not(feature = "treesit"))]
+fn without_treesit(who: &str) -> LispError {
+    LispError::runtime(format!(
+        "{who}: this runtime was built without tree-sitter (rebuild with --features treesit)"
+    ))
+}
+
+#[cfg(not(feature = "treesit"))]
+pub fn tree_open(_text: ropey::Rope, _lang: &str) -> Result<u64, LispError> {
+    Err(without_treesit("%tree-sitter-tree"))
+}
+
+#[cfg(not(feature = "treesit"))]
+pub fn tree_reparse(
+    _old: u64,
+    _text: ropey::Rope,
+    _lang: &str,
+    _edits: Option<Vec<(usize, usize, usize)>>,
+) -> Result<u64, LispError> {
+    Err(without_treesit("%tree-sitter-tree-reparse"))
+}
+
+#[cfg(not(feature = "treesit"))]
+pub fn tree_spans(
+    _heap: &mut crate::core::heap::Heap,
+    _handle: u64,
+    _kinds: Vec<String>,
+    _keywords: bool,
+    _from: i64,
+    _to: i64,
+) -> LispResult {
+    Err(without_treesit("%tree-sitter-tree-spans"))
+}
+
+#[cfg(not(feature = "treesit"))]
+pub fn tree_changes(_heap: &mut crate::core::heap::Heap, _handle: u64) -> LispResult {
+    Err(without_treesit("%tree-sitter-tree-changes"))
+}
+
+#[cfg(not(feature = "treesit"))]
+pub fn tree_free(_handle: u64) -> bool {
+    false
+}
+
 
 #[cfg(not(feature = "treesit"))]
 pub fn spans(
@@ -548,6 +1118,10 @@ pub fn load_grammar(path: &str, lang: &str) -> LispResult {
     // is not merely stale but ill-formed, and fails the parse outright. Same reasoning as
     // the pool above; the cache simply arrived later than the comment did.
     crate::core::sync::lock(&TREE_CACHE).retain(|(l, _, _)| l != lang);
+    // Held tree handles keep answering queries from the trees they have — those are valid
+    // trees, merely from the old grammar — but none is reparsed FROM again, for the reason
+    // above: a reparse after this sees a newer epoch and parses afresh.
+    GRAMMAR_EPOCH.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     Ok(Value::int(abi))
 }
 
@@ -806,5 +1380,114 @@ mod parse_cache_tests {
             !texts.contains(&document),
             "the document's older version is replaced, not kept"
         );
+    }
+}
+
+#[cfg(all(test, feature = "treesit"))]
+mod tree_handle_edit_tests {
+    use super::*;
+
+    /// Two edits in sequence compose into the one edit that covers both, in the original
+    /// text's coordinates for its start and old end and the final text's for its new end.
+    #[test]
+    fn edits_in_sequence_compose_into_one_covering_edit() {
+        // "abcdef" -> "aXYZdef" (bc -> XYZ) -> "aXYZdeQf" (insert Q before f)
+        assert_eq!(
+            compose_char_edits(&[(1, 3, 4), (6, 6, 7)]),
+            Some((1, 5, 7))
+        );
+        // an insert BEFORE the first edit widens the start, not the end
+        assert_eq!(
+            compose_char_edits(&[(1, 3, 4), (0, 0, 1)]),
+            Some((0, 3, 5))
+        );
+        // a delete overlapping the first edit's front
+        assert_eq!(
+            compose_char_edits(&[(1, 3, 4), (0, 2, 0)]),
+            Some((0, 3, 2))
+        );
+        assert_eq!(compose_char_edits(&[]), None);
+    }
+
+    /// The rope diff finds one contiguous change exactly, across chunk boundaries, and
+    /// widens it to whole characters when the change is inside a multi-byte one.
+    #[test]
+    fn a_rope_diff_finds_the_change_and_never_splits_a_character() {
+        let base: String = "fn main() { let x = 1; }\n".repeat(400);
+        let old = ropey::Rope::from_str(&base);
+        assert!(old.chunks().count() > 1, "the test must cross a chunk boundary");
+        let mut edited = base.clone();
+        edited.insert_str(5000, "yy");
+        let new = ropey::Rope::from_str(&edited);
+        assert_eq!(derive_rope_edit(&old, &new), Some((5000, 5000, 5002)));
+        assert_eq!(derive_rope_edit(&old, &old.clone()), None);
+        // é (C3 A9) -> è (C3 A8): the bytes differ only in the second, the edit is the char
+        let accented_old = ropey::Rope::from_str("caf\u{e9}!");
+        let accented_new = ropey::Rope::from_str("caf\u{e8}!");
+        assert_eq!(
+            derive_rope_edit(&accented_old, &accented_new),
+            Some((3, 5, 5))
+        );
+    }
+}
+
+#[cfg(all(test, feature = "treesit-grammars"))]
+mod tree_handle_tests {
+    use super::*;
+
+    fn spans_of(handle: u64, from: i64, to: i64) -> Vec<(i64, i64)> {
+        let mut heap = Heap::new();
+        let kinds = vec!["string".to_string(), "comment".to_string()];
+        let v = tree_spans(&mut heap, handle, kinds, false, from, to).expect("spans");
+        heap.seq_items(v)
+            .expect("a vector")
+            .into_iter()
+            .map(|span| {
+                let parts = heap.seq_items(span).expect("a span");
+                match (parts[0], parts[1]) {
+                    (Value::Int(a), Value::Int(b)) => (a, b),
+                    _ => panic!("span offsets are ints"),
+                }
+            })
+            .collect()
+    }
+
+    /// A reparse from an edit — explicit or derived — colours exactly what a fresh parse of
+    /// the new text does, and the old handle still answers for the old text.
+    #[test]
+    fn an_incremental_reparse_matches_a_fresh_parse() {
+        let source: String = (0..300)
+            .map(|i| format!("def m{i}\n  x = \"s{i}\" # c{i}\nend\n"))
+            .collect();
+        let old_text = ropey::Rope::from_str(&source);
+        let old = tree_open(old_text.clone(), "ruby").expect("parses");
+        // open a string above the window: everything after it is a string now
+        let mut new_text = old_text.clone();
+        new_text.insert(4, "\"");
+        let length = new_text.len_chars() as i64;
+        let fresh = tree_open(new_text.clone(), "ruby").expect("parses");
+        let derived = tree_reparse(old, new_text.clone(), "ruby", None).expect("reparses");
+        let explicit =
+            tree_reparse(old, new_text.clone(), "ruby", Some(vec![(4, 4, 5)])).expect("reparses");
+        let window = (length / 2, length / 2 + 400);
+        assert_eq!(
+            spans_of(derived, window.0, window.1),
+            spans_of(fresh, window.0, window.1)
+        );
+        assert_eq!(
+            spans_of(explicit, window.0, window.1),
+            spans_of(fresh, window.0, window.1)
+        );
+        // the old handle is untouched by the reparse
+        assert_eq!(spans_of(old, 0, 40), {
+            let again = tree_open(old_text, "ruby").expect("parses");
+            spans_of(again, 0, 40)
+        });
+        // an edit that does not fit the texts is refused
+        assert!(tree_reparse(old, new_text, "ruby", Some(vec![(4, 4, 9)])).is_err());
+        assert!(tree_free(fresh));
+        let mut heap = Heap::new();
+        let gone = tree_spans(&mut heap, fresh, Vec::new(), false, 0, 10).expect("answers");
+        assert!(matches!(gone, Value::Nil), "a freed handle reads as nil");
     }
 }
