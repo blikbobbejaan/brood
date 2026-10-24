@@ -3565,23 +3565,7 @@ half-open range, and it is a full collection (`Seqable`, `Counted`, `Conjable`, 
 Writing its `get` turned up KI-298: `(get coll k default)` with a non-nil default never asked
 `Lookup`, so `(get multimap :k [])` gave `[]` for a key holding values. Fixed in `get`'s
 3-arity arm and in `PrimOp3::MapGet3` alike. Not run on this machine.
-2026-10-24 (ADR-434, `ui-run` skips no-op turns): the loop remembers the model and grid it last
-drew, and a turn that leaves both `=` renders nothing. In bedit that's the key-up and the
-hosted buffer's echo of every keystroke, plus timers that found no work: three frames per key
-become one. Not run on this machine.
-2026-10-24 (ADR-433 tree handles): tree-sitter parses incrementally from a tree the caller
-KEEPS. `%tree-sitter-tree` parses a whole document (a rope, read through tree-sitter's chunk
-callback, never flattened) into an immutable ref handle; `%tree-sitter-tree-reparse` edits a
-copy of its tree and reparses (explicit char edits, or derived by a chunk-wise prefix/suffix
-compare of the two ropes); `%tree-sitter-tree-spans` colours a char RANGE of the held tree
-without parsing; `%tree-sitter-tree-changes` reports the edit plus tree-sitter's changed
-ranges, so a span cache can invalidate by range; `%tree-sitter-tree-free` drops one. The
-registry is bounded (32, LRU); a gone handle reads nil and reparses as a full parse.
-`editor/treesit` wraps them (`open-tree`, `update-tree`, `fontify-tree`, `tree-changes`,
-`free-tree`, `splice-edit`); `fontify` and every slice-based primitive are unchanged, and bedit
-is not yet moved onto them. Rust tests and a reparse-equals-fresh-parse test written; **no
-tests were run on this machine** (built, clippy clean, `nest check --strict` clean).
-2026-10-24 (ADR-430, the GPU target's feel): the installed build paints on the GPU, and that
+
 2026-10-24 (ADR-440, the GPU target's feel): the installed build paints on the GPU, and that
 path re-shaped every text run and re-uploaded every instance each frame. Now a run's quads are
 kept and replayed while the run repeats; position is not in the key, so a scroll reuses every
