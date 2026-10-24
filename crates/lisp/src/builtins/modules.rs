@@ -500,6 +500,9 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // Multi-valued map: one key may hold multiple values (a map of lists).
     // multimap-assoc, multimap-get, multimap-get-all, multimap-dissoc, …
     embedded_module!("multimap", "std/multimap.blsp"),
+    // Sorted map and sorted set: a treap keyed by `compare`, prioritised by `%hash`, so a
+    // collection's shape is its contents. min/max, floor/ceiling and range queries.
+    embedded_module!("sorted", "std/sorted.blsp"),
     // MD5/SHA-1/SHA-256/SHA-384/SHA-512 + HMAC, all Brood over the two `%digest`
     // / `%hmac` prims (raw bytes); hex/string shaping via bytes->hex; hash/string is djb2.
     embedded_module!("hash", "std/hash.blsp"),

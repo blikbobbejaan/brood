@@ -222,7 +222,10 @@ needs a Brood-specific form to respect an ADR.
   plus `std/stream` as the process-backed generator for anything that crosses a `send`.
   Keeps ADR-111's rule that laziness is opt-in and heap-local. Replaces the "unbounded stream
   generation" entry under Language core & types.
-- ⬜ **4. Sorted map and set.** `compare` is already a total order over every value
+- ✅ **4. Sorted map and set** (2026-10-24, ADR-430). `std/sorted`: a treap whose priorities
+  are the keys' hashes, so a collection's shape is its contents and `=` compares contents.
+  `min`/`max`, `floor`/`ceiling`, a half-open `range`, and the full collection protocol.
+  Original note: `compare` is already a total order over every value
   (ADR-285). A persistent balanced tree in `std/sorted.blsp` implementing `Seqable`/`Conjable`
   so `conj`/`into`/`get` dispatch through the collection protocol (ADR-156); the natural home
   for a range query, which `pq`/`multimap` do not cover.
@@ -909,8 +912,16 @@ What that review consciously left OPEN, with the reasoning:
     checker precise-typing. Concrete, step-ordered, ready to execute — see
     [`docs/plan-reserved-early-binding.md`](docs/plan-reserved-early-binding.md). Phases 2
     (multi-arity devirt) and 3 (see-through inlining of `get`'s `cond`) build on it.
-- ⬜ **`get`'s call + type-dispatch overhead, which the JIT cannot see through.**
-  Found while measuring ADR-165: against the `map-get` kernel op at 107 ms/1M, a
+  - *Re-assessed 2026-10-24:* Phase 3's target is already met for the hot shapes, by
+    instruction rather than by inlining: `(get m k)` is `PrimOp::MapGet` (ADR-296) and
+    `(get m k d)` / `(assoc m k v)` are `PrimOp3` (ADR-368), each declining to the wrapper
+    for every other receiver. The KI-19 staging exemption already reads
+    `is_reserved_global`. What is left is Steps B/C (the per-call identity re-check on a
+    reserved head), a pure speed change: build it only with `make ab` and `make ab-vm` on
+    the test machine to show it pays.
+- ✅ ~~**`get`'s call + type-dispatch overhead, which the JIT cannot see through.**~~
+  Closed by ADR-296 (`MapGet`) and ADR-368 (`MapGet3`, `MapAssoc`); the text below is the
+  original measurement. Found while measuring ADR-165: against the `map-get` kernel op at 107 ms/1M, a
   single-arity Brood wrapper costs **+124 ms**, its four-branch `cond` a further
   **+138 ms**, and multi-arity dispatch **+24 ms** — total 393 ms, with the JIT
   closing *none* of it (374 ms with the JIT off). This is the variadic-`+` finding
@@ -919,7 +930,8 @@ What that review consciously left OPEN, with the reasoning:
   — not moving more accessors into Rust, which only hides it. `get` is ~4,800 call
   sites, so this is the single highest-leverage perf item in the library.
   **[kernel/JIT]**
-- ⬜ **`sig` inline signatures.** A function's name, params and types live in two
+- ✅ **`sig` inline signatures** — shipped 2026-10-22 as typed parameters (ADR-420,
+  `(defn area (w:number h:number -> number) …)`); the original note follows. A function's name, params and types live in two
   forms with an ordering constraint that only bites under `BROOD_CONTRACTS=1`. The
   fix — `(defn f ((x int) -> int) …)` — is an ADR-082 revision touching `defn`, the
   checker's `sig_of`, `defrecord`'s emitted sigs, `sig!`'s wrapping, and every `sig`

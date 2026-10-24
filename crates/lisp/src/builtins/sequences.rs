@@ -189,6 +189,17 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["a", "b"],
         "Structural total-order comparison: -1 if a sorts before b, 0 if equal, 1 if after. Numbers numerically; strings/keywords/symbols by text; vectors/lists lexicographically; cross-kind by a stable tag rank. The binary form of `sort`'s order — `sort-by` and custom comparators build on it.\n\n    (compare 1 2)   → -1",
         compare);
+    // `(%hash v)` — the structural hash maps and sets key by, as an int. Equal values hash
+    // equal, and a symbol or keyword hashes by its spelling, so the number does not depend
+    // on interning order. `std/sorted` takes its treap priorities from it, which makes a
+    // sorted collection's shape a function of its keys alone (so `=` compares contents).
+    primitives.def(
+        "%hash",
+        Arity::exact(1),
+        Sig::new(vec![any], int),
+        &["v"],
+        "The structural hash of `v` as an integer: equal values hash equal, and a symbol or keyword hashes by its spelling.\n\n    (= (%hash [1 :a]) (%hash [1 :a]))   → true",
+        hash);
     // vector
     primitives.def(
         "vector",
@@ -1190,6 +1201,10 @@ pub(super) fn compare(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         Ordering::Greater => 1,
     };
     Ok(Value::int(ord))
+}
+
+pub(super) fn hash(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    Ok(Value::int(heap.hash_value(arg(args, 0)) as i64))
 }
 
 // ---------- vector ----------

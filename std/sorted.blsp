@@ -1,0 +1,263 @@
+;; std/sorted.blsp — persistent sorted map and sorted set.
+;;
+;; Design notes (the *why*; the *what* is in the docstrings below):
+;;  - The tree is a TREAP whose priorities are the keys' structural hashes (`%hash`), not
+;;    random numbers. For a given set of keys there is exactly one such tree, whatever order
+;;    they were added in, so two sorted collections with the same contents are the same value
+;;    and `=` on them compares contents (an AVL or red-black tree's shape records its
+;;    insertion history, and `=` would not). Expected depth is O(log n) for keys whose hashes
+;;    are well spread. A priority tie breaks on the key, so the heap order is total.
+;;  - Keys are ordered by `compare` (ADR-285), the structural total order over every value,
+;;    so any mix of keys sorts without a comparator.
+;;  - A node is the vector `[left key value right priority]`; a set's nodes hold nil values.
+;;  - Each collection is a RECORD wrapping its tree, so it joins the collection protocol:
+;;    `Seqable` (in key order), `Conjable`, `Counted` and `Lookup` (bare `get` and `keys`).
+;;    The fields are `%tree`/`%size` because a record answers `get` from its fields first, so
+;;    a field name is a key the collection could never hold.
+
+(defmodule sorted
+  "Persistent sorted map and sorted set, ordered by `compare`.
+
+    (let (m (into (sorted/empty-map) {:b 2 :c 3 :a 1}))
+      (seq m))                          ;; => ([:a 1] [:b 2] [:c 3])
+
+Both are collections: `seq`, `map`, `fold`, `for`, `count`, `into` and `conj` work on them in
+key order, and bare `get` reads them. What a hash map cannot do is the reason to use one:
+`min`/`max`, `floor`/`ceiling` (the nearest key at or below/above a key) and `range` (every
+entry between two keys), each without a full scan. Two sorted collections with the same
+contents are `=`, whatever order they were built in.")
+
+(defrecord sorted-map (%tree %size))
+(defrecord sorted-set (%tree %size))
+
+(defn- tree (coll) (/get coll :%tree))
+(defn- size (coll) (/get coll :%size))
+(defn- set-kind? (coll) (= (record-id coll) :sorted/sorted-set))
+
+;; ---- the treap ----------------------------------------------------------------------
+
+;; Is the node with priority `pa` and key `ka` above the one with `pb`/`kb`?
+(defn- above? (pa ka pb kb) (or (> pa pb) (and (= pa pb) (< (compare ka kb) 0))))
+
+;; Every recursion below descends ONE path or splits on one, so its depth is the tree's
+;; depth (O(log n)), not the collection's size.
+(check-allow :non-tail-recursion
+  (defn- split (node k)
+    "`[below found above]`: the nodes keyed below `k`, the node keyed `k` (or nil) and those above."
+    (if (nil? node)
+      [nil nil nil]
+      (let ([left key value right priority] node
+            order (compare k key))
+        (cond
+          (< order 0)
+            (let ([below found above] (split left k))
+              [below found [above key value right priority]])
+          (> order 0)
+            (let ([below found above] (split right k))
+              [[left key value below priority] found above])
+          else [left node right]))))
+  (defn- join (low high)
+    "One tree from `low` and `high`, every key of `low` below every key of `high`."
+    (cond
+      (nil? low) high
+      (nil? high) low
+      (above? (nth low 4) (nth low 1) (nth high 4) (nth high 1))
+        (let ([left key value right priority] low) [left key value (join right high) priority])
+      else (let ([left key value right priority] high) [(join low left) key value right priority])))
+  (defn- insert (node k v priority)
+    (if (or (nil? node) (above? priority k (nth node 4) (nth node 1)))
+      (let ([below _ above] (split node k)) [below k v above priority])
+      (let ([left key value right p] node
+            order (compare k key))
+        (cond
+          (< order 0) [(insert left k v priority) key value right p]
+          (> order 0) [left key value (insert right k v priority) p]
+          else [left key v right p]))))
+  (defn- delete (node k)
+    (let ([left key value right priority] node
+          order (compare k key))
+      (cond
+        (< order 0) [(delete left k) key value right priority]
+        (> order 0) [left key value (delete right k) priority]
+        else (join left right))))
+  (defn- entries-onto (node entry acc)
+    "The entries of `node` in key order, consed onto `acc`."
+    (if (nil? node)
+      acc
+      (entries-onto (nth node 0) entry (cons (entry node) (entries-onto (nth node 3) entry acc)))))
+  (defn- range-onto (node from to entry acc)
+    "The entries keyed from `from` (inclusive) to `to` (exclusive) in key order, onto `acc`."
+    (if (nil? node)
+      acc
+      (let (key (nth node 1)
+            from-ok (or (nil? from) (>= (compare key from) 0))
+            to-ok (or (nil? to) (< (compare key to) 0))
+            with-right (if to-ok (range-onto (nth node 3) from to entry acc) acc)
+            with-node (if (and from-ok to-ok) (cons (entry node) with-right) with-right))
+        (if from-ok (range-onto (nth node 0) from to entry with-node) with-node)))))
+
+(defn- find-node (node k)
+  (if (nil? node)
+    nil
+    (let (order (compare k (nth node 1)))
+      (cond
+        (< order 0) (find-node (nth node 0) k)
+        (> order 0) (find-node (nth node 3) k)
+        else node))))
+
+;; The nearest node at or below `k` (`floor`) and at or above it (`ceiling`).
+(defn- floor-node (node k best)
+  (if (nil? node)
+    best
+    (let (order (compare k (nth node 1)))
+      (cond
+        (< order 0) (floor-node (nth node 0) k best)
+        (> order 0) (floor-node (nth node 3) k node)
+        else node))))
+(defn- ceiling-node (node k best)
+  (if (nil? node)
+    best
+    (let (order (compare k (nth node 1)))
+      (cond
+        (< order 0) (ceiling-node (nth node 0) k node)
+        (> order 0) (ceiling-node (nth node 3) k best)
+        else node))))
+
+(defn- edge-node (node side)
+  (cond
+    (nil? node) nil
+    (nil? (nth node side)) node
+    else (edge-node (nth node side) side)))
+
+;; ---- the collections ----------------------------------------------------------------
+
+;; What a node stands for: a map's `[key value]` entry, a set's element.
+(defn- map-entry (node) [(nth node 1) (nth node 2)])
+(defn- set-entry (node) (nth node 1))
+(defn- entry-of (coll) (if (set-kind? coll) set-entry map-entry))
+(defn- entry-or-nil (coll node) (if (nil? node) nil ((entry-of coll) node)))
+
+(defn- rebuild (coll new-tree new-size)
+  (if (set-kind? coll) (sorted-set new-tree new-size) (sorted-map new-tree new-size)))
+
+(defn- put (coll k v)
+  (rebuild coll
+    (insert (tree coll) k v (%hash k))
+    (if (nil? (find-node (tree coll) k)) (+ (size coll) 1) (size coll))))
+
+(defn empty-map ()
+  "An empty sorted map. Build one with `into` or `assoc`.
+
+    (seq (into (sorted/empty-map) {:b 2 :a 1}))   → ([:a 1] [:b 2])"
+  (sorted-map nil 0))
+
+(defn empty-set ()
+  "An empty sorted set. Build one with `into` or `conj`.
+
+    (seq (into (sorted/empty-set) [3 1 2 1]))   → (1 2 3)"
+  (sorted-set nil 0))
+
+(defn assoc (m k v)
+  "Sorted map `m` with key `k` set to `v`.
+
+    (seq (sorted/assoc (sorted/empty-map) 2 :two))   → ([2 :two])"
+  (put m k v))
+
+(defn dissoc (coll k)
+  "Sorted map or set `coll` without key (or element) `k`; `coll` itself when `k` is absent.
+
+    (seq (sorted/dissoc (into (sorted/empty-set) [1 2 3]) 2))   → (1 3)"
+  (if (nil? (find-node (tree coll) k))
+    coll
+    (rebuild coll (delete (tree coll) k) (- (size coll) 1))))
+
+(defn get (coll k & default)
+  "The value at key `k` in sorted map `coll` (for a sorted set, `k` itself when it is a
+member), else `default` (nil when not given). Bare `get` gives the same answer with two
+arguments.
+
+    (sorted/get (into (sorted/empty-map) {:a 1}) :a)       → 1
+    (sorted/get (into (sorted/empty-map) {:a 1}) :zz 0)    → 0"
+  (let (node (find-node (tree coll) k))
+    (cond
+      (nil? node) (first default)
+      (set-kind? coll) (nth node 1)
+      else (nth node 2))))
+
+(defn contains? (coll k)
+  "True when sorted map or set `coll` has key (or element) `k`.
+
+    (sorted/contains? (into (sorted/empty-set) [1 2]) 2)   → true"
+  (not (nil? (find-node (tree coll) k))))
+
+(defn min (coll)
+  "The entry with the smallest key — `[key value]` for a map, the element for a set — or nil
+when `coll` is empty.
+
+    (sorted/min (into (sorted/empty-set) [5 3 9]))   → 3"
+  (entry-or-nil coll (edge-node (tree coll) 0)))
+
+(defn max (coll)
+  "The entry with the largest key — `[key value]` for a map, the element for a set — or nil
+when `coll` is empty.
+
+    (sorted/max (into (sorted/empty-map) {1 :a 7 :b}))   → [7 :b]"
+  (entry-or-nil coll (edge-node (tree coll) 3)))
+
+(defn floor (coll k)
+  "The entry with the largest key at or below `k`, or nil when there is none.
+
+    (sorted/floor (into (sorted/empty-set) [10 20 30]) 25)   → 20"
+  (entry-or-nil coll (floor-node (tree coll) k nil)))
+
+(defn ceiling (coll k)
+  "The entry with the smallest key at or above `k`, or nil when there is none.
+
+    (sorted/ceiling (into (sorted/empty-set) [10 20 30]) 25)   → 30"
+  (entry-or-nil coll (ceiling-node (tree coll) k nil)))
+
+(defn range (coll from to)
+  "The entries keyed from `from` (inclusive) up to `to` (exclusive), in key order, as a list.
+A nil bound is open on that side. Only the part of the tree in range is visited.
+
+    (sorted/range (into (sorted/empty-set) [1 2 3 4 5]) 2 4)     → (2 3)
+    (sorted/range (into (sorted/empty-set) [1 2 3 4 5]) 4 nil)   → (4 5)"
+  (range-onto (tree coll) from to (entry-of coll) nil))
+
+;; ---- the collection protocol --------------------------------------------------------
+
+(impl Seqable sorted/sorted-map (->seq [m] (entries-onto (tree m) map-entry nil)))
+(impl Seqable sorted/sorted-set (->seq [s] (entries-onto (tree s) set-entry nil)))
+(impl Counted sorted/sorted-map (->count [m] (size m)))
+(impl Counted sorted/sorted-set (->count [s] (size s)))
+(impl Conjable
+  sorted/sorted-map
+  (conj-onto [m x]
+    (cond
+      (and (vector? x) (= (count x) 2)) (put m (nth x 0) (nth x 1))
+      (map? x) (fold (seq x) m (fn (acc pair) (put acc (nth pair 0) (nth pair 1))))
+      else (error "conj: adding to a sorted map takes a [key value] pair or a map, got " (pr-str x)))))
+(impl Conjable sorted/sorted-set (conj-onto [s x] (put s x nil)))
+;; `Lookup` is what makes bare `get` and `keys` answer for the contents rather than the
+;; record's fields — and `keys` in key order.
+(impl Lookup
+  sorted/sorted-map
+  (lookup-get [m k] (get m k))
+  (lookup-keys [m] (entries-onto (tree m) set-entry nil)))
+(impl Lookup
+  sorted/sorted-set
+  (lookup-get [s k] (get s k))
+  (lookup-keys [s] (entries-onto (tree s) set-entry nil)))
+
+(impl Display
+  sorted/sorted-map
+  (->string [m] (str "#<sorted-map " (size m) " entries>")))
+(impl Display
+  sorted/sorted-set
+  (->string [s] (str "#<sorted-set " (size s) " elements>")))
+(impl Inspect
+  sorted/sorted-map
+  (inspect [m] (str "#<sorted-map " (pr-str (seq m)) ">")))
+(impl Inspect
+  sorted/sorted-set
+  (inspect [s] (str "#<sorted-set " (pr-str (seq s)) ">")))

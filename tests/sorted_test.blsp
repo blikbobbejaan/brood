@@ -1,0 +1,106 @@
+(defmodule sorted-test (:use test))
+
+(defn- sm (m) (into (sorted/empty-map) m))
+(defn- ss (xs) (into (sorted/empty-set) xs))
+
+;; 0..n-1 in a scrambled order: 37 is coprime with every n used below, so `(* i 37) mod n`
+;; visits each index once.
+(defn- scrambled (n) (map (range 0 n) (fn (i) (math/mod (* i 37) n))))
+
+(describe "sorted map"
+  (test "iterates in key order whatever the insertion order"
+    (assert= [[:a 1] [:b 2] [:c 3]] (into [] (sm {:c 3 :a 1 :b 2})))
+    (assert= (seq (range 0 200)) (keys (ss (scrambled 200)))))
+  (test "assoc replaces a value without growing"
+    (let (m (sorted/assoc (sm {:a 1}) :a 9))
+      (assert= 1 (count m))
+      (assert= 9 (get m :a))))
+  (test "bare get reads the contents, and sorted/get takes a default"
+    (let (m (sm {:a 1 :b nil}))
+      (assert= 1 (get m :a))
+      (assert= nil (get m :zz))
+      (assert= 1 (get m :a 0))
+      (assert= 0 (get m :zz 0))
+      (assert= 0 (sorted/get m :zz 0))
+      (assert= nil (sorted/get m :b 0))))
+  (test "contains? tells a stored nil from absence"
+    (let (m (sm {:a nil}))
+      (is (sorted/contains? m :a))
+      (is (not (sorted/contains? m :b)))))
+  (test "dissoc removes, and an absent key returns the same map"
+    (let (m (sm {:a 1 :b 2 :c 3}))
+      (assert= [[:a 1] [:c 3]] (into [] (sorted/dissoc m :b)))
+      (assert= 2 (count (sorted/dissoc m :b)))
+      (assert= m (sorted/dissoc m :zz))))
+  (test "min, max, floor and ceiling"
+    (let (m (sm {10 :a 20 :b 30 :c}))
+      (assert= [10 :a] (sorted/min m))
+      (assert= [30 :c] (sorted/max m))
+      (assert= [20 :b] (sorted/floor m 25))
+      (assert= [20 :b] (sorted/floor m 20))
+      (assert= nil (sorted/floor m 5))
+      (assert= [30 :c] (sorted/ceiling m 25))
+      (assert= nil (sorted/ceiling m 31))
+      (assert= nil (sorted/min (sorted/empty-map)))))
+  (test "range is half-open, and nil leaves a side open"
+    (let (m (sm {1 :a 2 :b 3 :c 4 :d}))
+      (assert= (list [2 :b] [3 :c]) (sorted/range m 2 4))
+      (assert= (list [1 :a] [2 :b]) (sorted/range m nil 3))
+      (assert= (list [3 :c] [4 :d]) (sorted/range m 3 nil))
+      (assert= nil (sorted/range m 5 9))))
+  (test "keys sort by compare: numbers numerically, vectors element by element"
+    (assert= (list 1 2.5 3) (keys (sm {3 :c 2.5 :b 1 :a})))
+    (assert= (list [1 2] [1 10] [2 0]) (keys (sm {[2 0] :c [1 10] :b [1 2] :a}))))
+  (test "conj takes a pair or a map"
+    (assert= [[:a 1] [:b 2] [:c 3]] (into [] (conj (conj (sm {:b 2}) [:a 1]) {:c 3})))))
+
+(describe "sorted set"
+  (test "deduplicates and sorts"
+    (assert= (list 1 2 3) (seq (ss [3 1 2 3 1])))
+    (assert= 3 (count (ss [3 1 2 3 1]))))
+  (test "get answers the element, as a set's does"
+    (assert= 2 (get (ss [1 2]) 2))
+    (assert= nil (get (ss [1 2]) 5)))
+  (test "range over a set"
+    (assert= (list 20 30) (sorted/range (ss [10 20 30 40]) 15 35)))
+  (test "every collection op runs in order"
+    (let (s (ss [5 1 4 2 3]))
+      (assert= (list 10 20 30 40 50) (map s (fn (x) (* x 10))))
+      (assert= 15 (fold s 0 +))
+      (assert= (list 2 4) (seq/filter s math/even?)))))
+
+(describe "a sorted collection's shape is its contents"
+  (test "the same contents built in different orders are ="
+    (assert= (ss (range 0 300)) (ss (scrambled 300)))
+    (assert= (ss (range 0 300)) (ss (reverse (range 0 300))))
+    (assert= (sm {:a 1 :b 2 :c 3}) (sorted/assoc (sorted/assoc (sm {:c 3}) :b 2) :a 1)))
+  (test "removing what was added gives back the original value"
+    (let (base (ss (scrambled 100))
+          grown (fold (range 100 150) base conj)
+          shrunk (fold (range 100 150) grown sorted/dissoc))
+      (assert= base shrunk)
+      (assert= 100 (count shrunk))))
+  (test "different contents are not ="
+    (is (not (= (ss [1 2 3]) (ss [1 2 4]))))
+    (is (not (= (sm {:a 1}) (sm {:a 2}))))))
+
+(defn- st-builder (parent lo hi) (send parent [:built (ss (range lo hi))]))
+(defn- st-collect (n acc)
+  (if (= n 0) acc (st-collect (- n 1) (receive ([:built s] (into acc s))))))
+(defn- st-echo (parent) (receive (s (send parent s))))
+
+(describe "sorted collections across processes"
+  :isolated (test "a sorted map round-trips through a worker and stays ="
+    (let (me (self) w (spawn (st-echo me)) m (sm {3 :c 1 :a 2 :b}))
+      (send w m)
+      (let (back (receive))
+        (assert= m back)
+        (assert= (list [1 :a] [2 :b] [3 :c]) (seq back))
+        (assert= [3 :c] (sorted/max back)))))
+  (test "workers each build a set; the parent merges them into one in order"
+    (let (me (self))
+      (doseq (i (range 0 10)) (spawn (st-builder me (* i 30) (+ (* i 30) 30))))
+      (let (merged (st-collect 10 (sorted/empty-set)))
+        (assert= 300 (count merged))
+        (assert= merged (ss (scrambled 300)))
+        (assert= (list 148 149 150) (sorted/range merged 148 151))))))

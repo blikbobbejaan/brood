@@ -3556,3 +3556,12 @@ match, in any order, scored independently and added; one term ranks exactly as b
 native `%fuzzy-top` splits and adds the same way (`score_terms`), and
 `tests/fuzzy_native_test.blsp` holds the two equal on multi-term queries. Not run on this
 machine.
+
+2026-10-24 (ADR-430, `std/sorted`; KI-298): a sorted map and set, ROADMAP's "other Lisps" item 4.
+The tree is a treap whose priorities are the keys' structural hashes (a new `%hash` primitive
+over `Heap::hash_value`), so its shape depends only on its keys and two collections with the
+same contents are `=` whatever order they were built in. It has min/max, floor/ceiling and a
+half-open range, and it is a full collection (`Seqable`, `Counted`, `Conjable`, `Lookup`).
+Writing its `get` turned up KI-298: `(get coll k default)` with a non-nil default never asked
+`Lookup`, so `(get multimap :k [])` gave `[]` for a key holding values. Fixed in `get`'s
+3-arity arm and in `PrimOp3::MapGet3` alike. Not run on this machine.
