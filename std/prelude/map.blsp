@@ -47,12 +47,17 @@
   ;; `%identity-of` is the obvious way to get the dispatch id and it uses bare `get`, so it
   ;; re-enters here and recurses forever. `coll` is already known to be a map, so its id is
   ;; just `:__id__` — read it with the prim.
+  ;;
+  ;; A `Lookup` impl that answers nil (no such key in its contents) keeps `fallback` too, so
+  ;; the 3-arity `get`'s default reaches a record collection (KI-298).
   (if (bound? (quote *impls*))
     (let (id (%map-get coll (quote :__id__) nil))
       (if id
         (let (methods (%map-get *impls* (quote [Lookup lookup-get]) nil))
           (if methods
-            (if (%map-get methods id nil) (lookup-get coll k) fallback)
+            (if (%map-get methods id nil)
+              (let (found (lookup-get coll k)) (if (nil? found) fallback found))
+              fallback)
             fallback))
         fallback))
     fallback))
@@ -91,10 +96,14 @@ a wrong-typed one.
                   (%get-unanswerable coll k))
               (int? k) (nth coll k nil)
               else (%get-unanswerable coll k)))
+  ;; The map branch reads with a nil default, not `default`: a non-nil default on an absent
+  ;; key skipped `%lookup-miss`, so a record collection answered the default for a key it
+  ;; holds (KI-298). The VM and native code run `PrimOp3::MapGet3`, which answers a plain
+  ;; map without the call.
   ((coll k default) (cond
                       (map? coll)
-                        (let (v (%map-get coll k default))
-                          (if (nil? v) (%lookup-miss coll k v) v))
+                        (let (v (%map-get coll k nil))
+                          (if (nil? v) (%lookup-miss coll k (%map-get coll k default)) v))
                       (set? coll) (if (%set-has? coll k) k default)
                       (nil? coll) default
                       (string? coll)
