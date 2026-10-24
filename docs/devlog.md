@@ -3590,3 +3590,11 @@ IME commits, `[:preedit text range]`, the IME candidate window at the frame's cu
 on focus gain. `{:wheel :lines}` — three lines a notch at once — is the default; `{:wheel
 :glide}` keeps the glide. Built and clippy-clean with `gui,gui-gpu`; the tests were written but
 NOT run on this machine, and no window was opened.
+2026-10-24 (ADR-432, fonts): the GUI finds installed fonts by name. `gui-font-register` takes
+`{:family-name "JetBrains Mono"}`; the system font database is scanned only on that first ask,
+or on the first glyph nothing loaded covers. A CJK ideograph or a missing symbol now comes from
+an installed font found by coverage, where it used to be tofu; emoji still come from the bundled
+Noto. `gui-ligatures!` (off by default) shapes 2–8-char punctuation runs as one cell-spanning
+unit in both painters. `gui-font-info` says which file each style resolved to. Rust tests
+(`render.rs` `font_tests`) were written for CI and were not run on this machine; nothing was run
+here beyond the gui / gui-gpu builds and clippy.
