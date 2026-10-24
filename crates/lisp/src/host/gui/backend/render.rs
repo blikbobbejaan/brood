@@ -119,6 +119,15 @@ impl<'a> Canvas<'a> {
 /// color and mono), plus the family-keyword → family-name map a `:family` resolves
 /// through. Shared by every window's renderer (so `gui-font-register` reaches them
 /// all), like the old family registry.
+///
+/// Two font databases, on purpose (ADR-442). The SHAPING one (`fs`) holds only the faces
+/// in use: the bundled DejaVu and emoji, the families registered, and the fallback faces
+/// a missing glyph pulled in. The SYSTEM one (`system`) is every installed face, scanned
+/// from the fontconfig directories the first time something needs it — a family asked
+/// for by name, or a glyph nothing loaded can draw — and never before, so a window that
+/// only draws ASCII in the bundled font opens without touching the disk. Keeping the
+/// system faces out of the shaping database is what keeps cosmic-text's own fallback
+/// walk (which visits every face in its database for a glyph it cannot place) short.
 pub(super) struct FontShared {
     fs: FontSystem,
     swash: SwashCache,
@@ -128,13 +137,70 @@ pub(super) struct FontShared {
     scaler: ScaleContext,
     /// interned family keyword id → fontdb family name (`:mono` → "DejaVu Sans Mono").
     names: HashMap<u32, String>,
+    /// interned family keyword id → where its faces came from (`gui-font-info`).
+    resolutions: HashMap<u32, FontResolution>,
+    /// The bundled faces a missing glyph is looked for in before the system: the
+    /// regular DejaVu and the colour emoji. cosmic-text's fallback already reaches both,
+    /// so a glyph either covers is left to it — what the renderer did before system
+    /// fallback existed.
+    bundled: Vec<fontdb::ID>,
+    /// Every installed face, scanned on first need (see the type's doc).
+    system: Option<fontdb::Database>,
+    /// The system faces loaded into the shaping database as fallbacks, `(family,
+    /// file)`, in the order they were first needed — the first place the next missing
+    /// glyph is looked for, so a screen of CJK scans the system once, not per char.
+    fallbacks: Vec<(String, String)>,
+    /// codepoint → the fallback family that draws it (`None`: nothing installed does).
+    fallback_for: HashMap<char, Option<String>>,
+    /// 128-codepoint blocks a full system scan already came up empty for, so a page of
+    /// glyphs nobody has (a Nerd-font icon range without a Nerd font) costs one scan.
+    empty_blocks: std::collections::HashSet<u32>,
+    /// Font files already loaded into the shaping database.
+    loaded_files: std::collections::HashSet<std::path::PathBuf>,
+    /// Bumped by every registration: a family keyword can now name different faces, so
+    /// a glyph cached under it (the GPU atlas keys by family keyword) is stale.
+    generation: u64,
+}
+
+/// Where a registered family's faces came from — the backend side of
+/// `super::super::FontInfo`.
+#[derive(Clone, Debug)]
+struct FontResolution {
+    requested: Option<String>,
+    origin: &'static str,
+    faces: [String; 4],
+}
+
+/// The four styles a family registers, in `FontInfo::faces` order.
+const STYLES: [(Weight, Style); 4] = [
+    (Weight::NORMAL, Style::Normal),
+    (Weight::BOLD, Style::Normal),
+    (Weight::NORMAL, Style::Italic),
+    (Weight::BOLD, Style::Italic),
+];
+
+/// A codepoint that rides on the glyph before it rather than needing its own: the
+/// zero-width joiner and the variation selectors. A font need not cover these for the
+/// cluster they sit in to be its.
+fn rides_along(c: char) -> bool {
+    matches!(c, '\u{200D}' | '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}')
+}
+
+/// The file behind a face source, for diagnostics (`None` for in-memory bytes).
+fn source_path(source: &fontdb::Source) -> Option<std::path::PathBuf> {
+    match source {
+        fontdb::Source::File(path) => Some(path.clone()),
+        fontdb::Source::SharedFile(path, _) => Some(path.clone()),
+        fontdb::Source::Binary(_) => None,
+    }
 }
 
 impl FontShared {
     pub(super) fn new() -> Self {
         let src = |b: &'static [u8]| fontdb::Source::Binary(Rc2::new(b));
-        // Load the bundled mono faces + the emoji fallback; no system fonts, so the
-        // editor renders identically everywhere (self-contained, ADR-046).
+        // Load the bundled mono faces + the emoji fallback; system fonts only on demand
+        // (`ensure_system`), so the default editor renders identically everywhere
+        // (self-contained, ADR-046) and opens without a font scan.
         let fs = FontSystem::new_with_fonts([
             src(FONT_REGULAR),
             src(FONT_BOLD),
@@ -142,13 +208,28 @@ impl FontShared {
             src(FONT_BOLD_ITALIC),
             src(FONT_EMOJI),
         ]);
+        let bundled = [MONO_FAMILY, EMOJI_FAMILY]
+            .iter()
+            .filter_map(|family| query_face(fs.db(), family, Weight::NORMAL, Style::Normal))
+            .collect();
+        let mono = value::intern(DEFAULT_FAMILY);
         let mut names = HashMap::new();
-        names.insert(value::intern(DEFAULT_FAMILY), MONO_FAMILY.to_string());
+        names.insert(mono, MONO_FAMILY.to_string());
+        let mut resolutions = HashMap::new();
+        resolutions.insert(mono, bundled_resolution());
         FontShared {
             fs,
             swash: SwashCache::new(),
             scaler: ScaleContext::new(),
             names,
+            resolutions,
+            bundled,
+            system: None,
+            fallbacks: Vec::new(),
+            fallback_for: HashMap::new(),
+            empty_blocks: Default::default(),
+            loaded_files: Default::default(),
+            generation: 0,
         }
     }
 
@@ -163,28 +244,300 @@ impl FontShared {
     /// Register a family from raw TTF bytes per style (behind `gui-font-register`):
     /// load all four faces into the db, and map `id` to the regular face's family
     /// name so an `Attrs` built for it picks the right faces (weight/style matched).
-    pub(super) fn register(
-        &mut self,
-        id: u32,
-        regular: Vec<u8>,
-        bold: Vec<u8>,
-        italic: Vec<u8>,
-        bold_italic: Vec<u8>,
-    ) {
+    /// `paths` are the files the bytes came from, kept for `gui-font-info`.
+    pub(super) fn register(&mut self, id: u32, faces: [Vec<u8>; 4], paths: [String; 4]) {
+        let [regular, bold, italic, bold_italic] = faces;
         let ids = self
             .fs
             .db_mut()
             .load_font_source(fontdb::Source::Binary(Rc2::new(regular)));
-        let fam = ids
+        let family = ids
             .first()
-            .and_then(|fid| self.fs.db().face(*fid))
-            .and_then(|f| f.families.first().map(|(n, _)| n.clone()));
-        for b in [bold, italic, bold_italic] {
-            self.fs.db_mut().load_font_data(b);
+            .and_then(|face_id| self.fs.db().face(*face_id))
+            .and_then(|face| face.families.first().map(|(name, _)| name.clone()));
+        for bytes in [bold, italic, bold_italic] {
+            self.fs.db_mut().load_font_data(bytes);
         }
-        if let Some(fam) = fam {
-            self.names.insert(id, fam);
+        self.generation += 1;
+        if let Some(family) = family {
+            self.names.insert(id, family);
+            self.resolutions.insert(
+                id,
+                FontResolution {
+                    requested: None,
+                    origin: "files",
+                    faces: paths,
+                },
+            );
         }
+    }
+
+    /// Register a family by its INSTALLED name (behind `gui-font-register`'s
+    /// `:family-name`): find it in the system database (case-insensitively, scanning the
+    /// system on first use), pick each style's face by weight and slant, and load those
+    /// files into the shaping database. A name nothing installed answers to maps `id` to
+    /// the bundled mono, and `gui-font-info` says so (`"not-found"`).
+    pub(super) fn register_installed(&mut self, id: u32, requested: &str) {
+        self.generation += 1;
+        self.ensure_system();
+        let Some(system) = self.system.as_ref() else {
+            return;
+        };
+        let wanted = requested.trim();
+        let family = system.faces().find_map(|face| {
+            face.families
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(wanted))
+                .map(|(name, _)| name.clone())
+        });
+        let Some(family) = family else {
+            self.names.insert(id, MONO_FAMILY.to_string());
+            let mut resolution = bundled_resolution();
+            resolution.requested = Some(wanted.to_string());
+            resolution.origin = "not-found";
+            self.resolutions.insert(id, resolution);
+            return;
+        };
+        let mut faces: [String; 4] = Default::default();
+        let mut sources = Vec::new();
+        for (slot, (weight, style)) in STYLES.iter().enumerate() {
+            let Some(face_id) = query_face(system, &family, *weight, *style) else {
+                continue;
+            };
+            if let Some((source, _)) = system.face_source(face_id) {
+                faces[slot] = source_path(&source)
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default();
+                sources.push(source);
+            }
+        }
+        for source in sources {
+            self.load_into_shaping(source);
+        }
+        self.names.insert(id, family);
+        self.resolutions.insert(
+            id,
+            FontResolution {
+                requested: Some(wanted.to_string()),
+                origin: "system",
+                faces,
+            },
+        );
+    }
+
+    /// What `gui-font-info` reports for family keyword `id` (the bundled mono for one
+    /// never registered, as `name_of` resolves it).
+    pub(super) fn info(&self, id: u32) -> super::super::FontInfo {
+        let resolution = self
+            .resolutions
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(bundled_resolution);
+        super::super::FontInfo {
+            name: self.name_of(id),
+            requested: resolution.requested,
+            origin: resolution.origin,
+            faces: resolution.faces,
+            fallbacks: self.fallbacks.clone(),
+            system_scanned: self.system.is_some(),
+            ligatures: false,
+        }
+    }
+
+    /// Scan the installed fonts (fontconfig's directories on Linux) into the system
+    /// database, once. The cost — every font file's header read — is paid by the first
+    /// call that needs it, never at startup.
+    fn ensure_system(&mut self) {
+        if self.system.is_none() {
+            let mut system = fontdb::Database::new();
+            system.load_system_fonts();
+            self.system = Some(system);
+        }
+    }
+
+    /// Load one font file into the shaping database, once per file.
+    fn load_into_shaping(&mut self, source: fontdb::Source) {
+        if let Some(path) = source_path(&source)
+            && !self.loaded_files.insert(path)
+        {
+            return;
+        }
+        self.fs.db_mut().load_font_source(source);
+    }
+
+    /// Whether face `id` of the shaping database has a glyph for every char of `chars`.
+    fn covers(&mut self, id: fontdb::ID, chars: &[char]) -> bool {
+        let Some(font) = self.fs.get_font(id, Weight::NORMAL) else {
+            return false;
+        };
+        let charmap = font.as_swash().charmap();
+        chars.iter().all(|&c| charmap.map(c) != 0)
+    }
+
+    /// The family to shape cluster `text` in, when it is not `family`: `Some` only when
+    /// neither `family` (in this weight and slant) nor a bundled face can draw it and an
+    /// installed font can — a CJK ideograph under DejaVu, a symbol a programming font
+    /// lacks. `None` leaves the cluster to cosmic-text exactly as before, which is what
+    /// keeps every glyph the bundled fonts already drew (emoji included) unchanged.
+    pub(super) fn fallback_family(
+        &mut self,
+        text: &str,
+        family: &str,
+        bold: bool,
+        italic: bool,
+    ) -> Option<String> {
+        if text.is_ascii() && family == MONO_FAMILY {
+            return None; // DejaVu covers all of printable ASCII: the hot path asks nothing
+        }
+        let chars: Vec<char> = text.chars().filter(|c| !rides_along(*c)).collect();
+        if chars.is_empty() {
+            return None;
+        }
+        let weight = if bold { Weight::BOLD } else { Weight::NORMAL };
+        let style = if italic { Style::Italic } else { Style::Normal };
+        if let Some(primary) = query_face(self.fs.db(), family, weight, style)
+            && self.covers(primary, &chars)
+        {
+            return None;
+        }
+        let bundled = self.bundled.clone();
+        if bundled.into_iter().any(|id| self.covers(id, &chars)) {
+            return None;
+        }
+        self.system_fallback(&chars)
+    }
+
+    /// An installed family that draws `chars` (keyed by the first), loading it into the
+    /// shaping database on first use: the fallbacks already loaded first, then — unless a
+    /// scan already found this block empty — a scan of the system's regular faces,
+    /// monospaced ones first.
+    fn system_fallback(&mut self, chars: &[char]) -> Option<String> {
+        let key = chars[0];
+        if let Some(known) = self.fallback_for.get(&key) {
+            return known.clone();
+        }
+        let loaded: Vec<String> = self
+            .fallbacks
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in loaded {
+            if let Some(id) = query_face(self.fs.db(), &name, Weight::NORMAL, Style::Normal)
+                && self.covers(id, chars)
+            {
+                self.fallback_for.insert(key, Some(name.clone()));
+                return Some(name);
+            }
+        }
+        let block = key as u32 >> 7;
+        if self.empty_blocks.contains(&block) {
+            self.fallback_for.insert(key, None);
+            return None;
+        }
+        self.ensure_system();
+        let found = self
+            .system
+            .as_ref()
+            .and_then(|system| scan_system(system, chars));
+        let Some((family, path)) = found else {
+            self.empty_blocks.insert(block);
+            self.fallback_for.insert(key, None);
+            return None;
+        };
+        // Every face of the family, so a bold or italic fallback glyph finds its style.
+        let sources: Vec<fontdb::Source> = self
+            .system
+            .as_ref()
+            .map(|system| {
+                system
+                    .faces()
+                    .filter(|face| face.families.iter().any(|(name, _)| *name == family))
+                    .map(|face| face.source.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for source in sources {
+            self.load_into_shaping(source);
+        }
+        self.fallbacks.push((family.clone(), path));
+        self.fallback_for.insert(key, Some(family.clone()));
+        Some(family)
+    }
+}
+
+/// The face of `family` closest to `weight`/`style` in `db`, by fontdb's CSS matching.
+fn query_face(
+    db: &fontdb::Database,
+    family: &str,
+    weight: Weight,
+    style: Style,
+) -> Option<fontdb::ID> {
+    db.query(&fontdb::Query {
+        families: &[Family::Name(family)],
+        weight,
+        stretch: fontdb::Stretch::Normal,
+        style,
+    })
+}
+
+/// The first installed family whose regular face draws every char of `chars`, with
+/// the file it was found in: monospaced faces first (a fallback glyph sits in a cell),
+/// then the Noto and DejaVu families a desktop usually has for coverage, then the rest.
+/// Each candidate's character map is read from its file (memory-mapped), so this is the
+/// slow path `FontShared::system_fallback` caches around.
+fn scan_system(system: &fontdb::Database, chars: &[char]) -> Option<(String, String)> {
+    let rank = |face: &fontdb::FaceInfo| {
+        let name = face
+            .families
+            .first()
+            .map(|(name, _)| name.as_str())
+            .unwrap_or("");
+        if face.monospaced {
+            0
+        } else if name.starts_with("Noto Sans") || name.starts_with("DejaVu") {
+            1
+        } else {
+            2
+        }
+    };
+    let mut candidates: Vec<&fontdb::FaceInfo> = system
+        .faces()
+        .filter(|face| face.style == Style::Normal && (350..=500).contains(&face.weight.0))
+        .collect();
+    candidates.sort_by_key(|face| rank(face));
+    candidates.into_iter().find_map(|face| {
+        let covered = system
+            .with_face_data(face.id, |data, index| {
+                swash::FontRef::from_index(data, index as usize)
+                    .map(|font| {
+                        let charmap = font.charmap();
+                        chars.iter().all(|&c| charmap.map(c) != 0)
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        let family = face.families.first().map(|(name, _)| name.clone())?;
+        covered.then(|| {
+            let path = source_path(&face.source)
+                .map(|path| path.display().to_string())
+                .unwrap_or_default();
+            (family, path)
+        })
+    })
+}
+
+/// The bundled DejaVu's resolution — the `:mono` family, and what a family name that is
+/// not installed falls back to.
+fn bundled_resolution() -> FontResolution {
+    FontResolution {
+        requested: None,
+        origin: "bundled",
+        faces: [
+            "<bundled DejaVuSansMono.ttf>".to_string(),
+            "<bundled DejaVuSansMono-Bold.ttf>".to_string(),
+            "<bundled DejaVuSansMono-Oblique.ttf>".to_string(),
+            "<bundled DejaVuSansMono-BoldOblique.ttf>".to_string(),
+        ],
     }
 }
 
@@ -232,6 +585,9 @@ pub(crate) struct Renderer {
     text_contrast: f32,
     /// `cov -> lifted cov` for the current `text_contrast`, 256 entries; identity at 1.0.
     cov_lut: Box<[u8; 256]>,
+    /// Whether runs of punctuation are shaped as one unit, so a font's programming
+    /// ligatures (`->`, `!=`, `===`) form (`gui-ligatures!`, ADR-442). Off by default.
+    ligatures: bool,
 
     // Keyed by (cluster, family id, bold, italic, scale, subpixel, PX BITS): the same
     // cluster at a different family/style/scale/AA/size rasterises to a different baked
@@ -295,6 +651,7 @@ impl Renderer {
             text_aa: TextAa::Auto,
             text_contrast: 1.0,
             cov_lut: Box::new(contrast_lut(1.0)),
+            ligatures: false,
             cache: HashMap::new(),
             metrics_memo: RefCell::new(HashMap::new()),
             canvas: Vec::new(),
@@ -349,6 +706,19 @@ impl Renderer {
             self.cache.insert(key.clone(), baked);
         }
         &self.cache[&key]
+    }
+
+    /// The family a face without `:family` is drawn in — part of the GPU atlas's glyph
+    /// key, since `gui-font!` changes it at the same px.
+    #[cfg_attr(not(feature = "gui-gpu"), allow(dead_code))]
+    pub(crate) fn default_family(&self) -> u32 {
+        self.default_family
+    }
+
+    /// The text contrast exponent γ (`gui-text-contrast!`) — the GPU shader's lift.
+    #[cfg_attr(not(feature = "gui-gpu"), allow(dead_code))]
+    pub(crate) fn text_contrast(&self) -> f32 {
+        self.text_contrast
     }
 
     /// Set the content inset (logical px). The cell metrics don't change — only the
@@ -560,6 +930,39 @@ impl Renderer {
         self.invalidate();
     }
 
+    /// A family was (re-)registered: the faces a keyword names may have changed, so drop
+    /// every baked glyph, and re-measure the cell — when the window's own family is the
+    /// one that moved, 'M' may be a different width now. (Before, re-registering the
+    /// family a window already used kept the old font's cell: `set_font` with an
+    /// unchanged keyword returns early, by design.)
+    pub(super) fn fonts_changed(&mut self) {
+        self.cache.clear();
+        self.recompute();
+    }
+
+    /// The shared registration count — part of the GPU atlas key, which names a glyph
+    /// by family KEYWORD and would otherwise keep a re-registered family's old glyphs.
+    #[cfg_attr(not(feature = "gui-gpu"), allow(dead_code))]
+    pub(crate) fn font_generation(&self) -> u64 {
+        self.families.borrow().generation
+    }
+
+    /// Shape runs of punctuation as one unit (`on`), so a font's ligatures form, or
+    /// every grapheme cluster alone (the default). Behind `gui-ligatures!`. The glyph
+    /// cache needs no flush — a ligature unit is a different key from its clusters — but
+    /// the retained frame was cut into the other units, so it is forgotten.
+    pub(super) fn set_ligatures(&mut self, on: bool) {
+        if self.ligatures != on {
+            self.ligatures = on;
+            self.invalidate();
+        }
+    }
+
+    /// Whether a `:text` op is cut into ligature units (`text_units`).
+    pub(crate) fn ligatures(&self) -> bool {
+        self.ligatures
+    }
+
     /// Whether text is rasterised per colour channel right now: the explicit mode, or
     /// under `Auto` only at a 1× scale (see `TextAa`).
     pub(super) fn subpixel_text(&self) -> bool {
@@ -611,7 +1014,7 @@ impl Renderer {
     ) -> CachedGlyph {
         let scale = scale.max(1) as usize;
         let px = (self.px * scale as f32).max(1.0);
-        let cells = cluster_cells(g).max(1);
+        let cells = unit_cells(g).max(1);
         let cw = (self.cell_w * scale * cells).max(1);
         let ch = (self.cell_h * scale).max(1);
         let line_h = ch as f32;
@@ -624,6 +1027,12 @@ impl Renderer {
         let fam = self.families.borrow().name_of(fid);
         let mut shared = self.families.borrow_mut();
         let shared = &mut *shared;
+        // A glyph neither the family nor a bundled face has is drawn from an installed
+        // font that has it, on the same baseline and in the same cell span (ADR-442).
+        let fam = shared.fallback_family(g, &fam, bold, italic).unwrap_or(fam);
+        // A ligature unit (several clusters, `text_units`) puts each cluster's glyph at
+        // its own cell, not at the font's fractional pen position.
+        let grid = is_ligature_unit(g).then_some((self.cell_w * scale) as i32);
         let attrs = |()| {
             let mut a = Attrs::new().family(Family::Name(fam.as_str()));
             if bold {
@@ -655,6 +1064,7 @@ impl Renderer {
                 cw,
                 ch,
                 baseline,
+                grid,
                 self.text_aa == TextAa::Bgr,
             )
         {
@@ -669,7 +1079,7 @@ impl Renderer {
                 &mut rgba,
                 cw,
                 ch,
-                Placement::Baseline(baseline),
+                Placement::Baseline { y: baseline, grid },
             );
             (false, false)
         };
@@ -811,13 +1221,128 @@ pub(super) fn canvas_over(
     rgba[idx + 3] = out_a as u8;
 }
 
-/// Where a cluster's glyphs sit in its baked canvas. `Baseline(y)` puts the text
+/// Where a cluster's glyphs sit in its baked canvas. `Baseline { y, .. }` puts the text
 /// baseline at row `y` (the shared grid baseline, so a fallback symbol aligns with
-/// the surrounding text). `Center` ignores the baseline and centers the glyph's
-/// bounding box in the canvas — for color emoji, which have no useful text baseline.
+/// the surrounding text); with `grid: Some(cell_w)` each glyph is moved onto the cell of
+/// the char it starts at (a ligature unit, `grid_shift`). `Center` ignores the baseline
+/// and centers the glyph's bounding box in the canvas — for color emoji, which have no
+/// useful text baseline.
 pub(super) enum Placement {
-    Baseline(i32),
+    Baseline { y: i32, grid: Option<i32> },
     Center,
+}
+
+/// How far to move glyph `gl` of a ligature unit so it starts on its char's cell rather
+/// than at the font's pen position: a unit is ASCII, one cell per byte, so the char at
+/// byte `start` owns cell `start`. The font's advance is fractional and the cell is
+/// rounded, so without this the pen drifts off the grid by up to half a pixel per char.
+/// Zero when `grid` is `None` (a single cluster, placed exactly as before).
+fn grid_shift(gl: &cosmic_text::LayoutGlyph, grid: Option<i32>) -> i32 {
+    match grid {
+        Some(cell_w) => gl.start as i32 * cell_w - gl.x.round() as i32,
+        None => 0,
+    }
+}
+
+/// The ASCII punctuation programming ligatures are made of (`->`, `!=`, `<=>`, `|>`,
+/// `::`, `/*`, `&&`, `===`). Letters and digits are left out on purpose: a run of them is
+/// a word, and caching every word as a unit would grow the glyph cache per identifier.
+fn ligature_byte(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'!' | b'#'
+            | b'$'
+            | b'%'
+            | b'&'
+            | b'*'
+            | b'+'
+            | b'-'
+            | b'.'
+            | b'/'
+            | b':'
+            | b';'
+            | b'<'
+            | b'='
+            | b'>'
+            | b'?'
+            | b'@'
+            | b'\\'
+            | b'^'
+            | b'_'
+            | b'|'
+            | b'~'
+    )
+}
+
+/// The longest run shaped as one unit; a longer run (a `=====` rule) is cut into units
+/// this long, so the glyph cache stays bounded by what the font can ligate.
+const MAX_LIGATURE_RUN: usize = 8;
+
+/// Whether `unit` is a ligature unit — two or more ligature bytes — rather than one
+/// grapheme cluster. Unambiguous: every ASCII punctuation char is a cluster of its own.
+pub(crate) fn is_ligature_unit(unit: &str) -> bool {
+    unit.len() > 1 && unit.bytes().all(ligature_byte)
+}
+
+/// The cells a unit of `text_units` spans: one per byte for a ligature unit, the
+/// cluster's own width otherwise.
+pub(crate) fn unit_cells(unit: &str) -> usize {
+    if is_ligature_unit(unit) {
+        unit.len()
+    } else {
+        cluster_cells(unit)
+    }
+}
+
+/// The units a `:text` op is drawn in: its grapheme clusters, or with `ligatures` on,
+/// its clusters with every run of two or more punctuation chars (`ligature_byte`) taken
+/// as ONE unit, so the run is shaped together and the font's ligatures form. Each unit
+/// is rasterised and cached as one canvas `unit_cells` wide, so a ligature spanning N
+/// cells occupies exactly those N cells and the grid never moves.
+pub(crate) fn text_units(text: &str, ligatures: bool) -> TextUnits<'_> {
+    if ligatures {
+        TextUnits::Ligated { text, at: 0 }
+    } else {
+        TextUnits::Clusters(text.graphemes(true))
+    }
+}
+
+/// The iterator `text_units` returns.
+pub(crate) enum TextUnits<'a> {
+    Clusters(unicode_segmentation::Graphemes<'a>),
+    Ligated { text: &'a str, at: usize },
+}
+
+impl<'a> Iterator for TextUnits<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<&'a str> {
+        match self {
+            TextUnits::Clusters(clusters) => clusters.next(),
+            TextUnits::Ligated { text, at } => {
+                let rest = &text[*at..];
+                if rest.is_empty() {
+                    return None;
+                }
+                let mut run = rest
+                    .bytes()
+                    .take_while(|byte| ligature_byte(*byte))
+                    .count()
+                    .min(MAX_LIGATURE_RUN);
+                // A combining mark after the run belongs to its last char's cluster.
+                if run >= 2 && rest[run - 1..].graphemes(true).next().map(str::len) != Some(1) {
+                    run -= 1;
+                }
+                let unit = if run >= 2 {
+                    &rest[..run]
+                } else {
+                    rest.graphemes(true).next().unwrap_or(rest)
+                };
+                *at += unit.len();
+                Some(unit)
+            }
+        }
+    }
 }
 
 /// Shape grapheme cluster `g` into a fresh cosmic-text buffer at `px` / line height
@@ -874,9 +1399,10 @@ pub(super) fn composite_cluster(
             };
             let (iw, ih) = (img.placement.width as i32, img.placement.height as i32);
             let (ox, oy) = match place {
-                Placement::Baseline(b) => {
-                    (phys.x + img.placement.left, b + phys.y - img.placement.top)
-                }
+                Placement::Baseline { y, grid } => (
+                    phys.x + img.placement.left + grid_shift(gl, grid),
+                    y + phys.y - img.placement.top,
+                ),
                 Placement::Center => ((cw as i32 - iw) / 2, (ch as i32 - ih) / 2),
             };
             match img.content {
@@ -926,6 +1452,7 @@ pub(super) fn composite_cluster_subpixel(
     cw: usize,
     ch: usize,
     baseline: i32,
+    grid: Option<i32>,
     bgr: bool,
 ) -> bool {
     use cosmic_text::CacheKeyFlags;
@@ -976,7 +1503,7 @@ pub(super) fn composite_cluster_subpixel(
             }
             let (iw, ih) = (img.placement.width as i32, img.placement.height as i32);
             let (ox, oy) = (
-                phys.x + img.placement.left,
+                phys.x + img.placement.left + grid_shift(gl, grid),
                 baseline + phys.y - img.placement.top,
             );
             for ry in 0..ih {
@@ -1221,16 +1748,21 @@ pub(crate) fn snap_hairline(
 ///     rim around the cell so the cursor reads unambiguously against any
 ///     background (a translucent fill alone sinks into a busy highlight —
 ///     e.g. the bracket-match block — and the eye loses which cell owns it);
+///   * `Hollow` — the rim alone, thinner: an outline box, the cursor of a window
+///     without focus (Emacs's and kitty's unfocused caret);
 ///   * `Bar` — a thin, solid vertical line on the cell's left edge (a modern
 ///     GUI insertion caret) that doesn't obscure the glyph;
 ///   * `Underline` — a thin solid rule along the cell bottom.
+/// `color` is the op's caret colour: the block's wash and every solid stroke take
+/// it; `None` keeps the defaults (a white wash, `CURSOR_FG` strokes).
 /// The bar/underline thickness scales with the cell so it stays proportional on
-/// HiDPI (≥2 physical px). They paint solid `CURSOR_FG` rather than a blend, so a
-/// 2px caret reads crisply.
+/// HiDPI (≥2 physical px). They paint solid rather than a blend, so a 2px caret
+/// reads crisply.
 /// `draw_top`/`draw_bottom` are already clamped to the visible region `[oy, fb_h)`.
 /// `cell_top` is the logical (unclipped) top of the cursor cell in framebuffer pixels;
 /// it may be negative or above `oy` when the cursor is partially scrolled off the top.
-/// Used only for `Underline` to locate the baseline inside the cell.
+/// Used for the rim's horizontal edges and the underline, which sit on the logical cell.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn cursor_cell(
     canvas: &mut Canvas,
     left: usize,
@@ -1240,37 +1772,43 @@ pub(super) fn cursor_cell(
     h: usize,
     cell_top: isize,
     style: crate::host::gui::CursorStyle,
+    color: Option<[u8; 3]>,
 ) {
+    use crate::host::gui::CursorStyle;
     // The band clips the visible slice further; everything below derives from it.
     let draw_top = draw_top.max(canvas.y0);
     let draw_bottom = draw_bottom.min(canvas.y1);
     if draw_top >= draw_bottom {
         return;
     }
+    let stroke = pack(color.unwrap_or(CURSOR_FG));
     let fb_w = canvas.w;
-    let buf = &mut *canvas.buf;
     match style {
-        crate::host::gui::CursorStyle::Block => {
-            for y in draw_top..draw_bottom {
-                let row = y * fb_w;
-                for x in left..(left + w).min(fb_w) {
-                    buf[row + x] = blend(buf[row + x], [0xff, 0xff, 0xff], 128);
+        CursorStyle::Block | CursorStyle::Hollow => {
+            let buf = &mut *canvas.buf;
+            if style == CursorStyle::Block {
+                let wash = color.unwrap_or([0xff, 0xff, 0xff]);
+                for y in draw_top..draw_bottom {
+                    let row = y * fb_w;
+                    for x in left..(left + w).min(fb_w) {
+                        buf[row + x] = blend(buf[row + x], wash, 128);
+                    }
                 }
             }
-            // The rim: solid CURSOR_FG, scaled like the bar caret so it stays
-            // proportional on HiDPI. Vertical edges span the visible slice;
-            // horizontal edges sit at the LOGICAL cell top/bottom (cell_top may
-            // be off-screen when the cursor is partially scrolled off).
-            let t = (w / 10).max(2);
+            // The rim, scaled like the bar caret so it stays proportional on HiDPI.
+            // Vertical edges span the visible slice; horizontal edges sit at the
+            // LOGICAL cell top/bottom (cell_top may be off-screen when the cursor is
+            // partially scrolled off).
+            let t = cursor_rim(w, style);
             let x0 = left;
             let x1 = (left + w).min(fb_w);
             for y in draw_top..draw_bottom {
                 let row = y * fb_w;
                 for x in x0..(x0 + t).min(fb_w) {
-                    buf[row + x] = pack(CURSOR_FG);
+                    buf[row + x] = stroke;
                 }
                 for x in x1.saturating_sub(t)..x1 {
-                    buf[row + x] = pack(CURSOR_FG);
+                    buf[row + x] = stroke;
                 }
             }
             let edges = [
@@ -1283,12 +1821,12 @@ pub(super) fn cursor_cell(
                 for y in y0..y1 {
                     let row = y * fb_w;
                     for x in x0..x1 {
-                        buf[row + x] = pack(CURSOR_FG);
+                        buf[row + x] = stroke;
                     }
                 }
             }
         }
-        crate::host::gui::CursorStyle::Bar => {
+        CursorStyle::Bar => {
             let thickness = (w / 8).max(2);
             fill_cell(
                 canvas,
@@ -1296,10 +1834,10 @@ pub(super) fn cursor_cell(
                 draw_top,
                 thickness,
                 draw_bottom - draw_top,
-                pack(CURSOR_FG),
+                stroke,
             );
         }
-        crate::host::gui::CursorStyle::Underline => {
+        CursorStyle::Underline => {
             let thickness = (h / 10).max(2);
             // Underline sits at the bottom of the logical cell regardless of clipping.
             let uy = (cell_top + h as isize).saturating_sub(thickness as isize);
@@ -1307,10 +1845,21 @@ pub(super) fn cursor_cell(
                 let uy = uy as usize;
                 if uy >= draw_top && uy < draw_bottom {
                     let visible = thickness.min(draw_bottom - uy);
-                    fill_cell(canvas, left, uy, w, visible, pack(CURSOR_FG));
+                    fill_cell(canvas, left, uy, w, visible, stroke);
                 }
             }
         }
+    }
+}
+
+/// The rim thickness of a block or hollow cursor `w` px wide: a tenth of the cell
+/// (never under 2 px) for a block, a twelfth (never under 1 px) for the hollow box,
+/// which is an outline and reads as one only when thinner than the focused caret.
+/// Shared with the GPU target (`gpu::cursor_quads`), so both paint the same box.
+pub(crate) fn cursor_rim(w: usize, style: crate::host::gui::CursorStyle) -> usize {
+    match style {
+        crate::host::gui::CursorStyle::Hollow => (w / 12).max(1),
+        _ => (w / 10).max(2),
     }
 }
 
@@ -1539,6 +2088,156 @@ mod grid_stability_tests {
             r.cache.len(),
             warm + 1,
             "returning to a drawn size re-rasterised it"
+        );
+    }
+}
+
+#[cfg(test)]
+mod font_tests {
+    //! ADR-442: system fonts by name, fallback by coverage, ligature units. Written for CI
+    //! (they read no font a stock runner might lack, except where noted), never run on
+    //! the desktop they were written on.
+    use super::*;
+
+    fn units(text: &str, ligatures: bool) -> Vec<&str> {
+        text_units(text, ligatures).collect()
+    }
+
+    #[test]
+    fn without_ligatures_a_text_op_is_its_grapheme_clusters() {
+        assert_eq!(units("a->b", false), ["a", "-", ">", "b"]);
+        assert_eq!(units("e\u{301}!", false), ["e\u{301}", "!"]);
+    }
+
+    #[test]
+    fn with_ligatures_a_punctuation_run_is_one_unit() {
+        assert_eq!(units("a->b", true), ["a", "->", "b"]);
+        assert_eq!(units("x === y", true), ["x", " ", "===", " ", "y"]);
+        assert_eq!(units("|> !=", true), ["|>", " ", "!="]);
+        // a lone punctuation char stays a cluster; letters never join a run
+        assert_eq!(units("a-b", true), ["a", "-", "b"]);
+        assert_eq!(units("www", true), ["w", "w", "w"]);
+    }
+
+    #[test]
+    fn a_long_run_is_cut_into_bounded_units() {
+        assert_eq!(units("==========", true), ["========", "=="]);
+    }
+
+    #[test]
+    fn a_combining_mark_stays_with_the_char_it_marks() {
+        // the mark makes `>` + U+0301 one cluster, so the run stops before it
+        assert_eq!(units("->\u{301}", true), ["-", ">\u{301}"]);
+        assert_eq!(units("-\u{301}>", true), ["-\u{301}", ">"]);
+        assert_eq!(units("<=>\u{301}", true), ["<=", ">\u{301}"]);
+    }
+
+    #[test]
+    fn a_unit_spans_one_cell_per_char_of_a_run() {
+        assert_eq!(unit_cells("==="), 3);
+        assert_eq!(unit_cells("->"), 2);
+        assert_eq!(unit_cells("a"), 1);
+        assert_eq!(unit_cells("中"), 2);
+        assert_eq!(unit_cells("\u{301}"), 0);
+        // the units of a line add up to its display width, ligatures or not
+        for text in ["fn a() -> b { x != y }", "a <=> b |> c", "中-->文"] {
+            let lig: usize = text_units(text, true).map(unit_cells).sum();
+            let plain: usize = text_units(text, false).map(unit_cells).sum();
+            assert_eq!(lig, plain, "{text:?}");
+            assert_eq!(
+                lig,
+                crate::host::text_width::display_width(text),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_ligature_unit_bakes_one_canvas_as_wide_as_its_cells() {
+        let mut r = Renderer::new(1.0, default_families(), 15.0);
+        r.set_ligatures(true);
+        let cell_w = r.cell_w;
+        let glyph = r.cluster_glyph("->", None, false, false, 1);
+        assert_eq!(glyph.width, 2 * cell_w);
+        assert!(
+            glyph.rgba.chunks(4).any(|px| px[3] > 0),
+            "the run drew nothing"
+        );
+        let glyph = r.cluster_glyph("===", None, false, false, 1);
+        assert_eq!(glyph.width, 3 * cell_w);
+    }
+
+    #[test]
+    fn toggling_ligatures_forgets_the_retained_frame_only_on_a_change() {
+        let mut r = Renderer::new(1.0, default_families(), 15.0);
+        r.prev_ops.push(Op::Clear);
+        r.set_ligatures(false); // unchanged
+        assert_eq!(r.prev_ops.len(), 1);
+        r.set_ligatures(true);
+        assert!(r.prev_ops.is_empty());
+        assert!(r.ligatures());
+    }
+
+    #[test]
+    fn the_bundled_font_never_scans_the_system() {
+        let mut shared = FontShared::new();
+        for text in ["a", "M", "->", "é", "─", "😀"] {
+            assert_eq!(
+                shared.fallback_family(text, MONO_FAMILY, false, false),
+                None
+            );
+        }
+        assert!(
+            shared.system.is_none(),
+            "drawing what the bundled fonts cover scanned the installed fonts"
+        );
+        let info = shared.info(value::intern(DEFAULT_FAMILY));
+        assert_eq!(info.origin, "bundled");
+        assert_eq!(info.name, MONO_FAMILY);
+        assert!(!info.system_scanned);
+    }
+
+    /// Reads the runner's installed fonts — but only to fail to find one.
+    #[test]
+    fn a_family_name_nothing_installed_answers_to_falls_back_to_the_bundled_mono() {
+        let mut shared = FontShared::new();
+        let id = value::intern("no-such-font-family-adr-432");
+        shared.register_installed(id, "No Such Font Family ADR 432");
+        assert_eq!(shared.name_of(id), MONO_FAMILY);
+        let info = shared.info(id);
+        assert_eq!(info.origin, "not-found");
+        assert_eq!(
+            info.requested.as_deref(),
+            Some("No Such Font Family ADR 432")
+        );
+        assert!(info.system_scanned);
+    }
+
+    /// Reads the runner's installed fonts: whatever it finds (if anything) for a CJK
+    /// ideograph must be loaded where shaping can reach it, and asked for once.
+    #[test]
+    fn a_fallback_found_on_the_system_is_loaded_for_shaping_and_remembered() {
+        let mut shared = FontShared::new();
+        let found = shared.fallback_family("中", MONO_FAMILY, false, false);
+        if let Some(family) = &found {
+            assert!(
+                query_face(shared.fs.db(), family, Weight::NORMAL, Style::Normal).is_some(),
+                "{family} was chosen but not loaded into the shaping database"
+            );
+            assert_eq!(
+                shared.info(value::intern(DEFAULT_FAMILY)).fallbacks.len(),
+                1
+            );
+        }
+        let scanned = shared.loaded_files.len();
+        assert_eq!(
+            shared.fallback_family("中", MONO_FAMILY, false, false),
+            found
+        );
+        assert_eq!(
+            shared.loaded_files.len(),
+            scanned,
+            "the second ask loaded again"
         );
     }
 }

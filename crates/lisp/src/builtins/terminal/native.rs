@@ -226,6 +226,25 @@ pub(in crate::builtins) fn key_to_value(heap: &mut Heap, k: crossterm::event::Ke
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     let alt = k.modifiers.contains(KeyModifiers::ALT);
     match k.code {
+        // Super (Emacs `s-`): a terminal reports it only under the kitty keyboard
+        // protocol, but when it does the chord spells the way the GUI's does —
+        // `:super-x`, `:ctrl-super-x`, a shifted letter upper-case unless Control is held.
+        KeyCode::Char(c) if k.modifiers.contains(KeyModifiers::SUPER) => {
+            let glyph = if !ctrl && k.modifiers.contains(KeyModifiers::SHIFT) {
+                c.to_ascii_uppercase()
+            } else {
+                c.to_ascii_lowercase()
+            };
+            value::kw(crate::host::gui::named_key(
+                &glyph.to_string(),
+                crate::host::gui::KeyModifiers {
+                    ctrl,
+                    alt,
+                    shift: false,
+                    super_key: true,
+                },
+            ))
+        }
         // Ctrl+Alt (Emacs C-M-… — structural sexp motion C-M-f/b/u/d, mark-sexp
         // C-M-SPC). Must precede the ctrl-only / alt-only arms so the second modifier
         // isn't dropped (the `ctrl-meta-` spelling the keymaps bind).
@@ -268,6 +287,14 @@ pub(in crate::builtins) fn key_to_value(heap: &mut Heap, k: crossterm::event::Ke
         KeyCode::End => named_kw("end", &k),
         KeyCode::PageUp => named_kw("page-up", &k),
         KeyCode::PageDown => named_kw("page-down", &k),
+        KeyCode::Insert => named_kw("insert", &k),
+        KeyCode::F(number) => match crate::host::gui::function_key(number) {
+            Some(name) => named_kw(name, &k),
+            None => Value::nil(),
+        },
+        KeyCode::Menu => named_kw("menu", &k),
+        KeyCode::Pause => named_kw("pause", &k),
+        KeyCode::ScrollLock => named_kw("scroll-lock", &k),
         _ => Value::nil(),
     }
 }
@@ -277,9 +304,12 @@ fn named_kw(base: &'static str, k: &crossterm::event::KeyEvent) -> Value {
     use crossterm::event::KeyModifiers;
     value::kw(crate::host::gui::named_key(
         base,
-        k.modifiers.contains(KeyModifiers::CONTROL),
-        k.modifiers.contains(KeyModifiers::ALT),
-        k.modifiers.contains(KeyModifiers::SHIFT),
+        crate::host::gui::KeyModifiers {
+            ctrl: k.modifiers.contains(KeyModifiers::CONTROL),
+            alt: k.modifiers.contains(KeyModifiers::ALT),
+            shift: k.modifiers.contains(KeyModifiers::SHIFT),
+            super_key: k.modifiers.contains(KeyModifiers::SUPER),
+        },
     ))
 }
 
@@ -402,7 +432,7 @@ pub(in crate::builtins) fn term_draw(args: &[Value], _: EnvId, heap: &mut Heap) 
                 CursorStyle::Underline => {
                     crossterm::queue!(out, SetCursorStyle::SteadyUnderScore).map_err(term_err)?
                 }
-                CursorStyle::Block => {
+                CursorStyle::Block | CursorStyle::Hollow => {
                     crossterm::queue!(out, SetCursorStyle::SteadyBlock).map_err(term_err)?
                 }
             }
@@ -817,14 +847,49 @@ pub(in crate::builtins) fn gui_open(args: &[Value], _: EnvId, heap: &mut Heap) -
     };
     //   :input :pixels     — mouse messages carry the pointer in physical pixels and
     //     `[:resize w h]` the pixel size; `:move`/`:drag` fire per pixel of motion.
-    //   :vsync true        — present in step with the monitor (the GPU target only).
+    //   :vsync true        — present in step with the monitor (FIFO; the GPU target only).
+    //   :vsync false       — the work-bound rate, tearing allowed (IMMEDIATE).
+    //   absent             — low latency without tearing (MAILBOX, else FIFO).
     let pixel_input = matches!(
         opts.and_then(|id| heap.map_get(id, value::kw("input"))),
         Some(Value::Keyword(s)) if s == value::intern("pixels")
     );
-    let vsync = match opts.and_then(|id| heap.map_get(id, value::kw("vsync"))) {
+    let vsync = opts
+        .and_then(|id| heap.map_get(id, value::kw("vsync")))
+        .filter(|v| !matches!(v, Value::Nil))
+        .map(crate::eval::truthy);
+    //   :key-repeat :os    — the OS auto-repeat reaches the app as presses of the held key
+    //     (at most one undelivered at a time); `:app` (the default) drops it (ADR-086).
+    //   :ime false         — no input method in this window (on by default).
+    //   :wheel :glide      — a wheel notch glides; `:lines` (the default) scrolls its
+    //     three lines at once (ADR-441).
+    let keyword_option = |key: &str, allowed: &[&str]| -> Result<Option<String>, LispError> {
+        match opts.and_then(|id| heap.map_get(id, value::kw(key))) {
+            None | Some(Value::Nil) => Ok(None),
+            Some(Value::Keyword(name)) if allowed.contains(&value::symbol_name_ref(name)) => {
+                Ok(Some(value::symbol_name(name)))
+            }
+            Some(_) => Err(LispError::runtime(format!(
+                "%gui-open: :{key} is one of {}",
+                allowed
+                    .iter()
+                    .map(|name| format!(":{name}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ))),
+        }
+    };
+    let key_repeat = match keyword_option("key-repeat", &["app", "os"])?.as_deref() {
+        Some("os") => crate::host::gui::KeyRepeat::Os,
+        _ => crate::host::gui::KeyRepeat::App,
+    };
+    let wheel = match keyword_option("wheel", &["lines", "glide"])?.as_deref() {
+        Some("glide") => crate::host::gui::WheelMode::Glide,
+        _ => crate::host::gui::WheelMode::Lines,
+    };
+    let ime = match opts.and_then(|id| heap.map_get(id, value::kw("ime"))) {
         Some(v) => crate::eval::truthy(v),
-        None => false,
+        None => true,
     };
     let spec = crate::host::gui::WindowSpec {
         title,
@@ -833,6 +898,9 @@ pub(in crate::builtins) fn gui_open(args: &[Value], _: EnvId, heap: &mut Heap) -
         app_id,
         pixel_input,
         vsync,
+        key_repeat,
+        ime,
+        wheel,
     };
     let id =
         crate::host::gui::open(crate::process::self_pid(), spec).map_err(LispError::runtime)?;
@@ -844,6 +912,34 @@ pub(in crate::builtins) fn gui_size_px(args: &[Value], _: EnvId, heap: &mut Heap
     let id = gui_window_id(heap, "%gui-size-px", arg(args, 0))?;
     let (w, h) = crate::host::gui::size_px(id).map_err(LispError::runtime)?;
     Ok(heap.alloc_vector2(Value::int(w as i64), Value::int(h as i64)))
+}
+
+/// `(%gui-latency id)` — window `id`'s recent input-to-present samples, oldest first, as
+/// maps of milliseconds: `:total` (input to present) and `:paint` (the paint's share),
+/// plus the GPU paint's `:encode` `:upload` `:acquire` `:submit` `:present` phases when
+/// the GPU target drew it (ADR-440). GC-safe: a builtin never fires GC mid-execution,
+/// so the maps stay live until the vector holds them.
+pub(in crate::builtins) fn gui_latency(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let id = gui_window_id(heap, "%gui-latency", arg(args, 0))?;
+    let samples = crate::host::gui::latency(id).map_err(LispError::runtime)?;
+    let ms = |us: u64| Value::float(us as f64 / 1000.0);
+    let mut maps = Vec::with_capacity(samples.len());
+    for sample in samples {
+        let mut pairs = vec![
+            (value::kw("total"), ms(sample.total_us)),
+            (value::kw("paint"), ms(sample.paint_us)),
+        ];
+        if let Some(split) = sample.split {
+            for (name, us) in ["encode", "upload", "acquire", "submit", "present"]
+                .into_iter()
+                .zip(split)
+            {
+                pairs.push((value::kw(name), ms(us)));
+            }
+        }
+        maps.push(heap.map_from_pairs(pairs));
+    }
+    Ok(heap.alloc_vector(maps))
 }
 
 /// `(%gui-texture id tex rgba w h)` — upload `rgba` (`w*h*4` bytes, row-major straight
@@ -1271,10 +1367,15 @@ fn parse_gui_ops(
                 continue;
             };
             let style = cursor_style_from(parts.get(3).copied().unwrap_or(Value::nil()));
+            // `[:cursor row col style color]`: the colour a face colour takes (a
+            // keyword, `[r g b]` or `"#rrggbb"`); absent, nil or unreadable is the
+            // painters' default. The style slot may be nil to colour a block.
+            let color = parts.get(4).and_then(|v| face_rgb(heap, *v));
             ops.push(crate::host::gui::Op::Cursor {
                 row: clamp_u16(row_i),
                 col: clamp_u16(col_i),
                 style,
+                color,
             });
         } else if tag == tags.rect_t {
             let Ok(row_i) = expect_int(heap, "%gui-draw", arg(&parts, 1)) else {
@@ -1843,7 +1944,7 @@ pub(in crate::builtins) fn span_color(heap: &Heap, v: Value) -> Option<[u8; 3]> 
 }
 
 /// The cursor style from a `[:cursor row col style]` op's optional 4th element: a
-/// `:bar` / `:underline` keyword, else (`:block`, nil, or anything unknown) the
+/// `:bar` / `:underline` / `:hollow` keyword, else (`:block`, nil, or anything unknown) the
 /// default `Block`. Shared by both frontends so the caret shape agrees.
 pub(in crate::builtins) fn cursor_style_from(v: Value) -> crate::host::gui::CursorStyle {
     use crate::host::gui::CursorStyle;
@@ -1851,6 +1952,7 @@ pub(in crate::builtins) fn cursor_style_from(v: Value) -> crate::host::gui::Curs
         Value::Keyword(s) => match value::symbol_name(s).as_str() {
             "bar" => CursorStyle::Bar,
             "underline" => CursorStyle::Underline,
+            "hollow" => CursorStyle::Hollow,
             _ => CursorStyle::Block,
         },
         _ => CursorStyle::Block,
@@ -2000,11 +2102,14 @@ pub(in crate::builtins) fn gui_text_aa(args: &[Value], _: EnvId, heap: &mut Heap
 }
 
 /// `(gui-font-register name styles)` — register font family `name` (a keyword) from
-/// `styles`, a map of style → TTF file path: `{:regular "…" :bold "…" :italic "…"
-/// :bold-italic "…"}`. Only `:regular` is required; a missing style reuses the
-/// regular file (so a single-file family works). The fonts are read here and parsed
-/// on the GUI thread; afterwards a face's `:family <name>` selects them. Returns
-/// `name`.
+/// `styles`, either an installed family by name — `{:family-name "JetBrains Mono"}`,
+/// resolved on the GUI thread against the system fonts, bold/italic picked by weight and
+/// slant, the bundled DejaVu standing in when nothing by that name is installed
+/// (`gui-font-info` says which) — or a map of style → TTF file path: `{:regular "…"
+/// :bold "…" :italic "…" :bold-italic "…"}`. With paths only `:regular` is required; a
+/// missing style reuses the regular file (so a single-file family works). The fonts are
+/// read here and parsed on the GUI thread; afterwards a face's `:family <name>` selects
+/// them. `:family-name` wins when both are given. Returns `name`.
 pub(in crate::builtins) fn gui_font_register(
     args: &[Value],
     _: EnvId,
@@ -2025,7 +2130,7 @@ pub(in crate::builtins) fn gui_font_register(
         return Err(LispError::wrong_type(
             heap,
             "%gui-font-register",
-            "map (style → path)",
+            "map (style → path, or {:family-name \"…\"})",
             arg(args, 1),
         ));
     };
@@ -2036,24 +2141,34 @@ pub(in crate::builtins) fn gui_font_register(
             Some(v) => Ok(Some(expect_string(heap, "%gui-font-register", v)?)),
         }
     };
+    if let Some(family_name) = path("family-name")? {
+        crate::host::gui::register_installed_family(name, family_name)
+            .map_err(LispError::runtime)?;
+        return Ok(Value::keyword(name));
+    }
     let read = |p: &str| -> Result<Vec<u8>, LispError> {
         std::fs::read(p).map_err(|e| LispError::runtime(format!("%gui-font-register: {p}: {e}")))
     };
-    let regular_path = path("regular")?
-        .ok_or_else(|| LispError::runtime("%gui-font-register: a :regular path is required"))?;
+    let regular_path = path("regular")?.ok_or_else(|| {
+        LispError::runtime("%gui-font-register: a :regular path (or a :family-name) is required")
+    })?;
     let regular = read(&regular_path)?;
-    // each missing style falls back to the regular file's bytes
-    let style = |key: &str| -> Result<Vec<u8>, LispError> {
+    // each missing style falls back to the regular file's bytes (and its path)
+    let style = |key: &str| -> Result<(Vec<u8>, String), LispError> {
         match path(key)? {
-            Some(p) => read(&p),
-            None => Ok(regular.clone()),
+            Some(p) => Ok((read(&p)?, p)),
+            None => Ok((regular.clone(), regular_path.clone())),
         }
     };
-    let bold = style("bold")?;
-    let italic = style("italic")?;
-    let bold_italic = style("bold-italic")?;
-    crate::host::gui::register_family(name, regular, bold, italic, bold_italic)
-        .map_err(LispError::runtime)?;
+    let (bold, bold_path) = style("bold")?;
+    let (italic, italic_path) = style("italic")?;
+    let (bold_italic, bold_italic_path) = style("bold-italic")?;
+    crate::host::gui::register_family(
+        name,
+        [regular, bold, italic, bold_italic],
+        [regular_path, bold_path, italic_path, bold_italic_path],
+    )
+    .map_err(LispError::runtime)?;
     Ok(Value::keyword(name))
 }
 
@@ -2174,6 +2289,7 @@ mod cursor_style_tests {
             CursorStyle::Underline
         );
         assert_eq!(cursor_style_from(value::kw("block")), CursorStyle::Block);
+        assert_eq!(cursor_style_from(value::kw("hollow")), CursorStyle::Hollow);
         // a bare `[:cursor row col]` (no style) and any unknown keyword → Block
         assert_eq!(cursor_style_from(Value::Nil), CursorStyle::Block);
         assert_eq!(cursor_style_from(value::kw("wat")), CursorStyle::Block);
@@ -2335,6 +2451,24 @@ mod key_to_value_tests {
         );
         assert_eq!(kw_of(KeyCode::BackTab, KeyModifiers::SHIFT), "back-tab");
         assert_eq!(kw_of(KeyCode::Esc, KeyModifiers::CONTROL), "escape");
+    }
+
+    // Function keys, Insert and Super spell the way the GUI frontend spells them
+    // (ADR-441), so `<f5>`, `C-<f5>`, `<insert>` and `s-x` bind the same in both.
+    #[test]
+    fn function_keys_insert_and_super_are_named() {
+        assert_eq!(kw_of(KeyCode::F(5), KeyModifiers::NONE), "f5");
+        assert_eq!(kw_of(KeyCode::F(12), KeyModifiers::CONTROL), "ctrl-f12");
+        assert_eq!(kw_of(KeyCode::Insert, KeyModifiers::SHIFT), "shift-insert");
+        assert_eq!(kw_of(KeyCode::Char('x'), KeyModifiers::SUPER), "super-x");
+        assert_eq!(
+            kw_of(
+                KeyCode::Char('x'),
+                KeyModifiers::SUPER | KeyModifiers::CONTROL
+            ),
+            "ctrl-super-x"
+        );
+        assert_eq!(kw_of(KeyCode::F(3), KeyModifiers::SUPER), "super-f3");
     }
 }
 

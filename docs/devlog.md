@@ -3583,3 +3583,53 @@ the tree again. It reads its own fields with `%map-get` now. The KI-298 `get` ch
 reverted: `linmap_soundness_test` pins "a default never reaches `Lookup`" on purpose, and the
 linmap loop path keeps that rule. KI-298 is a design question now, not a fix. Not run on this
 machine.
+
+2026-10-24 (ADR-440, the GPU target's feel): the installed build paints on the GPU, and that
+path re-shaped every text run and re-uploaded every instance each frame. Now a run's quads are
+kept and replayed while the run repeats; position is not in the key, so a scroll reuses every
+line it keeps. The instance buffers write only the span that changed. Translucent geometry
+blends in linear light through an sRGB view; text keeps the encoded lerp and gains the
+contrast lift. The default present is MAILBOX (else FIFO) with one frame in flight;
+`{:vsync false}` is the only road to IMMEDIATE. A window stays hidden until its app's first
+frame is painted, or 500 ms. `BROOD_GUI_TRACE=1` prints input → present per frame, and
+`gui/latency` returns the samples. The cursor op takes a colour and a `:hollow` style. Built
+with and without `gui-gpu`, clippy clean. No tests were run on this machine and no window was
+opened: the reuse and present-mode tests are for CI.
+
+2026-10-24 (ADR-441 the GUI keyboard): a window's input is the user's. `{:key-repeat :os}` hands
+a held key's repeat to the OS (each repeat a press, gated by a mailbox delivery credit so at most
+one is ever queued; `:app` stays the default). Super (`:super-x`, `[…][shift-][super-]<name>`),
+F1–F24, `:insert`, `:menu` and the other named keys, in both frontends. A shifted chord takes the
+layout's glyph, not the US table. `ke.text` for typing, `[:text …]` for multi-character text and
+IME commits, `[:preedit text range]`, the IME candidate window at the frame's cursor, `:focus-in`
+on focus gain. `{:wheel :lines}` — three lines a notch at once — is the default; `{:wheel
+:glide}` keeps the glide. Built and clippy-clean with `gui,gui-gpu`; the tests were written but
+NOT run on this machine, and no window was opened.
+
+2026-10-24 (ADR-442, fonts): the GUI finds installed fonts by name. `gui-font-register` takes
+`{:family-name "JetBrains Mono"}`; the system font database is scanned only on that first ask,
+or on the first glyph nothing loaded covers. A CJK ideograph or a missing symbol now comes from
+an installed font found by coverage, where it used to be tofu; emoji still come from the bundled
+Noto. `gui-ligatures!` (off by default) shapes 2–8-char punctuation runs as one cell-spanning
+unit in both painters. `gui-font-info` says which file each style resolved to. Rust tests
+(`render.rs` `font_tests`) were written for CI and were not run on this machine; nothing was run
+here beyond the gui / gui-gpu builds and clippy.
+
+2026-10-24 (ADR-443 tree handles): tree-sitter parses incrementally from a tree the caller
+KEEPS. `%tree-sitter-tree` parses a whole document (a rope, read through tree-sitter's chunk
+callback, never flattened) into an immutable ref handle; `%tree-sitter-tree-reparse` edits a
+copy of its tree and reparses (explicit char edits, or derived by a chunk-wise prefix/suffix
+compare of the two ropes); `%tree-sitter-tree-spans` colours a char RANGE of the held tree
+without parsing; `%tree-sitter-tree-changes` reports the edit plus tree-sitter's changed
+ranges, so a span cache can invalidate by range; `%tree-sitter-tree-free` drops one. The
+registry is bounded (32, LRU); a gone handle reads nil and reparses as a full parse.
+`editor/treesit` wraps them (`open-tree`, `update-tree`, `fontify-tree`, `tree-changes`,
+`free-tree`, `splice-edit`); `fontify` and every slice-based primitive are unchanged, and bedit
+is not yet moved onto them. Rust tests and a reparse-equals-fresh-parse test written; **no
+tests were run on this machine** (built, clippy clean, `nest check --strict` clean).
+
+2026-10-24 (ADR-444, `ui-run` skips no-op turns): the loop remembers the model and grid it last
+drew, and a turn that leaves both `=` renders nothing. In bedit that is any timer that found
+no work and a release that changed nothing. (A release that ends a held key, and the hosted
+buffer's echo of an edit, still render: each changes the model, though the view they build is
+all memo hits.) Not run on this machine.

@@ -6,7 +6,7 @@ use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, Value};
 use crate::error::{LispError, LispResult};
 
-use super::args::{arg, expect_int, expect_string};
+use super::args::{arg, expect_int, expect_string, expect_string_ref};
 
 /// Every primitive this file contributes: name, arity, signature, arglist, docstring.
 pub(super) fn register(primitives: &mut super::Primitives) {
@@ -55,6 +55,44 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["source", "lang", "kinds", "keywords?"],
         "The fontify query: [start end kind] for the OUTERMOST nodes whose :kind is in `kinds` (a list/vector of keywords), in source order, not descending into one that matched. With keywords? true, an anonymous token beginning with a letter is also reported, as kind :__keyword__ — the cross-language keyword rule, which no grammar names. Which kinds get which face stays with the caller; what this avoids is projecting every node into a map to read its kind and discard the rest, which is what a windowed fontify did on every keystroke.",
         tree_sitter_spans);
+    // Tree HANDLES (ADR-443): a whole document's parse tree, held across edits and
+    // reparsed incrementally, queried over a range — what an editor's view keeps per
+    // buffer instead of re-parsing a window of text on every keystroke.
+    primitives.def(
+        "%tree-sitter-tree",
+        Arity::exact(2),
+        Sig::new(vec![rope.union(string), kw], ref_ty),
+        &["text", "lang"],
+        "Parse a whole document — a rope (read chunk by chunk, never copied) or a string — with the tree-sitter grammar named by keyword lang, and return a tree HANDLE: an opaque ref naming the tree and the text it was parsed from. A handle is immutable: %tree-sitter-tree-reparse returns a new one and leaves this one answering as before. Handles live in a bounded runtime-wide registry (32, least recently used dropped first), so a dropped handle reads as nil from every query and reparsing from it is a full parse; free one you have replaced with %tree-sitter-tree-free. Sendable by value, so a task can parse off the loop and hand the handle back. Same grammar rules and errors as %tree-sitter-parse.",
+        tree_sitter_tree);
+    primitives.def(
+        "%tree-sitter-tree-reparse",
+        Arity::exact(4),
+        Sig::new(vec![ref_ty, rope.union(string), kw, any], ref_ty),
+        &["tree", "text", "lang", "edits"],
+        "A NEW tree handle for text, reparsed incrementally from tree's tree (tree-sitter's edit + reparse, ~1 ms where a fresh parse of a large file is hundreds). edits says what changed since tree's text, in CHAR offsets: one [start old-end new-end] (chars [start, old-end) of the old text became [start, new-end) of the new — a splice [lo hi repl] is [lo hi (+ lo (count repl))]), a sequence of them applied in order, or nil to derive the edit by comparing the two texts (common prefix and suffix, chunk by chunk — cheap, and exact for any single contiguous change). An edit that does not fit the two texts is an error, never a silently wrong tree. A gone handle, another lang, or a grammar reloaded since is a full parse. tree stays valid.",
+        tree_sitter_tree_reparse);
+    primitives.def(
+        "%tree-sitter-tree-spans",
+        Arity::exact(5),
+        Sig::new(vec![ref_ty, list_ty.union(vec_ty), any, int, int], vec_or_nil),
+        &["tree", "kinds", "keywords?", "from", "to"],
+        "The fontify query over a held tree, for chars [from, to) of its text only: [start end kind] for the OUTERMOST nodes whose :kind is in kinds that reach into the range, in source order, each clipped to the range — so a string opened above it reports its visible part, coloured as a string, because the tree is the whole document's. Walks only the nodes that reach the range. keywords? as in %tree-sitter-spans (an anonymous token beginning with a letter is :__keyword__). Absolute char offsets. nil when the handle is gone (freed or evicted): open a fresh tree.",
+        tree_sitter_tree_spans);
+    primitives.def(
+        "%tree-sitter-tree-changes",
+        Arity::exact(1),
+        Sig::new(vec![ref_ty], any),
+        &["tree"],
+        "Where tree's colouring may differ from the tree it was reparsed from: a sorted vector of disjoint char ranges [start end] of its text — the edited text itself plus tree-sitter's changed ranges (a quote typed above the screen recolours everything after it, and this says so). [] when the text did not change; true for a tree from a fresh parse (everything may differ); nil when the handle is gone. What a span cache invalidates by, instead of throwing every band away on any edit.",
+        tree_sitter_tree_changes);
+    primitives.def(
+        "%tree-sitter-tree-free",
+        Arity::exact(1),
+        Sig::new(vec![ref_ty], bool_ty),
+        &["tree"],
+        "Drop a tree handle now, instead of waiting for the registry to evict it; true when it was still held. Every later query on it answers nil.",
+        tree_sitter_tree_free);
     primitives.def(
         "%tree-sitter-load-grammar",
         Arity::exact(2),
@@ -127,20 +165,7 @@ pub(super) fn tree_sitter_errors(args: &[Value], _: EnvId, heap: &mut Heap) -> L
 pub(super) fn tree_sitter_spans(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let src = expect_string(heap, "%tree-sitter-spans", arg(args, 0))?;
     let lang = ts_lang(heap, "%tree-sitter-spans", arg(args, 1))?;
-    let mut kinds: Vec<String> = Vec::new();
-    for k in heap.seq_items(arg(args, 2))? {
-        match k {
-            Value::Keyword(s) => kinds.push(value::symbol_name(s)),
-            other => {
-                return Err(LispError::wrong_type(
-                    heap,
-                    "%tree-sitter-spans",
-                    "keyword",
-                    other,
-                ));
-            }
-        }
-    }
+    let kinds = ts_kinds(heap, "%tree-sitter-spans", arg(args, 2))?;
     let keywords = !matches!(arg(args, 3), Value::Nil | Value::Bool(false));
     crate::host::treesit::spans(heap, &src, &lang, kinds, keywords)
 }
@@ -162,4 +187,119 @@ pub(super) fn tree_sitter_load_grammar(args: &[Value], _: EnvId, heap: &mut Heap
         }
     };
     crate::host::treesit::load_grammar(&path, &lang)
+}
+
+// ---- tree handles (ADR-443) ----------------------------------------------------------
+
+/// The keyword list a span query names, as strings.
+fn ts_kinds(heap: &Heap, who: &'static str, v: Value) -> Result<Vec<String>, LispError> {
+    let mut kinds: Vec<String> = Vec::new();
+    for k in heap.seq_items(v)? {
+        match k {
+            Value::Keyword(s) => kinds.push(value::symbol_name(s)),
+            other => return Err(LispError::wrong_type(heap, who, "keyword", other)),
+        }
+    }
+    Ok(kinds)
+}
+
+/// A document's text as a rope: a rope as itself (a reference count, no copy), a string
+/// copied into one.
+fn ts_text(heap: &Heap, who: &'static str, v: Value) -> Result<ropey::Rope, LispError> {
+    match v {
+        Value::Rope(id) => Ok(heap.rope(id).clone()),
+        Value::Str(_) => Ok(ropey::Rope::from_str(expect_string_ref(heap, who, v)?)),
+        other => Err(LispError::wrong_type(heap, who, "rope or string", other)),
+    }
+}
+
+/// A tree handle: the `Ref` `%tree-sitter-tree` returned.
+fn ts_handle(heap: &Heap, who: &'static str, v: Value) -> Result<u64, LispError> {
+    match v {
+        Value::Ref(id) => Ok(id),
+        other => Err(LispError::wrong_type(heap, who, "tree handle (ref)", other)),
+    }
+}
+
+/// A non-negative int, as a char offset.
+fn ts_offset(heap: &Heap, who: &'static str, v: Value) -> Result<usize, LispError> {
+    let n = expect_int(heap, who, v)?;
+    usize::try_from(n).map_err(|_| {
+        LispError::runtime(format!("{who}: an edit offset is never negative, got {n}"))
+    })
+}
+
+/// The edits a reparse is told: nil (derive them), one `[start old-end new-end]`, or a
+/// sequence of them applied in order.
+fn ts_edits(
+    heap: &Heap,
+    who: &'static str,
+    v: Value,
+) -> Result<Option<Vec<(usize, usize, usize)>>, LispError> {
+    if matches!(v, Value::Nil) {
+        return Ok(None);
+    }
+    let items = heap.seq_items(v)?;
+    let triple = |heap: &Heap, item: Value| -> Result<(usize, usize, usize), LispError> {
+        let parts = heap.seq_items(item)?;
+        if parts.len() != 3 {
+            return Err(LispError::runtime(format!(
+                "{who}: an edit is [start old-end new-end], got {} items",
+                parts.len()
+            )));
+        }
+        Ok((
+            ts_offset(heap, who, parts[0])?,
+            ts_offset(heap, who, parts[1])?,
+            ts_offset(heap, who, parts[2])?,
+        ))
+    };
+    if items
+        .first()
+        .is_some_and(|first| matches!(first, Value::Int(_)))
+    {
+        return Ok(Some(vec![triple(heap, v)?]));
+    }
+    let edits = items
+        .into_iter()
+        .map(|item| triple(heap, item))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(edits))
+}
+
+pub(super) fn tree_sitter_tree(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let text = ts_text(heap, "%tree-sitter-tree", arg(args, 0))?;
+    let lang = ts_lang(heap, "%tree-sitter-tree", arg(args, 1))?;
+    Ok(Value::Ref(crate::host::treesit::tree_open(text, &lang)?))
+}
+
+pub(super) fn tree_sitter_tree_reparse(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let who = "%tree-sitter-tree-reparse";
+    let old = ts_handle(heap, who, arg(args, 0))?;
+    let text = ts_text(heap, who, arg(args, 1))?;
+    let lang = ts_lang(heap, who, arg(args, 2))?;
+    let edits = ts_edits(heap, who, arg(args, 3))?;
+    Ok(Value::Ref(crate::host::treesit::tree_reparse(
+        old, text, &lang, edits,
+    )?))
+}
+
+pub(super) fn tree_sitter_tree_spans(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let who = "%tree-sitter-tree-spans";
+    let handle = ts_handle(heap, who, arg(args, 0))?;
+    let kinds = ts_kinds(heap, who, arg(args, 1))?;
+    let keywords = !matches!(arg(args, 2), Value::Nil | Value::Bool(false));
+    let from = expect_int(heap, who, arg(args, 3))?;
+    let to = expect_int(heap, who, arg(args, 4))?;
+    crate::host::treesit::tree_spans(heap, handle, kinds, keywords, from, to)
+}
+
+pub(super) fn tree_sitter_tree_changes(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let handle = ts_handle(heap, "%tree-sitter-tree-changes", arg(args, 0))?;
+    crate::host::treesit::tree_changes(heap, handle)
+}
+
+pub(super) fn tree_sitter_tree_free(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let handle = ts_handle(heap, "%tree-sitter-tree-free", arg(args, 0))?;
+    Ok(Value::boolean(crate::host::treesit::tree_free(handle)))
 }

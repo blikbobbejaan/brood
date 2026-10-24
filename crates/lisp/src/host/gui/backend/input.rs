@@ -3,7 +3,7 @@
 //! bookkeeping that turns raw events into `[:key …]` / `[:mouse …]` messages.
 
 use super::*;
-use crate::host::gui::named_key;
+use crate::host::gui::{KeyModifiers, named_key};
 
 /// Max gap between consecutive presses (same button, same cell) that still counts
 /// as part of one click chain — the double/triple-click window, in milliseconds.
@@ -209,94 +209,325 @@ pub(super) fn shift_char(c: char) -> char {
     }
 }
 
+/// winit's modifier state as the frontend-neutral set a key name spells.
+pub(super) fn key_modifiers(mods: ModifiersState) -> KeyModifiers {
+    KeyModifiers {
+        ctrl: mods.control_key(),
+        alt: mods.alt_key(),
+        shift: mods.shift_key(),
+        super_key: mods.super_key(),
+    }
+}
+
+/// The base name of a named key that carries its modifiers in the name — the arrows,
+/// editing keys, F1–F24 and the rest of the keys a keyboard has beyond the typewriter
+/// ones (ADR-441). Tab, Escape and Space are not here: each has its own rule in
+/// `translate_key`. The names are the terminal frontend's (`builtins::key_to_value`)
+/// and `std/vt`'s, so a key reads the same in a window, in a terminal and to a program
+/// under a pty. Lock keys, PrintScreen and bare modifiers are not keys an app binds.
+fn named_key_base(key: &NamedKey) -> Option<&'static str> {
+    Some(match key {
+        NamedKey::ArrowUp => "up",
+        NamedKey::ArrowDown => "down",
+        NamedKey::ArrowLeft => "left",
+        NamedKey::ArrowRight => "right",
+        NamedKey::Enter => "enter",
+        NamedKey::Backspace => "backspace",
+        NamedKey::Delete => "delete",
+        NamedKey::Insert => "insert",
+        NamedKey::Home => "home",
+        NamedKey::End => "end",
+        NamedKey::PageUp => "page-up",
+        NamedKey::PageDown => "page-down",
+        NamedKey::ContextMenu => "menu",
+        NamedKey::Pause => "pause",
+        NamedKey::ScrollLock => "scroll-lock",
+        NamedKey::Help => "help",
+        NamedKey::Find => "find",
+        NamedKey::Undo => "undo",
+        NamedKey::Redo => "redo",
+        NamedKey::Copy => "copy",
+        NamedKey::Cut => "cut",
+        NamedKey::Paste => "paste",
+        NamedKey::Select => "select",
+        NamedKey::Execute => "execute",
+        NamedKey::Cancel => "cancel",
+        NamedKey::Clear => "clear",
+        NamedKey::BrowserBack => "back",
+        NamedKey::BrowserForward => "forward",
+        NamedKey::AudioVolumeUp => "volume-up",
+        NamedKey::AudioVolumeDown => "volume-down",
+        NamedKey::AudioVolumeMute => "volume-mute",
+        NamedKey::MediaPlayPause => "media-play-pause",
+        NamedKey::MediaStop => "media-stop",
+        NamedKey::MediaTrackNext => "media-next",
+        NamedKey::MediaTrackPrevious => "media-previous",
+        NamedKey::F1 => "f1",
+        NamedKey::F2 => "f2",
+        NamedKey::F3 => "f3",
+        NamedKey::F4 => "f4",
+        NamedKey::F5 => "f5",
+        NamedKey::F6 => "f6",
+        NamedKey::F7 => "f7",
+        NamedKey::F8 => "f8",
+        NamedKey::F9 => "f9",
+        NamedKey::F10 => "f10",
+        NamedKey::F11 => "f11",
+        NamedKey::F12 => "f12",
+        NamedKey::F13 => "f13",
+        NamedKey::F14 => "f14",
+        NamedKey::F15 => "f15",
+        NamedKey::F16 => "f16",
+        NamedKey::F17 => "f17",
+        NamedKey::F18 => "f18",
+        NamedKey::F19 => "f19",
+        NamedKey::F20 => "f20",
+        NamedKey::F21 => "f21",
+        NamedKey::F22 => "f22",
+        NamedKey::F23 => "f23",
+        NamedKey::F24 => "f24",
+        _ => return None,
+    })
+}
+
+/// The glyph a chord with Shift held names (Emacs `M->` is Alt+Shift+`.`). The layout
+/// decides it: winit's `logical_key` has Shift (and the layout's levels) applied but not
+/// Control, so on a German layout Alt+Shift+`.` is `M-:` and Alt+Shift+`<` is `M->`, as
+/// the keycaps say. Two cases fall back: a logical key that is not plain printable ASCII
+/// — macOS applies Option to it too (Option+Shift+`.` is `˘`), which is why chords read
+/// `key_without_modifiers` in the first place — goes through the US table on the base key
+/// (`shift_char`), and a letter keeps its base (the case is decided by the caller).
+pub(super) fn shifted_chord_char(logical: Option<char>, base: char) -> char {
+    match logical {
+        Some(glyph) if glyph.is_ascii_graphic() && glyph != base => glyph,
+        _ if base.is_alphabetic() => base,
+        _ => shift_char(base),
+    }
+}
+
+/// The text a plain keystroke (no Control / Alt / Super) typed, when it is MORE than one
+/// character — a compose sequence or a layout key that types several. Delivered as
+/// `[:text "…"]` rather than squeezed into one key (the first character was all that
+/// survived before ADR-441). A one-character keystroke is not text: it stays the 1-char
+/// key string `translate_key` makes of it, so every keymap that binds a character binds
+/// it however it was typed.
+pub(super) fn typed_text(ke: &KeyEvent, mods: ModifiersState) -> Option<String> {
+    if mods.control_key() || mods.alt_key() || mods.super_key() {
+        return None;
+    }
+    let WKey::Character(_) = &ke.logical_key else {
+        return None;
+    };
+    let text = ke.text.as_deref()?;
+    let mut chars = text.chars();
+    chars.next()?;
+    (chars.next().is_some() && !text.chars().any(char::is_control)).then(|| text.to_string())
+}
+
 pub(super) fn translate_key(ke: &KeyEvent, mods: ModifiersState) -> Option<Key> {
     use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+    let modifiers = key_modifiers(mods);
     match &ke.logical_key {
-        WKey::Named(n) => {
-            // The named keys carry their modifiers in the name (`crate::host::gui::named_key`,
-            // the rule both frontends share): `:ctrl-left`, `:alt-shift-up`, … — so the
-            // editor binds `C-<left>` / `C-S-<arrow>` as distinctly as `:shift-up`
-            // (shift-select) from a plain arrow. Tab and Escape keep their own spellings.
-            let with_mods = |base: &'static str| {
-                Key::Named(named_key(
-                    base,
-                    mods.control_key(),
-                    mods.alt_key(),
-                    mods.shift_key(),
-                ))
-            };
-            Some(match n {
-                NamedKey::ArrowUp => with_mods("up"),
-                NamedKey::ArrowDown => with_mods("down"),
-                NamedKey::ArrowLeft => with_mods("left"),
-                NamedKey::ArrowRight => with_mods("right"),
-                NamedKey::Enter => with_mods("enter"),
-                NamedKey::Escape => Key::Named("escape"),
-                NamedKey::Backspace => with_mods("backspace"),
-                // Shift+Tab is back-tab — match the crossterm frontend's :back-tab.
-                NamedKey::Tab if mods.shift_key() => Key::Named("back-tab"),
-                NamedKey::Tab => Key::Named("tab"),
-                NamedKey::Delete => with_mods("delete"),
-                NamedKey::Home => with_mods("home"),
-                NamedKey::End => with_mods("end"),
-                NamedKey::PageUp => with_mods("page-up"),
-                NamedKey::PageDown => with_mods("page-down"),
-                // Space carries modifiers like a character key would, so Ctrl/Alt
-                // survive (Emacs `C-SPC` set-mark → :ctrl- , `C-M-SPC` mark-sexp →
-                // :ctrl-meta- , matching crossterm) rather than collapsing to a
-                // self-inserted space. The Ctrl+Alt arm must come first.
-                NamedKey::Space if mods.control_key() && mods.alt_key() => Key::CtrlAlt(' '),
-                NamedKey::Space if mods.control_key() => Key::Ctrl(' '),
-                NamedKey::Space if mods.alt_key() => Key::Alt(' '),
-                NamedKey::Space => Key::Char(' '),
-                _ => return None,
-            })
-        }
+        // Space carries modifiers like a character key would, so Ctrl/Alt survive (Emacs
+        // `C-SPC` set-mark → :ctrl- , `C-M-SPC` mark-sexp → :ctrl-meta- , matching
+        // crossterm) rather than collapsing to a self-inserted space.
+        WKey::Named(NamedKey::Space) => Some(character_chord(' ', modifiers)),
+        // Shift+Tab is back-tab — match the crossterm frontend's :back-tab.
+        WKey::Named(NamedKey::Tab) if modifiers.shift => Some(Key::Named("back-tab")),
+        WKey::Named(NamedKey::Tab) => Some(Key::Named("tab")),
+        WKey::Named(NamedKey::Escape) => Some(Key::Named("escape")),
+        // The named keys carry their modifiers in the name (`crate::host::gui::named_key`,
+        // the rule both frontends share): `:ctrl-left`, `:alt-shift-up`, `:super-f5`, … —
+        // so the editor binds `C-<left>` / `C-S-<arrow>` as distinctly as `:shift-up`
+        // (shift-select) from a plain arrow.
+        WKey::Named(named) => Some(Key::Named(named_key(named_key_base(named)?, modifiers))),
         WKey::Character(s) => {
-            // For a Ctrl/Alt chord, read the key WITHOUT modifiers, so layout
-            // composition (on some layouts Alt+`-` composes to en-dash `–`, Alt+
-            // letters to accents) doesn't mangle the chord — the keymap binds the
-            // BASE character (`-`, `f`). Plain typing keeps the composed/logical
-            // char, so AltGr and dead keys still insert their glyph.
-            let base = if mods.control_key() || mods.alt_key() {
-                match ke.key_without_modifiers() {
-                    WKey::Character(b) => b.chars().next(),
-                    _ => s.chars().next(),
-                }
-            } else {
-                s.chars().next()
+            let chord = modifiers.ctrl || modifiers.alt || modifiers.super_key;
+            if !chord {
+                // Plain typing keeps what the key TYPED: `ke.text` has dead keys and
+                // compose applied (`´` then `e` types `é`), where the logical key is the
+                // bare `e`. A release has no text, so it falls back to the logical key —
+                // a release is matched to its press by the physical key, never by this.
+                let typed = ke.text.as_deref().and_then(|t| t.chars().next());
+                let c = typed
+                    .filter(|c| !c.is_control())
+                    .or_else(|| s.chars().next())?;
+                return Some(Key::Char(c));
+            }
+            // For a chord, read the key WITHOUT modifiers, so layout composition (on
+            // some layouts Alt+`-` composes to en-dash `–`, macOS Option+letters to
+            // accents) doesn't mangle the chord — the keymap binds the BASE character
+            // (`-`, `f`). `key_without_modifiers()` also strips SHIFT, so a chord with
+            // Shift held takes its glyph from the layout (`shifted_chord_char`): Emacs
+            // `M->` = Alt+Shift+`.` must reach the `alt->` binding, not `alt-.`.
+            let logical = s.chars().next();
+            let base = match ke.key_without_modifiers() {
+                WKey::Character(b) => b.chars().next(),
+                _ => logical,
             }?;
-            // `key_without_modifiers()` also strips SHIFT, so a shifted-punctuation
-            // chord (Emacs `M->` = Alt+Shift+`.`) would lose its shift and arrive as
-            // `alt-.` — never matching the `alt->` binding. Re-apply Shift via the
-            // US-layout map so the chord reaches the shifted glyph it names (`>`, `<`,
-            // `{`, `}`, `%`, `^`, …), matching what the crossterm frontend already
-            // delivers (`builtins::key_to_value`). Letters are untouched here (they're
-            // lowercased below); plain typing never reaches this (it keeps `s`).
-            let c = if (mods.control_key() || mods.alt_key()) && mods.shift_key() {
-                shift_char(base)
+            let c = if modifiers.shift {
+                shifted_chord_char(logical, base)
             } else {
                 base
             };
-            if mods.control_key() && mods.alt_key() {
-                Some(Key::CtrlAlt(c.to_ascii_lowercase()))
-            } else if mods.control_key() {
-                Some(Key::Ctrl(c.to_ascii_lowercase()))
-            } else if mods.alt_key() {
-                // Meta is case-SENSITIVE in Emacs (`M-O` open-line-above ≠ `M-o`): a
-                // shifted letter stays upper-case so the two are distinct, while an
-                // unshifted chord lower-cases (so Caps Lock / a stray Shift can't change
-                // the binding). Control chords (above) stay case-insensitive, as in Emacs.
-                Some(Key::Alt(if mods.shift_key() {
-                    c.to_ascii_uppercase()
-                } else {
-                    c.to_ascii_lowercase()
-                }))
-            } else {
-                Some(Key::Char(c))
-            }
+            Some(character_chord(c, modifiers))
         }
         _ => None,
+    }
+}
+
+/// A character `c` under chord `modifiers`, Shift already folded into `c`. Control chords
+/// are case-INsensitive (Emacs `C-a` = `C-A`); Meta and Super are case-SENSITIVE (`M-O`
+/// open-line-above ≠ `M-o`): a shifted letter stays upper-case so the two are distinct,
+/// while an unshifted chord lower-cases (so Caps Lock / a stray Shift can't change the
+/// binding). A chord with Super spells through `named_key` (`:super-x`, `:ctrl-super-x`).
+fn character_chord(c: char, modifiers: KeyModifiers) -> Key {
+    let case_kept = if !modifiers.ctrl && modifiers.shift {
+        c.to_ascii_uppercase()
+    } else {
+        c.to_ascii_lowercase()
+    };
+    match modifiers {
+        KeyModifiers {
+            super_key: true, ..
+        } => Key::Named(named_key(
+            &case_kept.to_string(),
+            KeyModifiers {
+                shift: false,
+                ..modifiers
+            },
+        )),
+        KeyModifiers {
+            ctrl: true,
+            alt: true,
+            ..
+        } => Key::CtrlAlt(c.to_ascii_lowercase()),
+        KeyModifiers { ctrl: true, .. } => Key::Ctrl(c.to_ascii_lowercase()),
+        KeyModifiers { alt: true, .. } => Key::Alt(case_kept),
+        _ => Key::Char(c),
+    }
+}
+
+// ---- input methods and focus ------------------------------------------------------------
+
+/// A commit of composed text as `[:text "…"]` — what an input method (or a keystroke
+/// that typed several characters) inserts at point.
+pub(super) fn text_message(text: &str) -> Message {
+    Message::Vector(vec![
+        Message::Keyword(value::intern("text")),
+        Message::Str(text.to_string()),
+    ])
+}
+
+/// The input method's composition in progress, as `[:preedit "…" [from to]]`: the text
+/// to show at point (not yet inserted), and the IME's cursor inside it as a CHARACTER
+/// range — winit reports bytes, which a Brood string does not index by — or nil when the
+/// IME hides it. An empty text with nil clears the composition.
+pub(super) fn preedit_message(text: &str, cursor: Option<(usize, usize)>) -> Message {
+    let char_index = |byte: usize| text[..byte.min(text.len())].chars().count() as i64;
+    let range = match cursor {
+        Some((from, to)) if text.is_char_boundary(from) && text.is_char_boundary(to) => {
+            Message::Vector(vec![
+                Message::Int(char_index(from)),
+                Message::Int(char_index(to)),
+            ])
+        }
+        _ => Message::Nil,
+    };
+    Message::Vector(vec![
+        Message::Keyword(value::intern("preedit")),
+        Message::Str(text.to_string()),
+        range,
+    ])
+}
+
+/// What an IME commit becomes. A single character typed with NO composition shown is a
+/// keystroke an input method passed through (some IMEs commit every key they do not
+/// compose), so it is the 1-char key string a keyboard would have sent — the keymap
+/// cannot tell the difference, and must not. Anything that ended a composition, or is
+/// longer than one character, is `[:text "…"]`.
+pub(super) fn commit_message(text: &str, after_preedit: bool) -> Option<Message> {
+    let mut chars = text.chars();
+    let first = chars.next()?;
+    if !after_preedit && chars.next().is_none() && !first.is_control() {
+        Some(key_message(&Key::Char(first)))
+    } else {
+        Some(text_message(text))
+    }
+}
+
+/// Where the IME's candidate window goes: the first `Op::Cursor` of the frame, as a
+/// grid-relative PIXEL rect `(x, y, w, h)` one cell in size, walking INTO the regions
+/// with the coordinate math `render_ops` paints them with (a cursor in a scrolled or
+/// zoomed pane is placed where it is drawn). `None` when the frame has no cursor.
+pub(super) fn ime_cursor_area(ops: &[Op], r: &Renderer) -> Option<(isize, isize, usize, usize)> {
+    find_cursor(ops, r, 0, 0, r.cell_w.max(1), r.cell_h.max(1), 0)
+}
+
+fn find_cursor(
+    ops: &[Op],
+    r: &Renderer,
+    ox: isize,
+    oy: isize,
+    cw: usize,
+    ch: usize,
+    scroll_dy: isize,
+) -> Option<(isize, isize, usize, usize)> {
+    ops.iter().find_map(|op| match op {
+        Op::Cursor { row, col, .. } => Some((
+            ox.saturating_add((*col as isize).saturating_mul(cw as isize)),
+            oy.saturating_add((*row as isize).saturating_mul(ch as isize))
+                .saturating_sub(scroll_dy),
+            cw,
+            ch,
+        )),
+        Op::ScrollRegion { dy_frac, ops } => {
+            find_cursor(ops, r, ox, oy, cw, ch, scroll_px(*dy_frac, ch))
+        }
+        Op::CellRegion { x, y, px, ops, .. } => {
+            let region = r.metrics_at(*px);
+            if region.cell_w == 0 || region.cell_h == 0 {
+                return None;
+            }
+            find_cursor(
+                ops,
+                r,
+                ox.saturating_add((*x as isize).saturating_mul(cw as isize)),
+                oy.saturating_add((*y as isize).saturating_mul(ch as isize))
+                    .saturating_sub(scroll_dy),
+                region.cell_w,
+                region.cell_h,
+                0,
+            )
+        }
+        _ => None,
+    })
+}
+
+/// The gate that keeps at most ONE OS auto-repeat undelivered per window
+/// (`{:key-repeat :os}`, ADR-441). A repeat is delivered with a credit charged here; the
+/// credit comes back when the message leaves the mailbox (`process::deliver_credited`),
+/// and until it does, further repeats are dropped. So an app whose frame is slower than
+/// the repeat rate repeats once per turn instead of queueing a burst that plays on after
+/// the key is released — the ADR-086 bug — while a fast app gets every repeat.
+#[derive(Default)]
+pub(super) struct RepeatGate {
+    outstanding: AtomicBool,
+}
+
+impl RepeatGate {
+    /// A credit for one repeat, or `None` while the last one is still queued.
+    pub(super) fn charge(gate: &Arc<RepeatGate>) -> Option<crate::process::DeliveryCredit> {
+        gate.outstanding
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        Some(crate::process::DeliveryCredit::new(gate.clone(), 1))
+    }
+}
+
+impl crate::process::CreditSource for RepeatGate {
+    fn release(&self, _cost: usize) {
+        self.outstanding.store(false, Ordering::Release);
     }
 }
 
@@ -368,5 +599,141 @@ mod tests {
     fn no_position_is_the_message_it_always_was() {
         let v = press_at(None, 2);
         assert_eq!(v.len(), 7);
+    }
+}
+
+#[cfg(test)]
+mod adr_431_tests {
+    use super::*;
+
+    fn modifiers(ctrl: bool, alt: bool, shift: bool, super_key: bool) -> KeyModifiers {
+        KeyModifiers {
+            ctrl,
+            alt,
+            shift,
+            super_key,
+        }
+    }
+
+    fn keyword_of(key: Key) -> String {
+        match key {
+            Key::Named(name) => name.to_string(),
+            Key::Ctrl(c) => format!("ctrl-{c}"),
+            Key::Alt(c) => format!("alt-{c}"),
+            Key::CtrlAlt(c) => format!("ctrl-meta-{c}"),
+            Key::Char(c) => c.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_shifted_chord_takes_the_layouts_glyph() {
+        // US: Alt+Shift+. is M->
+        assert_eq!(shifted_chord_char(Some('>'), '.'), '>');
+        // German: Shift+. is `:` and Shift+7 is `/` — the keycaps, not the US table
+        assert_eq!(shifted_chord_char(Some(':'), '.'), ':');
+        assert_eq!(shifted_chord_char(Some('/'), '7'), '/');
+        // macOS applies Option to the logical key: the US table answers instead
+        assert_eq!(shifted_chord_char(Some('˘'), '.'), '>');
+        // a letter keeps its base; the case is the chord's business
+        assert_eq!(shifted_chord_char(Some('Å'), 'a'), 'a');
+        assert_eq!(shifted_chord_char(Some('A'), 'a'), 'A');
+    }
+
+    #[test]
+    fn super_chords_spell_emacs_order() {
+        assert_eq!(
+            keyword_of(character_chord('x', modifiers(false, false, false, true))),
+            "super-x"
+        );
+        assert_eq!(
+            keyword_of(character_chord('S', modifiers(false, false, true, true))),
+            "super-S"
+        );
+        assert_eq!(
+            keyword_of(character_chord('S', modifiers(true, false, true, true))),
+            "ctrl-super-s"
+        );
+        assert_eq!(
+            keyword_of(character_chord('>', modifiers(false, true, true, true))),
+            "alt-super->"
+        );
+    }
+
+    #[test]
+    fn chords_without_super_are_what_they_always_were() {
+        assert_eq!(
+            keyword_of(character_chord('f', modifiers(true, true, false, false))),
+            "ctrl-meta-f"
+        );
+        assert_eq!(
+            keyword_of(character_chord('O', modifiers(false, true, true, false))),
+            "alt-O"
+        );
+        assert_eq!(
+            keyword_of(character_chord('A', modifiers(true, false, true, false))),
+            "ctrl-a"
+        );
+        assert_eq!(
+            keyword_of(character_chord(' ', modifiers(true, false, false, false))),
+            "ctrl- "
+        );
+        assert_eq!(
+            keyword_of(character_chord(' ', modifiers(false, false, false, false))),
+            " "
+        );
+    }
+
+    #[test]
+    fn named_keys_cover_the_function_and_editing_keys() {
+        assert_eq!(named_key_base(&NamedKey::F1), Some("f1"));
+        assert_eq!(named_key_base(&NamedKey::F24), Some("f24"));
+        assert_eq!(named_key_base(&NamedKey::Insert), Some("insert"));
+        assert_eq!(named_key_base(&NamedKey::ContextMenu), Some("menu"));
+        assert_eq!(named_key_base(&NamedKey::PrintScreen), None);
+        assert_eq!(named_key_base(&NamedKey::Shift), None);
+    }
+
+    fn vector_of(message: Message) -> Vec<Message> {
+        match &mut { message } {
+            Message::Vector(items) => std::mem::take(items),
+            _ => panic!("a vector message"),
+        }
+    }
+
+    #[test]
+    fn a_preedit_cursor_is_counted_in_characters() {
+        // "啊b" — the IME's cursor after the first character is byte 3
+        let items = vector_of(preedit_message("啊b", Some((3, 3))));
+        assert!(matches!(&items[1], Message::Str(s) if s == "啊b"));
+        let Message::Vector(range) = &items[2] else {
+            panic!("a range")
+        };
+        assert!(matches!(range[0], Message::Int(1)));
+        assert!(matches!(range[1], Message::Int(1)));
+        // the clearing preedit
+        let cleared = vector_of(preedit_message("", None));
+        assert!(matches!(cleared[2], Message::Nil));
+    }
+
+    #[test]
+    fn a_passed_through_character_is_a_key_and_a_composition_is_text() {
+        assert!(matches!(&commit_message("a", false), Some(Message::Str(s)) if s == "a"));
+        let composed = vector_of(commit_message("é", true).expect("a commit"));
+        assert!(matches!(&composed[1], Message::Str(s) if s == "é"));
+        let several = vector_of(commit_message("啊不", false).expect("a commit"));
+        assert!(matches!(&several[1], Message::Str(s) if s == "啊不"));
+        assert!(commit_message("", true).is_none());
+    }
+
+    #[test]
+    fn the_repeat_gate_holds_one_until_it_is_received() {
+        let gate = Arc::new(RepeatGate::default());
+        let credit = RepeatGate::charge(&gate).expect("the first repeat goes");
+        assert!(
+            RepeatGate::charge(&gate).is_none(),
+            "a second waits while the first is queued"
+        );
+        drop(credit); // the message left the mailbox
+        assert!(RepeatGate::charge(&gate).is_some());
     }
 }

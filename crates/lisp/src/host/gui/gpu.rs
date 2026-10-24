@@ -9,8 +9,9 @@
 //! whatever its op count, and a sprite drawn after a rect lands on top of it, as the CPU
 //! painter's op order promises. Glyphs share one texture (an atlas the rasterised
 //! clusters are packed into as they first appear), so a page of text is one batch, not
-//! one draw per glyph. The swapchain presents without vsync unless the window asked for
-//! it, so a sim's frame rate is bounded by work, not the monitor refresh.
+//! one draw per glyph. The swapchain presents MAILBOX by default (low latency, no
+//! tearing), FIFO under `{:vsync true}`, and IMMEDIATE only under `{:vsync false}`, so a
+//! sim that asks can still run at the rate its work allows (ADR-440).
 //!
 //! The op walk mirrors the CPU painter's (`paint::render_ops`) arm for arm — the same
 //! grid origin, the same scroll shift, the same region metrics and clip band, the same
@@ -19,7 +20,14 @@
 //! 1 px coverage ramp `fill_rrect` computes per pixel; a clip band is a per-instance rect
 //! the fragment shader discards outside of. The one visible difference is text
 //! anti-aliasing: the GPU samples one coverage per pixel (grey AA) where the CPU path
-//! can render subpixel (LCD) text at 1×, and the contrast lift is not applied.
+//! can render subpixel (LCD) text at 1× — a per-channel blend wants dual-source blending
+//! and a subpixel order the compositor may scale away (ADR-440). The blending otherwise
+//! matches: text lerps in the encoded space with the contrast lift in the shader, and
+//! translucent geometry blends in linear light through an sRGB view of the frame.
+//!
+//! A frame is re-walked, but not re-shaped: a text run's quads are kept and replayed
+//! while it repeats (`RunCache`), and the instance buffers are written only where they
+//! changed (`changed_span`) — the GPU's answer to the CPU painter's row diff.
 //!
 //! This module is MECHANISM only. It knows a quad, a texture, a UV rect, a tint and an
 //! angle; what a sprite sheet is, how a line is a thin quad at an angle, which frame an
@@ -39,10 +47,11 @@ use winit::window::Window;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::host::gui::backend::{
-    CURSOR_FG, Renderer, paint_stall_ms, snap_hairline, text_px_width,
+    CURSOR_FG, Renderer, cursor_rim, paint_stall_ms, snap_hairline, text_px_width, text_units,
+    unit_cells,
 };
 use crate::host::gui::effects::{EmitterStep, FrameEffects};
-use crate::host::gui::{Align, CursorStyle, MAX_PARTICLES, Op};
+use crate::host::gui::{Align, CursorStyle, Face, MAX_PARTICLES, Op};
 use crate::host::text_width::{TAB_WIDTH, cluster_cells, cluster_cells_at};
 
 const DEFAULT_FG: [u8; 3] = [0xe5, 0xe5, 0xe5];
@@ -60,7 +69,8 @@ const MAX_SCROLL_PX: f32 = 16384.0;
 /// Every quad carries a clip rect `[x0 y0 x1 y1]` the fragment stage discards outside
 /// of — how a cell region's band and a scroll region's grid-top clip are honoured.
 const SHADER_SRC: &str = r#"
-struct Viewport { size: vec2<f32>, _pad: vec2<f32> };
+// `text.x` is 1/γ for the text contrast lift (`gui-text-contrast!`, ADR-337); 1.0 is none.
+struct Viewport { size: vec2<f32>, text: vec2<f32> };
 @group(0) @binding(0) var<uniform> viewport: Viewport;
 
 fn corner(vi: u32) -> vec2<f32> {
@@ -120,13 +130,14 @@ fn vs_solid(@builtin(vertex_index) vi: u32, inst: SolidInst) -> SolidOut {
     return out;
 }
 
-@fragment
-fn fs_solid(in: SolidOut) -> @location(0) vec4<f32> {
+// How much of the pixel a solid quad covers: 0 outside its clip, 1 for a plain fill,
+// the SDF ramp for a rounded or fractional one.
+fn solid_coverage(in: SolidOut) -> f32 {
     if (clipped(in.pos.xy, in.clip)) {
-        discard;
+        return 0.0;
     }
     if (in.aa == 0.0) {
-        return in.color;
+        return 1.0;
     }
     // The rounded-box signed distance from the pixel centre to the rect's rounded core
     // (the rect inset by the radius), as `fill_rrect` computes it: a 1 px coverage ramp
@@ -135,11 +146,36 @@ fn fs_solid(in: SolidOut) -> @location(0) vec4<f32> {
     let r = min(in.radius, min(in.half.x, in.half.y));
     let q = abs(p) - (in.half - vec2<f32>(r, r));
     let d = length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r;
-    let coverage = clamp(0.5 - d, 0.0, 1.0);
+    return clamp(0.5 - d, 0.0, 1.0);
+}
+
+// sRGB-encoded 0..1 -> linear light, the exact curve the CPU painter's table holds.
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let low = c / 12.92;
+    let high = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+    return select(high, low, c <= vec3<f32>(0.04045));
+}
+
+// Into an encoded (non-sRGB) target: the blend happens on the encoded values.
+@fragment
+fn fs_solid(in: SolidOut) -> @location(0) vec4<f32> {
+    let coverage = solid_coverage(in);
     if (coverage <= 0.0) {
         discard;
     }
     return vec4<f32>(in.color.rgb, in.color.a * coverage);
+}
+
+// Into an sRGB view of the same frame: the colour is decoded here, the hardware blends
+// in linear light and encodes on write — the CPU painter's `blend`, which is right for
+// geometry (a translucent cursor wash, a rounded edge), as ADR-358 says text is not.
+@fragment
+fn fs_solid_linear(in: SolidOut) -> @location(0) vec4<f32> {
+    let coverage = solid_coverage(in);
+    if (coverage <= 0.0) {
+        discard;
+    }
+    return vec4<f32>(srgb_to_linear(in.color.rgb), in.color.a * coverage);
 }
 
 // --- textured quads ------------------------------------------------------------------
@@ -148,7 +184,8 @@ struct TexInst {
     @location(0) rect: vec4<f32>,   // x, y, w, h in pixels
     @location(1) uv: vec4<f32>,     // u0, v0, du, dv in texture space (a negative extent mirrors)
     @location(2) tint: vec4<f32>,   // straight rgba, 0..1
-    @location(3) mode: u32,         // 1 = coverage mask recoloured with tint, 0 = colour
+    @location(3) mode: u32,         // 0 = colour, 1 = coverage mask recoloured with tint,
+                                    // 2 = a mask whose coverage takes the contrast lift
     @location(4) rot: f32,          // radians about the centre
     @location(5) clip: vec4<f32>,   // x0, y0, x1, y1 in pixels
 };
@@ -181,8 +218,15 @@ fn fs_tex(in: TexOut) -> @location(0) vec4<f32> {
         discard;
     }
     let t = textureSample(tex, samp, in.uv);
+    // Text lerps in the ENCODED space (ADR-358): the target is non-sRGB, so the blend
+    // unit composites the bytes as given — `blend_text`, exactly.
     if (in.mode == 1u) {
         return vec4<f32>(in.tint.rgb, t.a * in.tint.a);
+    }
+    // The lift (ADR-337): `cov^(1/γ)`, decided per glyph where the CPU decides per
+    // pixel (`mode` 2 is set only for text lighter than the ground it is drawn on).
+    if (in.mode == 2u) {
+        return vec4<f32>(in.tint.rgb, pow(t.a, viewport.text.x) * in.tint.a);
     }
     return t * in.tint;
 }
@@ -509,9 +553,12 @@ struct AtlasGlyph {
 }
 
 /// A growable instance buffer: re-created (never mapped) when a frame outgrows it.
+/// `shadow` is what the buffer holds now, word for word, for `upload_changed` — the
+/// frame instance buffers diff against it and write only the span that moved.
 struct InstanceBuffer {
     buffer: wgpu::Buffer,
     capacity_bytes: u64,
+    shadow: Vec<u32>,
 }
 
 impl InstanceBuffer {
@@ -525,6 +572,7 @@ impl InstanceBuffer {
         InstanceBuffer {
             buffer,
             capacity_bytes,
+            shadow: Vec::new(),
         }
     }
 
@@ -542,14 +590,102 @@ impl InstanceBuffer {
             queue.write_buffer(&self.buffer, 0, data);
         }
     }
+
+    /// Upload `words`, writing only the span that differs from what the buffer already
+    /// holds (`changed_span`) — a frame that moved the cursor or one line rewrites a
+    /// few hundred bytes, not the page. A buffer that has to grow is re-created and
+    /// written whole. Returns the bytes written, for the trace.
+    fn upload_changed(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &str,
+        words: &[u32],
+    ) -> usize {
+        let needed = std::mem::size_of_val(words) as u64;
+        if needed > self.capacity_bytes {
+            let mut capacity = self.capacity_bytes.max(1);
+            while capacity < needed {
+                capacity *= 2;
+            }
+            *self = InstanceBuffer::new(device, label, capacity);
+        }
+        let span = if reuse_enabled() {
+            changed_span(&self.shadow, words)
+        } else {
+            (!words.is_empty()).then_some(0..words.len())
+        };
+        let Some(span) = span else {
+            self.shadow.truncate(words.len());
+            return 0;
+        };
+        queue.write_buffer(
+            &self.buffer,
+            (span.start * 4) as u64,
+            as_bytes_u32(&words[span.clone()]),
+        );
+        self.shadow.resize(words.len(), 0);
+        self.shadow[span.clone()].copy_from_slice(&words[span.clone()]);
+        span.len() * 4
+    }
+}
+
+/// The word range of `new` that differs from `old` — what an upload over a buffer that
+/// holds `old` must write to make it hold `new`. `None` when nothing differs (a shorter
+/// `new` whose words all match needs no write: the tail past it is never drawn). The
+/// search compares 64-word chunks first, so an unchanged page costs a memcmp.
+fn changed_span(old: &[u32], new: &[u32]) -> Option<std::ops::Range<usize>> {
+    const CHUNK: usize = 64;
+    let common = old.len().min(new.len());
+    let (old_common, new_common) = (&old[..common], &new[..common]);
+    let first_chunk = old_common
+        .chunks(CHUNK)
+        .zip(new_common.chunks(CHUNK))
+        .position(|(a, b)| a != b);
+    let first = match first_chunk {
+        Some(chunk) => {
+            let base = chunk * CHUNK;
+            base + old_common[base..]
+                .iter()
+                .zip(&new_common[base..])
+                .position(|(a, b)| a != b)
+                .expect("a differing chunk has a differing word")
+        }
+        None if new.len() > common => common,
+        None => return None,
+    };
+    let end = if new.len() > common {
+        new.len()
+    } else {
+        // the last differing word, searched from the back the same way
+        let tail = common - first;
+        let last_from_back = old_common[first..]
+            .rchunks(CHUNK)
+            .zip(new_common[first..].rchunks(CHUNK))
+            .position(|(a, b)| a != b)
+            .expect("the first differing word is in this range");
+        let chunk_end = tail - last_from_back * CHUNK;
+        let chunk_start = chunk_end.saturating_sub(CHUNK);
+        let within = old_common[first + chunk_start..first + chunk_end]
+            .iter()
+            .zip(&new_common[first + chunk_start..first + chunk_end])
+            .rposition(|(a, b)| a != b)
+            .expect("a differing chunk has a differing word");
+        first + chunk_start + within + 1
+    };
+    Some(first..end)
 }
 
 /// A run of consecutive quads drawn with one pipeline state: `count` instances starting
 /// at `first` in that pipeline's instance buffer.
 enum Batch {
+    /// `linear`: some quad in the run is translucent or anti-aliased, so the run is
+    /// drawn through the sRGB view and blends in linear light (`segments`). A run of
+    /// opaque plain fills looks the same either way and rides whichever pass is open.
     Solid {
         first: u32,
         count: u32,
+        linear: bool,
     },
     Tex {
         key: TexKey,
@@ -656,12 +792,18 @@ impl FrameBuilder {
             self.clip[2],
             self.clip[3],
         ]);
+        // A translucent quad or an SDF edge blends; an opaque plain fill only covers.
+        let blends = rgba[3] < 255 || aa != 0.0;
         let merge = self.can_merge();
         match self.batches.last_mut() {
-            Some(Batch::Solid { count, .. }) if merge => *count += 1,
+            Some(Batch::Solid { count, linear, .. }) if merge => {
+                *count += 1;
+                *linear |= blends;
+            }
             _ => self.batches.push(Batch::Solid {
                 first: index,
                 count: 1,
+                linear: blends,
             }),
         }
     }
@@ -676,7 +818,8 @@ impl FrameBuilder {
         self.solid(x, y, w, h, [rgb[0], rgb[1], rgb[2], 255], 0.0, Edge::Plain);
     }
 
-    /// A textured quad sampling `uv` (`[u0 v0 du dv]`, texture space) of `key`.
+    /// A textured quad sampling `uv` (`[u0 v0 du dv]`, texture space) of `key`; `mode`
+    /// is the shader's: 0 a colour texel, 1 a coverage mask tinted, 2 a mask lifted.
     #[allow(clippy::too_many_arguments)]
     fn textured(
         &mut self,
@@ -687,7 +830,7 @@ impl FrameBuilder {
         h: f32,
         uv: [f32; 4],
         tint: [u8; 4],
-        mono: bool,
+        mode: u32,
         rot: f32,
     ) {
         if !self.visible(x, y, w, h, rot) {
@@ -707,7 +850,7 @@ impl FrameBuilder {
             (tint[1] as f32 / 255.0).to_bits(),
             (tint[2] as f32 / 255.0).to_bits(),
             (tint[3] as f32 / 255.0).to_bits(),
-            u32::from(mono),
+            mode,
             rot.to_bits(),
             self.clip[0].to_bits(),
             self.clip[1].to_bits(),
@@ -724,6 +867,238 @@ impl FrameBuilder {
             }),
         }
     }
+}
+
+// ---- the run cache: damage tracking for the GPU target (ADR-440) -------------------
+//
+// The CPU painter retains its canvas and re-rasterises only the rows a frame changed
+// (`paint::strip_diff`). A swapchain image is not retained — every frame is drawn whole
+// — but drawing is the cheap half on a GPU. The expensive half is on the CPU: walking a
+// text op's graphemes, measuring each cluster and looking its glyph up in the atlas, for
+// every op of every frame. So the GPU target retains the RESULT of that walk instead: a
+// text run's quads, relative to where the run starts, keyed by everything they depend
+// on. A frame that repeats a run — every line a keystroke did not touch, every line a
+// scroll merely moved, every frame of a cursor blink — replays its quads with an offset
+// (`RunCache::take`); only a changed run is shaped again. The replay then lands in the
+// instance buffers, which are written only where they changed (`changed_span`), so a
+// blink uploads the cursor's few quads and a typed character the tail after it.
+//
+// Keyed WITHOUT position, deliberately: a run's row and the scroll offset only move it,
+// so a scroll (whole lines or a sub-cell glide) reuses every run it keeps on screen —
+// the GPU's answer to the CPU painter's scroll blit, with no blit. Its column is in the
+// key for a cell run (a tab advances to the next SCREEN stop, so where a run starts
+// changes its shape); its alignment for a pixel run. The metrics, the resolved family
+// and the window background (the contrast lift's ground) are in the key too, so a font
+// or theme change misses rather than replays stale quads.
+
+/// One quad of a cached run, relative to the run's anchor (`expand` adds the anchor).
+#[derive(Clone, Copy)]
+enum RunQuad {
+    Fill {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        rgb: [u8; 3],
+    },
+    Glyph {
+        page: usize,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        uv: [f32; 4],
+        tint: [u8; 4],
+        mode: u32,
+    },
+}
+
+/// Where a run is placed: on the cell grid starting at a column, or in pixel space
+/// with an alignment about its `x`.
+#[derive(Clone, Copy, PartialEq, Hash)]
+enum RunPlace {
+    Cell { col: u16 },
+    Pixel { align: u8 },
+}
+
+/// Everything a run's quads depend on except where it is drawn.
+#[derive(Clone, Copy, PartialEq)]
+struct RunContext {
+    place: RunPlace,
+    /// cell width, cell height, font px (bits) and the resolved default family
+    metrics: [u32; 4],
+    /// the window background: the ground a run without `:bg` is lifted against
+    ground: [u8; 3],
+    /// the font registration the glyphs were baked under, and whether ligature units
+    /// were shaped (ADR-442): either changes the quads a run produces
+    fonts: (u64, bool),
+}
+
+/// A cached run: its key (checked on a hash hit, so a collision is a miss, never a
+/// wrong picture) and its quads.
+struct TextRun {
+    text: String,
+    face: Face,
+    context: RunContext,
+    quads: Vec<RunQuad>,
+}
+
+/// The runs of the last frame and of the one being built. A run is looked up in this
+/// frame's map first (two identical lines share one), then taken from the last frame's;
+/// whatever the last frame had and this one did not use is dropped when the frame ends
+/// (`end_frame`), so the cache holds one screen's runs, never a history.
+#[derive(Default)]
+struct RunCache {
+    current: HashMap<u64, TextRun>,
+    previous: HashMap<u64, TextRun>,
+    /// this frame's runs replayed / shaped, for the trace
+    hits: u32,
+    misses: u32,
+}
+
+fn run_hash(text: &str, face: &Face, context: &RunContext) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    (face.fg, face.bg, face.bold, face.italic).hash(&mut hasher);
+    (face.underline, face.reverse, face.family, face.scale).hash(&mut hasher);
+    context.place.hash(&mut hasher);
+    context.metrics.hash(&mut hasher);
+    context.ground.hash(&mut hasher);
+    hasher.finish()
+}
+
+impl RunCache {
+    /// The run's quads when this frame or the last already shaped it.
+    fn take(
+        &mut self,
+        hash: u64,
+        text: &str,
+        face: &Face,
+        context: &RunContext,
+    ) -> Option<&[RunQuad]> {
+        let matches =
+            |run: &TextRun| run.text == text && run.face == *face && run.context == *context;
+        if !self.current.get(&hash).is_some_and(matches) {
+            let run = self.previous.remove(&hash).filter(matches)?;
+            self.current.insert(hash, run);
+        }
+        self.hits += 1;
+        self.current.get(&hash).map(|run| run.quads.as_slice())
+    }
+
+    /// Remember a run this frame shaped.
+    fn put(&mut self, hash: u64, run: TextRun) {
+        self.misses += 1;
+        self.current.insert(hash, run);
+    }
+
+    /// The frame is drawn: what it used is the next frame's to reuse, and nothing else.
+    fn end_frame(&mut self) {
+        self.previous = std::mem::take(&mut self.current);
+        self.hits = 0;
+        self.misses = 0;
+    }
+
+    /// Forget every run (a run names atlas pages; nothing else can stale it today, but a
+    /// caller that drops the atlas must drop these with it).
+    #[allow(dead_code)]
+    fn clear(&mut self) {
+        self.current.clear();
+        self.previous.clear();
+    }
+}
+
+/// `BROOD_GUI_DAMAGE=0` turns the GPU target's reuse off as it does the CPU painter's
+/// row diff: every run shaped and every instance buffer written whole, each frame — the
+/// escape hatch if reuse ever shows a stale picture. Read once.
+fn reuse_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("BROOD_GUI_DAMAGE")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+    })
+}
+
+/// Rec. 601 luma, the CPU painter's "is this lighter than that" ordering (`render::luma`).
+fn luma(rgb: [u8; 3]) -> u32 {
+    299 * rgb[0] as u32 + 587 * rgb[1] as u32 + 114 * rgb[2] as u32
+}
+
+/// The draw order of `batches` as render passes: `(linear, range)` each, where a linear
+/// pass draws through the swapchain's sRGB view (translucent and anti-aliased solids,
+/// blended in linear light) and the rest through the encoded view (text, sprites,
+/// particles — and an opaque fill, which looks the same in either, joins whichever pass
+/// is open). Consecutive batches of one kind share a pass, so a frame pays a pass switch
+/// only where its translucent geometry and its text interleave. Without an sRGB view
+/// (`linear_available` false) it is one encoded pass, as before.
+fn segments(batches: &[Batch], linear_available: bool) -> Vec<(bool, std::ops::Range<usize>)> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut space: Option<bool> = None;
+    for (index, batch) in batches.iter().enumerate() {
+        let wants = match batch {
+            Batch::Solid { linear, .. } => (*linear && linear_available).then_some(true),
+            Batch::Tex { .. } | Batch::Particles { .. } => Some(false),
+        };
+        let Some(wants) = wants else {
+            continue;
+        };
+        match space {
+            None => space = Some(wants),
+            Some(open) if open != wants => {
+                out.push((open, start..index));
+                start = index;
+                space = Some(wants);
+            }
+            Some(_) => {}
+        }
+    }
+    out.push((space.unwrap_or(false), start..batches.len()));
+    out
+}
+
+/// Push a shaped run's quads onto the frame at `(anchor_x, anchor_y)`. Each goes through
+/// the builder's own fill / textured, so culling, the clip band and batching are what
+/// they would be had the run been shaped this frame.
+fn replay(fb: &mut FrameBuilder, quads: &[RunQuad], anchor_x: f32, anchor_y: f32) {
+    for quad in quads {
+        match *quad {
+            RunQuad::Fill { x, y, w, h, rgb } => fb.fill(anchor_x + x, anchor_y + y, w, h, rgb),
+            RunQuad::Glyph {
+                page,
+                x,
+                y,
+                w,
+                h,
+                uv,
+                tint,
+                mode,
+            } => fb.textured(
+                TexKey::Atlas(page),
+                anchor_x + x,
+                anchor_y + y,
+                w,
+                h,
+                uv,
+                tint,
+                mode,
+                0.0,
+            ),
+        }
+    }
+}
+
+/// The sRGB sibling of the swapchain `format` that translucent geometry is drawn
+/// through, when the surface may be viewed in it (`SURFACE_VIEW_FORMATS`) and `format`
+/// has one; `None` otherwise, and then every quad blends in the encoded space.
+fn linear_view_format(
+    format: wgpu::TextureFormat,
+    views_allowed: bool,
+) -> Option<wgpu::TextureFormat> {
+    let linear = format.add_srgb_suffix();
+    (views_allowed && linear != format && format.remove_srgb_suffix() == format).then_some(linear)
 }
 
 /// A render pipeline over one shader module's entry points, the parts every pipeline here
@@ -1295,6 +1670,12 @@ pub struct GpuWindow {
     viewport_buffer: wgpu::Buffer,
     viewport_bind_group: wgpu::BindGroup,
     solid_pipeline: wgpu::RenderPipeline,
+    /// The solid pipeline into the swapchain's sRGB view, for translucent and
+    /// anti-aliased geometry (linear-light blending); `None` when the surface cannot be
+    /// viewed in a second format, and then every quad blends in the encoded space.
+    solid_linear_pipeline: Option<wgpu::RenderPipeline>,
+    /// That sRGB view's format.
+    linear_format: Option<wgpu::TextureFormat>,
     solid_instances: InstanceBuffer,
     tex_pipeline: wgpu::RenderPipeline,
     tex_layout: wgpu::BindGroupLayout,
@@ -1310,6 +1691,9 @@ pub struct GpuWindow {
     effects: Option<EffectsGpu>,
     /// The particle systems, made the first time a frame carries an emitter.
     particles: Option<ParticlesGpu>,
+    /// Every text run the last frame drew, as quads — what a frame that repeats a run
+    /// reuses instead of re-shaping it (`RunCache`, ADR-440).
+    runs: RunCache,
 }
 
 /// Whether a quad at `(x, y)` sized `w x h` could put any pixel inside a `fw x fh`
@@ -1345,19 +1729,27 @@ fn pick_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
         .or_else(|| formats.first().copied())
 }
 
-/// The present mode: with `vsync`, FIFO (always available, and IS vsync). Without, the
-/// platform's immediate/mailbox mode when it has one, else FIFO — the only mode some
-/// compositors offer, so then the choice is theirs, not ours.
-fn pick_present_mode(modes: &[wgpu::PresentMode], vsync: bool) -> wgpu::PresentMode {
-    if vsync {
-        wgpu::PresentMode::Fifo
-    } else if modes.contains(&wgpu::PresentMode::Immediate) {
-        wgpu::PresentMode::Immediate
-    } else if modes.contains(&wgpu::PresentMode::Mailbox) {
-        wgpu::PresentMode::Mailbox
-    } else {
-        wgpu::PresentMode::Fifo
-    }
+/// The present mode for the window's `:vsync` option (ADR-440):
+///
+/// - `None` (the default) — MAILBOX where the platform has it, else FIFO. Mailbox is the
+///   low-latency mode that never tears: a frame replaces the one waiting for the next
+///   refresh rather than queueing behind it, so what reaches the screen is the newest.
+///   An editor wants exactly that; a torn frame is a visible defect in text.
+/// - `Some(true)` — FIFO, which is vsync: every frame is shown, in step with the refresh.
+/// - `Some(false)` — the work-bound rate, tearing allowed: IMMEDIATE, then MAILBOX, then
+///   FIFO (the only mode some compositors offer, so then the choice is theirs).
+fn pick_present_mode(modes: &[wgpu::PresentMode], vsync: Option<bool>) -> wgpu::PresentMode {
+    use wgpu::PresentMode::{Fifo, Immediate, Mailbox};
+    let preference: &[wgpu::PresentMode] = match vsync {
+        Some(true) => &[Fifo],
+        Some(false) => &[Immediate, Mailbox],
+        None => &[Mailbox],
+    };
+    preference
+        .iter()
+        .copied()
+        .find(|mode| modes.contains(mode))
+        .unwrap_or(Fifo)
 }
 
 /// A scroll region's shift in pixels for a `dy_frac` of the cell height, capped — the
@@ -1366,28 +1758,39 @@ fn scroll_px(dy_frac: f32, ch: f32) -> f32 {
     (dy_frac * ch).round().clamp(-MAX_SCROLL_PX, MAX_SCROLL_PX)
 }
 
-/// The cursor's quads for one cell: `(x, y, w, h, colour)` each. Block is a 50% white
-/// overlay plus a solid rim `t` thick; Bar a caret on the left edge; Underline a rule
-/// along the bottom — the CPU `cursor_cell`'s geometry, thickness scaled with the cell so
-/// it stays proportional on HiDPI (never under 2 px).
+/// The cursor's quads for one cell: `(x, y, w, h, colour)` each. Block is a 50% wash
+/// plus a solid rim; Hollow the rim alone, thinner (`cursor_rim`); Bar a caret on the
+/// left edge; Underline a rule along the bottom — the CPU `cursor_cell`'s geometry,
+/// thickness scaled with the cell so it stays proportional on HiDPI. `color` is the
+/// op's caret colour (`None`: a white wash and `CURSOR_FG` strokes).
 fn cursor_quads(
     left: f32,
     top: f32,
     cw: f32,
     ch: f32,
     style: CursorStyle,
+    color: Option<[u8; 3]>,
 ) -> Vec<(f32, f32, f32, f32, [u8; 4])> {
-    let fg = [CURSOR_FG[0], CURSOR_FG[1], CURSOR_FG[2], 255];
+    let stroke = color.unwrap_or(CURSOR_FG);
+    let fg = [stroke[0], stroke[1], stroke[2], 255];
+    let rim = |t: f32| {
+        vec![
+            (left, top, t, ch, fg),
+            (left + cw - t, top, t, ch, fg),
+            (left, top, cw, t, fg),
+            (left, top + ch - t, cw, t, fg),
+        ]
+    };
     match style {
-        CursorStyle::Block => {
-            let t = (cw / 10.0).floor().max(2.0);
-            vec![
-                (left, top, cw, ch, [255, 255, 255, 128]),
-                (left, top, t, ch, fg),
-                (left + cw - t, top, t, ch, fg),
-                (left, top, cw, t, fg),
-                (left, top + ch - t, cw, t, fg),
-            ]
+        CursorStyle::Block | CursorStyle::Hollow => {
+            let t = cursor_rim(cw.max(0.0) as usize, style) as f32;
+            let mut quads = Vec::with_capacity(5);
+            if style == CursorStyle::Block {
+                let wash = color.unwrap_or([255, 255, 255]);
+                quads.push((left, top, cw, ch, [wash[0], wash[1], wash[2], 128]));
+            }
+            quads.extend(rim(t));
+            quads
         }
         CursorStyle::Bar => vec![(left, top, (cw / 8.0).floor().max(2.0), ch, fg)],
         CursorStyle::Underline => {
@@ -1398,7 +1801,7 @@ fn cursor_quads(
 }
 
 impl GpuWindow {
-    pub fn new(window: Rc<Window>, vsync: bool) -> Result<GpuWindow, String> {
+    pub fn new(window: Rc<Window>, vsync: Option<bool>) -> Result<GpuWindow, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let raw_display_handle = window
             .display_handle()
@@ -1440,6 +1843,17 @@ impl GpuWindow {
 
         let caps = surface.get_capabilities(&adapter);
         let format = pick_format(&caps.formats).ok_or("gpu surface: no supported format")?;
+        // The sRGB view of the same swapchain image the translucent geometry is drawn
+        // through (linear-light blending, as the CPU painter's `blend`), when the
+        // platform lets a surface be viewed in a second format. Without it every quad
+        // blends in the encoded space, as before; text always does (ADR-358).
+        let linear_format = linear_view_format(
+            format,
+            adapter
+                .get_downlevel_capabilities()
+                .flags
+                .contains(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS),
+        );
         let size = window.inner_size();
         let (w, h) = (size.width.max(1), size.height.max(1));
         let config = wgpu::SurfaceConfiguration {
@@ -1454,9 +1868,13 @@ impl GpuWindow {
             width: w,
             height: h,
             present_mode: pick_present_mode(&caps.present_modes, vsync),
-            desired_maximum_frame_latency: 2,
+            // One frame in flight: the CPU never runs more than a frame ahead of the
+            // display, so a keystroke's frame is the next one shown, not the one after.
+            // An editor's frames are cheap; the throughput a deeper queue buys a game is
+            // latency here (ADR-440).
+            desired_maximum_frame_latency: 1,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
-            view_formats: vec![],
+            view_formats: linear_format.into_iter().collect(),
         };
         surface.configure(&device, &config);
 
@@ -1469,7 +1887,7 @@ impl GpuWindow {
             label: Some("viewport"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -1542,34 +1960,47 @@ impl GpuWindow {
             bind_group_layouts: &[Some(&viewport_layout)],
             immediate_size: 0,
         });
-        let solid_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("solid quads"),
-            layout: Some(&solid_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_solid"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: (SOLID_FLOATS * 4) as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x4, 1 => Float32x4, 2 => Float32, 3 => Float32,
-                        4 => Float32, 5 => Float32x4
-                    ],
-                })],
-            },
-            primitive,
-            depth_stencil: None,
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_solid"),
-                compilation_options: Default::default(),
-                targets: &target,
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        // One solid pipeline per target format: the encoded one every frame draws with,
+        // and (when the surface has an sRGB view) the linear-light one translucent
+        // geometry is drawn with — the same vertex stage, its own fragment entry.
+        let solid_quads = |label: &str, target_format: wgpu::TextureFormat, fragment: &str| {
+            let target = [Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend,
+                write_mask: wgpu::ColorWrites::ALL,
+            })];
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&solid_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_solid"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: (SOLID_FLOATS * 4) as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![
+                            0 => Float32x4, 1 => Float32x4, 2 => Float32, 3 => Float32,
+                            4 => Float32, 5 => Float32x4
+                        ],
+                    })],
+                },
+                primitive,
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fragment),
+                    compilation_options: Default::default(),
+                    targets: &target,
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let solid_pipeline = solid_quads("solid quads", format, "fs_solid");
+        let solid_linear_pipeline = linear_format
+            .map(|linear| solid_quads("solid quads, linear light", linear, "fs_solid_linear"));
 
         let tex_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("textured"),
@@ -1618,6 +2049,8 @@ impl GpuWindow {
             viewport_buffer,
             viewport_bind_group,
             solid_pipeline,
+            solid_linear_pipeline,
+            linear_format,
             solid_instances,
             tex_pipeline,
             tex_layout,
@@ -1629,6 +2062,7 @@ impl GpuWindow {
             viewport_layout,
             effects: None,
             particles: None,
+            runs: RunCache::default(),
         })
     }
 
@@ -1773,7 +2207,17 @@ impl GpuWindow {
         italic: bool,
         scale: u16,
     ) -> Option<AtlasGlyph> {
-        let key = glyph_key(g, family, bold, italic, scale, renderer.metrics().px);
+        let metrics = renderer.metrics();
+        let key = glyph_key(
+            g,
+            family.unwrap_or(renderer.default_family()),
+            bold,
+            italic,
+            scale,
+            metrics.px,
+            (metrics.cell_w, metrics.cell_h),
+            renderer.font_generation(),
+        );
         if let Some(slot) = self.glyphs.get(&key) {
             return *slot;
         }
@@ -1784,13 +2228,218 @@ impl GpuWindow {
         packed
     }
 
+    /// Draw text run `s` in `face` with its anchor at `(anchor_x, anchor_y)` — a cell
+    /// run's grid origin and row top, a pixel run's `x` and top — replaying the quads
+    /// the last frame shaped for it when it repeats, shaping (and remembering) it when
+    /// it does not (`RunCache`).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_run(
+        &mut self,
+        fb: &mut FrameBuilder,
+        renderer: &mut Renderer,
+        s: &str,
+        face: &Face,
+        place: RunPlace,
+        g: Grid,
+        anchor_x: f32,
+        anchor_y: f32,
+    ) {
+        let metrics = renderer.metrics();
+        let context = RunContext {
+            place,
+            metrics: [
+                g.cw.to_bits(),
+                g.ch.to_bits(),
+                metrics.px.to_bits(),
+                renderer.default_family(),
+            ],
+            ground: renderer.bg(),
+            fonts: (renderer.font_generation(), renderer.ligatures()),
+        };
+        let reuse = reuse_enabled();
+        let hash = run_hash(s, face, &context);
+        if reuse && let Some(quads) = self.runs.take(hash, s, face, &context) {
+            replay(fb, quads, anchor_x, anchor_y);
+            return;
+        }
+        let quads = self.shape_run(renderer, s, face, place, g.cw, g.ch, context.ground);
+        replay(fb, &quads, anchor_x, anchor_y);
+        if reuse {
+            self.runs.put(
+                hash,
+                TextRun {
+                    text: s.to_string(),
+                    face: *face,
+                    context,
+                    quads,
+                },
+            );
+        }
+    }
+
+    /// Shape a text run into quads relative to its anchor: every cell background first
+    /// (one solid batch), then a glyph per non-space cluster out of the atlas (one
+    /// textured batch), then any underline — the CPU painter's text walk. A cell run
+    /// starts at its column (a raw tab advances to the next SCREEN stop, background
+    /// only); a pixel run at its alignment's shift by the run's shaped width.
+    #[allow(clippy::too_many_arguments)]
+    fn shape_run(
+        &mut self,
+        renderer: &mut Renderer,
+        s: &str,
+        face: &Face,
+        place: RunPlace,
+        cw: f32,
+        ch: f32,
+        ground: [u8; 3],
+    ) -> Vec<RunQuad> {
+        let atlas_size = ATLAS_SIZE as f32;
+        let (mut fg, mut bg) = (
+            face.fg.unwrap_or(DEFAULT_FG),
+            face.bg.unwrap_or(DEFAULT_BG_RGB),
+        );
+        // A face with no `:bg` is transparent: the glyph composites over whatever is
+        // under it (an hl-line band), exactly like Emacs.
+        let mut paint_bg = face.bg.is_some();
+        if face.reverse {
+            std::mem::swap(&mut fg, &mut bg);
+            paint_bg = true;
+        }
+        // The contrast lift applies to text lighter than what it lands on. The CPU
+        // compares per pixel; here the ground is the run's own background, or — for a
+        // transparent face — the window's, since what else lies under it is not known
+        // until the blend (ADR-440).
+        let lift = luma(fg) > luma(if paint_bg { bg } else { ground });
+        let scale = face.scale.max(1) as usize;
+        let ch_s = scale as f32 * ch;
+        let mut quads = Vec::new();
+        let mut clusters: Vec<(f32, f32, &str)> = Vec::new();
+        match place {
+            RunPlace::Cell { col } => {
+                let mut cx = col as usize;
+                // Ligature units when `gui-ligatures!` is on: a punctuation run is one
+                // glyph canvas spanning its cells (`text_units`, ADR-442).
+                for cluster in text_units(s, renderer.ligatures()) {
+                    if cluster == "\t" {
+                        let cells = cluster_cells_at(cluster, cx, TAB_WIDTH);
+                        if paint_bg {
+                            quads.push(RunQuad::Fill {
+                                x: cx as f32 * cw,
+                                y: 0.0,
+                                w: cells as f32 * cw,
+                                h: ch_s,
+                                rgb: bg,
+                            });
+                        }
+                        cx += cells;
+                        continue;
+                    }
+                    let cells = unit_cells(cluster);
+                    if cells == 0 {
+                        continue;
+                    }
+                    let block_w = (cells * scale) as f32 * cw;
+                    let left = cx as f32 * cw;
+                    if paint_bg {
+                        quads.push(RunQuad::Fill {
+                            x: left,
+                            y: 0.0,
+                            w: block_w,
+                            h: ch_s,
+                            rgb: bg,
+                        });
+                    }
+                    if cluster != " " {
+                        clusters.push((left, block_w, cluster));
+                    }
+                    cx += cells * scale;
+                }
+            }
+            RunPlace::Pixel { align } => {
+                let width = text_px_width(s, cw as usize, scale) as f32;
+                let left0 = match align {
+                    1 => -width / 2.0,
+                    2 => -width,
+                    _ => 0.0,
+                };
+                let mut cx = 0.0f32;
+                for cluster in s.graphemes(true) {
+                    let cells = cluster_cells(cluster);
+                    if cells == 0 {
+                        continue;
+                    }
+                    let block_w = (cells * scale) as f32 * cw;
+                    let left = left0 + cx;
+                    if paint_bg {
+                        quads.push(RunQuad::Fill {
+                            x: left,
+                            y: 0.0,
+                            w: block_w,
+                            h: ch_s,
+                            rgb: bg,
+                        });
+                    }
+                    if cluster != " " {
+                        clusters.push((left, block_w, cluster));
+                    }
+                    cx += block_w;
+                }
+            }
+        }
+        for (left, _, cluster) in &clusters {
+            let Some(glyph) = self.glyph_slot(
+                renderer,
+                cluster,
+                face.family,
+                face.bold,
+                face.italic,
+                face.scale,
+            ) else {
+                continue;
+            };
+            quads.push(RunQuad::Glyph {
+                page: glyph.page,
+                x: *left,
+                y: 0.0,
+                w: glyph.w as f32,
+                h: glyph.h as f32,
+                uv: [
+                    glyph.x as f32 / atlas_size,
+                    glyph.y as f32 / atlas_size,
+                    glyph.w as f32 / atlas_size,
+                    glyph.h as f32 / atlas_size,
+                ],
+                tint: [fg[0], fg[1], fg[2], 255],
+                mode: match (glyph.mono, lift) {
+                    (false, _) => 0,
+                    (true, false) => 1,
+                    (true, true) => 2,
+                },
+            });
+        }
+        if face.underline {
+            // A rule near the block bottom in the text colour, scaled with the glyph so
+            // it stays proportional.
+            let underline_y = ch_s - 2.0 * scale as f32;
+            for (left, block_w, _) in &clusters {
+                quads.push(RunQuad::Fill {
+                    x: *left,
+                    y: underline_y,
+                    w: *block_w,
+                    h: scale as f32,
+                    rgb: fg,
+                });
+            }
+        }
+        quads
+    }
+
     /// Expand `ops` into quads on `fb`, in order, on grid `g` — the CPU painter's
     /// `render_ops`, arm for arm. Recursion is the two region ops: a scroll region
     /// re-enters with its shift (and clips at the grid top, as the CPU path clips every
     /// shifted op there); a cell region re-enters with its own metrics, origin and clip
     /// band, restoring the renderer's metrics after.
     fn expand(&mut self, fb: &mut FrameBuilder, renderer: &mut Renderer, ops: &[Op], g: Grid) {
-        let atlas_size = ATLAS_SIZE as f32;
         let scale_factor = renderer.scale() as f32;
         for op in ops {
             match op {
@@ -1847,90 +2496,20 @@ impl GpuWindow {
                 // Text: the cell BACKGROUNDS as solid quads (a coloured Life cell is a
                 // space + `:bg`) — all of the op's cells first, so they form one solid
                 // batch — then a textured quad per non-space cluster out of the atlas,
-                // which together form one textured batch, then any underline.
+                // which together form one textured batch, then any underline. Shaped once
+                // and replayed while the run repeats (`draw_run`).
                 Op::Text { row, col, s, face } => {
-                    let (mut fg, mut bg) = (
-                        face.fg.unwrap_or(DEFAULT_FG),
-                        face.bg.unwrap_or(DEFAULT_BG_RGB),
-                    );
-                    // A face with no `:bg` is transparent: the glyph composites over
-                    // whatever is under it (an hl-line band), exactly like Emacs.
-                    let mut paint_bg = face.bg.is_some();
-                    if face.reverse {
-                        std::mem::swap(&mut fg, &mut bg);
-                        paint_bg = true;
-                    }
-                    let scale = face.scale.max(1) as usize;
-                    let ch_s = scale as f32 * g.ch;
                     let top = g.oy + *row as f32 * g.ch - g.scroll_dy;
-                    let mut clusters: Vec<(f32, f32, &str)> = Vec::new();
-                    let mut cx = *col as usize;
-                    for cluster in s.graphemes(true) {
-                        // A raw tab advances to the next SCREEN stop, background only.
-                        if cluster == "\t" {
-                            let cells = cluster_cells_at(cluster, cx, TAB_WIDTH);
-                            if paint_bg {
-                                fb.fill(
-                                    g.ox + cx as f32 * g.cw,
-                                    top,
-                                    cells as f32 * g.cw,
-                                    ch_s,
-                                    bg,
-                                );
-                            }
-                            cx += cells;
-                            continue;
-                        }
-                        let cells = cluster_cells(cluster);
-                        if cells == 0 {
-                            continue;
-                        }
-                        let block_w = (cells * scale) as f32 * g.cw;
-                        let left = g.ox + cx as f32 * g.cw;
-                        if paint_bg {
-                            fb.fill(left, top, block_w, ch_s, bg);
-                        }
-                        if cluster != " " {
-                            clusters.push((left, block_w, cluster));
-                        }
-                        cx += cells * scale;
-                    }
-                    for (left, _, cluster) in &clusters {
-                        let Some(glyph) = self.glyph_slot(
-                            renderer,
-                            cluster,
-                            face.family,
-                            face.bold,
-                            face.italic,
-                            face.scale,
-                        ) else {
-                            continue;
-                        };
-                        fb.textured(
-                            TexKey::Atlas(glyph.page),
-                            *left,
-                            top,
-                            glyph.w as f32,
-                            glyph.h as f32,
-                            [
-                                glyph.x as f32 / atlas_size,
-                                glyph.y as f32 / atlas_size,
-                                glyph.w as f32 / atlas_size,
-                                glyph.h as f32 / atlas_size,
-                            ],
-                            [fg[0], fg[1], fg[2], 255],
-                            glyph.mono,
-                            0.0,
-                        );
-                    }
-                    if face.underline {
-                        // A rule near the block bottom in the text colour, scaled with
-                        // the glyph so it stays proportional.
-                        let uy = top + ch_s - 2.0 * scale as f32;
-                        for (left, block_w, _) in &clusters {
-                            fb.fill(*left, uy, *block_w, scale as f32, fg);
-                        }
-                    }
+                    self.draw_run(
+                        fb,
+                        renderer,
+                        s,
+                        face,
+                        RunPlace::Cell { col: *col },
+                        g,
+                        g.ox,
+                        top,
+                    );
                 }
                 Op::Rect {
                     row,
@@ -1997,10 +2576,15 @@ impl GpuWindow {
                         );
                     }
                 }
-                Op::Cursor { row, col, style } => {
+                Op::Cursor {
+                    row,
+                    col,
+                    style,
+                    color,
+                } => {
                     let left = g.ox + *col as f32 * g.cw;
                     let top = g.oy + *row as f32 * g.ch - g.scroll_dy;
-                    for (x, y, w, h, rgba) in cursor_quads(left, top, g.cw, g.ch, *style) {
+                    for (x, y, w, h, rgba) in cursor_quads(left, top, g.cw, g.ch, *style, *color) {
                         fb.solid(x, y, w, h, rgba, 0.0, Edge::Plain);
                     }
                 }
@@ -2109,7 +2693,7 @@ impl GpuWindow {
                     rot,
                 } => {
                     if self.textures.contains_key(tex) {
-                        fb.textured(TexKey::User(*tex), *x, *y, *w, *h, *uv, *tint, false, *rot);
+                        fb.textured(TexKey::User(*tex), *x, *y, *w, *h, *uv, *tint, 0, *rot);
                     }
                 }
                 Op::Quad {
@@ -2131,75 +2715,12 @@ impl GpuWindow {
                     face,
                     align,
                 } => {
-                    let (mut fg, mut bg) = (
-                        face.fg.unwrap_or(DEFAULT_FG),
-                        face.bg.unwrap_or(DEFAULT_BG_RGB),
-                    );
-                    let mut paint_bg = face.bg.is_some();
-                    if face.reverse {
-                        std::mem::swap(&mut fg, &mut bg);
-                        paint_bg = true;
-                    }
-                    let scale = face.scale.max(1) as usize;
-                    let ch_s = scale as f32 * g.ch;
-                    let width = text_px_width(s, g.cw as usize, scale) as f32;
-                    let left0 = match align {
-                        Align::Left => *x,
-                        Align::Center => *x - width / 2.0,
-                        Align::Right => *x - width,
+                    let align = match align {
+                        Align::Left => 0,
+                        Align::Center => 1,
+                        Align::Right => 2,
                     };
-                    let top = *y;
-                    let mut clusters: Vec<(f32, f32, &str)> = Vec::new();
-                    let mut cx = 0.0f32;
-                    for cluster in s.graphemes(true) {
-                        let cells = cluster_cells(cluster);
-                        if cells == 0 {
-                            continue;
-                        }
-                        let block_w = (cells * scale) as f32 * g.cw;
-                        let left = left0 + cx;
-                        if paint_bg {
-                            fb.fill(left, top, block_w, ch_s, bg);
-                        }
-                        if cluster != " " {
-                            clusters.push((left, block_w, cluster));
-                        }
-                        cx += block_w;
-                    }
-                    for (left, _, cluster) in &clusters {
-                        let Some(glyph) = self.glyph_slot(
-                            renderer,
-                            cluster,
-                            face.family,
-                            face.bold,
-                            face.italic,
-                            face.scale,
-                        ) else {
-                            continue;
-                        };
-                        fb.textured(
-                            TexKey::Atlas(glyph.page),
-                            *left,
-                            top,
-                            glyph.w as f32,
-                            glyph.h as f32,
-                            [
-                                glyph.x as f32 / atlas_size,
-                                glyph.y as f32 / atlas_size,
-                                glyph.w as f32 / atlas_size,
-                                glyph.h as f32 / atlas_size,
-                            ],
-                            [fg[0], fg[1], fg[2], 255],
-                            glyph.mono,
-                            0.0,
-                        );
-                    }
-                    if face.underline {
-                        let uy = top + ch_s - 2.0 * scale as f32;
-                        for (left, block_w, _) in &clusters {
-                            fb.fill(*left, uy, *block_w, scale as f32, fg);
-                        }
-                    }
+                    self.draw_run(fb, renderer, s, face, RunPlace::Pixel { align }, g, *x, *y);
                 }
             }
         }
@@ -2209,11 +2730,12 @@ impl GpuWindow {
     /// present. The cell pixel size and the grid origin come from the renderer — the
     /// same coordinate contract the CPU `paint` uses, so cell ops land on the same pixels
     /// whichever target paints them.
-    pub(crate) fn paint(&mut self, frame: &[Op], renderer: &mut Renderer) {
+    pub(crate) fn paint(&mut self, frame: &[Op], renderer: &mut Renderer) -> Option<PaintTimes> {
         // `BROOD_GUI_TRACE=1` (or a `BROOD_STALL_MS` threshold): the same per-paint line the
         // CPU painter prints, split into this target's phases. Without it the GPU path —
         // the default in a `--with-gui-gpu` build — could not be measured at all.
-        let trace = paint_stall_ms().map(|ms| (ms, std::time::Instant::now()));
+        let trace = paint_stall_ms();
+        let t0 = std::time::Instant::now();
         let (cw, ch) = (renderer.cell_w.max(1), renderer.cell_h.max(1));
         let size = self.window.inner_size();
         let (fw, fh) = (size.width.max(1), size.height.max(1));
@@ -2232,6 +2754,8 @@ impl GpuWindow {
             scroll_dy: 0.0,
         };
         self.expand(&mut fb, renderer, frame, grid);
+        let (run_hits, run_misses) = (self.runs.hits, self.runs.misses);
+        self.runs.end_frame();
         // The particles step once per paint, as the CPU painter's do; an emitter the frame
         // no longer carries still draws its last particles, at the end of the scene.
         let steps = renderer.emitters.step(frame);
@@ -2247,19 +2771,21 @@ impl GpuWindow {
             .splice(split - lingering.len()..split - lingering.len(), lingering);
         let t_expand = std::time::Instant::now();
 
-        self.queue
-            .write_buffer(&self.viewport_buffer, 0, as_bytes(&[fwf, fhf, 0.0, 0.0]));
-        self.solid_instances.upload(
+        self.queue.write_buffer(
+            &self.viewport_buffer,
+            0,
+            as_bytes(&[fwf, fhf, contrast_exponent(renderer.text_contrast()), 0.0]),
+        );
+        let uploaded = self.solid_instances.upload_changed(
             &self.device,
             &self.queue,
             "solid instances",
-            as_bytes(&fb.solids),
-        );
-        self.tex_instances.upload(
+            as_words(&fb.solids),
+        ) + self.tex_instances.upload_changed(
             &self.device,
             &self.queue,
             "textured instances",
-            as_bytes_u32(&fb.texs),
+            &fb.texs,
         );
         if !steps.is_empty() {
             let format = self.config.format;
@@ -2281,17 +2807,26 @@ impl GpuWindow {
                 // The swapchain went stale (a resize the OS has not told winit about yet,
                 // a display change): reconfigure and skip this frame; the next paint draws.
                 self.surface.configure(&self.device, &self.config);
-                return;
+                return None;
             }
             wgpu::CurrentSurfaceTexture::Timeout
             | wgpu::CurrentSurfaceTexture::Occluded
-            | wgpu::CurrentSurfaceTexture::Validation => return,
+            | wgpu::CurrentSurfaceTexture::Validation => return None,
         };
         // acquiring the next swapchain image is where a vsync'd present waits for the display
         let t_acquire = std::time::Instant::now();
         let view = frame_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        // The same image viewed as sRGB, for the geometry that blends in linear light.
+        let linear_view = self.linear_format.map(|format| {
+            frame_texture
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor {
+                    format: Some(format),
+                    ..Default::default()
+                })
+        });
         let bg = renderer.bg();
         let background = wgpu::Color {
             r: bg[0] as f64 / 255.0,
@@ -2315,13 +2850,16 @@ impl GpuWindow {
                 pass.dispatch_workgroups(emitter.capacity.div_ceil(64), 1, 1);
             }
         }
-        match self.effects.as_ref().and_then(|e| e.targets.as_ref()) {
+        let passes = match self.effects.as_ref().and_then(|e| e.targets.as_ref()) {
             Some(targets) if fx.any() => {
                 let effects = self.effects.as_ref().expect("targets are effects'");
                 // the scene, lit, then the overlay: all into the scene texture
+                // An effects frame blends in the encoded space throughout: its scene
+                // target is one format, and the passes over it are light, not text.
                 self.draw_pass(
                     &mut encoder,
                     &targets.scene,
+                    None,
                     Some(background),
                     &fb.batches[..split],
                 );
@@ -2344,7 +2882,13 @@ impl GpuWindow {
                     pass.set_bind_group(0, &targets.multiply, &[]);
                     pass.draw(0..3, 0..1);
                 }
-                self.draw_pass(&mut encoder, &targets.scene, None, &fb.batches[split..]);
+                self.draw_pass(
+                    &mut encoder,
+                    &targets.scene,
+                    None,
+                    None,
+                    &fb.batches[split..],
+                );
                 if fx.bloom.is_some() {
                     for (label, target, group, pipeline) in [
                         (
@@ -2377,9 +2921,17 @@ impl GpuWindow {
                 pass.set_pipeline(&effects.final_pipeline);
                 pass.set_bind_group(0, &targets.composite, &[]);
                 pass.draw(0..3, 0..1);
+                drop(pass);
+                1
             }
-            _ => self.draw_pass(&mut encoder, &view, Some(background), &fb.batches),
-        }
+            _ => self.draw_pass(
+                &mut encoder,
+                &view,
+                linear_view.as_ref(),
+                Some(background),
+                &fb.batches,
+            ),
+        };
         self.queue.submit(std::iter::once(encoder.finish()));
         let t_submit = std::time::Instant::now();
         if let Some(path) = dump_path() {
@@ -2394,78 +2946,120 @@ impl GpuWindow {
             );
         }
         self.queue.present(frame_texture);
-        if let Some((ms, t0)) = trace {
-            let el = t0.elapsed();
-            if el.as_millis() >= ms {
-                let us =
-                    |a: std::time::Instant, b: std::time::Instant| b.duration_since(a).as_micros();
-                eprintln!(
-                    "[gui-paint-gpu] {}us: fb={fw}x{fh} ops={} batches={} | expand={}us upload={}us \
-                     acquire={}us submit={}us present={}us",
-                    el.as_micros(),
-                    frame.len(),
-                    fb.batches.len(),
-                    us(t0, t_expand),
-                    us(t_expand, t_upload),
-                    us(t_upload, t_acquire),
-                    us(t_acquire, t_submit),
-                    t_submit.elapsed().as_micros(),
-                );
-            }
+        let t_present = std::time::Instant::now();
+        let micros =
+            |a: std::time::Instant, b: std::time::Instant| b.duration_since(a).as_micros() as u64;
+        let times = PaintTimes {
+            encode_us: micros(t0, t_expand),
+            upload_us: micros(t_expand, t_upload),
+            acquire_us: micros(t_upload, t_acquire),
+            submit_us: micros(t_acquire, t_submit),
+            present_us: micros(t_submit, t_present),
+        };
+        if let Some(ms) = trace
+            && t_present.duration_since(t0).as_millis() >= ms
+        {
+            // runs: text runs replayed / shaped; up: instance bytes written (a frame that
+            // changed one line writes that line's tail, not the page); passes: render
+            // passes (more than one only where translucent geometry and text interleave).
+            eprintln!(
+                "[gui-paint-gpu] {}us: fb={fw}x{fh} ops={} batches={} passes={passes} \
+                 runs={run_hits}/{} up={uploaded}B | encode={}us upload={}us acquire={}us \
+                 submit={}us present={}us",
+                micros(t0, t_present),
+                frame.len(),
+                fb.batches.len(),
+                run_hits + run_misses,
+                times.encode_us,
+                times.upload_us,
+                times.acquire_us,
+                times.submit_us,
+                times.present_us,
+            );
         }
+        Some(times)
     }
+}
+
+/// Where one GPU paint's time went, in microseconds —
+/// what the input-to-present trace splits a latency sample by (ADR-440). `encode` is the
+/// op walk (shaping the runs that changed), `upload` the instance writes, `acquire`
+/// waiting for a swapchain image (where a FIFO present blocks), `submit` recording and
+/// submitting the passes, `present` handing the image to the compositor.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PaintTimes {
+    pub(crate) encode_us: u64,
+    pub(crate) upload_us: u64,
+    pub(crate) acquire_us: u64,
+    pub(crate) submit_us: u64,
+    pub(crate) present_us: u64,
 }
 
 impl GpuWindow {
     /// Draw `batches` in order into `view` — cleared to `clear` first, or drawn over what
-    /// is there.
+    /// is there. With `linear_view` (the same image viewed as sRGB) the batches are drawn
+    /// as `segments`: translucent geometry through it, blended in linear light, the rest
+    /// through `view`. Returns how many render passes it took, for the trace.
     fn draw_pass(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
+        linear_view: Option<&wgpu::TextureView>,
         clear: Option<wgpu::Color>,
         batches: &[Batch],
-    ) {
-        let mut pass = render_pass(encoder, "frame", view, clear);
-        pass.set_bind_group(0, &self.viewport_bind_group, &[]);
-        for batch in batches {
-            match batch {
-                Batch::Solid { first, count } => {
-                    pass.set_pipeline(&self.solid_pipeline);
-                    pass.set_vertex_buffer(0, self.solid_instances.buffer.slice(..));
-                    pass.draw(0..4, *first..first + count);
+    ) -> usize {
+        let linear = linear_view.zip(self.solid_linear_pipeline.as_ref());
+        let plan = segments(batches, linear.is_some());
+        let mut clear = clear;
+        for (in_linear, range) in &plan {
+            let (target, solid_pipeline) = match linear {
+                Some((linear_view, linear_pipeline)) if *in_linear => {
+                    (linear_view, linear_pipeline)
                 }
-                Batch::Tex { key, first, count } => {
-                    let bind_group = match key {
-                        TexKey::Atlas(page) => self.atlas.get(*page).map(|p| &p.bind_group),
-                        TexKey::User(tex) => self.textures.get(tex).map(|t| &t.bind_group),
-                    };
-                    let Some(bind_group) = bind_group else {
-                        continue;
-                    };
-                    pass.set_pipeline(&self.tex_pipeline);
-                    pass.set_vertex_buffer(0, self.tex_instances.buffer.slice(..));
-                    pass.set_bind_group(1, bind_group, &[]);
-                    pass.draw(0..4, *first..first + count);
-                }
-                Batch::Particles { id } => {
-                    let Some(particles) = &self.particles else {
-                        continue;
-                    };
-                    let Some(emitter) = particles.emitters.get(id) else {
-                        continue;
-                    };
-                    pass.set_pipeline(if emitter.additive {
-                        &particles.add_pipeline
-                    } else {
-                        &particles.blend_pipeline
-                    });
-                    pass.set_vertex_buffer(0, emitter.particles.slice(..));
-                    pass.set_bind_group(1, &emitter.draw_group, &[]);
-                    pass.draw(0..4, 0..emitter.capacity);
+                _ => (view, &self.solid_pipeline),
+            };
+            let mut pass = render_pass(encoder, "frame", target, clear.take());
+            pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+            for batch in &batches[range.clone()] {
+                match batch {
+                    Batch::Solid { first, count, .. } => {
+                        pass.set_pipeline(solid_pipeline);
+                        pass.set_vertex_buffer(0, self.solid_instances.buffer.slice(..));
+                        pass.draw(0..4, *first..first + count);
+                    }
+                    Batch::Tex { key, first, count } => {
+                        let bind_group = match key {
+                            TexKey::Atlas(page) => self.atlas.get(*page).map(|p| &p.bind_group),
+                            TexKey::User(tex) => self.textures.get(tex).map(|t| &t.bind_group),
+                        };
+                        let Some(bind_group) = bind_group else {
+                            continue;
+                        };
+                        pass.set_pipeline(&self.tex_pipeline);
+                        pass.set_vertex_buffer(0, self.tex_instances.buffer.slice(..));
+                        pass.set_bind_group(1, bind_group, &[]);
+                        pass.draw(0..4, *first..first + count);
+                    }
+                    Batch::Particles { id } => {
+                        let Some(particles) = &self.particles else {
+                            continue;
+                        };
+                        let Some(emitter) = particles.emitters.get(id) else {
+                            continue;
+                        };
+                        pass.set_pipeline(if emitter.additive {
+                            &particles.add_pipeline
+                        } else {
+                            &particles.blend_pipeline
+                        });
+                        pass.set_vertex_buffer(0, emitter.particles.slice(..));
+                        pass.set_bind_group(1, &emitter.draw_group, &[]);
+                        pass.draw(0..4, 0..emitter.capacity);
+                    }
                 }
             }
         }
+        plan.len()
     }
 
     /// Ready the effect passes for a `w`×`h` frame: the pipelines and targets, the lights'
@@ -2557,9 +3151,22 @@ fn render_pass<'e>(
 }
 
 /// The atlas key of a cluster under a face at a font size: what it is drawn from depends
-/// on the cluster, the family, the weight/slant, the scale and the pixel size (a cell
-/// region rasterises at its own px) — not the colour, which is a per-instance tint.
-fn glyph_key(g: &str, family: Option<u32>, bold: bool, italic: bool, scale: u16, px: f32) -> u64 {
+/// on the cluster, the RESOLVED family (a face without one is drawn in the window's
+/// default, which `gui-font!` changes), the weight/slant, the scale, the pixel size (a
+/// cell region rasterises at its own px), the cell box the cluster is baked into (a
+/// line-height change resizes it at the same px) and the font registration it was baked
+/// under (a re-registered family keyword names other faces) — not the colour, a
+/// per-instance tint.
+fn glyph_key(
+    g: &str,
+    family: u32,
+    bold: bool,
+    italic: bool,
+    scale: u16,
+    px: f32,
+    cell: (usize, usize),
+    generation: u64,
+) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     g.hash(&mut h);
@@ -2568,6 +3175,8 @@ fn glyph_key(g: &str, family: Option<u32>, bold: bool, italic: bool, scale: u16,
     italic.hash(&mut h);
     scale.hash(&mut h);
     px.to_bits().hash(&mut h);
+    cell.hash(&mut h);
+    generation.hash(&mut h);
     h.finish()
 }
 
@@ -2580,6 +3189,22 @@ fn as_bytes(v: &[f32]) -> &[u8] {
 fn as_bytes_u32(v: &[u32]) -> &[u8] {
     // SAFETY: as `as_bytes`.
     unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v)) }
+}
+
+fn as_words(v: &[f32]) -> &[u32] {
+    // SAFETY: `f32` and `u32` have the same size and alignment, and every bit pattern is
+    // a valid `u32`; the slice covers exactly the floats' storage.
+    unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u32, v.len()) }
+}
+
+/// The shader's contrast exponent for a `gui-text-contrast!` γ: `1/γ`, the power the
+/// lifted coverage is raised to (`contrast_lut`'s curve, computed per fragment).
+fn contrast_exponent(gamma: f32) -> f32 {
+    if gamma.is_finite() {
+        1.0 / gamma.clamp(0.5, 3.0)
+    } else {
+        1.0
+    }
 }
 
 /// `BROOD_GUI_DUMP=<path.ppm>`: the GPU path's half of the CPU painter's dump flag
@@ -2743,45 +3368,15 @@ mod tests {
         fb.solid(0.0, 0.0, 10.0, 10.0, [255, 0, 0, 255], 0.0, Edge::Plain);
         fb.solid(20.0, 0.0, 10.0, 10.0, [255, 0, 0, 255], 0.0, Edge::Plain);
         let uv = [0.0, 0.0, 1.0, 1.0];
-        fb.textured(
-            TexKey::User(7),
-            0.0,
-            0.0,
-            8.0,
-            8.0,
-            uv,
-            [255; 4],
-            false,
-            0.0,
-        );
-        fb.textured(
-            TexKey::User(7),
-            8.0,
-            0.0,
-            8.0,
-            8.0,
-            uv,
-            [255; 4],
-            false,
-            0.0,
-        );
-        fb.textured(
-            TexKey::User(9),
-            16.0,
-            0.0,
-            8.0,
-            8.0,
-            uv,
-            [255; 4],
-            false,
-            0.0,
-        );
+        fb.textured(TexKey::User(7), 0.0, 0.0, 8.0, 8.0, uv, [255; 4], 0, 0.0);
+        fb.textured(TexKey::User(7), 8.0, 0.0, 8.0, 8.0, uv, [255; 4], 0, 0.0);
+        fb.textured(TexKey::User(9), 16.0, 0.0, 8.0, 8.0, uv, [255; 4], 0, 0.0);
         fb.solid(40.0, 0.0, 10.0, 10.0, [0, 255, 0, 255], 0.0, Edge::Plain);
         let shape: Vec<(bool, u32, u32)> = fb
             .batches
             .iter()
             .map(|b| match b {
-                Batch::Solid { first, count } => (true, *first, *count),
+                Batch::Solid { first, count, .. } => (true, *first, *count),
                 Batch::Tex { first, count, .. } => (false, *first, *count),
                 Batch::Particles { .. } => unreachable!("no emitter in this frame"),
             })
@@ -2814,17 +3409,31 @@ mod tests {
     #[test]
     fn cursor_quads_follow_the_cpu_geometry() {
         // Block: the overlay plus four rim bars, 2 px thick for a 10 px cell.
-        let block = cursor_quads(100.0, 50.0, 10.0, 20.0, CursorStyle::Block);
+        let block = cursor_quads(100.0, 50.0, 10.0, 20.0, CursorStyle::Block, None);
         assert_eq!(block.len(), 5);
         assert_eq!(block[0], (100.0, 50.0, 10.0, 20.0, [255, 255, 255, 128]));
         assert_eq!(block[2].0, 108.0); // the right rim at cw - t
         // Bar: one caret on the left edge, at least 2 px.
-        let bar = cursor_quads(100.0, 50.0, 10.0, 20.0, CursorStyle::Bar);
+        let bar = cursor_quads(100.0, 50.0, 10.0, 20.0, CursorStyle::Bar, None);
         assert_eq!(bar.len(), 1);
         assert_eq!((bar[0].2, bar[0].3), (2.0, 20.0));
         // Underline: one rule along the cell bottom.
-        let under = cursor_quads(100.0, 50.0, 10.0, 20.0, CursorStyle::Underline);
+        let under = cursor_quads(100.0, 50.0, 10.0, 20.0, CursorStyle::Underline, None);
         assert_eq!(under[0].1, 68.0);
+        // Hollow: the rim alone, 1 px for a 10 px cell, in the op's colour.
+        let hollow = cursor_quads(
+            100.0,
+            50.0,
+            10.0,
+            20.0,
+            CursorStyle::Hollow,
+            Some([1, 2, 3]),
+        );
+        assert_eq!(hollow.len(), 4);
+        assert_eq!(hollow[0], (100.0, 50.0, 1.0, 20.0, [1, 2, 3, 255]));
+        // A coloured block washes the cell in that colour at half alpha.
+        let tinted = cursor_quads(100.0, 50.0, 10.0, 20.0, CursorStyle::Block, Some([9, 8, 7]));
+        assert_eq!(tinted[0].4, [9, 8, 7, 128]);
     }
 
     #[test]
@@ -2901,14 +3510,188 @@ mod tests {
     }
 
     #[test]
-    fn no_vsync_takes_immediate_then_mailbox_then_fifo_and_vsync_is_fifo() {
+    fn the_default_is_mailbox_no_vsync_may_tear_and_vsync_is_fifo() {
         use wgpu::PresentMode::{Fifo, Immediate, Mailbox};
-        assert_eq!(
-            pick_present_mode(&[Fifo, Mailbox, Immediate], false),
-            Immediate
+        let all = [Fifo, Mailbox, Immediate];
+        // the default never tears: mailbox, else fifo — never immediate
+        assert_eq!(pick_present_mode(&all, None), Mailbox);
+        assert_eq!(pick_present_mode(&[Fifo, Immediate], None), Fifo);
+        // `:vsync false` asks for the work-bound rate
+        assert_eq!(pick_present_mode(&all, Some(false)), Immediate);
+        assert_eq!(pick_present_mode(&[Fifo, Mailbox], Some(false)), Mailbox);
+        assert_eq!(pick_present_mode(&[Fifo], Some(false)), Fifo);
+        // `:vsync true` is fifo
+        assert_eq!(pick_present_mode(&all, Some(true)), Fifo);
+    }
+}
+
+#[cfg(test)]
+mod reuse_tests {
+    use super::*;
+
+    #[test]
+    fn an_unchanged_buffer_writes_nothing() {
+        let page: Vec<u32> = (0..1000).collect();
+        assert_eq!(changed_span(&page, &page), None);
+        // a shorter frame whose words all match needs no write either
+        assert_eq!(changed_span(&page, &page[..400]), None);
+    }
+
+    #[test]
+    fn one_changed_word_writes_one_word() {
+        let page: Vec<u32> = (0..1000).collect();
+        for at in [0, 63, 64, 500, 999] {
+            let mut next = page.clone();
+            next[at] = 7_000_000;
+            assert_eq!(changed_span(&page, &next), Some(at..at + 1), "at {at}");
+        }
+    }
+
+    #[test]
+    fn the_span_runs_from_the_first_to_the_last_difference() {
+        let page: Vec<u32> = (0..1000).collect();
+        let mut next = page.clone();
+        next[130] = 1;
+        next[700] = 1;
+        assert_eq!(changed_span(&page, &next), Some(130..701));
+    }
+
+    #[test]
+    fn a_longer_frame_writes_from_the_first_difference_to_its_end() {
+        let page: Vec<u32> = (0..100).collect();
+        let mut next = page.clone();
+        next.extend([1, 2, 3]);
+        assert_eq!(changed_span(&page, &next), Some(100..103));
+        next[10] = 0;
+        assert_eq!(changed_span(&page, &next), Some(10..103));
+        // into an empty buffer: everything
+        assert_eq!(changed_span(&[], &next), Some(0..103));
+    }
+
+    fn context(col: u16) -> RunContext {
+        RunContext {
+            place: RunPlace::Cell { col },
+            metrics: [8.0f32.to_bits(), 16.0f32.to_bits(), 13.0f32.to_bits(), 1],
+            ground: [0, 0, 0],
+            fonts: (0, false),
+        }
+    }
+
+    fn run(text: &str, context: RunContext) -> TextRun {
+        TextRun {
+            text: text.to_string(),
+            face: Face::default(),
+            context,
+            quads: vec![RunQuad::Fill {
+                x: 1.0,
+                y: 2.0,
+                w: 3.0,
+                h: 4.0,
+                rgb: [5, 6, 7],
+            }],
+        }
+    }
+
+    #[test]
+    fn a_run_shaped_last_frame_is_replayed_and_one_unused_for_a_frame_is_dropped() {
+        let mut cache = RunCache::default();
+        let face = Face::default();
+        let hash = run_hash("fn main", &face, &context(0));
+        assert!(cache.take(hash, "fn main", &face, &context(0)).is_none());
+        cache.put(hash, run("fn main", context(0)));
+        cache.end_frame();
+        // the next frame finds it (and keeps it for the one after) …
+        assert!(cache.take(hash, "fn main", &face, &context(0)).is_some());
+        cache.end_frame();
+        assert!(cache.take(hash, "fn main", &face, &context(0)).is_some());
+        // … a frame that does not draw it lets it go
+        cache.end_frame();
+        cache.end_frame();
+        assert!(cache.take(hash, "fn main", &face, &context(0)).is_none());
+    }
+
+    #[test]
+    fn a_run_is_found_only_under_everything_it_was_shaped_with() {
+        let mut cache = RunCache::default();
+        let face = Face::default();
+        let hash = run_hash("x\ty", &face, &context(0));
+        cache.put(hash, run("x\ty", context(0)));
+        // another column (a tab stop moves), another text, another face: a miss, even
+        // when handed the same hash — a collision is never a wrong picture
+        assert!(cache.take(hash, "x\ty", &face, &context(4)).is_none());
+        assert!(cache.take(hash, "x\tz", &face, &context(0)).is_none());
+        let bold = Face {
+            bold: true,
+            ..Face::default()
+        };
+        assert!(cache.take(hash, "x\ty", &bold, &context(0)).is_none());
+        assert!(cache.take(hash, "x\ty", &face, &context(0)).is_some());
+    }
+
+    #[test]
+    fn a_replayed_run_lands_at_its_anchor() {
+        let mut fb = FrameBuilder::new(800.0, 600.0);
+        let quads = run("a", context(0)).quads;
+        replay(&mut fb, &quads, 100.0, 200.0);
+        assert_eq!(&fb.solids[..4], &[101.0, 202.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn translucent_geometry_gets_a_linear_pass_and_opaque_fills_ride_along() {
+        let mut fb = FrameBuilder::new(800.0, 600.0);
+        fb.fill(0.0, 0.0, 10.0, 10.0, [1, 2, 3]);
+        fb.textured(
+            TexKey::Atlas(0),
+            0.0,
+            0.0,
+            8.0,
+            8.0,
+            [0.0; 4],
+            [255; 4],
+            1,
+            0.0,
         );
-        assert_eq!(pick_present_mode(&[Fifo, Mailbox], false), Mailbox);
-        assert_eq!(pick_present_mode(&[Fifo], false), Fifo);
-        assert_eq!(pick_present_mode(&[Fifo, Mailbox, Immediate], true), Fifo);
+        // the cursor wash: translucent, so its batch blends in linear light
+        fb.solid(0.0, 0.0, 10.0, 10.0, [255, 255, 255, 128], 0.0, Edge::Plain);
+        fb.textured(
+            TexKey::Atlas(0),
+            8.0,
+            0.0,
+            8.0,
+            8.0,
+            [0.0; 4],
+            [255; 4],
+            1,
+            0.0,
+        );
+        assert_eq!(
+            segments(&fb.batches, true),
+            vec![(false, 0..2), (true, 2..3), (false, 3..4)]
+        );
+        // without an sRGB view it is one pass, as before
+        assert_eq!(segments(&fb.batches, false), vec![(false, 0..4)]);
+        // a frame of opaque fills only: one pass, whatever is available
+        let mut plain = FrameBuilder::new(800.0, 600.0);
+        plain.fill(0.0, 0.0, 10.0, 10.0, [1, 2, 3]);
+        assert_eq!(segments(&plain.batches, true), vec![(false, 0..1)]);
+        assert_eq!(segments(&[], true), vec![(false, 0..0)]);
+    }
+
+    #[test]
+    fn the_srgb_view_is_the_formats_sibling_when_the_surface_allows_one() {
+        use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb, Rgba16Float};
+        assert_eq!(linear_view_format(Bgra8Unorm, true), Some(Bgra8UnormSrgb));
+        assert_eq!(linear_view_format(Bgra8Unorm, false), None);
+        // no sibling, or already sRGB: none
+        assert_eq!(linear_view_format(Rgba16Float, true), None);
+        assert_eq!(linear_view_format(Bgra8UnormSrgb, true), None);
+    }
+
+    #[test]
+    fn the_contrast_exponent_is_the_reciprocal_clamped_like_the_cpu_setting() {
+        assert_eq!(contrast_exponent(1.0), 1.0);
+        assert_eq!(contrast_exponent(2.0), 0.5);
+        assert_eq!(contrast_exponent(10.0), 1.0 / 3.0);
+        assert_eq!(contrast_exponent(f32::NAN), 1.0);
     }
 }

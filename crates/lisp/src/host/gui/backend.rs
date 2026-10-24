@@ -15,18 +15,24 @@ pub use render::TextAa;
 use render::*;
 // The GPU render target (`gpu.rs`) paints with the same text metric and hairline snap.
 #[cfg(feature = "gui-gpu")]
-pub(crate) use {paint::paint_stall_ms, paint::text_px_width, render::snap_hairline};
+pub(crate) use {
+    paint::paint_stall_ms, paint::text_px_width, render::cursor_rim, render::snap_hairline,
+    render::text_units, render::unit_cells,
+};
 
-use super::{CursorShape, Key, Mouse, MouseAction, MouseButton, Op, WindowSpec};
+use super::{
+    CursorShape, Key, KeyRepeat, LatencySample, Mouse, MouseAction, MouseButton, Op, WheelMode,
+    WindowSpec,
+};
 
 use crate::core::sync::lock;
 use crate::core::value;
 
-use crate::process::{Message, deliver};
+use crate::process::{Message, deliver, deliver_credited};
 
 use std::cell::RefCell;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use std::num::NonZeroU32;
 
@@ -96,7 +102,8 @@ fn shape_at(zones: &[Zone], x: isize, y: isize) -> Option<CursorShape> {
 }
 
 // Bundled monospace font, four styles (see assets/README.md) — the default
-// `:mono` family; a face's :bold/:italic pick the style. No system font discovery.
+// `:mono` family; a face's :bold/:italic pick the style. Installed fonts are found
+// by name only when asked for (`gui-font-register` with `:family-name`, ADR-442).
 const FONT_REGULAR: &[u8] = include_bytes!("../../../assets/DejaVuSansMono.ttf");
 
 const FONT_BOLD: &[u8] = include_bytes!("../../../assets/DejaVuSansMono-Bold.ttf");
@@ -106,13 +113,17 @@ const FONT_ITALIC: &[u8] = include_bytes!("../../../assets/DejaVuSansMono-Obliqu
 const FONT_BOLD_ITALIC: &[u8] = include_bytes!("../../../assets/DejaVuSansMono-BoldOblique.ttf");
 
 // Bundled color emoji font (CBDT), loaded only as a *fallback*: a cluster the mono
-// font can't cover (an emoji, a flag, a CJK char, …) is shaped + rasterised from
+// font can't cover (an emoji, a flag, …) is shaped + rasterised from
 // here by cosmic-text/swash, in color. Not a selectable `:family`. ~11 MB.
 const FONT_EMOJI: &[u8] = include_bytes!("../../../assets/NotoColorEmoji.ttf");
 
 // The family name fontdb assigns the bundled mono faces — what we pass as the
 // primary `Attrs` family; cosmic-text's fallback list then reaches the emoji font.
 const MONO_FAMILY: &str = "DejaVu Sans Mono";
+
+// The family name fontdb assigns the bundled emoji font — a bundled face a missing
+// glyph is looked for in before any system font (`FontShared::fallback_family`).
+const EMOJI_FAMILY: &str = "Noto Color Emoji";
 
 // The default font family keyword (`:mono`), and the default cell pixel size.
 const DEFAULT_FAMILY: &str = "mono";
@@ -192,6 +203,32 @@ const WHEEL_IMPULSE: f64 = 0.45;
 const WHEEL_STREAK_MS: u128 = 220;
 const WHEEL_STREAK_BOOST: f64 = 0.18;
 const WHEEL_STREAK_CAP: f64 = 2.2;
+/// Lines one wheel notch scrolls under `{:wheel :lines}` — the distance a glide covers
+/// too, so switching modes changes how a notch moves, not how far.
+const WHEEL_LINES: f64 = 3.0;
+/// How long a `{:wheel :lines}` scroll waits for the app to draw the last one before the
+/// backlog goes anyway — a raw loop that never draws must not lose its wheel.
+const WHEEL_HOLD: Duration = Duration::from_millis(100);
+
+/// Deliver a `{:wheel :lines}` window's wheel backlog as ONE scroll message, unless the
+/// last one is still undrawn (and younger than `WHEEL_HOLD`) — then it waits and keeps
+/// summing. True when nothing is left waiting.
+fn flush_wheel(w: &mut Win, now: Instant) -> bool {
+    if w.wheel_backlog == 0.0 {
+        return true;
+    }
+    let undrawn = w.scroll_pending
+        && w.wheel_sent
+            .is_some_and(|sent| now.duration_since(sent) < WHEEL_HOLD);
+    if undrawn {
+        return false;
+    }
+    deliver_scroll(w, w.wheel_backlog);
+    w.wheel_backlog = 0.0;
+    w.scroll_pending = true;
+    w.wheel_sent = Some(now);
+    true
+}
 
 // The rendering *mechanism's* fallback colours — used ONLY when Brood supplies
 // none: `Op::Clear` / the inset-margin fill when no `gui-bg!` is set, and a face
@@ -334,11 +371,22 @@ enum UserEvent {
     /// every renderer. Behind `gui-font-register`.
     RegisterFamily {
         name: u32,
-        regular: Vec<u8>,
-        bold: Vec<u8>,
-        italic: Vec<u8>,
-        bold_italic: Vec<u8>,
+        faces: Box<[Vec<u8>; 4]>,
+        paths: [String; 4],
     },
+    /// Register a font family (interned `name`) by an INSTALLED family name, found in
+    /// the system font database (scanned on first use) with each style picked by weight
+    /// and slant. Behind `gui-font-register` with `:family-name` (ADR-442).
+    RegisterInstalledFamily { name: u32, family_name: String },
+    /// Report where family `family` (`None` = the global default) got its faces, and
+    /// the fallback fonts loaded so far. Behind `gui-font-info`.
+    FontInfo {
+        family: Option<u32>,
+        reply: Sender<super::FontInfo>,
+    },
+    /// Shape runs of punctuation as one unit so a font's ligatures form — for every
+    /// open window and ones opened later. Behind `gui-ligatures!`. A pure repaint.
+    Ligatures { on: bool },
 }
 
 /// A freshly opened window's wiring, handed back to the Brood side: its id and
@@ -349,6 +397,7 @@ struct OpenReply {
     size: Arc<Mutex<(u16, u16)>>,
     size_px: Arc<Mutex<(u32, u32)>>,
     held_key: Arc<Mutex<Option<Key>>>,
+    latency: Arc<Mutex<VecDeque<LatencySample>>>,
 }
 
 /// What the Brood side keeps per open window (keyed by the id `open` returns) —
@@ -363,6 +412,9 @@ struct WinHandle {
     /// cleared on release / focus loss), so `gui-held-key` can be polled as the
     /// source of truth for a held key — immune to a missed key-up (ADR-086).
     held_key: Arc<Mutex<Option<Key>>>,
+    /// The last `LATENCY_SAMPLES` input-to-present samples, newest last, for
+    /// `gui-latency` (ADR-440).
+    latency: Arc<Mutex<VecDeque<LatencySample>>>,
 }
 
 /// The one GUI thread's event-loop proxy, started lazily on the first `open`.
@@ -583,6 +635,7 @@ pub fn open(subscriber: u64, spec: WindowSpec) -> Result<u64, String> {
                 size: Arc::new(Mutex::new(headless_cells(spec.size))),
                 size_px: Arc::new(Mutex::new(headless_px(spec.size))),
                 held_key: Arc::new(Mutex::new(None)),
+                latency: Arc::default(),
             },
         );
         return Ok(id);
@@ -604,6 +657,7 @@ pub fn open(subscriber: u64, spec: WindowSpec) -> Result<u64, String> {
         size,
         size_px,
         held_key,
+        latency,
     } = reply_rx
         .recv()
         .map_err(|_| "gui thread did not reply".to_string())??;
@@ -613,6 +667,7 @@ pub fn open(subscriber: u64, spec: WindowSpec) -> Result<u64, String> {
             size,
             size_px,
             held_key,
+            latency,
         },
     );
     Ok(id)
@@ -740,6 +795,15 @@ pub fn held_key(id: u64) -> Result<Option<Key>, String> {
     let h = w.get(&id).ok_or("gui window not open")?;
     let k = *lock(&h.held_key);
     Ok(k)
+}
+
+/// `(gui-latency id)` — window `id`'s recent input-to-present samples, oldest first
+/// (at most `LATENCY_SAMPLES`; empty headless, where nothing is painted). ADR-440.
+pub fn latency(id: u64) -> Result<Vec<LatencySample>, String> {
+    let w = lock(windows());
+    let h = w.get(&id).ok_or("gui window not open")?;
+    let samples = lock(&h.latency).iter().copied().collect();
+    Ok(samples)
 }
 
 /// `(gui-draw id ops)` — paint a frame to window `id`.
@@ -991,15 +1055,10 @@ pub fn size_px(id: u64) -> Result<(u32, u32), String> {
 }
 
 /// `(gui-font-register …)` — register a font family (interned `name`) from raw
-/// TTF bytes per style; the GUI thread parses + shares it so `:family` can pick
-/// it. Starts the GUI thread if needed (so a family can be registered up front).
-pub fn register_family(
-    name: u32,
-    regular: Vec<u8>,
-    bold: Vec<u8>,
-    italic: Vec<u8>,
-    bold_italic: Vec<u8>,
-) -> Result<(), String> {
+/// TTF bytes per style (regular, bold, italic, bold-italic), read from `paths`; the GUI
+/// thread parses + shares it so `:family` can pick it. Starts the GUI thread if needed
+/// (so a family can be registered up front).
+pub fn register_family(name: u32, faces: [Vec<u8>; 4], paths: [String; 4]) -> Result<(), String> {
     if headless() {
         return Ok(());
     }
@@ -1008,12 +1067,60 @@ pub fn register_family(
         .unwrap_or_else(PoisonError::into_inner)
         .send_event(UserEvent::RegisterFamily {
             name,
-            regular,
-            bold,
-            italic,
-            bold_italic,
+            faces: Box::new(faces),
+            paths,
         })
         .map_err(|_| "gui thread is gone".to_string())
+}
+
+/// `(gui-font-register name {:family-name "…"})` — register family `name` by an
+/// installed font's family name. Resolved on the GUI thread, which scans the system
+/// fonts the first time it is asked; `font_info` reports what it found. Starts the GUI
+/// thread if needed, like `register_family`.
+pub fn register_installed_family(name: u32, family_name: String) -> Result<(), String> {
+    if headless() {
+        return Ok(());
+    }
+    gui()?
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .send_event(UserEvent::RegisterInstalledFamily { name, family_name })
+        .map_err(|_| "gui thread is gone".to_string())
+}
+
+/// `(gui-font-info [family])` — where family `family` (`None` = the global default)
+/// got its faces, and the fallback fonts loaded so far. Answered on the GUI thread,
+/// after every registration sent before it (the proxy is FIFO). Headless there is no
+/// font engine, so this fails, as `cell_size` does.
+pub fn font_info(family: Option<u32>) -> Result<super::FontInfo, String> {
+    if headless() {
+        return Err("gui is headless — no font engine to ask".into());
+    }
+    let (reply_tx, reply_rx) = mpsc::channel();
+    gui()?
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .send_event(UserEvent::FontInfo {
+            family,
+            reply: reply_tx,
+        })
+        .map_err(|_| "gui thread is gone".to_string())?;
+    reply_rx
+        .recv()
+        .map_err(|_| "gui thread did not reply".to_string())
+}
+
+/// `(gui-ligatures! on)` — shape punctuation runs as one unit (programming ligatures)
+/// on every window + the default for ones opened later. No-op (silently) if the GUI
+/// thread never started.
+pub fn ligatures(on: bool) -> Result<(), String> {
+    if headless() {
+        return Ok(());
+    }
+    if let Ok(g) = gui() {
+        let _ = lock(g).send_event(UserEvent::Ligatures { on });
+    }
+    Ok(())
 }
 
 /// One open window's GUI-thread-side state.
@@ -1145,7 +1252,53 @@ struct Win {
     /// delivered while this is set, so the queue never grows beyond one pending event
     /// even when Brood's render pipeline is slower than the 12 ms tick rate.
     scroll_pending: bool,
+    /// Who repeats a held key (`WindowSpec::key_repeat`), and — under `KeyRepeat::Os` —
+    /// the gate that keeps at most one OS repeat undelivered (ADR-441).
+    key_repeat: KeyRepeat,
+    repeat_gate: Arc<RepeatGate>,
+    /// Whether an input method may compose in this window (`WindowSpec::ime`); whether
+    /// its composition is showing now (so an IME switched off clears it); whether one
+    /// was shown since the last commit (so the commit that ends it is `[:text …]` even
+    /// though winit clears the preedit just before); and the cursor rect last handed to
+    /// it for the candidate window, so it is only told when the cursor moves.
+    ime: bool,
+    preedit_shown: bool,
+    ime_composed: bool,
+    ime_area: Option<(isize, isize, usize, usize)>,
+    /// What a wheel notch does (`WindowSpec::wheel`). Under `WheelMode::Lines`, the lines
+    /// of notches that arrived while the last scroll message was not yet drawn, summed
+    /// into the next one, and when that last one went (a window that never draws is not
+    /// held up past `WHEEL_HOLD`).
+    wheel: WheelMode,
+    wheel_backlog: f64,
+    wheel_sent: Option<Instant>,
+    /// Whether the window has been made visible. It is built hidden and shown once its
+    /// first real frame (one the app drew) has been painted, or after `SHOW_TIMEOUT`
+    /// with whatever it has — so opening never flashes an empty background, and a
+    /// window whose app never draws still appears (ADR-440).
+    shown: bool,
+    /// Whether the app has drawn a frame yet. Until it has, a redraw paints nothing:
+    /// the only thing to paint would be the bare background.
+    drawn: bool,
+    /// When the window was built, for `SHOW_TIMEOUT`.
+    opened_at: Instant,
+    /// When the earliest input not yet answered by a frame arrived (a key press, a
+    /// button, a wheel step) — consumed by the next `UserEvent::Draw` (ADR-440).
+    input_at: Option<Instant>,
+    /// The input stamp the frame waiting to be painted answers, carried to the paint so
+    /// it can report input -> present.
+    draw_input: Option<Instant>,
+    /// The last `LATENCY_SAMPLES` input-to-present samples, shared with `gui-latency`.
+    latency: Arc<Mutex<VecDeque<LatencySample>>>,
 }
+
+/// How long a window waits, hidden, for its app's first frame before it is shown
+/// anyway (ADR-440). Long enough that a Brood app's first draw normally lands inside
+/// it; short enough that a slow one still gets a window promptly.
+const SHOW_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// How many input-to-present samples a window keeps for `gui-latency`.
+const LATENCY_SAMPLES: usize = 64;
 
 /// The global renderer settings a window opens with — each behind a `gui-*!`
 /// primitive whose `id`-less form sets the default for windows opened later as well
@@ -1167,6 +1320,8 @@ struct RenderDefaults {
     text_aa: TextAa,
     /// The text contrast exponent (1.0 = the plain linear-light blend).
     text_contrast: f32,
+    /// Whether punctuation runs are shaped together (programming ligatures).
+    ligatures: bool,
 }
 
 impl Default for RenderDefaults {
@@ -1179,6 +1334,7 @@ impl Default for RenderDefaults {
             line_height: LINE_HEIGHT,
             text_aa: TextAa::Auto,
             text_contrast: 1.0,
+            ligatures: false,
         }
     }
 }
@@ -1196,7 +1352,12 @@ fn build_window(
     let attributes = Window::default_attributes()
         .with_title(spec.title.unwrap_or_else(|| "Brood".to_string()))
         .with_decorations(spec.decorations)
-        .with_inner_size(LogicalSize::new(w, h));
+        .with_inner_size(LogicalSize::new(w, h))
+        // Hidden until its first real frame is painted (`Win::shown`), so the desktop
+        // never maps an empty window that a frame then replaces. Wayland ignores the
+        // flag, but maps a surface only at its first commit — which the paint gating
+        // in `RedrawRequested` makes the first real frame too.
+        .with_visible(false);
     // The desktop app id, on the platforms that have one. There is no protocol for
     // changing it afterwards, which is why it belongs to the build and not to a
     // `gui-*!` op. winit keeps ONE `platform_specific.name`, read by whichever
@@ -1221,6 +1382,10 @@ fn build_window(
         .create_window(attributes)
         .map_err(|e| format!("window: {e}"))?;
     let window = Rc::new(window);
+    // An input method composes in the window unless the app opted out (`{:ime false}`):
+    // winit allows none by default, which left dead keys, compose and every CJK input
+    // method unable to type here at all (ADR-441).
+    window.set_ime_allowed(spec.ime);
     // A `gui-gpu` build draws on the GPU unless BROOD_GUI_GPU=0; a GPU that cannot be
     // brought up (no adapter, no surface) is reported once and the window falls back to
     // the CPU painter rather than failing to open.
@@ -1248,6 +1413,7 @@ fn build_window(
     renderer.set_line_height(defaults.line_height);
     renderer.set_text_aa(defaults.text_aa);
     renderer.set_text_contrast(defaults.text_contrast);
+    renderer.set_ligatures(defaults.ligatures);
     let inner = window.inner_size();
     Ok(Win {
         window,
@@ -1267,6 +1433,12 @@ fn build_window(
         held: None,
         last_click: None,
         held_key: Arc::new(Mutex::new(None)),
+        shown: false,
+        drawn: false,
+        opened_at: Instant::now(),
+        input_at: None,
+        draw_input: None,
+        latency: Arc::default(),
         held_physical: None,
         zones: Vec::new(),
         shape: None,
@@ -1279,6 +1451,15 @@ fn build_window(
         particles_next: None,
         scroll_last_tick: Instant::now(),
         scroll_pending: false,
+        key_repeat: spec.key_repeat,
+        repeat_gate: Arc::new(RepeatGate::default()),
+        ime: spec.ime,
+        preedit_shown: false,
+        ime_composed: false,
+        ime_area: None,
+        wheel: spec.wheel,
+        wheel_backlog: 0.0,
+        wheel_sent: None,
     })
 }
 
@@ -1336,6 +1517,7 @@ impl GuiApp {
                     size: win.size.clone(),
                     size_px: win.size_px.clone(),
                     held_key: win.held_key.clone(),
+                    latency: win.latency.clone(),
                 }));
                 self.ids.insert(id, wid);
                 self.wins.insert(wid, win);
@@ -1521,12 +1703,23 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 if let Some(w) = self.ids.get(&id).and_then(|wid| self.wins.get_mut(wid)) {
                     // Brood finished rendering; the next momentum step may fire.
                     w.scroll_pending = false;
+                    // The first frame to arrive after an input is taken as the one that
+                    // answers it (ADR-440): the mailbox between hides which turn of the
+                    // app's loop the input caused, so this is the honest approximation.
+                    let input_at = w.input_at.take();
                     // A frame identical to the one on screen — a timer that fired and
                     // changed nothing, a model turn whose view is unchanged — costs no
                     // repaint at all. The op vocabulary is plain data, so equality is exact.
-                    if ops == w.frame {
+                    // A window still hidden paints it anyway: it is the app's first frame,
+                    // and the window waits for one to show itself.
+                    if ops == w.frame && w.shown {
                         return;
                     }
+                    // Two frames before one paint keep the EARLIER input's stamp: the
+                    // paint answers both.
+                    w.draw_input = w.draw_input.or(input_at);
+                    // Painting before this frame arrived would present the bare background.
+                    w.drawn = true;
                     // Sounds are ops of the frame: each `[:sound …]` plays once, here, as
                     // the frame arrives — not on repaints, and (by the equality above) not
                     // for a frame that repeats the last one verbatim.
@@ -1544,6 +1737,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     // zone to pixels with the metrics its own region is painted at.
                     w.zones = cursor_zones(&ops, &w.renderer);
                     w.frame = ops;
+                    update_ime_area(w);
                     w.window.request_redraw();
                 }
             }
@@ -1693,22 +1887,30 @@ impl ApplicationHandler<UserEvent> for GuiApp {
             // Register a font family from raw TTF bytes; parse here and share it
             // with every renderer. A bad font is dropped (the family stays
             // unregistered, so `:family` falls back to the default).
-            UserEvent::RegisterFamily {
-                name,
-                regular,
-                bold,
-                italic,
-                bold_italic,
-            } => {
+            UserEvent::RegisterFamily { name, faces, paths } => {
+                self.families.borrow_mut().register(name, *faces, paths);
+                fonts_changed(&mut self.wins);
+            }
+            // By installed name: resolved against the system font database (scanned on
+            // the first such call), the bundled mono standing in for a name not found.
+            UserEvent::RegisterInstalledFamily { name, family_name } => {
                 self.families
                     .borrow_mut()
-                    .register(name, regular, bold, italic, bold_italic);
-                // a re-registration replaces a family; clear caches keyed by the
-                // old glyphs, forget the retained frame (its ops are unchanged but
-                // their glyphs are not), and repaint.
+                    .register_installed(name, &family_name);
+                fonts_changed(&mut self.wins);
+            }
+            UserEvent::FontInfo { family, reply } => {
+                let family = family
+                    .or(self.defaults.family)
+                    .unwrap_or_else(|| value::intern(DEFAULT_FAMILY));
+                let mut info = self.families.borrow().info(family);
+                info.ligatures = self.defaults.ligatures;
+                let _ = reply.send(info);
+            }
+            UserEvent::Ligatures { on } => {
+                self.defaults.ligatures = on;
                 for w in self.wins.values_mut() {
-                    w.renderer.cache.clear();
-                    w.renderer.invalidate();
+                    w.renderer.set_ligatures(on);
                     w.window.request_redraw();
                 }
             }
@@ -1727,6 +1929,23 @@ impl ApplicationHandler<UserEvent> for GuiApp {
         let Some(w) = self.wins.get_mut(&window_id) else {
             return;
         };
+        // Stamp the input this event is (ADR-440): a key press, a button, a wheel step.
+        // The earliest unanswered one is kept; the next frame to arrive answers it. A
+        // press the arms below drop (an auto-repeat) is stamped too — the frame the
+        // app's own repeat draws answers it, which is what the user waits on.
+        if w.input_at.is_none()
+            && match &event {
+                WindowEvent::KeyboardInput {
+                    event: key_event,
+                    is_synthetic,
+                    ..
+                } => key_event.state == ElementState::Pressed && !is_synthetic,
+                WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => true,
+                _ => false,
+            }
+        {
+            w.input_at = Some(Instant::now());
+        }
         match event {
             // The window's close button → a dedicated `:close` message,
             // distinct from the Escape *key* (`:escape`): a frontend signal
@@ -1773,14 +1992,31 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // dropped too — they'd be phantom keystrokes. Relaying the flood was
                 // the original bug: it outran the mailbox drain, so a backlog kept
                 // "playing" after key-up (the cursor scrolling on past).
+                //
+                // Under `{:key-repeat :os}` (ADR-441) the repeat is not dropped but
+                // delivered as another press of the held key — through `RepeatGate`, so
+                // at most one is ever undelivered and a slow frame cannot rebuild that
+                // backlog. A keystroke that typed several characters (a compose
+                // sequence) is `[:text …]`, not a key, and is not tracked as held.
                 ElementState::Pressed if !is_synthetic => {
-                    if let Some(k) = translate_key(&ke, w.mods) {
+                    if let Some(text) = typed_text(&ke, w.mods) {
+                        if !ke.repeat || w.key_repeat == KeyRepeat::Os {
+                            deliver(w.subscriber, text_message(&text));
+                        }
+                    } else if let Some(k) = translate_key(&ke, w.mods) {
                         let mut hk = lock(&w.held_key);
                         if *hk != Some(k) {
                             *hk = Some(k);
                             drop(hk);
                             w.held_physical = Some(ke.physical_key);
                             deliver(w.subscriber, key_message(&k));
+                        } else {
+                            drop(hk);
+                            if w.key_repeat == KeyRepeat::Os
+                                && let Some(credit) = RepeatGate::charge(&w.repeat_gate)
+                            {
+                                deliver_credited(w.subscriber, key_message(&k), credit);
+                            }
                         }
                     }
                 }
@@ -1816,8 +2052,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
             // missing entirely — the release happens in another window. Deliver
             // `:blur` so the app can drop any held key and stop repeating; a
             // belt-and-suspenders backstop beside the synthetic releases above
-            // (ADR-086). Focus *gain* (`true`) needs no signal — the next real
-            // press resumes input.
+            // (ADR-086). Focus *gain* is `:focus-in`, below.
             WindowEvent::Focused(false) => {
                 // Drop the held key: we can't observe its release while unfocused,
                 // so `gui-held-key` must not keep reporting it (the poll-based stop)
@@ -1835,6 +2070,49 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     );
                 }
             }
+            // Focus GAIN, as `:focus-in` — the pair of `:blur` (ADR-441). What an app
+            // needs to repaint focus-dependent chrome (a hollow cursor turned solid), to
+            // re-check files changed while it was away, and to know the held-key state it
+            // dropped on `:blur` starts clean. Not `:focus`: that is `ui-run`'s
+            // raise-this-window control message, which the loop acts on itself.
+            WindowEvent::Focused(true) => {
+                deliver(w.subscriber, Message::Keyword(value::intern("focus-in")));
+            }
+            // The input method (ADR-441). A composition in progress is `[:preedit text
+            // range]` — shown at point by the app, not inserted — and an empty one clears
+            // it; a commit is `[:text …]`, or a plain key when the IME merely passed one
+            // character through (`commit_message`). A disabled IME drops whatever
+            // composition was showing, so the app is told to clear it.
+            WindowEvent::Ime(ime) => match ime {
+                winit::event::Ime::Enabled => {
+                    // The candidate window must be told where the caret is again.
+                    w.ime_area = None;
+                    update_ime_area(w);
+                }
+                winit::event::Ime::Preedit(text, cursor) => {
+                    if text.is_empty() && !w.preedit_shown {
+                        return;
+                    }
+                    w.preedit_shown = !text.is_empty();
+                    w.ime_composed |= w.preedit_shown;
+                    deliver(w.subscriber, preedit_message(&text, cursor));
+                }
+                winit::event::Ime::Commit(text) => {
+                    // winit sends the clearing preedit just before, so whether a
+                    // composition was shown is remembered here, not read from the flag.
+                    let after_preedit = std::mem::take(&mut w.ime_composed);
+                    w.preedit_shown = false;
+                    if let Some(message) = commit_message(&text, after_preedit) {
+                        deliver(w.subscriber, message);
+                    }
+                }
+                winit::event::Ime::Disabled => {
+                    if std::mem::take(&mut w.preedit_shown) {
+                        deliver(w.subscriber, preedit_message("", None));
+                    }
+                    w.ime_composed = false;
+                }
+            },
             WindowEvent::CursorLeft { .. } => {
                 // The pointer left the window. If a button was held, its release happens
                 // outside and we never see it — so the NEXT re-entry's motion would emit
@@ -1999,15 +2277,15 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // line units; PixelDelta (trackpad) is in physical pixels — normalised
                 // here to line units so Brood gets a consistent float in both cases.
                 //
-                // Momentum is only for PixelDelta (smooth trackpad). LineDelta (mouse
-                // wheel clicks) always delivers immediately and stops any running momentum.
+                // A wheel notch (LineDelta) scrolls its lines at once or glides, per the
+                // window's `WheelMode`; a trackpad (PixelDelta) tracks the finger and coasts.
                 // Momentum itself is driven by `about_to_wait` with `WaitUntil(12ms)` so
                 // it fires once per event-loop cycle after the queue is drained — no
                 // flooding, no background thread.
                 let ch = w.renderer.cell_h.max(1);
                 match delta {
                     MouseScrollDelta::LineDelta(_, y) => {
-                        // A wheel notch is an IMPULSE into the same kinetic scroll a
+                        // `{:wheel :glide}`: a notch is an IMPULSE into the kinetic scroll a
                         // trackpad flick runs, not a three-line jump: the glide reaches
                         // the notch's distance over ~half a second of fractional steps
                         // (`WHEEL_DECAY`), so the text moves rather than snaps. Notches in
@@ -2016,6 +2294,22 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                         // A notch against the running direction stops the glide first.
                         let dy = y as f64;
                         if dy == 0.0 {
+                            return;
+                        }
+                        // `{:wheel :lines}` (the default, ADR-441): the notch's whole
+                        // distance at once, as a terminal and Emacs scroll — no glide, no
+                        // streak. A notch the app has not drawn the last one of yet joins
+                        // the backlog (`flush_wheel`), so a spun wheel is one message per
+                        // frame carrying the sum, never a queue of them.
+                        if w.wheel == WheelMode::Lines {
+                            w.scroll_momentum_active = false;
+                            w.scroll_velocity = 0.0;
+                            if w.wheel_backlog * dy < 0.0 {
+                                w.wheel_backlog = 0.0;
+                            }
+                            w.wheel_backlog += dy * WHEEL_LINES;
+                            // what cannot go now, `about_to_wait` sends after the draw
+                            flush_wheel(w, Instant::now());
                             return;
                         }
                         let now = Instant::now();
@@ -2097,15 +2391,38 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // thread, outside the green-process scheduler — a slow frame (glyph
                 // rasterization, softbuffer present, vsync block) is invisible to the
                 // "quantum" guard, so it gets its own guard here.
+                // Nothing drawn yet and still hidden: painting now would present the bare
+                // background, the flash on open. `about_to_wait` shows the window after
+                // `SHOW_TIMEOUT` if the app never draws (ADR-440).
+                if !w.drawn && !w.shown {
+                    return;
+                }
                 let _sg = crate::core::heap::stall_guard("gui-paint");
-                match &mut w.backend {
+                let paint_start = Instant::now();
+                let split = match &mut w.backend {
                     Backend::Cpu { surface, .. } => {
-                        paint(surface, &w.window, &mut w.renderer, &w.frame)
+                        paint(surface, &w.window, &mut w.renderer, &w.frame);
+                        None
                     }
                     #[cfg(feature = "gui-gpu")]
-                    Backend::Gpu(gpu) => {
-                        gpu.paint(&w.frame, &mut w.renderer);
-                    }
+                    Backend::Gpu(gpu) => gpu.paint(&w.frame, &mut w.renderer).map(|times| {
+                        [
+                            times.encode_us,
+                            times.upload_us,
+                            times.acquire_us,
+                            times.submit_us,
+                            times.present_us,
+                        ]
+                    }),
+                };
+                let presented = Instant::now();
+                // The frame is on its way to the compositor: now the window may appear.
+                if !w.shown {
+                    w.shown = true;
+                    w.window.set_visible(true);
+                }
+                if let Some(input_at) = w.draw_input.take() {
+                    record_latency(w, input_at, paint_start, presented, split);
                 }
                 w.particles_next = w
                     .renderer
@@ -2132,6 +2449,18 @@ impl ApplicationHandler<UserEvent> for GuiApp {
         let now = Instant::now();
         let mut next_wakeup: Option<Instant> = None;
         for w in self.wins.values_mut() {
+            // A window whose app has not drawn within `SHOW_TIMEOUT` is shown anyway,
+            // painted with what it has: never an invisible window (ADR-440).
+            if !w.shown {
+                let due = w.opened_at + SHOW_TIMEOUT;
+                if now >= due {
+                    w.shown = true;
+                    w.window.set_visible(true);
+                    w.window.request_redraw();
+                } else {
+                    next_wakeup = Some(next_wakeup.map_or(due, |t| t.min(due)));
+                }
+            }
             if let Some(due) = w.particles_next {
                 if now >= due {
                     // the paint sets the next one while particles remain
@@ -2140,6 +2469,12 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 } else {
                     next_wakeup = Some(next_wakeup.map_or(due, |t| t.min(due)));
                 }
+            }
+            // A `{:wheel :lines}` backlog goes out once the app has drawn the last
+            // scroll (or `WHEEL_HOLD` has passed); until then, wake to check again.
+            if !flush_wheel(w, now) {
+                let due = w.wheel_sent.map_or(now, |sent| sent + WHEEL_HOLD);
+                next_wakeup = Some(next_wakeup.map_or(due, |t| t.min(due)));
             }
             if !w.scroll_momentum_active {
                 continue;
@@ -2224,6 +2559,17 @@ fn run_gui(ready: Sender<Result<EventLoopProxy<UserEvent>, String>>) {
     let _ = event_loop.run_app(&mut app);
 }
 
+/// A family was (re-)registered: every window drops the glyphs baked from the old
+/// faces, re-measures its cell (its own family may be the one that moved), tells its
+/// app the grid it now has, and repaints.
+fn fonts_changed(wins: &mut HashMap<WindowId, Win>) {
+    for w in wins.values_mut() {
+        w.renderer.fonts_changed();
+        publish_size(w);
+        w.window.request_redraw();
+    }
+}
+
 /// Retune one window's cell font (family and/or px), then recompute its grid,
 /// republish its size for `gui-size`, and request a repaint. Shared by the
 /// global-default and per-window arms of `UserEvent::Font`.
@@ -2236,6 +2582,83 @@ fn apply_font(w: &mut Win, family: Option<u32>, px: Option<f32>) {
     // break). The sub-cell remainder is re-placed at paint time (`grid_origin`).
     publish_size(w);
     w.window.request_redraw();
+}
+
+/// Tell the input method where the caret is, so its candidate window opens beside it
+/// rather than in a screen corner (ADR-441): the frame's `Op::Cursor` cell
+/// (`ime_cursor_area`), offset by the grid origin into window pixels. Only when it moved —
+/// a frame per keystroke must not cost an IME round trip each.
+fn update_ime_area(w: &mut Win) {
+    if !w.ime {
+        return;
+    }
+    let Some((x, y, width, height)) = ime_cursor_area(&w.frame, &w.renderer) else {
+        return;
+    };
+    let inner = w.window.inner_size();
+    let (origin_x, origin_y) = w
+        .renderer
+        .grid_origin(inner.width as usize, inner.height as usize);
+    let area = (
+        x.saturating_add(origin_x as isize),
+        y.saturating_add(origin_y as isize),
+        width,
+        height,
+    );
+    if w.ime_area == Some(area) {
+        return;
+    }
+    w.ime_area = Some(area);
+    w.window.set_ime_cursor_area(
+        PhysicalPosition::new(area.0.max(0) as i32, area.1.max(0) as i32),
+        winit::dpi::PhysicalSize::new(width as u32, height as u32),
+    );
+}
+
+/// Record one input-to-present sample (ADR-440): from `input_at` (the GUI thread
+/// received the input) to `presented` (the paint of the first frame that arrived after
+/// it returned from its present), with the paint's own share and, on the GPU target,
+/// its phases. Kept for `gui-latency`; printed under `BROOD_GUI_TRACE=1` (or a
+/// `BROOD_STALL_MS` threshold the sample exceeds).
+fn record_latency(
+    w: &Win,
+    input_at: Instant,
+    paint_start: Instant,
+    presented: Instant,
+    split: Option<[u64; 5]>,
+) {
+    let sample = LatencySample {
+        total_us: presented.duration_since(input_at).as_micros() as u64,
+        paint_us: presented.duration_since(paint_start).as_micros() as u64,
+        split,
+    };
+    if let Some(threshold_ms) = paint_stall_ms()
+        && u128::from(sample.total_us) >= threshold_ms * 1000
+    {
+        let ms = |us: u64| us as f64 / 1000.0;
+        let phases = match sample.split {
+            Some([encode, upload, acquire, submit, present]) => format!(
+                " | encode={:.2}ms upload={:.2}ms acquire={:.2}ms submit={:.2}ms present={:.2}ms",
+                ms(encode),
+                ms(upload),
+                ms(acquire),
+                ms(submit),
+                ms(present)
+            ),
+            None => String::new(),
+        };
+        eprintln!(
+            "[gui-latency] input->present {:.2}ms (to paint {:.2}ms, paint {:.2}ms){phases}",
+            ms(sample.total_us),
+            ms(sample.total_us.saturating_sub(sample.paint_us)),
+            ms(sample.paint_us),
+        );
+    }
+    let mut samples = lock(&w.latency);
+    if samples.len() == LATENCY_SAMPLES {
+        samples.pop_front();
+    }
+    samples.push_back(sample);
 }
 
 /// Republish a window's size to the Brood side and wake its app loop with the

@@ -71,6 +71,31 @@ impl Default for Face {
     }
 }
 
+/// What `gui-font-info` reports about one font family: where its faces came from, so a
+/// user who asked for "JetBrains Mono" can see which file they got — or that they got
+/// the bundled DejaVu because nothing by that name is installed (ADR-442). Plain data,
+/// defined here rather than in the backend so the builtin compiles without the GUI.
+#[derive(Clone, Debug, Default)]
+pub struct FontInfo {
+    /// The family name shaping uses (`"DejaVu Sans Mono"` for the bundled `:mono`).
+    pub name: String,
+    /// The installed name a `:family-name` registration asked for, when it was one.
+    pub requested: Option<String>,
+    /// `"bundled"`, `"files"` (registered from paths), `"system"` (found by name) or
+    /// `"not-found"` (asked for by name, not installed: the bundled mono stands in).
+    pub origin: &'static str,
+    /// The file each style resolved to — regular, bold, italic, bold-italic. A bundled
+    /// face reads `"<bundled DejaVuSansMono.ttf>"`.
+    pub faces: [String; 4],
+    /// The system fonts loaded so far to draw glyphs the primary font lacks, as
+    /// `(family, file)`, in the order they were first needed.
+    pub fallbacks: Vec<(String, String)>,
+    /// Whether the system font database has been scanned yet (it is only on demand).
+    pub system_scanned: bool,
+    /// Whether runs of punctuation are shaped together (`gui-ligatures!`).
+    pub ligatures: bool,
+}
+
 /// What `gui-open` can decide about a window only while it is being *built* — as
 /// opposed to the `gui-*!` primitives, which mutate a window that already exists.
 /// One struct rather than a growing positional tail, since every one of these rides
@@ -104,11 +129,50 @@ pub struct WindowSpec {
     /// game drawing with the pixel-space ops (`:sprite`, `:px-rect`, `:line`) needs — a
     /// cell is the wrong grain for a sprite under the pointer.
     pub pixel_input: bool,
-    /// True to present in step with the monitor refresh (the `{:vsync true}` open
-    /// option). Only the GPU render target honours it: the CPU path presents
-    /// synchronously whatever this says. Off by default, as the GPU path always was —
-    /// a sim measuring its own frame rate wants the work-bound rate.
-    pub vsync: bool,
+    /// The `:vsync` open option, as asked: `Some(true)` presents in step with the
+    /// monitor refresh (FIFO); `Some(false)` asks for the work-bound rate, tearing
+    /// allowed (IMMEDIATE where the platform has it); `None`, the default, is the
+    /// low-latency choice that never tears (MAILBOX where available, else FIFO).
+    /// Only the GPU render target honours it: the CPU path presents synchronously
+    /// whatever this says (ADR-440).
+    pub vsync: Option<bool>,
+    /// Who repeats a held key (the `{:key-repeat …}` open option, ADR-441).
+    pub key_repeat: KeyRepeat,
+    /// True to let an input method compose text in this window (the `{:ime …}` open
+    /// option, on by default): its preedit arrives as `[:preedit text range]`, its
+    /// commits as `[:text text]`, and the candidate window is placed at the frame's
+    /// cursor. A game that reads raw keys can turn it off.
+    pub ime: bool,
+    /// What a mouse-wheel notch does (the `{:wheel …}` open option, ADR-441).
+    pub wheel: WheelMode,
+}
+
+/// Who repeats a held key in a GUI window (ADR-441).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum KeyRepeat {
+    /// The app does (`{:key-repeat :app}`, the default): the OS auto-repeat is dropped and
+    /// a held key is one press and one `[:key-up …]`, so the app paces its own repeat
+    /// from `gui-held-key` (ADR-086).
+    #[default]
+    App,
+    /// The OS does (`{:key-repeat :os}`): each auto-repeat is delivered as a press of the
+    /// held key, at the user's system delay and rate — but never more than ONE undelivered
+    /// repeat at a time, so a slow frame cannot queue a burst that plays on after release.
+    Os,
+}
+
+/// What one mouse-wheel notch does in a GUI window (ADR-441). A trackpad's pixel deltas
+/// and their momentum are the same under both.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum WheelMode {
+    /// The notch's whole distance (three lines) in one scroll message, now — what a
+    /// terminal and Emacs do (`{:wheel :lines}`, the default). Notches that arrive while
+    /// the app has not yet drawn the last one are summed into the next message.
+    #[default]
+    Lines,
+    /// The notch is an impulse into a short kinetic glide (`{:wheel :glide}`): the same
+    /// three lines over about half a second of fractional steps.
+    Glide,
 }
 
 impl Default for WindowSpec {
@@ -121,9 +185,29 @@ impl Default for WindowSpec {
             decorations: true,
             app_id: None,
             pixel_input: false,
-            vsync: false,
+            vsync: None,
+            key_repeat: KeyRepeat::App,
+            ime: true,
+            wheel: WheelMode::Lines,
         }
     }
+}
+
+/// One input-to-present measurement of a window (ADR-440, `gui-latency`): from the GUI
+/// thread receiving an input (a key press, a mouse button, a wheel step) to the paint
+/// of the first frame that ARRIVED after it returning from its present. Which frame
+/// answers which input cannot be known across the app's mailbox, so "the next frame
+/// drawn" is the approximation; a present returning is when the compositor has the
+/// frame, not when the panel lights it (add up to one refresh for that).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LatencySample {
+    /// input -> present, microseconds
+    pub total_us: u64,
+    /// the paint's share of it (op walk to present), microseconds
+    pub paint_us: u64,
+    /// the GPU paint's phases — encode, upload, acquire, submit, present — in
+    /// microseconds; `None` on the CPU painter
+    pub split: Option<[u64; 5]>,
 }
 
 /// The pointer shape a cursor zone requests — frontend-neutral (mapped to a winit
@@ -153,15 +237,18 @@ pub enum Align {
 /// How the text cursor is drawn at its cell. `Block` (the default) overlays the
 /// whole cell — the terminal-style caret; `Bar` is a thin vertical line on the
 /// cell's left edge (a modern GUI insertion caret); `Underline` a thin rule along
-/// the cell bottom. A `[:cursor row col]` op with no style is `Block`, so existing
-/// callers are unchanged. The terminal frontend maps these to crossterm's steady
-/// cursor styles.
+/// the cell bottom; `Hollow` an outline box around the cell — the cursor of a window
+/// that does not have focus, as Emacs and kitty draw it. A `[:cursor row col]` op with
+/// no style is `Block`, so existing callers are unchanged. The terminal frontend maps
+/// these to crossterm's steady cursor styles (`Hollow` to a block: a terminal has no
+/// outline cursor).
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum CursorStyle {
     #[default]
     Block,
     Bar,
     Underline,
+    Hollow,
 }
 
 /// One render op, parsed out of a frame vector into plain (Send) data so it can
@@ -183,6 +270,11 @@ pub enum Op {
         row: u16,
         col: u16,
         style: CursorStyle,
+        /// The caret's colour (the op's optional 5th element); `None` is the
+        /// painters' default — a near-white rim over a 50% white wash for a block,
+        /// `CURSOR_FG` for the thin shapes. A block with a colour washes the cell in
+        /// it at 50% and rims it solid; every other shape is drawn solid in it.
+        color: Option<[u8; 3]>,
     },
     /// Fill a `w`×`h` block of cells from `(row, col)` with `face`'s background — a
     /// solid panel (a popup card, a selection band, a gutter wash). Like a multi-row
@@ -502,31 +594,43 @@ pub enum Key {
     Named(&'static str),
 }
 
-/// The name of a named key under modifiers — ONE rule for both frontends, so a chord
-/// reads the same whether it arrived from winit or from crossterm: `[ctrl-meta-|ctrl-|
-/// alt-][shift-]<name>` — `:ctrl-left`, `:alt-shift-up`, `:ctrl-meta-delete`. Character
-/// chords already spell their modifiers this way (`:ctrl-x`, `:ctrl-meta-f`), and every
-/// named key carries all of its modifiers so chords like `C-<left>` can be bound. Tab
-/// keeps its own spelling (Shift+Tab is `:back-tab`) and Escape carries none.
+/// The modifiers a key name spells, frontend-neutral: each frontend reads its own event's
+/// modifier state into one of these and [`named_key`] spells it.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct KeyModifiers {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    /// The Super / Windows / Command key — Emacs's `s-`.
+    pub super_key: bool,
+}
+
+/// The name of a key under modifiers — ONE rule for both frontends, so a chord reads the
+/// same whether it arrived from winit or from crossterm:
+/// `[ctrl-meta-|ctrl-|alt-][shift-][super-]<name>` — `:ctrl-left`, `:alt-shift-up`,
+/// `:ctrl-meta-delete`, `:super-f5`, `:ctrl-shift-super-left`. The order is Emacs's own
+/// (`C-M-S-s-`), so a label is the prefixes translated one by one. Character chords
+/// already spell their modifiers this way (`:ctrl-x`, `:ctrl-meta-f`); a character chord
+/// that has Super (`:super-x`, `:ctrl-super-x`) goes through here too, with its Shift
+/// already folded into the glyph (`:super->`, not `:shift-super-.`). Tab keeps its own
+/// spelling (Shift+Tab is `:back-tab`) and Escape carries none.
 ///
-/// Returns a `&'static str` — the vocabulary is closed (a dozen keys × eight modifier
-/// sets), so each spelling is built once and kept for the process, which lets [`Key`]
-/// stay `Copy`.
-pub fn named_key(base: &'static str, ctrl: bool, alt: bool, shift: bool) -> &'static str {
+/// Returns a `&'static str` — the vocabulary is closed (the named keys and the printable
+/// characters × sixteen modifier sets), so each spelling is built once and kept for the
+/// process, which lets [`Key`] stay `Copy`.
+pub fn named_key(base: &str, modifiers: KeyModifiers) -> &'static str {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
-    if !(ctrl || alt || shift) {
-        return base;
-    }
     let name = format!(
-        "{}{}{}",
-        match (ctrl, alt) {
+        "{}{}{}{}",
+        match (modifiers.ctrl, modifiers.alt) {
             (true, true) => "ctrl-meta-",
             (true, false) => "ctrl-",
             (false, true) => "alt-",
             (false, false) => "",
         },
-        if shift { "shift-" } else { "" },
+        if modifiers.shift { "shift-" } else { "" },
+        if modifiers.super_key { "super-" } else { "" },
         base
     );
     static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
@@ -539,24 +643,76 @@ pub fn named_key(base: &'static str, ctrl: bool, alt: bool, shift: bool) -> &'st
     leaked
 }
 
+/// The name of function key F`number` — `"f1"` … `"f24"` — or `None` past F24. Both
+/// frontends name the function keys through here, so `<f5>` binds the same in each.
+pub fn function_key(number: u8) -> Option<&'static str> {
+    const NAMES: [&str; 24] = [
+        "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "f13", "f14",
+        "f15", "f16", "f17", "f18", "f19", "f20", "f21", "f22", "f23", "f24",
+    ];
+    NAMES.get(usize::from(number).checked_sub(1)?).copied()
+}
+
 #[cfg(test)]
 mod named_key_tests {
-    use super::named_key;
+    use super::{KeyModifiers, function_key, named_key};
+    fn mods(ctrl: bool, alt: bool, shift: bool, super_key: bool) -> KeyModifiers {
+        KeyModifiers {
+            ctrl,
+            alt,
+            shift,
+            super_key,
+        }
+    }
     #[test]
     fn spells_modifiers_the_way_character_chords_do() {
-        assert_eq!(named_key("left", false, false, false), "left");
-        assert_eq!(named_key("left", false, false, true), "shift-left");
-        assert_eq!(named_key("left", true, false, false), "ctrl-left");
-        assert_eq!(named_key("up", false, true, false), "alt-up");
-        assert_eq!(named_key("up", true, true, false), "ctrl-meta-up");
-        assert_eq!(named_key("right", true, false, true), "ctrl-shift-right");
-        assert_eq!(named_key("delete", false, true, true), "alt-shift-delete");
+        assert_eq!(named_key("left", mods(false, false, false, false)), "left");
+        assert_eq!(
+            named_key("left", mods(false, false, true, false)),
+            "shift-left"
+        );
+        assert_eq!(
+            named_key("left", mods(true, false, false, false)),
+            "ctrl-left"
+        );
+        assert_eq!(named_key("up", mods(false, true, false, false)), "alt-up");
+        assert_eq!(
+            named_key("up", mods(true, true, false, false)),
+            "ctrl-meta-up"
+        );
+        assert_eq!(
+            named_key("right", mods(true, false, true, false)),
+            "ctrl-shift-right"
+        );
+        assert_eq!(
+            named_key("delete", mods(false, true, true, false)),
+            "alt-shift-delete"
+        );
+    }
+    #[test]
+    fn super_comes_last_in_emacs_order() {
+        assert_eq!(named_key("x", mods(false, false, false, true)), "super-x");
+        assert_eq!(
+            named_key("f5", mods(true, false, false, true)),
+            "ctrl-super-f5"
+        );
+        assert_eq!(
+            named_key("left", mods(true, true, true, true)),
+            "ctrl-meta-shift-super-left"
+        );
     }
     #[test]
     fn the_same_chord_is_the_same_static_str() {
-        let a = named_key("home", true, false, true);
-        let b = named_key("home", true, false, true);
+        let a = named_key("home", mods(true, false, true, false));
+        let b = named_key("home", mods(true, false, true, false));
         assert!(std::ptr::eq(a, b));
+    }
+    #[test]
+    fn function_keys_run_f1_to_f24() {
+        assert_eq!(function_key(1), Some("f1"));
+        assert_eq!(function_key(24), Some("f24"));
+        assert_eq!(function_key(0), None);
+        assert_eq!(function_key(25), None);
     }
 }
 
@@ -639,16 +795,16 @@ pub(crate) mod gpu; // the wgpu render target behind `BROOD_GUI_GPU=1`
 
 #[cfg(not(feature = "gui"))]
 pub use disabled::{
-    TextAa, bg, cell_size, close, drag_move, drag_resize, draw, focus, font, fullscreen, grab,
-    held_key, host_main_thread, icon, input_mode, inset, line_height, maximize, minimize,
-    next_texture_id, open, register_family, size, size_px, sound, sound_free, text_aa,
-    text_contrast, texture, texture_free, title,
+    TextAa, bg, cell_size, close, drag_move, drag_resize, draw, focus, font, font_info, fullscreen,
+    grab, held_key, host_main_thread, icon, input_mode, inset, latency, ligatures, line_height,
+    maximize, minimize, next_texture_id, open, register_family, register_installed_family, size,
+    size_px, sound, sound_free, text_aa, text_contrast, texture, texture_free, title,
 };
 
 #[cfg(feature = "gui")]
 pub use backend::{
-    TextAa, bg, cell_size, close, drag_move, drag_resize, draw, focus, font, fullscreen, grab,
-    held_key, host_main_thread, icon, input_mode, inset, line_height, maximize, minimize,
-    next_texture_id, open, register_family, size, size_px, sound, sound_free, text_aa,
-    text_contrast, texture, texture_free, title,
+    TextAa, bg, cell_size, close, drag_move, drag_resize, draw, focus, font, font_info, fullscreen,
+    grab, held_key, host_main_thread, icon, input_mode, inset, latency, ligatures, line_height,
+    maximize, minimize, next_texture_id, open, register_family, register_installed_family, size,
+    size_px, sound, sound_free, text_aa, text_contrast, texture, texture_free, title,
 };

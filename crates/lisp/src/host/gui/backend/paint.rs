@@ -398,15 +398,18 @@ fn leaf_translates(
                 row: nr,
                 col: nc,
                 style: nst,
+                color: ncolor,
             },
             Op::Cursor {
                 row: or,
                 col: oc,
                 style: ost,
+                color: ocolor,
             },
         ) => {
             nc == oc
                 && nst == ost
+                && ncolor == ocolor
                 && oy as isize + *nr as isize * ch_i - new.dy
                     == oy as isize + *or as isize * ch_i - old.dy + delta
         }
@@ -532,12 +535,18 @@ fn blit_deltas(new: &Leaves, old: &Leaves, k: usize, oy: usize, ch: usize) -> Ve
                 ) => a == b && fa == fb && sa == sb,
                 (
                     Op::Cursor {
-                        col: a, style: sa, ..
+                        col: a,
+                        style: sa,
+                        color: ca,
+                        ..
                     },
                     Op::Cursor {
-                        col: b, style: sb, ..
+                        col: b,
+                        style: sb,
+                        color: cb,
+                        ..
                     },
-                ) => a == b && sa == sb,
+                ) => a == b && sa == sb && ca == cb,
                 (
                     Op::Rect {
                         col: a,
@@ -902,7 +911,9 @@ pub(super) fn render_ops(
                 let render_top = top_signed.max(oy as isize) as usize;
                 let mut cx = *col as usize;
                 let bg_packed = pack(bg);
-                for g in s.graphemes(true) {
+                // With `gui-ligatures!` on, a punctuation run is ONE unit — shaped together
+                // so the font's ligatures form, one canvas spanning its cells (ADR-442).
+                for g in text_units(s, r.ligatures()) {
                     // A raw tab — the frontend has no line column to measure from, so
                     // it advances to the next SCREEN stop, as a terminal would (an app
                     // that wants the line's stops expands first: `string/expand-tabs`).
@@ -916,7 +927,7 @@ pub(super) fn render_ops(
                         cx += cells;
                         continue;
                     }
-                    let cells = cluster_cells(g);
+                    let cells = unit_cells(g);
                     if cells == 0 {
                         // zero-width (a lone combining mark): nothing to advance.
                         continue;
@@ -1025,7 +1036,12 @@ pub(super) fn render_ops(
                     );
                 }
             }
-            Op::Cursor { row, col, style } => {
+            Op::Cursor {
+                row,
+                col,
+                style,
+                color,
+            } => {
                 // Compute the logical cell bounds in framebuffer pixels. `cell_top`
                 // may be < oy (partially scrolled off the viewport top) — clip the
                 // draw range to [oy, fb_h) rather than suppressing the cursor entirely,
@@ -1044,6 +1060,7 @@ pub(super) fn render_ops(
                         ch,
                         cell_top,
                         *style,
+                        *color,
                     );
                 }
             }
@@ -1769,6 +1786,7 @@ mod render_robustness {
                         row: 2,
                         col: 2,
                         style: CursorStyle::Block,
+                        color: None,
                     },
                     Op::Text {
                         row: 1,
@@ -1834,6 +1852,7 @@ mod render_robustness {
                 row: big,
                 col: big,
                 style: CursorStyle::Bar,
+                color: None,
             },
         ]);
     }
@@ -1935,6 +1954,7 @@ mod strip_diff_tests {
             row,
             col: 2,
             style: CursorStyle::Block,
+            color: None,
         }
     }
 

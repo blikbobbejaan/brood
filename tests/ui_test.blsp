@@ -200,9 +200,9 @@
               else m))
           (r-display me))
         :left)
-      ;; a, b, (bad throws — no render), b again (rolled back + re-rendered), c.
-      ;; the repeated :b proves the loop recovered to the last good frame.
-      (assert= (drain-saw []) (list :a :b :b :c))))
+      ;; a, b, (bad throws — no render; rolled back to b, which is already on screen, so
+      ;; nothing is redrawn — ADR-444), c: the loop recovered to the last good frame.
+      (assert= (drain-saw []) (list :a :b :c))))
 
   (test "a throwing update drops the bad input and keeps the current model"
     (let (me (self))
@@ -222,8 +222,8 @@
             (= input :quit) (assoc m :done true)
             else m))
         (r-display me))
-      ;; rendered n: 0, 1, 1 (boom dropped — model held at 1), 2.
-      (assert= (drain-saw []) (list 0 1 1 2))))
+      ;; rendered n: 0, 1 (boom dropped — model held at 1, already drawn, so no frame), 2.
+      (assert= (drain-saw []) (list 0 1 2))))
 
   (test "a throw on the FIRST render is fatal — re-raised, and :leave still runs"
     (let (me (self))
@@ -412,6 +412,38 @@
             else m))
         (ci-display me))
       (assert= (drain-saw []) (list 0 1 2))))) ; per-input frames: 0, 1, 2
+
+;; ADR-444: a turn whose model comes back `=` to the one on screen renders nothing.
+(describe "ui-run — a turn that changes nothing draws nothing"
+  (test "inputs that leave the model unchanged cost no view and no draw"
+    (let (me (self))
+      (send me [:input :inc])
+      (send me [:input :noop])
+      (send me [:input :noop])
+      (send me [:input :inc])
+      (send me [:input :quit])
+      (ui-run {:n 0}
+        (fn (m c r) (do (send me [:saw (get m :n)]) []))
+        (fn (m input c r)
+          (cond
+            (= input :inc) (assoc m :n (+ (get m :n) 1))
+            (= input :quit) (assoc m :done true)
+            else m))
+        (ci-display me))
+      (assert= (drain-saw []) (list 0 1 2))))
+  (test "an equal model rebuilt by update is still a no-op turn"
+    (let (me (self))
+      (send me [:input :rebuild])
+      (send me [:input :quit])
+      (ui-run {:n 0}
+        (fn (m c r) (do (send me [:saw (get m :n)]) []))
+        (fn (m input c r)
+          (cond
+            (= input :rebuild) {:n (get m :n)}
+            (= input :quit) (assoc m :done true)
+            else m))
+        (ci-display me))
+      (assert= (drain-saw []) (list 0)))))
 ;; ---- named timers (ADR-102) ------------------------------------------------
 ;; The firing logic is pure (deadline math over a clock map + the timer specs), so it
 ;; tests deterministically with hand-supplied `now`/`clock` — no wall-clock, no loop.

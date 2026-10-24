@@ -16,7 +16,8 @@
 ;;   [:text row col s]              draw string `s` at (row, col), 0-based cells
 ;;   [:text row col s face]         …styled by `face`, a map (see below)
 ;;   [:cursor row col]              place the text cursor (a block caret)
-;;   [:cursor row col style]        …shaped :block / :bar / :underline
+;;   [:cursor row col style]        …shaped :block / :bar / :underline / :hollow
+;;   [:cursor row col style colour] …in `colour` (a face colour; `style` may be nil)
 ;;   [:rect row col w h face]       fill a w×h cell block with `face`'s :bg colour
 ;;   [:rect row col w h face r]     …with corners rounded by `r` cells (GUI only)
 ;;   [:frect x y w h face op r]     sub-cell rounded rect (cell-unit floats); GUI-only
@@ -58,17 +59,24 @@ styled by `face` (a map like `{:fg :red :bold true}`).
     [:text row col s]
     [:text row col s face]))
 
-(defn cursor (row col &optional (style nil))
+(defn cursor (row col &optional (style nil) (color nil))
   "A render op placing the text cursor at (`row`, `col`). With `style` — `:bar`
 (a thin insertion caret on the cell's left edge), `:underline` (a rule along the
-cell bottom), or `:block` (the default full-cell caret) — the GUI frontend shapes
-the caret accordingly and the terminal maps it to its matching steady cursor. With
-no `style` it's `[:cursor row col]`, unchanged (a block caret).
+cell bottom), `:hollow` (an outline box around the cell, the cursor of a window
+without focus), or `:block` (the default full-cell caret) — the GUI frontend shapes
+the caret accordingly and the terminal maps it to its matching steady cursor
+(`:hollow` to a block). With `color` (a face colour: a palette keyword, `[r g b]` or
+`\"#rrggbb\"`) the GUI draws the caret in it — a block washes its cell in the colour
+at half strength and rims it solid, every other shape is solid; the terminal ignores
+it. With neither it's `[:cursor row col]`, unchanged (a block caret).
 
-    (editor/display/cursor 1 2)   → [:cursor 1 2]"
-  (if (nil? style)
-    [:cursor row col]
-    [:cursor row col style]))
+    (editor/display/cursor 1 2)   → [:cursor 1 2]
+    (editor/display/cursor 1 2 :hollow)   → [:cursor 1 2 :hollow]
+    (editor/display/cursor 1 2 nil :red)   → [:cursor 1 2 nil :red]"
+  (cond
+    (not (nil? color)) [:cursor row col style color]
+    (not (nil? style)) [:cursor row col style]
+    else [:cursor row col]))
 
 (defn cursor-zone (x y w h shape)
   "A render op marking a rectangular hot-zone (cells: `[x y]` origin, `w`×`h`) that

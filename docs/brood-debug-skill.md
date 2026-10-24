@@ -138,7 +138,9 @@ nest run --for 3s                # does it run + exit cleanly? (--for bounds it 
 If check/test/`--for` all pass but the live window misbehaves, it's
 interactivity, not a crash — go straight to the input path. `BROOD_UI_TRACE=1`
 prints each `ui-run` turn's view/draw/update timing; `BROOD_GUI_TRACE=1` the
-window's paint.
+window's paint (on the GPU target with `runs=` reused/total text runs and `up=` bytes
+written) and a `[gui-latency]` line per answered input: input → present, split into
+the wait for a paint and the paint (ADR-440; `gui/latency id` returns the samples).
 
 **You can't click in a headless/agent session — so drive input directly.** GUI
 input is delivered as ordinary **mailbox messages** to the process that called
