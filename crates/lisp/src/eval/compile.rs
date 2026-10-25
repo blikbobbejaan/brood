@@ -268,8 +268,8 @@ fn resolve_prim3(heap: &Heap, h: Symbol) -> Option<PrimOp3> {
     // The two map ops (ADR-368), by head — the 3-ary twins of `PrimOp::MapGet`'s `get`
     // rule: accepted only while the head still resolves to the PRELUDE closure, so a user
     // `(def get …)` cleanly disables the inline and the epoch guard re-validates on a
-    // redefinition. `get`'s 3-arity is `%map-get` then `%lookup-miss` on a nil, which
-    // `Heap::map_get3_inline` mirrors; `assoc`'s single-pair arm is `%map-assoc` for a map
+    // redefinition. `get`'s 3-arity is `%map-get` then, on a miss, `%lookup-miss` with the
+    // default as its fallback, which `Heap::map_get3_inline` mirrors; `assoc`'s single-pair arm is `%map-assoc` for a map
     // and `%vector-assoc` for a vector, and only the map half is inlined.
     if crate::core::value::symbol_is(h, "get") {
         // `BROOD_NO_MAPGET` opts out.
