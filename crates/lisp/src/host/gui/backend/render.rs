@@ -1527,18 +1527,15 @@ pub(super) fn composite_cluster_subpixel(
             if img.data.len() < (img.placement.width * img.placement.height * 4) as usize {
                 continue;
             }
-            // One pixel of margin each side: the LCD filter spreads an edge two
-            // subpixels outward, into the neighbouring pixel.
-            let (iw, ih) = (img.placement.width as i32 + 2, img.placement.height as i32);
+            let (iw, ih) = (img.placement.width as i32, img.placement.height as i32);
             let (ox, oy) = (
-                phys.x + img.placement.left + grid_shift(gl, grid) - 1,
+                phys.x + img.placement.left + grid_shift(gl, grid),
                 baseline + phys.y - img.placement.top,
             );
-            let filtered = lcd_filter(&img.data, iw - 2, ih, bgr);
             for ry in 0..ih {
                 for rx in 0..iw {
-                    let i = ((ry * iw + rx) * 3) as usize;
-                    let (r, g, b) = (filtered[i], filtered[i + 1], filtered[i + 2]);
+                    let i = ((ry * iw + rx) * 4) as usize;
+                    let (r, g, b) = (img.data[i], img.data[i + 1], img.data[i + 2]);
                     let a = r.max(g).max(b);
                     if a == 0 {
                         continue;
@@ -1560,47 +1557,6 @@ pub(super) fn composite_cluster_subpixel(
         }
     }
     drew
-}
-
-/// FreeType's default LCD filter (`FT_LCD_FILTER_DEFAULT`), the five-tap weights a subpixel
-/// sample's coverage is spread over its neighbours with, out of 256. Without it every edge
-/// carries a saturated colour fringe — orange on one side of a stem, blue on the other —
-/// which reads as blur, not sharpness.
-const LCD_FILTER: [u32; 5] = [8, 77, 86, 77, 8];
-
-/// `data` — an RGBA subpixel mask `width` × `height` from zeno, each pixel's three channels
-/// the coverage of its thirds — run through [`LCD_FILTER`] along each row of subpixels, as
-/// an RGB mask one pixel wider on each side. `bgr`: the panel's subpixels run blue-first,
-/// which is the order the samples sit in on screen.
-fn lcd_filter(data: &[u8], width: i32, height: i32, bgr: bool) -> Vec<u8> {
-    let order: [usize; 3] = if bgr { [2, 1, 0] } else { [0, 1, 2] };
-    let (width, height) = (width.max(0) as usize, height.max(0) as usize);
-    let samples = (width + 2) * 3;
-    let mut out = vec![0u8; samples * height];
-    let mut row = vec![0u32; samples];
-    for y in 0..height {
-        row.fill(0);
-        for x in 0..width {
-            for (third, channel) in order.iter().enumerate() {
-                row[(x + 1) * 3 + third] = data[(y * width + x) * 4 + channel] as u32;
-            }
-        }
-        for sample in 0..samples {
-            let spread: u32 = LCD_FILTER
-                .iter()
-                .enumerate()
-                .filter_map(|(tap, weight)| {
-                    (sample + tap)
-                        .checked_sub(2)
-                        .and_then(|from| row.get(from))
-                        .map(|value| value * weight)
-                })
-                .sum();
-            let (x, third) = (sample / 3, sample % 3);
-            out[(y * (width + 2) + x) * 3 + order[third]] = ((spread + 128) / 256).min(255) as u8;
-        }
-    }
-    out
 }
 
 pub(super) fn pack(rgb: [u8; 3]) -> u32 {
@@ -1936,24 +1892,6 @@ pub(crate) fn cursor_rim(w: usize, style: crate::host::gui::CursorStyle) -> usiz
 #[cfg(test)]
 mod text_aa_tests {
     use super::*;
-
-    /// The LCD filter keeps a solid interior solid, spreads a lone lit subpixel over its
-    /// neighbours by the FreeType weights (into the margin pixel too), and follows a BGR
-    /// panel's order.
-    #[test]
-    fn the_lcd_filter_softens_fringes_and_keeps_solid_coverage() {
-        let solid = [255u8, 255, 255, 255].repeat(3);
-        let out = lcd_filter(&solid, 3, 1, false);
-        assert_eq!(out.len(), 5 * 3);
-        assert_eq!(&out[6..9], &[255, 255, 255]); // the middle pixel, two samples in
-        assert!(out[0] == 0 && out[2] > 0); // the margin catches the spread edge
-        let lone = [255u8, 0, 0, 255];
-        let rgb = lcd_filter(&lone, 1, 1, false);
-        assert_eq!(&rgb[3..6], &[86, 77, 8]);
-        assert_eq!(&rgb[0..3], &[0, 8, 77]);
-        let bgr = lcd_filter(&[0u8, 0, 255, 255], 1, 1, true);
-        assert_eq!(&bgr[3..6], &[8, 77, 86]); // blue-first: the lit third is on the left
-    }
 
     /// A subpixel-rendered cluster carries three coverages per pixel that differ from
     /// one another somewhere along a stem's edge — the whole point of LCD text — and

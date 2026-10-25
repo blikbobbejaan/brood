@@ -1832,9 +1832,12 @@ impl GpuWindow {
         // A machine with no GPU still offers an adapter when Mesa is installed: llvmpipe or
         // lavapipe, the GPU emulated on the CPU. Drawing through it costs more than the CPU
         // painter, which knows what changed, so it counts as no GPU — the caller falls back
-        // with nothing to configure.
+        // with nothing to configure. `BROOD_GUI_GPU=1` still asks for it (the GPU-only
+        // effects, a `BROOD_GUI_DUMP` readback on a machine without a GPU).
         let info = adapter.get_info();
-        if info.device_type == wgpu::DeviceType::Cpu {
+        if info.device_type == wgpu::DeviceType::Cpu
+            && std::env::var("BROOD_GUI_GPU").as_deref() != Ok("1")
+        {
             return Err(format!("only a software adapter ({})", info.name));
         }
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
