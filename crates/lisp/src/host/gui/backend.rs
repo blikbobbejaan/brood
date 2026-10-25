@@ -2024,24 +2024,22 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 is_synthetic,
                 ..
             } => match ke.state {
-                // A fresh press goes through; an auto-repeat is dropped. We detect
-                // a repeat by TRANSITION, not winit's `ke.repeat` flag: on
+                // Every press goes through `press`, which tells a repeat from a fresh
+                // press by TRANSITION, not winit's `ke.repeat` flag: on
                 // GNOME/Wayland that flag is unreliable — held keys arrive as a
-                // flood of `repeat == false` presses (ADR-086) — so a press for the
-                // key already in `held_key` (no release has cleared it) is the
-                // repeat, and we drop it. A genuine re-press (double-tap) comes only
-                // after a release, which clears `held_key`, so it still registers.
-                // Synthetic presses (winit replaying held keys on focus *gain*) are
-                // dropped too — they'd be phantom keystrokes. Relaying the flood was
-                // the original bug: it outran the mailbox drain, so a backlog kept
-                // "playing" after key-up (the cursor scrolling on past).
+                // flood of `repeat == false` presses (ADR-086). A press for the
+                // key already held (no release between) is the repeat. A genuine
+                // re-press (double-tap) comes only after a release, so it still
+                // registers. Synthetic presses (winit replaying held keys on focus
+                // *gain*) are dropped — they'd be phantom keystrokes.
                 //
-                // Under `{:key-repeat :os}` (ADR-441) the repeat is not dropped but
-                // delivered as another press of the held key — through `RepeatGate`, so
-                // at most one is ever undelivered and a slow frame cannot rebuild that
-                // backlog. A keystroke that typed several characters (a compose
-                // sequence) is `[:text …]`, not a key: it is held physically, so its
-                // repeats are found the same way, and reported to `gui-held-key` as none.
+                // A repeat is dropped under `{:key-repeat :app}` (ADR-086: the app
+                // repeats from `gui-held-key`) and, under `:os` (ADR-441), delivered as
+                // another press through `RepeatGate`, so at most one is ever undelivered
+                // and a slow frame cannot build a backlog that plays on after key-up. A
+                // keystroke that typed several characters (a compose sequence) is
+                // `[:text …]`, not a key: it is held physically, so its repeats are
+                // found the same way, and reported to `gui-held-key` as none.
                 ElementState::Pressed if !is_synthetic => {
                     if let Some(text) = typed_text(&ke, w.mods) {
                         press(w, text_message(&text), None, ke.physical_key);
@@ -2064,12 +2062,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // while unfocused — exactly when we must stop).
                 ElementState::Released => {
                     if w.held_physical == Some(ke.physical_key) {
-                        let mut hk = lock(&w.held_key);
-                        let held = *hk;
-                        *hk = None;
-                        drop(hk);
-                        w.held_physical = None;
-                        if let Some(k) = held {
+                        if let Some(k) = let_go(w) {
                             deliver(w.subscriber, key_up_message(&k));
                         }
                     } else if let Some(k) = translate_key(&ke, w.mods) {
@@ -2086,8 +2079,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // Drop the held key: we can't observe its release while unfocused,
                 // so `gui-held-key` must not keep reporting it (the poll-based stop)
                 // and the `:blur` is the event-based stop. Both, belt-and-braces.
-                *lock(&w.held_key) = None;
-                w.held_physical = None;
+                let_go(w);
                 deliver(w.subscriber, Message::Keyword(value::intern("blur")));
                 // A composition does not survive the window losing focus on every
                 // platform's IME, and not every one says so: clear what the app shows.
@@ -2672,6 +2664,15 @@ fn press(w: &mut Win, message: Message, key: Option<Key>, physical: PhysicalKey)
     {
         deliver_credited(w.subscriber, message, credit);
     }
+}
+
+/// The held key was released, or the window lost focus with it down: nothing is held
+/// any more, and the repeat still queued for it is taken back (`RepeatGate::withdraw`).
+/// Returns the key that was held — `None` for typed text, or when nothing was.
+fn let_go(w: &mut Win) -> Option<Key> {
+    w.held_physical = None;
+    w.repeat_gate.withdraw();
+    lock(&w.held_key).take()
 }
 
 /// Where an input method's composition stands. `Ended` is the empty preedit winit sends
