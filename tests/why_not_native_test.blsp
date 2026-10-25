@@ -28,11 +28,15 @@
       (assert= nil (get (dev/jit-state counts 2) :reason))
       (assert= nil (dev/why-not-native counts 2))))
 
+  ;; Never called: the probe compiles the body without running it, so the arm reads
+  ;; `:untried` (or `:no-arm` where there is no arm to compile).
   (test "an arm never called at that arity says so"
-    (let (fresh (fn (a b c) (+ a b c)))
-      (is (string? (dev/why-not-native fresh 3)))
+    (let (fresh (fn (a b c) (+ a b c))
+          answer (dev/why-not-native fresh 3))
+      (is (string? answer))
       (when (%native-tier?)
-        (is (includes? (dev/why-not-native fresh 3) "never called with 3 arguments")))))
+        (is (or (includes? answer "not been called often enough")
+              (includes? answer "never called with 3 arguments"))))))
 
   (test "without a native tier the answer says so"
     (when (not (%native-tier?))

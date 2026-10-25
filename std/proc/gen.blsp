@@ -91,14 +91,18 @@ unique key, a map pid → value for a duplicate one — or nil. Internal, for `n
       (check-allow :discarded-catch
         (try (table/get entries key) (catch _ nil))))))
 
+;; A kernel name resolves to its pid here too: `monitor`, which `call` needs, takes a pid or
+;; a `{:name :node}` address but not a bare keyword, so `(call :logger …)` raised there.
 (defn- gen-target (pid)
-  (if (and (map? pid) (contains? pid :via))
-    (let (entry (%via-entry (get pid :via) (get pid :key)))
-      (cond
-        (nil? entry) nil
-        (vector? entry) (when (proc/alive? (first entry)) (first entry))
-        else (seq/find (keys entry) proc/alive?)))
-    pid))
+  (cond
+    (keyword? pid) (proc/whereis pid)
+    (and (map? pid) (contains? pid :via))
+      (let (entry (%via-entry (get pid :via) (get pid :key)))
+        (cond
+          (nil? entry) nil
+          (vector? entry) (when (proc/alive? (first entry)) (first entry))
+          else (seq/find (keys entry) proc/alive?)))
+    else pid))
 
 (defn- gen-send (pid message)
   (let (target (gen-target pid))
