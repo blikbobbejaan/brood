@@ -219,6 +219,13 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "Window id's recent input-to-present samples, oldest first (at most 64), each a map of milliseconds: :total — from the GUI thread receiving an input (a key press, a mouse button, a wheel step) to the paint of the first frame that arrived after it returning from its present — and :paint, that paint's share; a frame drawn by the GPU render target adds its phases :encode :upload :acquire :submit :present. Which frame answers an input cannot be known across the app's mailbox, so the next frame drawn is taken as the answer; a present returning means the compositor has the frame, not that the panel shows it (up to one refresh more). Empty headless. BROOD_GUI_TRACE=1 prints each sample as it is taken. ADR-440.",
         gui_latency);
     primitives.def(
+        "%gui-key-repeats",
+        Arity::exact(1),
+        Sig::new(vec![int], map_ty),
+        &["id"],
+        "How window id's held keys have repeated since it opened, as a map: :delivered, the OS repeats delivered to the app; :dropped, those dropped because one was still waiting (the app fell behind the repeat rate); and, from the last key that repeated, the desktop's :delay before its first repeat and the :interval between its last two, in milliseconds (nil before any key has repeated). Counts every repeat under {:key-repeat :os}; under :app nothing is delivered or dropped, the timings still kept. All zero headless. ADR-441.",
+        gui_key_repeats);
+    primitives.def(
         "%gui-settle",
         Arity::exact(1),
         Sig::new(vec![int], nil_ty),

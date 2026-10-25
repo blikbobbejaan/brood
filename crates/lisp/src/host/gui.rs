@@ -210,6 +210,21 @@ pub struct LatencySample {
     pub split: Option<[u64; 5]>,
 }
 
+/// How a window's held keys have repeated since it opened (`gui-key-repeats`, ADR-441):
+/// the OS repeats delivered to the app and those dropped because one was still waiting
+/// (the app fell behind the repeat rate), and, from the last key that repeated, the
+/// desktop's delay before its first repeat and the interval between its last two — so an
+/// app can compare how long it takes to answer one with how often they come.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RepeatCounts {
+    pub delivered: u64,
+    pub dropped: u64,
+    /// press -> first repeat, microseconds
+    pub delay_us: Option<u64>,
+    /// between the last two repeats, microseconds
+    pub interval_us: Option<u64>,
+}
+
 /// The names of `LatencySample::split`'s phases, in order.
 pub const PAINT_PHASES: [&str; 5] = ["encode", "upload", "acquire", "submit", "present"];
 
@@ -839,15 +854,17 @@ pub(crate) mod gpu; // the wgpu render target behind `BROOD_GUI_GPU=1`
 #[cfg(not(feature = "gui"))]
 pub use disabled::{
     TextAa, bg, cell_size, close, drag_move, drag_resize, draw, focus, font, font_info, fullscreen,
-    grab, held_key, host_main_thread, icon, input_mode, inset, latency, ligatures, line_height,
-    maximize, minimize, next_texture_id, open, register_family, register_installed_family, settle,
-    size, size_px, sound, sound_free, text_aa, text_contrast, texture, texture_free, title,
+    grab, held_key, host_main_thread, icon, input_mode, inset, key_repeats, latency, ligatures,
+    line_height, maximize, minimize, next_texture_id, open, register_family,
+    register_installed_family, settle, size, size_px, sound, sound_free, text_aa, text_contrast,
+    texture, texture_free, title,
 };
 
 #[cfg(feature = "gui")]
 pub use backend::{
     TextAa, bg, cell_size, close, drag_move, drag_resize, draw, focus, font, font_info, fullscreen,
-    grab, held_key, host_main_thread, icon, input_mode, inset, latency, ligatures, line_height,
-    maximize, minimize, next_texture_id, open, register_family, register_installed_family, settle,
-    size, size_px, sound, sound_free, text_aa, text_contrast, texture, texture_free, title,
+    grab, held_key, host_main_thread, icon, input_mode, inset, key_repeats, latency, ligatures,
+    line_height, maximize, minimize, next_texture_id, open, register_family,
+    register_installed_family, settle, size, size_px, sound, sound_free, text_aa, text_contrast,
+    texture, texture_free, title,
 };

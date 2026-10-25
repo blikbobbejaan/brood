@@ -921,6 +921,26 @@ pub(in crate::builtins) fn gui_latency(args: &[Value], _: EnvId, heap: &mut Heap
     Ok(heap.alloc_vector(maps))
 }
 
+/// `(gui-key-repeats id)` — how window `id`'s held keys have repeated since it opened:
+/// `{:delivered n :dropped n :delay ms :interval ms}`, `:delay` and `:interval` the
+/// desktop's as the last key that repeated showed them (nil before any has).
+pub(in crate::builtins) fn gui_key_repeats(
+    args: &[Value],
+    _: EnvId,
+    heap: &mut Heap,
+) -> LispResult {
+    let id = gui_window_id(heap, "%gui-key-repeats", arg(args, 0))?;
+    let repeats = crate::host::gui::key_repeats(id).map_err(LispError::runtime)?;
+    let ms = |us: Option<u64>| us.map_or(Value::nil(), |us| Value::float(us as f64 / 1000.0));
+    let count = |n: u64| Value::int(n as i64);
+    Ok(heap.map_from_pairs(vec![
+        (value::kw("delivered"), count(repeats.delivered)),
+        (value::kw("dropped"), count(repeats.dropped)),
+        (value::kw("delay"), ms(repeats.delay_us)),
+        (value::kw("interval"), ms(repeats.interval_us)),
+    ]))
+}
+
 /// `(%gui-texture id tex rgba w h)` — upload `rgba` (`w*h*4` bytes, row-major straight
 /// alpha, a bytes value or a vector of ints) as texture `tex` of window `id`. The handle
 /// is the CALLER's (Brood allocates it — `gui/texture` — so a sprite sheet's size can be

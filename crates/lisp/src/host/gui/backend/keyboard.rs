@@ -1,0 +1,359 @@
+//! A window's keyboard, apart from winit so its rules can be tested: which keystroke is
+//! held, what every key down delivered, and the gate on the OS repeat (ADR-086, ADR-441).
+//! The event loop hands it each press, release and focus loss and delivers what it answers.
+
+use super::*;
+
+/// What the Brood side reads of a window's keyboard — `gui-held-key` and
+/// `gui-key-repeats` — kept current by the GUI thread.
+#[derive(Default)]
+pub(super) struct KeyReport {
+    pub(super) held: Option<Keystroke>,
+    pub(super) repeats: RepeatCounts,
+}
+
+/// One press's message for the app: a fresh press, or an OS repeat carrying the gate's
+/// credit (`process::deliver_credited`), which the release can take back.
+pub(super) enum KeyMessage {
+    Press(Message),
+    Repeat(Message, crate::process::DeliveryCredit),
+}
+
+pub(super) struct Keyboard {
+    /// Who repeats a held key (`WindowSpec::key_repeat`).
+    repeat: KeyRepeat,
+    /// What the Brood side reads; `held` is the keystroke held down, set on a fresh press
+    /// and cleared on its release or focus loss. A press of the keystroke already held is
+    /// its repeat — told by transition, since winit's `ke.repeat` is unreliable on Wayland.
+    report: Arc<Mutex<KeyReport>>,
+    /// The PHYSICAL key of the held keystroke. A release is matched to it by physical key,
+    /// not logical: a shifted chord (`(` = Shift+9) whose Shift comes up first releases
+    /// as `9`, which would never clear a held `(` — the key stuck and the repeat running
+    /// away. The physical key is the same down and up whatever the modifiers.
+    held_physical: Option<PhysicalKey>,
+    /// Every key down, by physical key, with what its press delivered, so its release
+    /// names that press: `[:key-up "("]` though Shift came up first, `[:key-up [:text
+    /// "…"]]` for a compose sequence. All of it goes on focus loss, since a release in
+    /// another window is never seen.
+    down: Vec<(PhysicalKey, Keystroke)>,
+    /// At most one OS repeat undelivered, and that one taken back at the release.
+    gate: Arc<RepeatGate>,
+    /// When the held keystroke was pressed, and when it last repeated: the delay and
+    /// interval `RepeatCounts` reports.
+    pressed_at: Option<Instant>,
+    repeated_at: Option<Instant>,
+}
+
+impl Keyboard {
+    pub(super) fn new(repeat: KeyRepeat) -> Keyboard {
+        Keyboard {
+            repeat,
+            report: Arc::default(),
+            held_physical: None,
+            down: Vec::new(),
+            gate: Arc::default(),
+            pressed_at: None,
+            repeated_at: None,
+        }
+    }
+
+    /// The state the Brood side reads, shared with the window's handle.
+    pub(super) fn report(&self) -> Arc<Mutex<KeyReport>> {
+        self.report.clone()
+    }
+
+    /// One press of `stroke` from `physical` at `at`. A fresh press is always sent. A
+    /// repeat is dropped under `KeyRepeat::App`, where the app repeats from `gui-held-key`;
+    /// under `KeyRepeat::Os` it goes through the gate, so at most one is ever undelivered.
+    pub(super) fn press(
+        &mut self,
+        stroke: Keystroke,
+        physical: PhysicalKey,
+        at: Instant,
+    ) -> Option<KeyMessage> {
+        let message = keystroke_message(&stroke);
+        let mut report = lock(&self.report);
+        if self.held_physical != Some(physical) || report.held.as_ref() != Some(&stroke) {
+            self.down.retain(|(down, _)| *down != physical);
+            self.down.push((physical, stroke.clone()));
+            report.held = Some(stroke);
+            self.held_physical = Some(physical);
+            self.pressed_at = Some(at);
+            self.repeated_at = None;
+            return Some(KeyMessage::Press(message));
+        }
+        let micros = |since: Instant| at.saturating_duration_since(since).as_micros() as u64;
+        match self.repeated_at {
+            Some(last) => report.repeats.interval_us = Some(micros(last)),
+            None => report.repeats.delay_us = self.pressed_at.map(micros),
+        }
+        self.repeated_at = Some(at);
+        if self.repeat != KeyRepeat::Os {
+            return None;
+        }
+        match RepeatGate::charge(&self.gate) {
+            Some(credit) => {
+                report.repeats.delivered += 1;
+                Some(KeyMessage::Repeat(message, credit))
+            }
+            None => {
+                report.repeats.dropped += 1;
+                None
+            }
+        }
+    }
+
+    /// The release of `physical`, which reads as `translated` now: `[:key-up <what its
+    /// press delivered>]`, and for the held key, nothing held any more. A release with no
+    /// press seen here (a key pressed in another window) names its own key; a bare
+    /// modifier (`translated` none) names nothing.
+    pub(super) fn release(
+        &mut self,
+        physical: PhysicalKey,
+        translated: Option<Key>,
+    ) -> Option<Message> {
+        if self.held_physical == Some(physical) {
+            self.let_go();
+        }
+        let pressed = self
+            .down
+            .iter()
+            .position(|(down, _)| *down == physical)
+            .map(|at| self.down.swap_remove(at).1);
+        pressed
+            .or_else(|| translated.map(Keystroke::Key))
+            .map(|stroke| key_up_message(&stroke))
+    }
+
+    /// The window lost focus: a release there is never seen, so nothing is held or down.
+    pub(super) fn blur(&mut self) {
+        self.let_go();
+        self.down.clear();
+    }
+
+    /// Nothing is held any more, and the repeat still queued for it is taken back.
+    fn let_go(&mut self) {
+        self.held_physical = None;
+        self.gate.withdraw();
+        lock(&self.report).held = None;
+    }
+}
+
+/// The gate that keeps at most ONE OS auto-repeat undelivered per window
+/// (`{:key-repeat :os}`, ADR-441). A repeat is delivered with a credit charged here; the
+/// credit comes back when the message leaves the mailbox (`process::deliver_credited`),
+/// and until it does, further repeats are dropped. So an app whose frame is slower than
+/// the repeat rate repeats once per turn instead of queueing a burst that plays on after
+/// the key is released — the ADR-086 bug — while a fast app gets every repeat. The
+/// release takes back the one still queued (`withdraw`), so the screen stops with the
+/// key, not a frame after it.
+#[derive(Default)]
+pub(super) struct RepeatGate {
+    outstanding: AtomicBool,
+    withdrawn: AtomicBool,
+}
+
+impl RepeatGate {
+    /// A credit for one repeat, or `None` while the last one is still queued.
+    fn charge(gate: &Arc<RepeatGate>) -> Option<crate::process::DeliveryCredit> {
+        gate.outstanding
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        gate.withdrawn.store(false, Ordering::Release);
+        Some(crate::process::DeliveryCredit::new(gate.clone(), 1))
+    }
+
+    /// Take back the repeat still queued, if one is: the key was released, or the window
+    /// lost focus. Charging the next repeat clears it, so it only ever names the one in
+    /// flight (both run on the GUI thread).
+    fn withdraw(&self) {
+        self.withdrawn.store(true, Ordering::Release);
+    }
+}
+
+impl crate::process::CreditSource for RepeatGate {
+    fn release(&self, _cost: usize) {
+        self.outstanding.store(false, Ordering::Release);
+    }
+
+    fn withdrawn(&self) -> bool {
+        self.withdrawn.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::process::CreditSource;
+    use std::time::Duration;
+    use winit::keyboard::KeyCode;
+
+    fn physical(code: KeyCode) -> PhysicalKey {
+        PhysicalKey::Code(code)
+    }
+
+    fn char_key(c: char) -> Keystroke {
+        Keystroke::Key(Key::Char(c))
+    }
+
+    /// The payload of a `[:key-up …]` / `[:text …]` message, or the bare key string.
+    fn spelled(message: &Message) -> String {
+        match message {
+            Message::Str(s) => s.clone(),
+            Message::Keyword(k) => format!(":{}", value::symbol_name(*k)),
+            Message::Vector(parts) => parts.iter().map(spelled).collect::<Vec<_>>().join(" "),
+            _ => panic!("not a key message"),
+        }
+    }
+
+    fn sent(answer: Option<KeyMessage>) -> (&'static str, String) {
+        match answer {
+            Some(KeyMessage::Press(message)) => ("press", spelled(&message)),
+            Some(KeyMessage::Repeat(message, _)) => ("repeat", spelled(&message)),
+            None => ("nothing", String::new()),
+        }
+    }
+
+    fn held(keyboard: &Keyboard) -> Option<Keystroke> {
+        lock(&keyboard.report).held.clone()
+    }
+
+    #[test]
+    fn a_press_goes_and_its_repeats_wait_for_the_last_to_be_received() {
+        let mut keyboard = Keyboard::new(KeyRepeat::Os);
+        let start = Instant::now();
+        let a = physical(KeyCode::KeyA);
+        assert_eq!(
+            sent(keyboard.press(char_key('a'), a, start)),
+            ("press", "a".into())
+        );
+        assert!(held(&keyboard) == Some(char_key('a')));
+
+        let first = keyboard.press(char_key('a'), a, start + Duration::from_millis(500));
+        let Some(KeyMessage::Repeat(_, credit)) = first else {
+            panic!("the first repeat goes, with a credit")
+        };
+        assert_eq!(
+            sent(keyboard.press(char_key('a'), a, start + Duration::from_millis(533))),
+            ("nothing", String::new()),
+            "a second repeat is dropped while the first is still queued"
+        );
+        drop(credit); // the app received it
+        assert_eq!(
+            sent(keyboard.press(char_key('a'), a, start + Duration::from_millis(566))).0,
+            "repeat"
+        );
+
+        let repeats = lock(&keyboard.report).repeats;
+        assert_eq!((repeats.delivered, repeats.dropped), (2, 1));
+        assert_eq!(repeats.delay_us, Some(500_000), "press to first repeat");
+        assert_eq!(repeats.interval_us, Some(33_000), "between the last two");
+    }
+
+    #[test]
+    fn the_app_repeats_itself_under_key_repeat_app() {
+        let mut keyboard = Keyboard::new(KeyRepeat::App);
+        let start = Instant::now();
+        let a = physical(KeyCode::KeyA);
+        assert_eq!(sent(keyboard.press(char_key('a'), a, start)).0, "press");
+        assert_eq!(sent(keyboard.press(char_key('a'), a, start)).0, "nothing");
+        assert!(
+            held(&keyboard) == Some(char_key('a')),
+            "gui-held-key still says so"
+        );
+    }
+
+    #[test]
+    fn the_release_takes_back_the_queued_repeat_and_names_its_press() {
+        let mut keyboard = Keyboard::new(KeyRepeat::Os);
+        let start = Instant::now();
+        let a = physical(KeyCode::KeyA);
+        keyboard.press(char_key('a'), a, start);
+        let Some(KeyMessage::Repeat(_, credit)) = keyboard.press(char_key('a'), a, start) else {
+            panic!("a repeat")
+        };
+        let release = keyboard.release(a, Some(Key::Char('a'))).expect("a key-up");
+        assert_eq!(spelled(&release), ":key-up a");
+        assert!(keyboard.gate.withdrawn(), "the queued repeat is taken back");
+        assert!(held(&keyboard).is_none());
+        drop(credit);
+        // the next hold starts clean: its repeat is wanted
+        keyboard.press(char_key('a'), a, start);
+        assert!(matches!(
+            keyboard.press(char_key('a'), a, start),
+            Some(KeyMessage::Repeat(..))
+        ));
+        assert!(!keyboard.gate.withdrawn());
+    }
+
+    #[test]
+    fn a_shifted_chord_released_shift_first_names_its_press() {
+        let mut keyboard = Keyboard::new(KeyRepeat::Os);
+        let nine = physical(KeyCode::Digit9);
+        keyboard.press(char_key('('), nine, Instant::now());
+        // Shift came up first: the release reads as `9`
+        let release = keyboard
+            .release(nine, Some(Key::Char('9')))
+            .expect("a key-up");
+        assert_eq!(spelled(&release), ":key-up (");
+        assert!(held(&keyboard).is_none(), "and the held key is not stuck");
+    }
+
+    #[test]
+    fn overlapping_keys_each_release_as_pressed_and_only_the_last_is_held() {
+        let mut keyboard = Keyboard::new(KeyRepeat::Os);
+        let start = Instant::now();
+        let (nine, b) = (physical(KeyCode::Digit9), physical(KeyCode::KeyB));
+        keyboard.press(char_key('('), nine, start);
+        keyboard.press(char_key('b'), b, start);
+        assert!(held(&keyboard) == Some(char_key('b')));
+        let release = keyboard
+            .release(nine, Some(Key::Char('9')))
+            .expect("a key-up");
+        assert_eq!(
+            spelled(&release),
+            ":key-up (",
+            "not the held key, still its press"
+        );
+        assert!(
+            held(&keyboard) == Some(char_key('b')),
+            "b is still held: a release of another key does not end it"
+        );
+        let release = keyboard.release(b, Some(Key::Char('b'))).expect("a key-up");
+        assert_eq!(spelled(&release), ":key-up b");
+        assert!(held(&keyboard).is_none());
+    }
+
+    #[test]
+    fn a_compose_sequence_is_held_and_released_as_its_text() {
+        let mut keyboard = Keyboard::new(KeyRepeat::Os);
+        let e = physical(KeyCode::KeyE);
+        let text = Keystroke::Text("ǘ̃".into());
+        assert_eq!(
+            sent(keyboard.press(text.clone(), e, Instant::now())),
+            ("press", ":text ǘ̃".into())
+        );
+        assert!(held(&keyboard) == Some(text));
+        let release = keyboard.release(e, None).expect("a key-up");
+        assert_eq!(spelled(&release), ":key-up :text ǘ̃");
+    }
+
+    #[test]
+    fn focus_loss_lets_everything_go() {
+        let mut keyboard = Keyboard::new(KeyRepeat::Os);
+        let a = physical(KeyCode::KeyA);
+        keyboard.press(char_key('('), a, Instant::now());
+        keyboard.blur();
+        assert!(held(&keyboard).is_none());
+        assert!(keyboard.gate.withdrawn());
+        // a release seen after the blur names its own key: the press is forgotten
+        let release = keyboard.release(a, Some(Key::Char('a'))).expect("a key-up");
+        assert_eq!(spelled(&release), ":key-up a");
+        // a bare modifier names nothing
+        assert!(
+            keyboard
+                .release(physical(KeyCode::ShiftLeft), None)
+                .is_none()
+        );
+    }
+}

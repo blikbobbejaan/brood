@@ -76,6 +76,9 @@ pub fn cell_size(_id: u64, _px: Option<f32>) -> Result<(u16, u16), String> {
 pub fn held_key(_id: u64) -> Result<Option<super::Keystroke>, String> {
     Err(NOT_COMPILED.into())
 }
+pub fn key_repeats(_id: u64) -> Result<super::RepeatCounts, String> {
+    Err(NOT_COMPILED.into())
+}
 pub fn latency(_id: u64) -> Result<Vec<super::LatencySample>, String> {
     Err(NOT_COMPILED.into())
 }
