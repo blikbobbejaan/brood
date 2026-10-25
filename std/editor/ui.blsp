@@ -43,7 +43,14 @@ beat. The observer and the editor are both `ui-run` clients — see
 (defdyn *term-display*
   ;; the terminal (crossterm) frontend — always available, and single (one
   ;; terminal), so it's a fixed display map of the 0-arg `term-*` primitives.
-  {:enter term/enter :leave term/leave :size term/size :draw term/draw :poll term/poll})
+  ;; `:key-held?` is only ever true in a terminal speaking the kitty keyboard protocol,
+  ;; the one kind that reports a release (`term/held-key`).
+  {:enter term/enter
+   :leave term/leave
+   :size term/size
+   :draw term/draw
+   :poll term/poll
+   :key-held? (fn () (not (nil? (term/held-key))))})
 
 (defn- ui-coalesce-motion (msg)
   "Collapse a flood of pointer-motion events — a `:drag` or a `:move` — down to the
@@ -166,9 +173,9 @@ their input. Both are deferred trade-offs (ADR-059), fine for the observer.
 
 (defn display-key-held? (display)
   "Whether a key is down in `display` — its `:key-held?`, which a GUI window answers from
-the press and release it saw; false for a display that cannot tell. `ui-run` holds its idle
-timers while it is true, and a thin client (`editor/serve`) ships it with each key so a
-served app's loop does the same.
+the press and release it saw (the terminal too, when it speaks the kitty keyboard protocol);
+false for a display that cannot tell. `ui-run` holds its idle timers while it is true, and a
+thin client (`editor/serve`) ships it with each key so a served app's loop does the same.
 
     (editor/ui/display-key-held? {:key-held? (fn () true)})   → true
     (editor/ui/display-key-held? {})   → false"

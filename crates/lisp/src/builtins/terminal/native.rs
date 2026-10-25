@@ -6,6 +6,8 @@ use crate::builtins::args::{arg, expect_bigint, expect_int, expect_string};
 use crate::builtins::bytes::collect_bytes;
 use crate::builtins::io::capture_write;
 use crate::builtins::numeric::num_to_f64;
+
+mod keyboard;
 // The thin crossterm seam: enter/leave the alternate screen, read keys, and
 // paint a *frame* — a Brood vector of render ops. The protocol's meaning is
 // data (the ops); these primitives are the in-process frontend that interprets
@@ -36,6 +38,11 @@ pub(in crate::builtins) fn term_enter(_: &[Value], _: EnvId, _: &mut Heap) -> Li
         Hide
     )
     .map_err(term_err)?;
+    // The kitty keyboard protocol, when the terminal speaks it: repeats and releases are
+    // reported, so a held key stops with the hand (`keyboard`). Pushed on the alternate
+    // screen (each screen has its own flag stack), only here — the inline REPL seam keeps
+    // the legacy keyboard.
+    keyboard::enhance();
     Ok(Value::nil())
 }
 
@@ -45,6 +52,7 @@ pub(in crate::builtins) fn term_leave(_: &[Value], _: EnvId, _: &mut Heap) -> Li
     use crossterm::cursor::Show;
     use crossterm::event::DisableMouseCapture;
     use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
+    keyboard::restore();
     crossterm::execute!(
         std::io::stdout(),
         Show,
@@ -64,6 +72,8 @@ pub fn restore_terminal() {
     use crossterm::cursor::Show;
     use crossterm::event::DisableMouseCapture;
     use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
+    // before leaving the alternate screen, whose flag stack the push went on
+    keyboard::restore();
     let _ = crossterm::execute!(
         std::io::stdout(),
         Show,
@@ -118,24 +128,43 @@ pub(in crate::builtins) fn term_size(_: &[Value], _: EnvId, heap: &mut Heap) -> 
 }
 
 /// `(term-poll ms)` — wait up to `ms` ms for a key; return it (a 1-char string,
-/// or a keyword for specials) or `nil` on timeout. Always called with a finite
-/// `ms`: the observer is the root process, so blocking here blocks only the root
-/// thread (never a scheduler worker), but an *infinite* poll on a green process
+/// or a keyword for specials), a mouse event, `[:key-up press]` for a release (only
+/// under the kitty keyboard protocol, `keyboard`), or `nil` on timeout. A repeat
+/// already superseded in the buffered input is dropped there. Always called with a
+/// finite `ms`: the observer is the root process, so blocking here blocks only the
+/// root thread (never a scheduler worker), but an *infinite* poll on a green process
 /// would pin a worker (native blocking can't be preempted) — hence finite.
 pub(in crate::builtins) fn term_poll(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    use crossterm::event::{Event, KeyEventKind, poll, read};
     let ms = expect_int(heap, "%term-poll", arg(args, 0))?.max(0) as u64;
-    if poll(std::time::Duration::from_millis(ms)).map_err(term_err)? {
-        match read().map_err(term_err)? {
-            // Ignore key *release* events (reported on some platforms with the
-            // enhanced-keyboard protocol) so a keypress isn't seen twice.
-            Event::Key(k) if k.kind != KeyEventKind::Release => Ok(key_to_value(heap, k)),
-            Event::Mouse(m) => Ok(mouse_to_value(heap, m)),
-            _ => Ok(Value::nil()),
+    match keyboard::next(std::time::Duration::from_millis(ms)).map_err(term_err)? {
+        Some(keyboard::Polled::Key(keyboard::KeyDelivery::Press(event))) => {
+            Ok(key_to_value(heap, event))
         }
-    } else {
-        Ok(Value::nil())
+        Some(keyboard::Polled::Key(keyboard::KeyDelivery::Release(press))) => {
+            Ok(key_up_value(heap, press))
+        }
+        Some(keyboard::Polled::Mouse(mouse)) => Ok(mouse_to_value(heap, mouse)),
+        None => Ok(Value::nil()),
     }
+}
+
+/// A release as the app sees it: `[:key-up press]`, `press` what `press_event` spelled
+/// when it was delivered — nil for a key that spells nothing.
+fn key_up_value(heap: &mut Heap, press_event: crossterm::event::KeyEvent) -> Value {
+    match key_to_value(heap, press_event) {
+        Value::Nil => Value::nil(),
+        press => heap.alloc_vector2(value::kw("key-up"), press),
+    }
+}
+
+/// `(term-held-key)` — the key held in the terminal now, as its press delivered it, or nil.
+/// Only a terminal that speaks the kitty keyboard protocol reports a release, so in any
+/// other this is always nil (`keyboard`).
+pub(in crate::builtins) fn term_held_key(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    Ok(match keyboard::held() {
+        Some(press) => key_to_value(heap, press),
+        None => Value::nil(),
+    })
 }
 
 /// Encode a Brood mouse event as the vector `[:mouse action button row col mods]`
@@ -230,6 +259,9 @@ pub(in crate::builtins) fn key_to_value(heap: &mut Heap, k: crossterm::event::Ke
         // normalises that to ALT) or Super (reported only under the kitty keyboard
         // protocol) — spells exactly as the GUI's does: `crate::host::gui::character_chord`,
         // the one rule for both frontends (`:ctrl-x`, `:alt-X`, `:ctrl-meta-f`, `:super-x`).
+        // A capital is shifted: under the kitty protocol's alternate keys the terminal sends
+        // the shifted glyph and crossterm drops Shift (`X` for Alt+Shift+x), where a legacy
+        // Esc-prefixed `X` comes with Shift set — the same chord either way.
         KeyCode::Char(c) if ctrl || alt || k.modifiers.contains(KeyModifiers::SUPER) => {
             gui_key_to_value(
                 heap,
@@ -238,7 +270,7 @@ pub(in crate::builtins) fn key_to_value(heap: &mut Heap, k: crossterm::event::Ke
                     crate::host::gui::KeyModifiers {
                         ctrl,
                         alt,
-                        shift: k.modifiers.contains(KeyModifiers::SHIFT),
+                        shift: k.modifiers.contains(KeyModifiers::SHIFT) || c.is_uppercase(),
                         super_key: k.modifiers.contains(KeyModifiers::SUPER),
                     },
                 ),
@@ -2470,6 +2502,43 @@ mod key_to_value_tests {
             "ctrl-super-x"
         );
         assert_eq!(kw_of(KeyCode::F(3), KeyModifiers::SUPER), "super-f3");
+    }
+
+    // Under the kitty protocol's alternate keys a shifted chord arrives as its glyph with
+    // Shift dropped; it spells as the legacy Esc-prefixed chord, Shift set, does.
+    #[test]
+    fn an_alternate_key_chord_spells_as_the_legacy_one() {
+        assert_eq!(
+            kw_of(KeyCode::Char('X'), KeyModifiers::ALT),
+            kw_of(KeyCode::Char('X'), KeyModifiers::ALT | KeyModifiers::SHIFT)
+        );
+        assert_eq!(kw_of(KeyCode::Char('X'), KeyModifiers::ALT), "alt-X");
+        assert_eq!(kw_of(KeyCode::Char('<'), KeyModifiers::ALT), "alt-<");
+        assert_eq!(kw_of(KeyCode::Char('A'), KeyModifiers::CONTROL), "ctrl-a");
+    }
+
+    // A release is `[:key-up press]`, `press` what the press event spelled.
+    #[test]
+    fn a_key_up_is_its_press_spelled() {
+        let mut heap = Heap::new();
+        let release = super::key_up_value(
+            &mut heap,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+        );
+        let Value::Vector(id) = release else {
+            panic!("expected a [:key-up …] vector, got {release:?}");
+        };
+        let (Value::Keyword(head), Value::Keyword(press)) =
+            (heap.vector(id)[0], heap.vector(id)[1])
+        else {
+            panic!("expected [:key-up :ctrl-n]");
+        };
+        assert_eq!(value::symbol_name(head), "key-up");
+        assert_eq!(value::symbol_name(press), "ctrl-n");
+        assert!(matches!(
+            super::key_up_value(&mut heap, KeyEvent::new(KeyCode::Null, KeyModifiers::NONE)),
+            Value::Nil
+        ));
     }
 }
 

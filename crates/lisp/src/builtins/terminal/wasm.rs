@@ -31,6 +31,7 @@ wasm_unsupported_builtins!(
     term_leave,
     term_size,
     term_poll,
+    term_held_key,
     term_draw,
     term_raw_enter,
     term_raw_leave,

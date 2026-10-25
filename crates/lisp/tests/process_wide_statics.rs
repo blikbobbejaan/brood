@@ -120,6 +120,13 @@ const PROCESS_WIDE: &[(&str, &str, Reason)] = &[
     ("host/gui/backend.rs", "W", OneMachine),
     // The GUI thread's exit gate: one GUI thread per OS process, shut once at its exit.
     ("host/gui/backend.rs", "EXIT_GATE", OneMachine),
+    // The terminal keyboard: the kitty flags pushed, the input read ahead and the keys down.
+    // A process has one controlling terminal, whichever runtime polls it.
+    (
+        "builtins/terminal/native/keyboard.rs",
+        "TERMINAL_KEYBOARD",
+        OneMachine,
+    ),
     // The `brood-tab` page's display outbox: one page drains one wasm instance.
     ("host/tab.rs", "OUTBOX", OneMachine),
     // The prelude image a host hands over, taken by the one shared prelude boot (`SHARED`)
