@@ -3695,3 +3695,13 @@ order, which is a plain vector (the `[seen order]` pair and `start-each` are gon
 returns a vector. `defstatem`'s loop takes the next state straight from `receive`, without
 the `:stop`/`:stale` sentinels. `project-entry` resolves an entry point once for
 `project-entry-fn` and `check-boot`, replacing the near-copy `project-entry-application`.
+
+2026-10-25 (ADR-436, the two boot checks): `nest run --check-boot` starts and stops an
+application `:main`; a release's boot check resolves it and says `an application, not
+started`, because it runs on the build machine. That difference is now the rule, written in
+ADR-436 and in both checks: they resolve through one public `project-run/project-entry` and
+print through one `project-run/boot-ok-message`, so the start is the only step between them.
+New guards: `--check-boot` prints the starts and stops in dependency order and fails on a
+start that raises (`crates/nest/tests/boot_check_and_renames.rs`), and a bundle's boot check
+never starts the application the same binary starts when run
+(`crates/cli/tests/release_bundle.rs`). Not run on this machine.

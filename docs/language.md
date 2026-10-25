@@ -2595,7 +2595,9 @@ children — and is killed if it is still running after 5 s. If a root process
 exits by itself, the rest stop, and `run` returns for a `:normal` exit and
 raises with the reason otherwise. A start that raises stops what already
 started, in reverse, and re-raises. `nest run --check-boot` starts the
-application and stops it, running nothing else.
+application and stops it, running nothing else; the boot check `nest release`
+runs on the binary it built only resolves it, since that runs on the build
+machine, where a start would bind the application's ports.
 `application/start`, `application/stop`, `application/run` and
 `application/check` are the same steps by hand.
 

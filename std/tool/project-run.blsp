@@ -321,7 +321,13 @@ instead of printing and raising on failure. Backs the `nest mcp` `run-tests` too
 ;; real boot would, so "is the entry there, and is it callable?" must have one
 ;; implementation, not a copy per caller that can answer differently. `who` names
 ;; the caller in the error text.
-(defn- project-entry (who modname fname)
+(defn project-entry (who modname fname)
+  "The value the entry point `modname/fname` names (falling back to the bare `fname`): a
+function or an application (`defapp`). Raises the error a real boot would when it is
+missing or neither — `who` names the caller in its text. [[project-entry-fn]] turns it
+into the callable a boot runs.
+
+    (project-run/project-entry \"run\" 'myapp 'main)   ;=> myapp/main's value, or raises \"run: entry fn 'main' is not defined …\""
   (let (qual (symbol (str (->string modname) "/" (->string fname)))
         target (cond (bound? qual) qual (bound? fname) fname else nil))
     (when (nil? target)
@@ -340,6 +346,13 @@ or raise the error a real boot would — `who` names the caller in its text. An 
     (project-run/project-entry-fn \"run\" 'myapp 'main)   ;=> the callable myapp/main, or raises \"run: no entry point: …\""
   (let (entry (project-entry who modname fname))
     (if (application/app? entry) (fn (& _args) (application/run entry)) entry)))
+
+(defn boot-ok-message (modname fname loaded outcome)
+  "The line both boot checks print on success: the entry they resolved, what they loaded
+(`loaded`, e.g. `\"12 source files loaded\"`) and what they ran (`outcome`).
+
+    (project-run/boot-ok-message 'app 'main \"3 modules loaded\" \"nothing run\")   ;=> \"boot ok: app/main (3 modules loaded, nothing run)\""
+  (str "boot ok: " (->string modname) "/" (->string fname) " (" loaded ", " outcome ")"))
 
 ;; Why the entry point is missing, phrased as the thing the user can act on.
 ;; `require`'s own answer is `cannot find module 'main'` — a true fact about a
@@ -467,18 +480,13 @@ of those loads the entry point, which is where a stale dependency actually dies 
       (require-one modname)
       ;; An application's boot check also starts and stops it (ADR-436): its `:start`
       ;; is where a missing dependency or a bad child spec dies, and it runs nothing else.
-      (let (entry (project-entry "check-boot" modname fname)
-            application (when (application/app? entry) entry)
-            started (when application (application/check application)))
-        (io/puts (str "boot ok: "
-                   (->string modname)
-                   "/"
-                   (->string fname)
-                   " ("
-                   (count (project/source-files root))
-                   " source files loaded, "
-                   (if application
-                     (str "started and stopped " (string/join (map started ->string) ", "))
-                     "nothing run")
-                   ")")))
+      ;; A release's boot check does not (`check-bundle-boot` says why).
+      (let (entry (project-entry "check-boot" modname fname))
+        (io/puts (boot-ok-message modname
+                   fname
+                   (str (count (project/source-files root)) " source files loaded")
+                   (if (application/app? entry)
+                     (str "started and stopped "
+                       (string/join (map (application/check entry) ->string) ", "))
+                     "nothing run"))))
       0)))
