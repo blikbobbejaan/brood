@@ -300,6 +300,8 @@ pub(crate) fn jit_compile_now(heap: &Heap, arm: &Arc<CompiledArm>, base: usize) 
                 );
             }
         }
+        arm.compile_relocations
+            .store(heap.code_relocations(), Release);
         arm.compile_epoch.store(epoch, Release);
         arm.jit_code.store(ptr, Release);
         arm.shared_published
