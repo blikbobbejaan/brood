@@ -68,6 +68,24 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 
 (An open entry's `## KI-N` section goes here until it is resolved.)
 
+## KI-303 — a self-tail loop called non-tail from another loop never got hot (open)
+
+**Seen:** CI run 40232107201 (`6577bfaf`), `test` and the contracts-armed suite, every try.
+`tests/shared_vector_read_test.blsp` "the arms are native and stay native" settled
+`sv-row-sum` (a nine-iteration self-tail loop) through `(sv-rows-sum sv-rows 0 0)`, which
+calls it non-tail 150 times a batch, and read `:untried` after 40 rounds: 6 000 calls against
+`TIER_THRESHOLD` 128, so the calls were not counted at all, not merely slow to compile. The
+test now drives `sv-row-sum` by a tail call from the batch, as every other `settle` does, so
+the vector-read guard runs; the counting gap is what stays open. It is the predictability
+problem in its plainest form — a hot inner loop that stays interpreted because of how it is
+called — and `dev/why-not-native` would answer `:untried` for it.
+
+**Next step, on the test machine:** call `sv-row-sum` from `sv-rows-sum` as the test did and
+read `(%jit-arm-state sv-row-sum 4)`'s `:state` and `jit_calls` after each batch, at tier 1
+and tier 2. If the count never moves, find the call path from an interpreted (or native)
+caller's non-tail site that enters the callee's arm without `jit_tier`; if it moves and
+resets, find the reset.
+
 
 ## Index — status per issue
 
@@ -75,6 +93,7 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
+| KI-303 | **a self-tail loop called non-tail from another loop never got hot** — `shared_vector_read_test`'s `sv-row-sum` read `:untried` after 6 000 calls (threshold 128) | ⚠️ **OPEN 2026-10-25** — section above; the test drives the arm directly meanwhile |
 | KI-302 | **`startup` +3% from `7acef6e2` (`next-impl`)** — first blamed on a third registry write per `impl`; it was the prelude crossing a hash-table doubling in the image load's position table | ✅ **FIXED 2026-10-25** — the prelude image header carries the position count and the load reserves it once. Guard: `positioned_list_tests` (the count is what `from_message` stamps) |
 | KI-301 | **the JIT prepass counted a staged call (KI-19) as unstaged, so every arm with one before a branch join bailed** — `join-depth-mismatch`, e.g. `(if (and (< i n) (digit? (nth s i -1))) …)`; `json`'s number scanners and `object-acc` ran interpreted for good | ✅ **FIXED 2026-10-25** — the prepass and the checkpoint-depth model count the staged callee. Guard: `count_nth_inline_test` tier case (`:bailed` on the old binary under the bail trace) |
 | KI-300 | **a thin-wrapper callback did not tier within `settle`'s window** — `tests/jit_computed_call_test.blsp:77` got `:untried` for `(fn (a x) (+ a x))` in CI run 40133808011 (`bbb74f2b`); green in the run before | ✅ **FIXED 2026-10-25 — the test's ordering.** The interpreter redirects a thin wrapper to its inner head (ADR-069, `compile/dispatch.rs`), so `add`'s arm is counted only once the caller `fold-with` is native and calls it through the computed head. `settle` waited only on `add`'s queue, never on `fold-with`'s: with `fold-with`'s compile still queued on a loaded runner, all 500 rounds ran interpreted (~0.1 s) and `add` read `:untried`. Both thin-wrapper tests now settle `fold-with` first, as the by-name test already settled `sum-by-name`, and the two tests that `def` mid-test run `:isolated`, so their epoch bump cannot send a native `fold-with` back to the queue between settles. By construction (no primitive stalls the compiler thread to force the old order) |

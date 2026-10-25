@@ -52,7 +52,10 @@
 
   (test "the arms are native and stay native"
     (when (%native-tier?)
-      (let (st (settle sv-row-sum 4 (fn () (sv-rows-sum sv-rows 0 0)) 40))
+      ;; Driven by a tail call from the batch, as `settle` drives an arm elsewhere: called
+      ;; non-tail from `sv-rows-sum` it read `:untried` after 40 rounds (6 000 calls against a
+      ;; threshold of 128) on CI — KI-303.
+      (let (st (settle sv-row-sum 4 (fn () (sv-row-sum (nth sv-rows 5) 0 9 0)) 400))
         (assert= :native st)
         (assert= 0 (get (%jit-arm-state sv-row-sum 4) :deopts)))
       (let (st (settle sv-seconds 3 (fn () (sv-seconds sv-pairs 0 0)) 40))

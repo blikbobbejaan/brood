@@ -688,18 +688,21 @@ mod vecstore_layout_tests {
     /// `boxcar` does — far past the 300-entry startup probe, across a dozen buckets. A
     /// `boxcar` upgrade that changes its layout fails here and in `rt_vec_entry_stride`,
     /// which then keeps every RUNTIME read on the callback.
+    ///
+    /// The vector holds `VecStore`s and steps by the stride the startup check measured, as
+    /// native code does: a `boxcar` entry carries its own `active` flag beside the value, so
+    /// the step is not `size_of` the element — a `u64` vector stepping by 8 failed at index 1,
+    /// where the entry is 16 bytes on.
     #[test]
     fn the_shared_vector_location_is_where_boxcar_puts_it() {
-        assert!(
-            rt_vec_entry_stride().is_some(),
-            "the startup self-check must accept this build's boxcar"
-        );
+        let stride =
+            rt_vec_entry_stride().expect("the startup self-check must accept this build's boxcar");
         const N: usize = 100_000;
-        let v: boxcar::Vec<u64> = boxcar::Vec::new();
-        for i in 0..N {
-            v.push(i as u64);
+        let v: boxcar::Vec<VecStore> = boxcar::Vec::new();
+        for _ in 0..N {
+            v.push(VecStore::from_vec(Vec::new()));
         }
-        let addr = |i: usize| &v[i] as *const u64 as usize;
+        let addr = |i: usize| &v[i] as *const VecStore as usize;
         let mut first = [usize::MAX; RT_VEC_BUCKETS];
         for i in 0..N {
             let (b, off) = rt_vec_location(i);
@@ -709,7 +712,11 @@ mod vecstore_layout_tests {
         }
         for i in 0..N {
             let (b, off) = rt_vec_location(i);
-            assert_eq!(addr(i), addr(first[b]) + off * 8, "index {i} (bucket {b})");
+            assert_eq!(
+                addr(i),
+                addr(first[b]) + off * stride,
+                "index {i} (bucket {b})"
+            );
         }
         // The largest handle index lands in the last bucket the table has room for.
         assert_eq!(rt_vec_location(u32::MAX as usize).0, RT_VEC_BUCKETS - 1);
