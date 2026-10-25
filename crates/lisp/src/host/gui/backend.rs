@@ -1972,7 +1972,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     MouseScrollDelta::PixelDelta(position) => position.y != 0.0,
                 },
                 // an input method's commit is typing, whatever the keyboard did
-                WindowEvent::Ime(winit::event::Ime::Commit(_)) => true,
+                WindowEvent::Ime(winit::event::Ime::Commit(text)) => !text.is_empty(),
                 _ => false,
             }
         {
@@ -2444,15 +2444,21 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                         .map(|times| Some(times.phases())),
                 };
                 let presented = Instant::now();
-                if let Some(split) = painted {
-                    // The frame is on its way to the compositor: now the window may appear.
-                    if !w.shown {
-                        w.shown = true;
-                        w.window.set_visible(true);
+                // The app has drawn: the window may appear. Shown even when the GPU skipped
+                // this frame — a surface reports itself occluded while its window is hidden
+                // (Metal does), so waiting for a presented frame would wait out
+                // `SHOW_TIMEOUT` — and asked to paint again once visible.
+                if !w.shown {
+                    w.shown = true;
+                    w.window.set_visible(true);
+                    if painted.is_none() {
+                        w.window.request_redraw();
                     }
-                    if let Some(input_at) = w.draw_input.take() {
-                        record_latency(w, input_at, paint_start, presented, split);
-                    }
+                }
+                if let Some(split) = painted
+                    && let Some(input_at) = w.draw_input.take()
+                {
+                    record_latency(w, input_at, paint_start, presented, split);
                 }
                 w.particles_next = w
                     .renderer
