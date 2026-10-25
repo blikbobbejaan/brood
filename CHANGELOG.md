@@ -7,6 +7,10 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 ## Unreleased
 
 **Added.**
+- `tls/connect` (ADR-451): a TLS stream that stays open, with ALPN (`:alpn`, `tls/protocol`);
+  `tls/listen` takes the protocols a server speaks. `http/connection` + `http/request-on`:
+  HTTP/1.1 on one kept-alive socket per origin (chunked and `Content-Length` framing,
+  reconnect when the server closes); `http/read-response` frames a 1.1 response off a socket.
 - UDP sockets (ADR-449): `std/net/udp` — `open`, `send`, `recv`, `close`, `local-port`; each
   datagram arrives as `[:udp sock host port data]` on the TCP reactor, flow-controlled.
 - `std/tz`: named time zones from the system's zoneinfo (TZif, RFC 8536) and POSIX TZ rules —

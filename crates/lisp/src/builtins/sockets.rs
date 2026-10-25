@@ -52,6 +52,21 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["sock", "host", "port", "data"],
         "Send one datagram (data an iolist: a string, bytes or a nested tree) from sock to host:port, an IP address or localhost. Asynchronous: a datagram the network loses or refuses is simply gone. Returns nil.",
         udp_send);
+    // A persistent TLS client stream with ALPN (ADR-451): keep-alive HTTPS, h2, WebSockets.
+    primitives.def(
+        "%tls-connect",
+        Arity::exact(5),
+        Sig::variadic(any, socket_ty),
+        &["host", "port", "ca-pem", "alpn", "binary"],
+        "Start a TLS connection to host:port and return the socket at once. When the handshake completes the calling process gets [:tcp-connected sock]; then tcp-send, [:tcp sock data] and tcp-close work as on a plaintext stream. ca-pem (a PEM certificate, or nil for the Mozilla roots) is the trust anchor; alpn (a list of protocol names, or nil) is offered to the server, and tls-protocol reads its choice; a truthy binary delivers bytes. A failure before the handshake completes arrives as [:tcp-error sock msg] or [:tcp-closed sock]. Low-level — tls/connect waits for the outcome.",
+        tls_connect);
+    primitives.def(
+        "%tls-protocol",
+        Arity::exact(1),
+        Sig::new(vec![socket_ty], any),
+        &["sock"],
+        "The ALPN protocol a tls-connect stream negotiated (\"h2\", \"http/1.1\"), or nil: not connected yet, the server chose none, or not such a stream.",
+        tls_protocol);
     primitives.def(
         "%tls-request",
         Arity::range(3, 5),
@@ -61,10 +76,10 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         tls_request);
     primitives.def(
         "%tls-listen",
-        Arity::exact(4),
-        Sig::new(vec![string, int, string, string], socket_ty),
-        &["host", "port", "cert-pem", "key-pem"],
-        "Bind a TLS listening socket on host:port using the PEM certificate chain cert-pem and private key key-pem (port 0 = OS-assigned). Like tcp-listen, connections arrive as [:tcp-accept lsock client]; each accepted socket transparently decrypts inbound to [:tcp …] and encrypts tcp-send, so code above the transport is unchanged. Returns a socket.",
+        Arity::range(4, 5),
+        Sig::variadic(any, socket_ty),
+        &["host", "port", "cert-pem", "key-pem", "&optional alpn"],
+        "Bind a TLS listening socket on host:port using the PEM certificate chain cert-pem and private key key-pem (port 0 = OS-assigned). Optional alpn: the protocols this server speaks, in its order of preference — a client offering one of them gets it (ADR-451). Like tcp-listen, connections arrive as [:tcp-accept lsock client]; each accepted socket transparently decrypts inbound to [:tcp …] and encrypts tcp-send, so code above the transport is unchanged. Returns a socket.",
         tls_listen);
     primitives.def(
         "%tls-self-signed",
@@ -199,8 +214,16 @@ pub(super) fn tls_listen(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
     )?;
     let cert = expect_string(heap, "%tls-listen", arg(args, 2))?;
     let key = expect_string(heap, "%tls-listen", arg(args, 3))?;
+    let alpn = match arg(args, 4) {
+        Value::Nil => Vec::new(),
+        v => heap
+            .seq_items(v)?
+            .into_iter()
+            .map(|item| expect_string(heap, "%tls-listen", item))
+            .collect::<Result<Vec<_>, _>>()?,
+    };
     let owner = crate::process::self_pid();
-    match crate::host::net::tls_listen(&host, port, &cert, &key, owner) {
+    match crate::host::net::tls_listen(&host, port, &cert, &key, alpn, owner) {
         Ok(id) => Ok(Value::socket(id)),
         Err(e) => Err(
             LispError::runtime(format!("tls-listen {}:{}: {}", host, port, e))
@@ -243,6 +266,39 @@ pub(super) fn tls_request(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     let id = crate::host::net::tls_request(&host, port, request, ca, binary, owner)
         .map_err(|e| LispError::runtime(format!("%tls-request: {}", e)))?;
     Ok(Value::socket(id))
+}
+
+pub(super) fn tls_connect(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let host = expect_string(heap, "%tls-connect", arg(args, 0))?;
+    let port = socket_port(
+        "%tls-connect",
+        expect_int(heap, "%tls-connect", arg(args, 1))?,
+    )?;
+    let ca = match arg(args, 2) {
+        Value::Nil => None,
+        v => Some(expect_string(heap, "%tls-connect", v)?),
+    };
+    let alpn = match arg(args, 3) {
+        Value::Nil => Vec::new(),
+        v => heap
+            .seq_items(v)?
+            .into_iter()
+            .map(|item| expect_string(heap, "%tls-connect", item))
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+    let binary = crate::eval::truthy(arg(args, 4));
+    let owner = crate::process::self_pid();
+    let id = crate::host::net::tls_connect(&host, port, ca, alpn, binary, owner)
+        .map_err(|e| LispError::runtime(format!("%tls-connect: {}", e)))?;
+    Ok(Value::socket(id))
+}
+
+pub(super) fn tls_protocol(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let id = expect_socket(heap, "%tls-protocol", arg(args, 0))?;
+    Ok(match crate::host::net::tls_protocol(id) {
+        Some(protocol) => heap.alloc_string_owned(protocol),
+        None => Value::nil(),
+    })
 }
 
 pub(super) fn tcp_send(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {

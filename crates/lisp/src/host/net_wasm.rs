@@ -45,6 +45,21 @@ pub fn local_port(_id: u64) -> Option<u16> {
     None
 }
 
+pub fn tls_connect(
+    _host: &str,
+    _port: u16,
+    _ca_pem: Option<String>,
+    _alpn: Vec<String>,
+    _binary: bool,
+    _subscriber: u64,
+) -> std::io::Result<u64> {
+    unsupported()
+}
+
+pub fn tls_protocol(_id: u64) -> Option<String> {
+    None
+}
+
 pub fn udp_open(_host: &str, _port: u16, _subscriber: u64) -> std::io::Result<u64> {
     unsupported()
 }
@@ -73,6 +88,7 @@ pub fn tls_listen(
     _port: u16,
     _cert_pem: &str,
     _key_pem: &str,
+    _alpn: Vec<String>,
     _subscriber: u64,
 ) -> std::io::Result<u64> {
     unsupported()

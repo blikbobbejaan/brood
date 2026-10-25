@@ -8,9 +8,9 @@
 
 (defmodule tls
   "TLS sockets over the kernel's `%tls-*` primitives. `request` makes a one-shot
-HTTPS request; `listen` binds a TLS server socket from a PEM certificate chain +
-key; `self-signed` mints a dev certificate for zero-config TLS. Established
-sockets are ordinary `tcp` sockets — inbound `[:tcp …]` messages, `tcp/send`
+HTTPS request; `connect` opens a TLS stream that stays open, with ALPN (`protocol`);
+`listen` binds a TLS server socket from a PEM certificate chain + key; `self-signed` mints a
+dev certificate for zero-config TLS. Established sockets are ordinary `tcp` sockets — inbound `[:tcp …]` messages, `tcp/send`
 outbound — so code above the transport is unchanged. Policy is Brood; only the
 crypto/syscalls are Rust.")
 
@@ -20,11 +20,11 @@ crypto/syscalls are Rust.")
     (tls/request \"example.com\" 443 \"GET / HTTP/1.0\\r\\nHost: example.com\\r\\n\\r\\n\")   ;=> #<socket …>; the reply arrives as [:tcp sock data] messages"
   (%tls-request host port request ca-pem binary))
 
-(defn listen (host port cert-pem key-pem)
-  "Bind a TLS listening socket on host:port using the PEM certificate chain cert-pem and private key key-pem (port 0 = OS-assigned). Like `tcp/listen`, connections arrive as `[:tcp-accept lsock client]`; each accepted socket transparently decrypts inbound to `[:tcp …]` and encrypts `tcp/send`, so code above the transport is unchanged. Returns a socket.
+(defn listen (host port cert-pem key-pem &optional alpn)
+  "Bind a TLS listening socket on host:port using the PEM certificate chain cert-pem and private key key-pem (port 0 = OS-assigned). Optional `alpn`: the protocols this server speaks, preferred first (`[\"h2\" \"http/1.1\"]`); a client offering one gets it (ADR-451). Like `tcp/listen`, connections arrive as `[:tcp-accept lsock client]`; each accepted socket transparently decrypts inbound to `[:tcp …]` and encrypts `tcp/send`, so code above the transport is unchanged. Returns a socket.
 
     (tls/listen \"127.0.0.1\" 8443 cert-pem key-pem)   ;=> #<socket …> accepting TLS connections"
-  (%tls-listen host port cert-pem key-pem))
+  (%tls-listen host port cert-pem key-pem alpn))
 
 (defn self-signed (host)
   "Generate a self-signed TLS certificate + private key for host (a DNS name like \"localhost\"), for zero-config dev TLS. Returns `[cert-pem key-pem]` — pass them to `tls/listen`. Not for production (clients reject a self-signed cert unless told to trust it).
@@ -33,3 +33,30 @@ crypto/syscalls are Rust.")
   (%tls-self-signed host))
 ;; A VECTOR, as the docstring says (`[cert-pem key-pem]`): declared `list`, the return
 ;; contract failed every `tls/self-signed` call under BROOD_CONTRACTS=1 (KI-113).
+
+(defn connect (host port &optional (opts {}))
+  "A TLS connection to host:port that stays open (ADR-451): returns the socket once the handshake has completed, raising if it fails. Then it is an ordinary stream — `tcp/send`, `[:tcp sock data]`, `tcp/close` — so it carries as many requests as the protocol wants (HTTP keep-alive, a WebSocket). `opts`: `:ca` a PEM certificate replacing the Mozilla roots, `:alpn` the protocols to offer (`[\"h2\" \"http/1.1\"]`; `protocol` reads the server's choice), `:binary` (default true) bytes rather than text, `:timeout-ms` (default 30000) for the handshake.
+
+    (tls/connect \"example.com\" 443 {:alpn [\"http/1.1\"]})   ;=> #<socket …>, connected"
+  (let (sock (%tls-connect host
+               port
+               (get opts :ca)
+               (get opts :alpn)
+               (get opts :binary true))
+        fail (fn (message)
+               (do
+                 (tcp/close sock)
+                 (throw {:kind :runtime
+                         :code "E0050"
+                         :message (str "tls-connect " host ":" port ": " message)}))))
+    (receive
+      ([:tcp-connected ^sock] sock)
+      ([:tcp-error ^sock message] (fail message))
+      ([:tcp-closed ^sock] (fail "closed during the handshake"))
+      (after (get opts :timeout-ms 30000) (fail "the handshake timed out")))))
+
+(defn protocol (sock)
+  "The ALPN protocol the server chose on a `connect`ed socket (`\"h2\"`, `\"http/1.1\"`), or nil when it chose none.
+
+    (tls/protocol (tls/connect \"example.com\" 443 {:alpn [\"http/1.1\"]}))   ;=> \"http/1.1\""
+  (%tls-protocol sock))
