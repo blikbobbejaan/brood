@@ -128,9 +128,10 @@ pub(in crate::builtins) fn term_size(_: &[Value], _: EnvId, heap: &mut Heap) -> 
 }
 
 /// `(term-poll ms)` — wait up to `ms` ms for a key; return it (a 1-char string,
-/// or a keyword for specials), a mouse event, `[:key-up press]` for a release (only
-/// under the kitty keyboard protocol, `keyboard`), or `nil` on timeout. A repeat
-/// already superseded in the buffered input is dropped there. Always called with a
+/// or a keyword for specials), a mouse event, `[:key-up press]` when a key comes up
+/// (reported under the kitty keyboard protocol, inferred from its repeats stopping
+/// otherwise; `keyboard`), or `nil` on timeout. A held key's repeat already superseded in
+/// the buffered input is dropped there. Always called with a
 /// finite `ms`: the observer is the root process, so blocking here blocks only the
 /// root thread (never a scheduler worker), but an *infinite* poll on a green process
 /// would pin a worker (native blocking can't be preempted) — hence finite.
@@ -144,7 +145,7 @@ pub(in crate::builtins) fn term_poll(args: &[Value], _: EnvId, heap: &mut Heap) 
             Ok(key_up_value(heap, press))
         }
         Some(keyboard::Polled::Mouse(mouse)) => Ok(mouse_to_value(heap, mouse)),
-        None => Ok(Value::nil()),
+        Some(keyboard::Polled::Other) | None => Ok(Value::nil()),
     }
 }
 
@@ -158,10 +159,10 @@ fn key_up_value(heap: &mut Heap, press_event: crossterm::event::KeyEvent) -> Val
 }
 
 /// `(term-held-key)` — the key held in the terminal now, as its press delivered it, or nil.
-/// Only a terminal that speaks the kitty keyboard protocol reports a release, so in any
-/// other this is always nil (`keyboard`).
+/// Reported under the kitty keyboard protocol, inferred from a run of repeats otherwise, and
+/// nil outside `term-enter` (`keyboard`).
 pub(in crate::builtins) fn term_held_key(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    Ok(match keyboard::held() {
+    Ok(match keyboard::held().map_err(term_err)? {
         Some(press) => key_to_value(heap, press),
         None => Value::nil(),
     })

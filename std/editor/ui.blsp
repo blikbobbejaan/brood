@@ -43,8 +43,8 @@ beat. The observer and the editor are both `ui-run` clients — see
 (defdyn *term-display*
   ;; the terminal (crossterm) frontend — always available, and single (one
   ;; terminal), so it's a fixed display map of the 0-arg `term-*` primitives.
-  ;; `:key-held?` is only ever true in a terminal speaking the kitty keyboard protocol,
-  ;; the one kind that reports a release (`term/held-key`).
+  ;; `:key-held?` is reported by a terminal speaking the kitty keyboard protocol and
+  ;; inferred from the repeats in any other (`term/held-key`).
   {:enter term/enter
    :leave term/leave
    :size term/size

@@ -1,5 +1,5 @@
-//! The terminal's keyboard under the kitty keyboard protocol (ADR-441, amended 2026-10-25):
-//! a held key as a native app has it.
+//! The terminal's keyboard (ADR-441, amended 2026-10-25): a held key as a native app has it,
+//! in every terminal.
 //!
 //! A legacy terminal sends a held key as a run of presses queued in the tty, so behind a slow
 //! frame they back up and keep playing after the key came up. A terminal that speaks the
@@ -8,7 +8,7 @@
 //! can, and this module reads it:
 //!
 //! - **A repeat that is already stale is dropped.** Everything the tty has buffered is read
-//!   ahead into `ahead`; a repeat whose key's next event in that input is another repeat or
+//!   ahead into the [`Inbox`]; a repeat whose key's next event in that input is another repeat or
 //!   its release is superseded, so it never reaches the app ([`repeat_superseded`]). That is
 //!   the terminal's version of the window's gate and withdraw: the backlog is gone the moment
 //!   the key is up. A press is never dropped, and neither is typed text.
@@ -16,15 +16,25 @@
 //!   key, not its modifiers, so Ctrl or Shift let go first still names the chord.
 //! - **The held key is known**, for `term-held-key` and the display's `:key-held?`.
 //!
-//! Without the protocol nothing here changes what a poll returns: no repeat or release
-//! arrives, and nothing is ever held.
+//! Every other key is inferred ([`Inbox`]): a legacy terminal's and tmux's, and under the
+//! protocol the keys it still sends as legacy bytes (text, Enter, Tab, Backspace). A held key
+//! there is a run of the same press arriving faster than a hand can press one key
+//! ([`REPEAT_GAP`]), timed by the tty reads around the arrivals, so a backlog read all at once
+//! behind a slow frame is still seen for what it was. Once a run is held only its latest
+//! repeat is live, and when the repeats stop for [`RELEASE_AFTER`] (or another key is
+//! pressed) it comes up: `[:key-up press]`, and the repeat still waiting is dropped. Typed text
+//! is held and comes up the same way but is never dropped, because a terminal sends a paste
+//! as keys too. A key tapped and let go has no key-up here: nothing says when it came up.
+//!
+//! The inline REPL (`term-raw-enter`, no `term-enter`) reads keys as a terminal always sent
+//! them: every key a press, nothing held.
 
 use std::collections::VecDeque;
 use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyboardEnhancementFlags, MouseEvent,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseEvent,
 };
 
 /// What `term-enter` asks a kitty-protocol terminal for. Disambiguation makes a chord a
@@ -223,33 +233,311 @@ impl KeyTracker {
         self.down.push((identity, press));
     }
 
-    fn learn(&mut self, identity: KeyCode) {
+    /// Whether the terminal has reported a repeat or a release of this key.
+    pub(super) fn reports(&self, identity: KeyCode) -> bool {
+        self.reported.contains(&identity)
+    }
+
+    pub(super) fn learn(&mut self, identity: KeyCode) {
         if !self.reported.contains(&identity) {
             self.reported.push(identity);
         }
     }
 }
 
+/// How far apart, on average, a key's arrivals are at most for the run of them to be a held
+/// key repeating rather than a hand pressing it again: 70 ms, about 14 a second, which is
+/// beyond a finger tapping one key and below every desktop's default repeat rate (25 to 33 a
+/// second). A desktop set to repeat slower than this is read as presses, as before.
+pub(super) const REPEAT_GAP: Duration = Duration::from_millis(70);
+
+/// How long an inferred hold's repeats may stop before the key counts as released. Twice
+/// [`REPEAT_GAP`]: a stall in the terminal or the link longer than this ends the hold early,
+/// and the next repeat starts a new one.
+pub(super) const RELEASE_AFTER: Duration = Duration::from_millis(140);
+
+/// Whether a key event types text: a character with no Ctrl, Alt or Super, Enter or Tab. A
+/// terminal sends a paste as exactly these, at once, so a run of them is never dropped,
+/// however fast it came: a held letter may play on, but a pasted `====` arrives whole.
+fn types_text(key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char(_) => !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER),
+        KeyCode::Enter | KeyCode::Tab | KeyCode::BackTab => true,
+        _ => false,
+    }
+}
+
 /// What one poll yields.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Polled {
     Key(KeyDelivery),
     Mouse(MouseEvent),
+    /// An event a poll does not report (a resize, focus, a paste): the poll returns nil at
+    /// once, so the app looks again.
+    Other,
+}
+
+/// One thing read from the tty, waiting in [`Inbox::ahead`].
+#[derive(Clone, Debug)]
+enum Input {
+    Event(Event),
+    /// An inferred hold ended here: `[:key-up press]`.
+    Released(KeyEvent),
+}
+
+#[derive(Clone, Debug)]
+struct Entry {
+    input: Input,
+    /// The inferred run this key event belongs to, and its place in it (0 is the press).
+    run: Option<(u64, usize)>,
+    /// A repeat known to be stale: superseded by a later one, or the key has come up.
+    stale: bool,
+}
+
+/// The key a terminal reports no repeat or release of, arriving again and again: a legacy
+/// terminal's every key, tmux's, and under the kitty protocol the keys it keeps as legacy
+/// bytes (text, Enter, Tab, Backspace). Each arrival is timed by the tty reads around it, so
+/// whether the run is a held key repeating is decided from when the events could have come,
+/// never from when the app got round to them.
+#[derive(Clone, Copy, Debug)]
+struct Run {
+    id: u64,
+    /// The run's first event, as delivered: what its key-up names.
+    press: KeyEvent,
+    count: usize,
+    /// Where the tightest stretch of repeats starts: the read before that arrival (it came
+    /// after this) and its place in the run. Never the first arrival, whose gap to the next
+    /// is the desktop's delay, and never an arrival with no read before it to bound it.
+    paced_from: Option<(Instant, usize)>,
+    /// The read that brought the latest event: it arrived by then.
+    last_read: Instant,
+    held: bool,
+}
+
+/// The input read ahead of the app and what it says about the keys: the tracker for keys
+/// the terminal reports, the run for those it does not. Pure over its inputs (the events
+/// and the instants of the reads that brought them), so the rules are tested without a tty.
+#[derive(Debug)]
+pub(super) struct Inbox {
+    ahead: VecDeque<Entry>,
+    keys: KeyTracker,
+    run: Option<Run>,
+    runs_started: u64,
+    /// When the tty was last read: the next events read arrived after it.
+    previous_read: Option<Instant>,
+}
+
+impl Inbox {
+    pub(super) const fn new() -> Self {
+        Inbox {
+            ahead: VecDeque::new(),
+            keys: KeyTracker::new(),
+            run: None,
+            runs_started: 0,
+            previous_read: None,
+        }
+    }
+
+    /// Start over at `now`, the terminal just taken over or given back: no key down, no
+    /// run, and the next events read arrived after `now`. Input already read stays.
+    fn reset(&mut self, now: Option<Instant>) {
+        self.keys = KeyTracker::new();
+        self.run = None;
+        self.previous_read = now;
+    }
+
+    /// The events one read of the tty brought, at `now`. `drained` says the read emptied the
+    /// tty, so a quiet held key really has stopped repeating (a read cut short by
+    /// [`READ_AHEAD`] proves nothing).
+    pub(super) fn arrive(&mut self, events: Vec<Event>, now: Instant, drained: bool) {
+        let after = self.previous_read;
+        for event in events {
+            match event {
+                Event::Key(key) => self.arrive_key(key, after, now),
+                other => self.push(Input::Event(other), None),
+            }
+        }
+        if drained
+            && let Some(run) = self.run
+            && now.saturating_duration_since(run.last_read) > RELEASE_AFTER
+        {
+            self.end_run();
+        }
+        self.previous_read = Some(now);
+    }
+
+    fn arrive_key(&mut self, key: KeyEvent, after: Option<Instant>, now: Instant) {
+        let identity = key_identity(key.code);
+        if !trackable(key.code) {
+            return self.push(Input::Event(Event::Key(key)), None);
+        }
+        if key.kind != KeyEventKind::Press {
+            // the terminal reports this key: the tracker has it from here, and a run of it
+            // was its legacy press, not a hold to end
+            self.keys.learn(identity);
+            if self
+                .run
+                .is_some_and(|run| key_identity(run.press.code) == identity)
+            {
+                self.run = None;
+            }
+            return self.push(Input::Event(Event::Key(key)), None);
+        }
+        let reported = self.keys.reports(identity);
+        let same = |run: &Run| run.press.code == key.code && run.press.modifiers == key.modifiers;
+        match self.run {
+            Some(run) if !reported && same(&run) => self.continue_run(key, after, now),
+            _ => {
+                // another key pressed: the desktop stops repeating the one before it
+                self.end_run();
+                if reported {
+                    self.push(Input::Event(Event::Key(key)), None);
+                } else {
+                    self.runs_started += 1;
+                    self.run = Some(Run {
+                        id: self.runs_started,
+                        press: key,
+                        count: 1,
+                        paced_from: None,
+                        last_read: now,
+                        held: false,
+                    });
+                    self.push(Input::Event(Event::Key(key)), Some((self.runs_started, 0)));
+                }
+            }
+        }
+    }
+
+    /// The run's key again. It is held once some stretch of its repeats (the arrivals after
+    /// the first, whose gap is the desktop's delay) came at least as fast as [`REPEAT_GAP`]
+    /// on average, bounded from the reads around them; from then on only its latest repeat
+    /// is live.
+    fn continue_run(&mut self, key: KeyEvent, after: Option<Instant>, now: Instant) {
+        let Some(mut run) = self.run else { return };
+        run.count += 1;
+        run.last_read = now;
+        let place = run.count - 1;
+        // the stretch from `start` (which arrived after `from`) to this arrival (by `now`)
+        // took at most `now - from`, over `place - start` gaps
+        run.held = run.held
+            || run.paced_from.is_some_and(|(from, start)| {
+                now.saturating_duration_since(from) <= REPEAT_GAP * (place - start) as u32
+            });
+        // this arrival starts the tightest stretch when its bound less a gap per place is
+        // later than the best one's
+        if let Some(from) = after
+            && run.paced_from.is_none_or(|(best, best_start)| {
+                from + REPEAT_GAP * best_start as u32 > best + REPEAT_GAP * place as u32
+            })
+        {
+            run.paced_from = Some((from, place));
+        }
+        self.run = Some(run);
+        if run.held {
+            self.mark_stale(run);
+        }
+        self.push(Input::Event(Event::Key(key)), Some((run.id, place)));
+    }
+
+    /// The run is over (another key, a protocol event of its key, or quiet): a held run's
+    /// key-up is queued behind its events, and its repeats still waiting are stale.
+    fn end_run(&mut self) {
+        if let Some(run) = self.run.take()
+            && run.held
+        {
+            self.mark_stale(run);
+            self.push(Input::Released(run.press), None);
+        }
+    }
+
+    /// Every repeat of `run` still waiting is stale (the one arriving next, or the release,
+    /// supersedes them) — unless the key types text, which is never dropped.
+    fn mark_stale(&mut self, run: Run) {
+        if types_text(&run.press) {
+            return;
+        }
+        for entry in &mut self.ahead {
+            if matches!(entry.run, Some((id, place)) if id == run.id && place > 0) {
+                entry.stale = true;
+            }
+        }
+    }
+
+    fn push(&mut self, input: Input, run: Option<(u64, usize)>) {
+        self.ahead.push_back(Entry {
+            input,
+            run,
+            stale: false,
+        });
+    }
+
+    /// The next thing to hand the app, if anything waiting is still live.
+    pub(super) fn deliver(&mut self) -> Option<Polled> {
+        while let Some(entry) = self.ahead.pop_front() {
+            if entry.stale {
+                continue;
+            }
+            match entry.input {
+                Input::Released(press) => {
+                    return Some(Polled::Key(KeyDelivery::Release(press)));
+                }
+                Input::Event(Event::Key(key)) => {
+                    let later =
+                        self.ahead
+                            .iter()
+                            .filter(|entry| !entry.stale)
+                            .filter_map(|entry| match &entry.input {
+                                Input::Event(event) => Some(event),
+                                Input::Released(_) => None,
+                            });
+                    if let Some(delivery) = self.keys.take(key, later) {
+                        return Some(Polled::Key(delivery));
+                    }
+                }
+                Input::Event(Event::Mouse(mouse)) => return Some(Polled::Mouse(mouse)),
+                Input::Event(_) => return Some(Polled::Other),
+            }
+        }
+        None
+    }
+
+    /// When an inferred hold will count as released if no repeat comes first: the poll waits
+    /// no longer than this, so the key-up wakes the app on time.
+    pub(super) fn release_due(&self) -> Option<Instant> {
+        self.run
+            .filter(|run| run.held)
+            .map(|run| run.last_read + RELEASE_AFTER + Duration::from_millis(1))
+    }
+
+    /// The press of the key held now: one the terminal reports, or an inferred hold.
+    pub(super) fn held(&self) -> Option<KeyEvent> {
+        self.keys
+            .held()
+            .or_else(|| self.run.filter(|run| run.held).map(|run| run.press))
+    }
+
+    fn len(&self) -> usize {
+        self.ahead.len()
+    }
 }
 
 /// The terminal's keyboard state: one terminal per OS process, so one of these.
 pub(super) struct TerminalKeyboard {
     /// Whether `term-enter` pushed [`FLAGS`], so the leave pops them, once.
     enhanced: bool,
-    /// Events read from the tty ahead of the one being delivered.
-    ahead: VecDeque<Event>,
-    keys: KeyTracker,
+    /// Whether the full-screen UI has the terminal (`term-enter` to `term-leave`): only then
+    /// is a hold inferred and a key-up delivered. The inline REPL reads keys as it always did.
+    taken: bool,
+    inbox: Inbox,
 }
 
 /// The process's terminal keyboard (`process_wide_statics.rs`: one terminal per process).
 static TERMINAL_KEYBOARD: Mutex<TerminalKeyboard> = Mutex::new(TerminalKeyboard {
     enhanced: false,
-    ahead: VecDeque::new(),
-    keys: KeyTracker::new(),
+    taken: false,
+    inbox: Inbox::new(),
 });
 
 fn keyboard() -> MutexGuard<'static, TerminalKeyboard> {
@@ -258,13 +546,14 @@ fn keyboard() -> MutexGuard<'static, TerminalKeyboard> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// After the alternate screen is entered (kitty keeps one flag stack per screen): push
-/// [`FLAGS`] when stdout is a terminal that says it speaks the protocol. Best effort; a
-/// terminal that does not answer is left as it was.
+/// After the alternate screen is entered (kitty keeps one flag stack per screen): take the
+/// keyboard, and push [`FLAGS`] when stdout is a terminal that says it speaks the protocol.
+/// Best effort; a terminal that does not answer is left as it was.
 pub(super) fn enhance() {
     use std::io::IsTerminal;
     let mut keyboard = keyboard();
-    keyboard.keys = KeyTracker::new();
+    keyboard.taken = true;
+    keyboard.inbox.reset(Some(Instant::now()));
     if keyboard.enhanced || !std::io::stdout().is_terminal() {
         return;
     }
@@ -285,7 +574,8 @@ pub(super) fn enhance() {
 /// forget the keys. Idempotent; errors are swallowed.
 pub(super) fn restore() {
     let mut keyboard = keyboard();
-    keyboard.keys = KeyTracker::new();
+    keyboard.taken = false;
+    keyboard.inbox.reset(None);
     if std::mem::take(&mut keyboard.enhanced) {
         let _ = crossterm::execute!(
             std::io::stdout(),
@@ -294,57 +584,76 @@ pub(super) fn restore() {
     }
 }
 
-/// The press of the key held now, if one is (never without the protocol).
-pub(super) fn held() -> Option<KeyEvent> {
-    let keyboard = keyboard();
-    if keyboard.enhanced {
-        keyboard.keys.held()
-    } else {
-        None
-    }
-}
-
-/// Wait up to `timeout` for input and return the next thing to deliver: `None` on timeout,
-/// for an event a poll does not report (a resize, focus, paste), and when all the input there
-/// was turned out to be superseded repeats. The wait happens without the lock held.
-pub(super) fn next(timeout: Duration) -> std::io::Result<Option<Polled>> {
+/// Read everything the tty has buffered into the inbox, without waiting.
+fn absorb(keyboard: &mut TerminalKeyboard) -> std::io::Result<()> {
     use crossterm::event::{poll, read};
-    if keyboard().ahead.is_empty() && !poll(timeout)? {
-        return Ok(None);
+    let mut events = Vec::new();
+    let mut drained = false;
+    while keyboard.inbox.len() + events.len() < READ_AHEAD {
+        if !poll(Duration::ZERO)? {
+            drained = true;
+            break;
+        }
+        events.push(read()?);
     }
-    let mut guard = keyboard();
-    let TerminalKeyboard {
-        enhanced,
-        ahead,
-        keys,
-    } = &mut *guard;
-    while ahead.len() < READ_AHEAD && poll(Duration::ZERO)? {
-        ahead.push_back(read()?);
-    }
-    while let Some(event) = ahead.pop_front() {
-        match event {
-            Event::Key(key) if *enhanced => {
-                if let Some(delivery) = keys.take(key, ahead.iter()) {
-                    return Ok(Some(Polled::Key(delivery)));
-                }
+    if keyboard.taken {
+        keyboard.inbox.arrive(events, Instant::now(), drained);
+    } else {
+        // the inline REPL: every key is a press, as a terminal always sent it
+        for event in events {
+            match event {
+                Event::Key(key) if key.kind == KeyEventKind::Release => {}
+                event => keyboard.inbox.push(Input::Event(event), None),
             }
-            // without the protocol a release is ignored (some platforms report one anyway)
-            // and a repeat is a press, as they always were
-            Event::Key(key) if key.kind != KeyEventKind::Release => {
-                return Ok(Some(Polled::Key(KeyDelivery::Press(key))));
-            }
-            Event::Key(_) => {}
-            Event::Mouse(mouse) => return Ok(Some(Polled::Mouse(mouse))),
-            _ => return Ok(None),
         }
     }
-    Ok(None)
+    Ok(())
+}
+
+/// The press of the key held now, if one is, from everything the tty has buffered.
+pub(super) fn held() -> std::io::Result<Option<KeyEvent>> {
+    let mut keyboard = keyboard();
+    absorb(&mut keyboard)?;
+    Ok(if keyboard.taken {
+        keyboard.inbox.held()
+    } else {
+        None
+    })
+}
+
+/// Wait up to `timeout` for input and return the next thing to deliver, `None` on timeout.
+/// An inferred hold's key-up is due when its repeats stop, so the wait ends then too. The
+/// wait happens without the lock held.
+pub(super) fn next(timeout: Duration) -> std::io::Result<Option<Polled>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let wait = {
+            let mut keyboard = keyboard();
+            absorb(&mut keyboard)?;
+            if let Some(polled) = keyboard.inbox.deliver() {
+                return Ok(Some(polled));
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(None);
+            }
+            let until = match keyboard.inbox.release_due() {
+                Some(due) => due.min(deadline),
+                None => deadline,
+            };
+            until.saturating_duration_since(now)
+        };
+        crossterm::event::poll(wait)?;
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{KeyDelivery, KeyTracker, key_identity, repeat_superseded};
+    use super::{
+        Inbox, KeyDelivery, KeyTracker, Polled, RELEASE_AFTER, key_identity, repeat_superseded,
+    };
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+    use std::time::{Duration, Instant};
 
     fn key(code: KeyCode, modifiers: KeyModifiers, kind: KeyEventKind) -> KeyEvent {
         KeyEvent::new_with_kind_and_state(code, modifiers, kind, KeyEventState::NONE)
@@ -541,5 +850,159 @@ mod tests {
         assert_eq!(key_identity(KeyCode::Char('A')), KeyCode::Char('a'));
         assert_eq!(key_identity(KeyCode::BackTab), KeyCode::Tab);
         assert_eq!(key_identity(KeyCode::Up), KeyCode::Up);
+    }
+
+    /// An inbox fed reads at given milliseconds after `start`, as `absorb` feeds it.
+    struct Reads {
+        inbox: Inbox,
+        start: Instant,
+    }
+
+    impl Reads {
+        fn new() -> Self {
+            let start = Instant::now();
+            let mut inbox = Inbox::new();
+            inbox.reset(Some(start));
+            Reads { inbox, start }
+        }
+
+        fn at(&self, milliseconds: u64) -> Instant {
+            self.start + Duration::from_millis(milliseconds)
+        }
+
+        /// One read at `milliseconds` that brought `keys` and emptied the tty.
+        fn read(&mut self, milliseconds: u64, keys: &[KeyEvent]) {
+            let events = keys.iter().map(|key| Event::Key(*key)).collect();
+            self.inbox.arrive(events, self.at(milliseconds), true);
+        }
+
+        /// Everything the app would be handed now.
+        fn drain(&mut self) -> Vec<Polled> {
+            std::iter::from_fn(|| self.inbox.deliver()).collect()
+        }
+    }
+
+    fn pressed(event: KeyEvent) -> Polled {
+        Polled::Key(KeyDelivery::Press(event))
+    }
+
+    fn released(event: KeyEvent) -> Polled {
+        Polled::Key(KeyDelivery::Release(event))
+    }
+
+    // An app keeping up: each repeat arrives in a read of its own. The desktop's delay
+    // before the first repeat is no evidence; two repeats 33 ms apart are, so the key is
+    // held from the third repeat, every repeat is delivered as it comes, and once they stop
+    // the key-up follows.
+    #[test]
+    fn a_key_repeating_at_the_desktop_rate_is_held_and_comes_up_when_it_stops() {
+        let mut reads = Reads::new();
+        let down = press(KeyCode::Down, NONE);
+        reads.read(10, &[down]);
+        assert_eq!(reads.drain(), vec![pressed(down)]);
+        let mut delivered = Vec::new();
+        for (read_before, arrival) in [(20, 500), (510, 533), (543, 566), (576, 599)] {
+            reads.read(read_before, &[]);
+            reads.read(arrival, &[down]);
+            delivered.extend(reads.drain());
+        }
+        assert_eq!(delivered, vec![pressed(down); 4]);
+        assert_eq!(reads.inbox.held(), Some(down));
+        assert_eq!(
+            reads.inbox.release_due(),
+            Some(reads.at(599) + RELEASE_AFTER + Duration::from_millis(1))
+        );
+        reads.read(700, &[]);
+        assert_eq!(
+            reads.inbox.held(),
+            Some(down),
+            "a gap shorter than the release wait"
+        );
+        reads.read(760, &[]);
+        assert_eq!(reads.drain(), vec![released(down)]);
+        assert_eq!(reads.inbox.held(), None);
+    }
+
+    // An app a second behind: the press and twenty repeats come in one read. They came
+    // faster than any hand, so only the press and the latest repeat are live, and when the
+    // repeats have stopped that one goes too — nothing plays on after the key is up.
+    #[test]
+    fn a_backlog_behind_a_slow_frame_collapses_and_its_last_repeat_goes_at_the_release() {
+        let mut reads = Reads::new();
+        let next_line = press(KeyCode::Char('n'), CONTROL);
+        reads.read(1000, &[next_line; 21]);
+        assert_eq!(reads.inbox.held(), Some(next_line));
+        assert_eq!(reads.inbox.deliver(), Some(pressed(next_line)));
+        reads.read(1300, &[]);
+        assert_eq!(reads.drain(), vec![released(next_line)]);
+    }
+
+    // Three taps of one key while the app was busy are a hand, not a repeat: 300 ms bounds
+    // them, slower than the repeat gap, so all three are delivered and nothing is held.
+    #[test]
+    fn taps_buffered_behind_a_slow_frame_are_all_delivered() {
+        let mut reads = Reads::new();
+        reads.read(5, &[]);
+        let next_line = press(KeyCode::Char('n'), CONTROL);
+        reads.read(305, &[next_line; 3]);
+        assert_eq!(reads.inbox.held(), None);
+        reads.read(800, &[]);
+        assert_eq!(reads.drain(), vec![pressed(next_line); 3]);
+    }
+
+    // A held letter is held (idle work waits, the key-up comes), but none of it is dropped:
+    // a paste arrives the same way, and a pasted `aaaa` must arrive whole.
+    #[test]
+    fn typed_text_is_held_but_never_dropped() {
+        let mut reads = Reads::new();
+        let letter = press(KeyCode::Char('a'), NONE);
+        reads.read(100, &[letter; 10]);
+        assert_eq!(reads.inbox.held(), Some(letter));
+        reads.read(400, &[]);
+        let mut expected = vec![pressed(letter); 10];
+        expected.push(released(letter));
+        assert_eq!(reads.drain(), expected);
+    }
+
+    // Another key pressed ends the hold: the desktop stops repeating the first key, so its
+    // key-up comes before the new press, and its waiting repeats are dropped.
+    #[test]
+    fn another_key_ends_the_hold_before_its_press() {
+        let mut reads = Reads::new();
+        let down = press(KeyCode::Down, NONE);
+        let enter = press(KeyCode::Enter, NONE);
+        let mut keys = vec![down; 12];
+        keys.push(enter);
+        reads.read(200, &keys);
+        assert_eq!(
+            reads.drain(),
+            vec![pressed(down), released(down), pressed(enter)]
+        );
+    }
+
+    // A read cut short with input still in the tty proves nothing about a quiet key.
+    #[test]
+    fn a_read_that_left_input_behind_does_not_release() {
+        let mut reads = Reads::new();
+        let down = press(KeyCode::Down, NONE);
+        reads.read(200, &[down; 12]);
+        reads.inbox.arrive(Vec::new(), reads.at(1500), false);
+        assert_eq!(reads.inbox.held(), Some(down));
+    }
+
+    // A key the terminal reports (the kitty protocol's repeat) leaves inference: the run of
+    // its legacy press ends without a key-up, and the tracker holds it from there.
+    #[test]
+    fn a_reported_repeat_hands_the_key_to_the_tracker() {
+        let mut reads = Reads::new();
+        let down = press(KeyCode::Down, NONE);
+        reads.read(10, &[down]);
+        reads.read(500, &[repeat(KeyCode::Down, NONE)]);
+        assert_eq!(reads.drain(), vec![pressed(down), pressed(down)]);
+        assert_eq!(reads.inbox.held(), Some(down));
+        assert_eq!(reads.inbox.release_due(), None);
+        reads.read(900, &[release(KeyCode::Down, NONE)]);
+        assert_eq!(reads.drain(), vec![released(down)]);
+        assert_eq!(reads.inbox.held(), None);
     }
 }
