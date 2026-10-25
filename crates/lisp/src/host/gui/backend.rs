@@ -2046,6 +2046,10 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                         Some(KeyMessage::Repeat(message, credit)) => {
                             deliver_credited(w.subscriber, message, credit)
                         }
+                        Some(KeyMessage::Restroke { up, press }) => {
+                            deliver(w.subscriber, up);
+                            deliver(w.subscriber, press);
+                        }
                         None => {}
                     }
                 }
