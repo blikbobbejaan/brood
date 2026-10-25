@@ -443,7 +443,25 @@
             (= input :quit) (assoc m :done true)
             else m))
         (ci-display me))
-      (assert= (drain-saw []) (list 0)))))
+      (assert= (drain-saw []) (list 0))))
+  (test "a skipped turn tells a display with :settle that it is over, and draws nothing"
+    (let (me (self))
+      (send me [:input :inc])
+      (send me [:input :noop])
+      (send me [:input :noop])
+      (send me [:input :inc])
+      (send me [:input :quit])
+      (ui-run {:n 0}
+        (fn (m c r) [])
+        (fn (m input c r)
+          (cond
+            (= input :inc) (assoc m :n (+ (get m :n) 1))
+            (= input :quit) (assoc m :done true)
+            else m))
+        (assoc (ci-display me)
+          :draw (fn (f) (send me [:saw :draw]))
+          :settle (fn () (send me [:saw :settle]))))
+      (assert= (drain-saw []) (list :draw :draw :settle :settle :draw)))))
 ;; ---- named timers (ADR-102) ------------------------------------------------
 ;; The firing logic is pure (deadline math over a clock map + the timer specs), so it
 ;; tests deterministically with hand-supplied `now`/`clock` — no wall-clock, no loop.
