@@ -158,6 +158,10 @@ as pure-Brood packages over `tcp`'s binary mode, following store-postgres's patt
 
 ### 6. The library ecosystem is small, and there are std holes in time and crypto
 
+**Update 2026-10-25: the two std holes are closed.** Time zones are `std/tz` (zoneinfo and
+POSIX rules); ECDSA, RSA, X25519 and Argon2id are in `std/crypto` (ADR-448). The ecosystem
+part below stands.
+
 **Missing.** The first-party packages in the sibling repositories are hatch, store,
 store-postgres, s3, mail plus two adapters, observe plus two adapters, b2d and four bedit
 themes. That is about a dozen. The live registry count is *unverified*. Two holes sit at

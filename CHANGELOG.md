@@ -7,6 +7,13 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 ## Unreleased
 
 **Added.**
+- `std/tz`: named time zones from the system's zoneinfo (TZif, RFC 8536) and POSIX TZ rules —
+  `tz/zone`, `tz/local-zone`, `tz/->local`, `tz/->utc` (a skipped or repeated wall time
+  resolved by `:earlier` / `:later`), `tz/->iso` with the offset, `tz/offset`. Pure Brood.
+- `std/crypto`: ECDSA P-256/P-384 (`ecdsa-keypair`/`-sign`/`-verify`, JWT ES256/ES384), RSA
+  PKCS#1 v1.5 and PSS (`rsa-keypair`/`-sign`/`-verify`, RS*/PS*, a key as its JWK `n`/`e`),
+  X25519 (`x25519-keypair`, `x25519-shared`) and Argon2id (`password-hash`,
+  `password-verify`) — ADR-448. ECDSA and RSA are native-only.
 - The GPU painter draws subpixel (LCD) text, as the CPU painter does: `gui/text-aa`'s `:subpixel`,
   `:bgr`, and `:auto` at a 1× scale — in one pass with dual-source blending, in three (one per
   colour channel) on an adapter without it. Both measured byte-identical to the CPU painter's

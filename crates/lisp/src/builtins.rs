@@ -45,6 +45,7 @@ pub(crate) mod contracts;
 mod crypto;
 mod diagnostics;
 mod dynamic;
+mod pubkey;
 pub(crate) use dynamic::{binding_enter, push_bindings};
 pub(crate) use errors::handler_args;
 mod errors;
@@ -170,6 +171,7 @@ pub fn register(heap: &mut Heap, root: EnvId) {
     tooling::register(&mut primitives);
     diagnostics::register(&mut primitives);
     crypto::register(&mut primitives);
+    pubkey::register(&mut primitives);
     crate::boot::image::register(&mut primitives);
     compress::register(&mut primitives);
     pkg::register(&mut primitives);
