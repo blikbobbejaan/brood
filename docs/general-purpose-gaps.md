@@ -249,6 +249,11 @@ and `docs/brood-for-claude.md` and the writing skill already teach the failure c
 
 ### 9. Cost: memory per runtime and per process, and compute speed
 
+**Status 2026-10-26: open, and measurement-bound.** What is left on runtime-frontier's
+queue is M2 (shared IC tables, the largest per-process item at 664 B — a lock-free design that
+needs TSAN/loom) and then M3/M4/M6/M7. Each is gated on benchmark runs, which happen on the
+test machine, not here.
+
 **Measured in brood-benchmark/README.md, 2026-09-16.** Base RSS is 52.8 MB, against Go 1.8,
 Python 9.8 and Node 42.8. Holding 300k live processes takes 1.31 GB, against the
 reference actor runtime's 924 MB. A tree of 20k supervised children takes 491 MB, against its
@@ -265,6 +270,13 @@ immutable unboxed vectors behind a `bytes`-like handle.
 **Kind.** Kernel. Unboxed arrays need an ADR.
 
 ### 10. Very large codebases, and an advisory type system
+
+**Status 2026-10-26: the scaling half is done; the numbers below are the before.** The
+module-index cache (ADR-380), an incremental check (ADR-382), a parallel walk (ADR-386,
+11× on 12 cores), O(changed) image rebuilds (ADR-419) and a parallel cold load (ADR-426, the
+default) are all in. The check's memory spike is fixed (0.2 GB over the load floor,
+sequential). Left: the parallel arm's +0.7 GB, and re-timing the 2026-10-23 load-path work
+on the test machine (docs/large-project-scaling.md, the queue).
 
 At 3.07M lines a cold `nest check` takes 161 s and 3.8 GB on one thread, and a cold
 `nest run` takes 39 s (docs/large-project-scaling.md). Warm runs are fine, and the doc

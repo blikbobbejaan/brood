@@ -1974,6 +1974,13 @@ program with no annotations checks and runs exactly as before (see
 let you inform — and optionally *enforce* — the type system. Both are macros, not
 special forms.
 
+**Advisory in the image, a gate where you want one.** The checker never stops code from
+loading into a live image — hot reload depends on that — but its verdict is an exit status.
+`nest check` exits non-zero on any finding, and `--strict` adds the findings for a value
+merely wider than a parameter accepts. A project that wants a type gate
+runs `nest check --strict` in CI, as Brood does for `std/` and `tests/` and bedit does for
+itself; `(check-allow :category form…)` records a deliberate exception where it is made.
+
 `(sig name (params… -> ret))` declares a function's signature. It is a pure
 declaration — a runtime no-op — read by the advisory checker, which then flags a
 provably wrong call against it (both the argument and the result type flow):
