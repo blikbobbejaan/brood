@@ -80,6 +80,8 @@ const PROCESS_WIDE: &[(&str, &str, Reason)] = &[
     // One audio thread owns the output device for the whole OS process.
     ("host/audio.rs", "STARTING", OneMachine),
     ("builtins/filesystem.rs", "LOCK", OneMachine),
+    // A signal's disposition belongs to the OS process, so what it was before a trap does.
+    ("builtins/os.rs", "SIGNAL_PRIOR_ACTIONS", OneMachine),
     // The allocator's count, and so the soft memory limit, is the OS process's.
     ("process/pressure.rs", "PRESSURE", OneMachine),
     // The node: one per OS process (ADR-033).

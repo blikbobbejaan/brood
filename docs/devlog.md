@@ -3675,3 +3675,15 @@ misnumbered. Counted repetition now reaches the engine as `{m,n}`, which keeps o
 the last iteration's capture (44 cases). Two more cases differ by design: a `]` first in a set
 closes it (`[]` is the empty set). Also `os/trap`'s pipe uses `pipe` + `FD_CLOEXEC`; macOS has
 no `pipe2`.
+
+2026-10-25 (review of ADR-435..437): lifting a trap, or a dead subscriber giving one up,
+set the signal to `SIG_DFL`, so a `nohup`'d program that trapped SIGHUP died on its next
+hangup, and the REPL lost its Ctrl-C handler. The first trap now saves the disposition and
+both paths put it back, under a lock that also stops a trap racing the reader thread
+(`crates/cli/tests/application_sigterm.rs` starts a runtime with SIGHUP ignored).
+`application/run` hands each signal back to whoever trapped it before, rather than to
+nobody, and drops its root monitors before stopping them; its crash test is `:isolated`, as
+it traps the test runner's own signals. `defstatem` refuses a machine with no data
+parameter, and a backwards `{3,1}` is literal text as the regex dialect's malformation rule
+says, rather than an engine error. Not run on this machine: every test, and the new ones
+run in CI.

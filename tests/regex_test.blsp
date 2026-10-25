@@ -136,12 +136,20 @@
     (is (matches? "(ab){2}" "abab"))
     (is (matches? "\\d{3}" "123"))
     (is (matches? "[a-c]{2}" "ca")))
+  ;; It was once expanded into copies, which copied the group: three groups, and the
+  ;; one after the repetition answered at the wrong number.
+  (test "a repeated group is still one group, holding the last iteration"
+    (let (m (find "(a|b){2}(x)" "abx"))
+      (assert= 2 (count (get m :groups)))
+      (assert= "b" (get (nth (get m :groups) 0) :text))
+      (assert= "x" (get (nth (get m :groups) 1) :text))))
   ;; A brace that is not a well-formed repetition is the character it looks like —
   ;; the same forgiveness the rest of this parser extends to a stray metacharacter.
   (test "a malformed brace is a literal brace"
     (is (matches? "a{x}" "a{x}"))
     (is (matches? "a{" "a{"))
-    (is (matches? "a{2" "a{2")))
+    (is (matches? "a{2" "a{2"))
+    (is (matches? "a{3,1}" "a{3,1}")))
   (test "a repetition too large to expand is refused out loud, not hung on"
     (assert= (get (try (match? "a{1,100000}" "aaa") (catch e e)) :kind) :parse)))
 

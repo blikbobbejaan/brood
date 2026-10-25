@@ -760,7 +760,7 @@ pub(super) fn interrupt_taken(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult
 // the handler writes the signal number to a self-pipe — `write` is async-signal-safe —
 // and one non-worker thread reads the pipe and delivers `[:signal sig]` to whoever
 // trapped it (ADR-059's blocking-work-delivers-to-a-mailbox rule). Policy — what a
-// shutdown stops, in what order — is Brood (`std/proc/app.blsp`).
+// shutdown stops, in what order — is Brood (`std/proc/application.blsp`).
 
 /// The signals a Brood process may trap, by the keyword it names them with.
 #[cfg(unix)]
@@ -782,6 +782,24 @@ static SIGNAL_PIPE_WRITE: std::sync::atomic::AtomicI32 = std::sync::atomic::Atom
 /// The pipe and its reader thread, made once; an error says why the OS refused either.
 #[cfg(unix)]
 static SIGNAL_PIPE: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+
+/// What each trappable signal did before its trap — `SIG_DFL`, the `SIG_IGN` a `nohup`
+/// leaves on SIGHUP, the REPL's Ctrl-C handler — put back when the trap is lifted or its
+/// subscriber has exited; `None` while the signal is not trapped. Holding the lock also
+/// orders a trap against the reader thread giving one up.
+#[cfg(unix)]
+static SIGNAL_PRIOR_ACTIONS: std::sync::Mutex<[Option<libc::sigaction>; 3]> =
+    std::sync::Mutex::new([None, None, None]);
+
+/// Give signal `index` back the disposition it had before it was trapped.
+#[cfg(unix)]
+fn restore_prior_action(prior: &mut [Option<libc::sigaction>; 3], index: usize) {
+    if let Some(action) = prior[index].take() {
+        unsafe {
+            libc::sigaction(TRAPPABLE_SIGNALS[index].1, &action, std::ptr::null_mut());
+        }
+    }
+}
 
 /// The handler for a trapped signal: one `write` of the signal number, nothing else.
 #[cfg(unix)]
@@ -828,22 +846,36 @@ fn start_signal_pipe() -> Result<(), String> {
             let Some(index) = TRAPPABLE_SIGNALS.iter().position(|(_, s)| *s == signum) else {
                 continue;
             };
-            let subscriber = SIGNAL_SUBSCRIBERS[index].load(Ordering::Acquire);
-            if subscriber != 0 && crate::process::is_alive(subscriber) {
-                crate::process::deliver(
-                    subscriber,
-                    crate::process::Message::Vector(vec![
-                        crate::process::Message::Keyword(value::intern("signal")),
-                        crate::process::Message::Keyword(value::intern(TRAPPABLE_SIGNALS[index].0)),
-                    ]),
-                );
-            } else {
-                // Nobody is left to act on it: the signal does what it would have done
-                // untrapped, so a dead subscriber cannot make the runtime unkillable.
-                SIGNAL_SUBSCRIBERS[index].store(0, Ordering::Release);
-                unsafe {
-                    libc::signal(signum, libc::SIG_DFL);
-                    libc::raise(signum);
+            loop {
+                let subscriber = SIGNAL_SUBSCRIBERS[index].load(Ordering::Acquire);
+                if subscriber != 0 && crate::process::is_alive(subscriber) {
+                    crate::process::deliver(
+                        subscriber,
+                        crate::process::Message::Vector(vec![
+                            crate::process::Message::Keyword(value::intern("signal")),
+                            crate::process::Message::Keyword(value::intern(
+                                TRAPPABLE_SIGNALS[index].0,
+                            )),
+                        ]),
+                    );
+                    break;
+                }
+                // Nobody is left to act on it: the signal does what it did before it was
+                // trapped, so a dead subscriber cannot make the runtime unkillable. A trap
+                // made since the load above wins, and gets the signal instead.
+                let mut prior = SIGNAL_PRIOR_ACTIONS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if SIGNAL_SUBSCRIBERS[index]
+                    .compare_exchange(subscriber, 0, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    restore_prior_action(&mut prior, index);
+                    drop(prior);
+                    unsafe {
+                        libc::raise(signum);
+                    }
+                    break;
                 }
             }
         }
@@ -897,17 +929,25 @@ pub(super) fn trap_signal(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
                     LispError::runtime(format!("%trap-signal: no signal pipe: {why}"))
                 })?;
         }
+        let mut prior = SIGNAL_PRIOR_ACTIONS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous = SIGNAL_SUBSCRIBERS[index].swap(subscriber, Ordering::AcqRel);
-        unsafe {
-            if subscriber == 0 {
-                libc::signal(signum, libc::SIG_DFL);
-            } else {
+        if subscriber == 0 {
+            restore_prior_action(&mut prior, index);
+        } else {
+            // Installed on every trap (something may have replaced the handler since), but
+            // the disposition to restore is the one from before the FIRST trap.
+            unsafe {
                 let handler: extern "C" fn(libc::c_int) = brood_forward_signal;
                 let mut action: libc::sigaction = std::mem::zeroed();
                 action.sa_sigaction = handler as usize as libc::sighandler_t;
                 action.sa_flags = libc::SA_RESTART;
                 libc::sigemptyset(&mut action.sa_mask);
-                libc::sigaction(signum, &action, std::ptr::null_mut());
+                let mut replaced: libc::sigaction = std::mem::zeroed();
+                if libc::sigaction(signum, &action, &mut replaced) == 0 && prior[index].is_none() {
+                    prior[index] = Some(replaced);
+                }
             }
         }
         Ok(if previous == 0 {

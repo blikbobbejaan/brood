@@ -439,6 +439,8 @@ with `gen/start`; drive it with `gen/cast`, `gen/call` and `gen/stop`.
                   `(do ~@(rest init-clause))
                   `[~(first (first state-blocks)) ~data-sym])
         entry `(gen/run-statem ~handler ~terminate ~initial))
+    (when (not (symbol? data-sym))
+      (error "defstatem " name ": the parameter list must start with the data parameter"))
     (when (empty? state-blocks) (error "defstatem " name ": no states"))
     (when (not (= known (count clauses)))
       (error "defstatem "

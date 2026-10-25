@@ -139,14 +139,18 @@ arguments are ignored.
         roots (into {}
                 (seq/keep started
                   (fn (entry)
-                    (let ([_ root] entry) (when (pid? root) [(monitor root) root]))))))
-    (os/trap :term)
-    (os/trap :int)
+                    (let ([_ root] entry) (when (pid? root) [(monitor root) root])))))
+        previous-term (os/trap :term)
+        previous-int (os/trap :int))
+    ;; Registered last: a process that finds `:application` knows the traps are armed.
     (proc/register :application (self))
     (let (ended (await-stop roots))
-      (os/trap :term nil)
-      (os/trap :int nil)
+      ;; Whoever trapped the signals before gets them back, and the roots' monitors go,
+      ;; so stopping the roots leaves no `:down` behind in the caller's mailbox.
+      (os/trap :term previous-term)
+      (os/trap :int previous-int)
       (proc/unregister :application)
+      (doseq (ref (keys roots)) (demonitor ref))
       (if (nil? ended)
         (do (stop started) :ok)
         (let ([pid reason] ended)

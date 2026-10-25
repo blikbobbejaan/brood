@@ -2568,9 +2568,11 @@ reading, which is OTP's `logger` behaviour.
 `:int` (Ctrl-C) or `:hup` — to the calling process as the message
 `[:signal sig]` instead of its default action (for all three, ending the
 runtime). `(os/trap sig pid)` names another process; `(os/trap sig nil)`
-restores the default. One subscriber per signal, and the call returns the
-previous one. If the subscriber has exited when the signal arrives, the default
-action runs, so a forgotten trap never leaves a program unkillable.
+gives the signal back what it did before it was trapped (the default, or the
+`SIG_IGN` a `nohup` leaves). One subscriber per signal, and the call returns
+the previous one. If the subscriber has exited when the signal arrives, the
+signal does what it did before the trap, so a forgotten trap never leaves a
+program unkillable.
 
 **An application** (`std/proc/application.blsp`, ADR-436) is what a
 long-running program starts, in what order, and how it stops:

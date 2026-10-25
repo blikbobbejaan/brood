@@ -55,8 +55,9 @@ lookaround. Each pattern is parsed once and compiled once, then cached.")
 ;; ---- parse: pattern string -> AST -------------------------------------------
 ;; A pattern parses to a list of BRANCHES (the top-level alternation); each branch
 ;; is a list of PIECES; a piece is an ATOM, optionally wrapped `{:q :star/:plus/:opt
-;; :a atom}` or `{:q :count :lo :hi :a atom}`. Atoms are tagged maps: {:t :lit :c c} {:t :any} {:t :bol} {:t :eol}
-;; {:t :set :neg b :chars (…)} {:t :class :k :digit/:word/:space} {:t :group :alt …}.
+;; :a atom}` or `{:q :count :lo :hi :a atom}`. Atoms are tagged maps: {:t :lit :c c}
+;; {:t :any} {:t :bol} {:t :eol} {:t :set :neg b :chars (…)} {:t :class :k
+;; :digit/:word/:space} {:t :group :alt …}.
 
 (defn- regex-peek (pcs: (vector string) i:int -> (or nil string))
   (if (< i (count pcs)) (nth pcs i) nil))
@@ -183,12 +184,13 @@ all — in which case the caller treats the `{` as the literal character it look
     (cond
       (= lo-text "") nil
       (= c "}") [(reflect/read-string lo-text) (reflect/read-string lo-text) (inc i2)]
+      ;; A backwards range (`{3,1}`) is malformed, so it means its characters too.
       (= c ",")
-        (let ([hi-text i3] (regex-digits-at pcs (inc i2) ""))
-          (when (= (regex-peek pcs i3) "}")
-            [(reflect/read-string lo-text)
-              (if (= hi-text "") nil (reflect/read-string hi-text))
-              (inc i3)]))
+        (let ([hi-text i3] (regex-digits-at pcs (inc i2) "")
+              lo (reflect/read-string lo-text)
+              hi (if (= hi-text "") nil (reflect/read-string hi-text)))
+          (when (and (= (regex-peek pcs i3) "}") (or (nil? hi) (<= lo hi)))
+            [lo hi (inc i3)]))
       else nil)))
 
 ;; Counted repetition stays counted: the engine has `{m,n}` itself. Expanding it into

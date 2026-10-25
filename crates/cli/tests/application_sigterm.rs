@@ -17,6 +17,15 @@ const DEADLINE: Duration = Duration::from_secs(30);
 
 /// Start `brood` on `source`, returning the child and a channel of its stdout lines.
 fn start(name: &str, source: &str) -> (Child, Receiver<String>, std::path::PathBuf) {
+    start_with(name, source, |_| {})
+}
+
+/// [`start`], letting `configure` adjust the command first.
+fn start_with(
+    name: &str,
+    source: &str,
+    configure: impl FnOnce(&mut Command),
+) -> (Child, Receiver<String>, std::path::PathBuf) {
     let path = std::env::temp_dir().join(format!(
         "brood-application-{}-{name}.blsp",
         std::process::id()
@@ -24,14 +33,17 @@ fn start(name: &str, source: &str) -> (Child, Receiver<String>, std::path::PathB
     let mut file = std::fs::File::create(&path).expect("create script");
     file.write_all(source.as_bytes()).expect("write script");
     drop(file);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_brood"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_brood"));
+    command
         .env("BROOD_NO_CHECK", "1")
         .env("BROOD_NO_CRASH_REPORT", "1")
         .arg(&path)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("run brood");
+        // Inherited, not piped: nothing drains a pipe, and a full one would block the child.
+        .stderr(Stdio::inherit());
+    configure(&mut command);
+    let mut child = command.spawn().expect("run brood");
     let stdout = child.stdout.take().expect("piped stdout");
     let (lines_in, lines_out) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -133,4 +145,44 @@ fn a_dead_subscriber_leaves_sigterm_fatal() {
         Some(libc::SIGTERM),
         "a trap whose subscriber exited must not swallow SIGTERM; status {status:?}"
     );
+}
+
+#[test]
+fn lifting_a_trap_gives_back_an_ignored_sighup() {
+    // Started the way `nohup` starts a program: SIGHUP ignored. Lifting a trap must put
+    // that back, not the default action, which would end the runtime on a hangup.
+    let source = r#"
+(os/trap :hup)
+(os/trap :hup nil)
+(io/puts "ready")
+(read-line)
+(io/puts "survived")
+"#;
+    let (mut child, lines, path) = start_with("ignored-hangup", source, |command| {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            command.pre_exec(|| {
+                libc::signal(libc::SIGHUP, libc::SIG_IGN);
+                Ok(())
+            });
+        }
+    });
+    wait_for(&mut child, &lines, "ready");
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGHUP);
+    }
+    // A fatal signal ends the process at `kill`, so the line below reaches a live child
+    // only if the hangup was ignored.
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let _ = stdin.write_all(b"go\n");
+    drop(stdin);
+    let status = wait_exit(&mut child);
+    let rest: Vec<String> = lines.iter().collect();
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        rest,
+        ["survived"],
+        "SIGHUP must stay ignored after the trap is lifted; status {status:?}"
+    );
+    assert_eq!(status.code(), Some(0));
 }
