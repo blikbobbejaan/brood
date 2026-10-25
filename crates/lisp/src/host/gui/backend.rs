@@ -257,6 +257,9 @@ enum UserEvent {
     },
     /// Replace window `id`'s frame and repaint it.
     Draw { id: u64, ops: Vec<Op> },
+    /// Window `id`'s app finished a turn with nothing new to draw (ADR-444): what a Draw
+    /// would have told the window about the app's progress, without the frame.
+    Settle { id: u64 },
     /// Destroy window `id`.
     Close { id: u64 },
     /// Set window `id`'s OS title-bar text at runtime. Behind `gui-title!`.
@@ -821,6 +824,18 @@ pub fn draw(id: u64, ops: Vec<Op>) -> Result<(), String> {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .send_event(UserEvent::Draw { id, ops })
+        .map_err(|_| "gui thread is gone".to_string())
+}
+
+/// `(gui-settle id)` — window `id`'s app finished a turn with nothing to draw (ADR-444).
+pub fn settle(id: u64) -> Result<(), String> {
+    if headless() {
+        return Ok(());
+    }
+    gui()?
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .send_event(UserEvent::Settle { id })
         .map_err(|_| "gui thread is gone".to_string())
 }
 
@@ -1741,6 +1756,15 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     w.window.request_redraw();
                 }
             }
+            UserEvent::Settle { id } => {
+                if let Some(w) = self.ids.get(&id).and_then(|wid| self.wins.get_mut(wid)) {
+                    // As a Draw would: the app is done with the last scroll step, so the
+                    // next momentum step may fire — and the input it was answering changed
+                    // nothing, so no later frame is its answer.
+                    w.scroll_pending = false;
+                    w.input_at = None;
+                }
+            }
             UserEvent::Close { id } => {
                 if let Some(wid) = self.ids.remove(&id) {
                     self.wins.remove(&wid); // dropping the window closes it
@@ -1929,22 +1953,39 @@ impl ApplicationHandler<UserEvent> for GuiApp {
         let Some(w) = self.wins.get_mut(&window_id) else {
             return;
         };
-        // Stamp the input this event is (ADR-440): a key press, a button, a wheel step.
-        // The earliest unanswered one is kept; the next frame to arrive answers it. A
-        // press the arms below drop (an auto-repeat) is stamped too — the frame the
-        // app's own repeat draws answers it, which is what the user waits on.
+        // Stamp the input this event is (ADR-440): a key press, a button press, a wheel step.
+        // The earliest unanswered one is kept; the next frame to arrive answers it, and a
+        // turn that settles with nothing to draw (`settle`) drops it. A press the arms below
+        // drop (an auto-repeat) is stamped too — the frame the app's own repeat draws
+        // answers it, which is what the user waits on. A bare modifier is not: `C-x` is
+        // timed from the `x`, not from however long Ctrl was held before it.
         if w.input_at.is_none()
             && match &event {
                 WindowEvent::KeyboardInput {
                     event: key_event,
                     is_synthetic,
                     ..
-                } => key_event.state == ElementState::Pressed && !is_synthetic,
-                WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => true,
+                } => {
+                    key_event.state == ElementState::Pressed
+                        && !is_synthetic
+                        && !is_modifier_key(key_event)
+                }
+                WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,
+                WindowEvent::MouseWheel { .. } => true,
                 _ => false,
             }
         {
             w.input_at = Some(Instant::now());
+        }
+        // A key that reached the window is not part of a composition: one that was
+        // cancelled (Escape sends an empty preedit and no commit) must not make the next
+        // one-character commit read as composed text.
+        if let WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } = &event
+            && key_event.state == ElementState::Pressed
+        {
+            w.ime_composed = false;
         }
         match event {
             // The window's close button → a dedicated `:close` message,
@@ -2060,6 +2101,12 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 *lock(&w.held_key) = None;
                 w.held_physical = None;
                 deliver(w.subscriber, Message::Keyword(value::intern("blur")));
+                // A composition does not survive the window losing focus on every
+                // platform's IME, and not every one says so: clear what the app shows.
+                w.ime_composed = false;
+                if std::mem::take(&mut w.preedit_shown) {
+                    deliver(w.subscriber, preedit_message("", None));
+                }
                 // Same for a held mouse button: its release may land off-window /
                 // unfocused and never reach us, so synthesize one now (see CursorLeft).
                 if let Some(b) = w.held.take() {
@@ -2399,21 +2446,28 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 }
                 let _sg = crate::core::heap::stall_guard("gui-paint");
                 let paint_start = Instant::now();
-                let split = match &mut w.backend {
+                // `presented_frame` false: the GPU target skipped the frame (a stale
+                // swapchain mid-resize, an occluded window) — nothing reached the
+                // compositor, so the input stays unanswered for the frame that does.
+                let (split, presented_frame) = match &mut w.backend {
                     Backend::Cpu { surface, .. } => {
                         paint(surface, &w.window, &mut w.renderer, &w.frame);
-                        None
+                        (None, true)
                     }
                     #[cfg(feature = "gui-gpu")]
-                    Backend::Gpu(gpu) => gpu.paint(&w.frame, &mut w.renderer).map(|times| {
-                        [
-                            times.encode_us,
-                            times.upload_us,
-                            times.acquire_us,
-                            times.submit_us,
-                            times.present_us,
-                        ]
-                    }),
+                    Backend::Gpu(gpu) => match gpu.paint(&w.frame, &mut w.renderer) {
+                        Some(times) => (
+                            Some([
+                                times.encode_us,
+                                times.upload_us,
+                                times.acquire_us,
+                                times.submit_us,
+                                times.present_us,
+                            ]),
+                            true,
+                        ),
+                        None => (None, false),
+                    },
                 };
                 let presented = Instant::now();
                 // The frame is on its way to the compositor: now the window may appear.
@@ -2421,7 +2475,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     w.shown = true;
                     w.window.set_visible(true);
                 }
-                if let Some(input_at) = w.draw_input.take() {
+                if presented_frame && let Some(input_at) = w.draw_input.take() {
                     record_latency(w, input_at, paint_start, presented, split);
                 }
                 w.particles_next = w

@@ -914,6 +914,13 @@ pub(in crate::builtins) fn gui_size_px(args: &[Value], _: EnvId, heap: &mut Heap
     Ok(heap.alloc_vector2(Value::int(w as i64), Value::int(h as i64)))
 }
 
+/// `(%gui-settle id)` — window `id`'s app finished a turn with nothing new to draw (ADR-444).
+pub(in crate::builtins) fn gui_settle(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let id = gui_window_id(heap, "%gui-settle", arg(args, 0))?;
+    crate::host::gui::settle(id).map_err(LispError::runtime)?;
+    Ok(Value::nil())
+}
+
 /// `(%gui-latency id)` — window `id`'s recent input-to-present samples, oldest first, as
 /// maps of milliseconds: `:total` (input to present) and `:paint` (the paint's share),
 /// plus the GPU paint's `:encode` `:upload` `:acquire` `:submit` `:present` phases when

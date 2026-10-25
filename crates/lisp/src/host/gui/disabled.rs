@@ -82,6 +82,9 @@ pub fn latency(_id: u64) -> Result<Vec<super::LatencySample>, String> {
 pub fn draw(_id: u64, _ops: Vec<Op>) -> Result<(), String> {
     Err(NOT_COMPILED.into())
 }
+pub fn settle(_id: u64) -> Result<(), String> {
+    Err(NOT_COMPILED.into())
+}
 pub fn font(_id: Option<u64>, _family: Option<u32>, _px: Option<f32>) -> Result<(), String> {
     Err(NOT_COMPILED.into())
 }

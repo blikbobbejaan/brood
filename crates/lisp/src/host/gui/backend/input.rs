@@ -324,6 +324,29 @@ pub(super) fn typed_text(ke: &KeyEvent, mods: ModifiersState) -> Option<String> 
     (chars.next().is_some() && !text.chars().any(char::is_control)).then(|| text.to_string())
 }
 
+/// A bare modifier or lock key: a press the app is never sent and so never answers with a
+/// frame — the latency stamp (ADR-440) waits for the key it modifies instead.
+pub(super) fn is_modifier_key(ke: &KeyEvent) -> bool {
+    matches!(
+        ke.logical_key,
+        WKey::Named(
+            NamedKey::Shift
+                | NamedKey::Control
+                | NamedKey::Alt
+                | NamedKey::AltGraph
+                | NamedKey::Super
+                | NamedKey::Meta
+                | NamedKey::Hyper
+                | NamedKey::CapsLock
+                | NamedKey::NumLock
+                | NamedKey::Fn
+                | NamedKey::FnLock
+                | NamedKey::Symbol
+                | NamedKey::SymbolLock
+        )
+    )
+}
+
 pub(super) fn translate_key(ke: &KeyEvent, mods: ModifiersState) -> Option<Key> {
     use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
     let modifiers = key_modifiers(mods);
@@ -382,10 +405,18 @@ pub(super) fn translate_key(ke: &KeyEvent, mods: ModifiersState) -> Option<Key> 
 /// while an unshifted chord lower-cases (so Caps Lock / a stray Shift can't change the
 /// binding). A chord with Super spells through `named_key` (`:super-x`, `:ctrl-super-x`).
 fn character_chord(c: char, modifiers: KeyModifiers) -> Key {
+    // Unicode case, so `M-Ä` is not `M-ä`; a letter whose other case is not one char
+    // (`ß` → "SS") keeps its own.
+    fn single(c: char, mut cased: impl Iterator<Item = char>) -> char {
+        match (cased.next(), cased.next()) {
+            (Some(only), None) => only,
+            _ => c,
+        }
+    }
     let case_kept = if !modifiers.ctrl && modifiers.shift {
-        c.to_ascii_uppercase()
+        single(c, c.to_uppercase())
     } else {
-        c.to_ascii_lowercase()
+        single(c, c.to_lowercase())
     };
     match modifiers {
         KeyModifiers {
