@@ -14,6 +14,50 @@
 > cites them, or the source; the full text is recoverable from git history
 > (`git show fdce5400^:docs/<name>.md`).
 
+> ## 📐 DESIGN NOTE (2026-10-25) — `matmul`'s gap is shared-region reads, not boxing
+>
+> The queue item **"Unboxed arrays (`matmul` — boxed 24-byte `Value` array reads)"** below assumed
+> the cost was the boxed cell. A `perf` profile of `matmul` at n=175 (1.61G instructions,
+> cubic part dominant: n=350 is 6.4×) says otherwise:
+>
+> | symbol | cycles |
+> |---|---|
+> | `brood_jit_arm_5` (`dot`, native) | 25.9% |
+> | `exec_chunk` | 14.1% |
+> | `Heap::vector` | 14.0% |
+> | `brood_rt_vector_ref` | 9.2% |
+> | `Heap::code_gen_ref` | 8.4% |
+>
+> **31% is element reads leaving native code.** `a` and `b` are `def`'d globals, so they live in
+> the shared RUNTIME region, and `inline_vec_ref` (`jit_lower/emit.rs`) indexes only LOCAL
+> vectors: a PRELUDE/RUNTIME handle takes the `brood_rt_vector_ref` FFI, because the shared slabs
+> are chunked `boxcar::Vec`s with no single base. Each read then pays the callback, the region
+> dispatch in `Heap::vector`, and `code_gen_ref`'s generation-version check. `matmul` is integer
+> code, so unboxed float storage would not touch it, and an unboxed element store behind the same
+> FFI would save almost nothing.
+>
+> **Order of work, then:**
+>
+> 1. **Inline shared-region vector reads.** `boxcar`'s bucket for index `i` is computable: in
+>    0.2.14 (`SKIPPED_BUCKETS = 5`, `buckets.rs`) it is `⌊log2(i + 32)⌋ − 5`, at offset
+>    `i + 32 − 2^⌊log2(i + 32)⌋`, one `lzcnt` and a shift. So native code can
+>    index a RUNTIME vector given a per-generation bucket-base table. Publish that table the way
+>    `brood_rt_vec_nursery_base` publishes the LOCAL base, re-read after a safepoint, and guard it
+>    with the generation version `code_gen_ref` already keeps. Expected: most of the 31%.
+>    Measure on `matmul`, `nqueens` and `sieve` (all read `def`'d vectors in hot loops).
+> 2. **Then** unboxed element storage, where it still pays: a vector whose elements are all
+>    `Int` or all `Float` could keep them as packed 8-byte words, chosen at construction (as V8's
+>    elements kinds are) and invisible to Brood. It stays one `Value` kind, fully immutable
+>    (ADR-026: a fresh vector per update, no mutable buffer), so the type lattice and
+>    `docs/types.md`'s compatibility contract do not move. It pays for memory bandwidth (24 → 8
+>    bytes a cell) and for the float box on read, so `nbody`/`mandelbrot`-shaped code is the
+>    target, and only once reads are inline.
+> 3. Not this: a new user-visible `f64vector` kind. It is a second vector API, a new `Value` tag
+>    for every primitive and the checker to learn, for what (2) gives transparently.
+>
+> Raising the leaf inliner's limits was measured on the same day and buys nothing (every row
+> noise at body 48 / 12 blocks), so it is not on this list.
+
 > ## ✅ CLOSED (2026-07-27) — the KI-14 guard cost is recovered; the named suspect was wrong
 >
 > The regression this block was opened for (**`fib` 57 → 75 ms, `pfib` 165 → 218 ms**, bisected to

@@ -3764,6 +3764,16 @@ Rust comments describe Brood in its own terms (the August decision), `docs/elixi
 is gone, and history files are untouched. Not run on this machine:
 `tests/names_test.blsp` is new and runs in CI.
 
+2026-10-25 (the call IC entry is 48 bytes, was 64): `CallIcEntry` is one per call site a process has
+run, the largest item in a parked green process. A `spawn-live` unit holds 7. Its callee is now a
+one-byte kind plus a `u64` handle instead of a 24-byte `Value` (24 for `Pid`'s second word, which no
+callee needs), `argc` is a `u16`, and the arm's env sits beside the arm instead of in a tuple. Only
+closures, builtins and keywords are cached; anything else, or a site with more than 65 535 literal
+arguments, resolves on every call as a cold site does. The size is a compile-time assertion.
+`spawn-live` at 200 000 processes: 943 → 927 MB peak RSS. `make ab --floor` (fib, pfib, bintree,
+spawn, spawn-live, pingpong, ring, json) and `make ab-vm`: noise. Not run on this machine: the new
+`call_ic_entry_tests`, in CI.
+
 2026-10-25 (`groups`, process groups across a cluster; ADR-446; ROADMAP gap E done): one
 group server per node, registered as `:groups`, owning a table of group → pid → origin node.
 Each server monitors its own node's members and casts every join, leave and death to its
