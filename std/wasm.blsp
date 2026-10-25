@@ -1,33 +1,42 @@
-;; std/wasm.blsp — WASM component interop, the Brood layer (ADR-071/145).
+;; std/wasm.blsp — WASM component interop, the Brood layer (ADR-071/145/453).
 ;;
 ;; A **component** is sandboxed native code: hash-pinned `.wasm` data a package
 ;; ships, instantiated by the embedded wasmtime host — linear memory only (it
-;; cannot touch the Brood heap), no capabilities wired (pure compute in this
-;; slice), fuel-metered (a runaway guest is a catchable error, never a wedged
-;; worker). Values marshal across the boundary by the export's WIT types
-;; (ints/floats/bools/strings/chars, lists, tuples, options; results lift
-;; records → maps, variants → tagged vectors, enums → keywords, and a WIT
-;; `result` error raises).
+;; cannot touch the Brood heap), fuel-metered (a runaway guest is a catchable
+;; error, never a wedged worker). Values marshal across the boundary by the
+;; export's WIT types (ints/floats/bools/strings/chars, lists, tuples, options;
+;; results lift records → maps, variants → tagged vectors, enums → keywords, and
+;; a WIT `result` error raises).
+;;
+;; **Capabilities are granted, never ambient (ADR-453).** Loaded without grants, a
+;; component gets no WASI at all — one that imports it fails to load. Loaded with a
+;; grants map it gets WASI preview 2: clocks and randomness, plus exactly the
+;; directories, environment variables, arguments and stdio the map lists. Never the
+;; network.
 ;;
 ;; An instance is MUTABLE STATE, so it follows the language's rule for mutable
 ;; state: an opaque handle behind primitives — never a `Value` you can `send`.
 ;; Share one by giving it to a process and talking to that process by message.
 ;; The handle is an unguessable token (a capability: a process reaches only an
 ;; instance it was handed), and the instance belongs to the process that loaded
-;; it — when that process exits, the instance is closed with it.
+;; it — when that process exits, the instance is closed with it. A guest
+;; `resource` (a connection, a parser) is a token too, valid only with its
+;; instance: an `own<T>` result is held until `release` or until it is passed
+;; back as an `own<T>` argument, which moves it into the guest.
 ;;
 ;; Mechanism is the `%wasm-*` primitives; this module is the policy: file
 ;; loading, ergonomic calls, and `use-native` — the "use Rustler" moment that
 ;; binds every export as an ordinary Brood function.
 
 (defmodule wasm
-  "WASM component interop (ADR-071/145): load sandboxed native components and
+  "WASM component interop (ADR-071/145/453): load sandboxed native components and
 call their exports as ordinary functions. `wasm/load` a `.wasm` (or WAT text
-via `instantiate`), `call` its exports, or `use-native` to bind every
-export as a named Brood function. Calls are fuel-metered and sandboxed; long
-calls go through the dirty-offload pool (`call-blocking`).")
+via `instantiate`), optionally with WASI grants, `call` its exports, or
+`use-native` to bind every export as a named Brood function. Calls are
+fuel-metered and sandboxed; long calls go through the dirty-offload pool
+(`call-blocking`).")
 
-(defn load (path:string -> int)
+(defn load (path:string &optional grants)
   "Instantiate the compiled WASM component at `path` (a `.wasm` file). Returns
 an instance handle for `call`/`use-native`. An instance is a **manual
 resource** — its store, code, and linear memory live until you `close` it or
@@ -38,36 +47,59 @@ runtime keeps the last few components it compiled, keyed by a hash of the
 bytes), so closing and reloading to give back linear memory or to recover
 from a trap costs a fresh instance, not a recompile.
 
-    (wasm/load \"codec.wasm\")   ;=> an int instance handle, for wasm/call"
-  (%wasm-load (file/slurp-bytes path)))
+`grants` links WASI preview 2 (ADR-453), deny-by-default: `:dirs` a vector of
+`[host-dir guest-dir]` (read-only) or `[host-dir guest-dir :write]`, `:env` a
+map of the variables the guest sees, `:args` its argv, `:stdio` true to pass
+its stdout and stderr through. Clocks and randomness come with any grants map,
+`{}` included; the network never does. Without `grants` a component that
+imports WASI fails to load.
 
-(defn instantiate (source)
+    (wasm/load \"codec.wasm\")   ;=> an int instance handle, for wasm/call
+    (wasm/load \"sqlite.wasm\" {:dirs [[\"data\" \"/data\" :write]]})   ;=> a handle whose guest sees ./data as /data"
+  (%wasm-load (file/slurp-bytes path) grants))
+
+(defn instantiate (source &optional grants)
   "Instantiate a WASM component from in-memory `source`: a `bytes` value (a
-compiled component) or a string of WAT text — the REPL/testing path.
+compiled component) or a string of WAT text — the REPL/testing path. `grants`
+as for `load`.
 
     (wasm/instantiate (file/slurp-bytes \"codec.wasm\"))   ;=> an int instance handle"
-  (%wasm-load source))
+  (%wasm-load source grants))
 
 (defn exports (inst:int -> any)
-  "The instance's exported functions, as a vector of `[name arity]` pairs.
+  "The instance's exported functions, as a vector of `[name arity]` pairs. A
+function of an exported interface is named `interface#function`
+(`\"brood:sqlite/db#[method]connection.query\"`).
 
     (wasm/exports inst)   ;=> [[\"add\" 2] [\"greet\" 1]]"
   (%wasm-exports inst))
 
 (defn call (inst name & args)
   "Call export `name` (a string) of `inst` with `args`, marshalled by the
-export's WIT parameter types. Runs inline, fuel-capped — for short compute.
-A trap (including out-of-fuel) raises a catchable error.
+export's WIT parameter types. `name` is the export's full name, or an interface
+function's bare name (`\"[method]connection.query\"`) when no other export
+shares it. A resource argument is its token. Runs inline, fuel-capped — for
+short compute. A trap (including out-of-fuel) raises a catchable error.
 
     (wasm/call inst \"add\" 2 3)   ;=> 5, for an export that adds its two ints"
   (%wasm-call inst name (into [] args)))
 
 (defn call-blocking (inst name & args)
   "Like `call`, but on the dirty-offload OS pool (ADR-144): only this
-process waits, never a scheduler worker. For long-running guest calls.
+process waits, never a scheduler worker. For long-running guest calls — and
+for any call that reaches the disk through WASI.
 
     (wasm/call-blocking inst \"compress\" data)   ;=> the export's result, computed off the scheduler"
   (offload %wasm-call inst name (into [] args)))
+
+(defn release (inst:int resource:int -> bool)
+  "Drop guest `resource` (a token an export returned) of `inst`, running the
+guest's destructor. True if `inst` held it; false if it was already released or
+moved into the guest by an `own<T>` argument. Every resource also goes when its
+instance closes.
+
+    (wasm/release inst connection)   ;=> true"
+  (%wasm-release inst resource))
 
 (defn close (inst:int -> nil)
   "Drop `inst`: the sandbox and everything the guest owns is freed. Idempotent.
@@ -75,19 +107,36 @@ process waits, never a scheduler worker. For long-running guest calls.
     (wasm/close inst)   ;=> nil"
   (%wasm-close inst))
 
+(defn native-name (export:string)
+  "The Brood name `use-native` binds export `export` (a string) to: the interface
+dropped, and a resource's functions spelled as `type-function` — `[constructor]T`
+is `T-new`, `[method]T.f` and `[static]T.f` are `T-f`.
+
+    (wasm/native-name \"add\")                                  → \"add\"
+    (wasm/native-name \"brood:sqlite/db#[method]connection.query\")   → \"connection-query\"
+    (wasm/native-name \"db#[constructor]connection\")            → \"connection-new\""
+  (let (at (index-of export "#")
+        bare (if (< at 0) export (string/substring export (inc at) (string/length export))))
+    (cond
+      (string/starts-with? bare "[constructor]")
+        (str (string/drop-prefix bare "[constructor]") "-new")
+      (or (string/starts-with? bare "[method]") (string/starts-with? bare "[static]"))
+        (str (string/replace (string/substring bare (inc (index-of bare "]")) (string/length bare))
+               "." "-"))
+      else bare)))
+
 (defn use-native (inst)
-  "Bind every export of `inst` as a global Brood function of the same name —
-the `use Rustler` moment, driven by the component's own interface. Returns the
-list of names bound. The bindings are ordinary `def`s (hot-reloadable); each
-calls the export inline — wrap with `call-blocking` yourself for exports
-that run long.
+  "Bind every export of `inst` as a global Brood function — the `use Rustler`
+moment, driven by the component's own interface. Each is named by
+`native-name`, so a resource's constructor is `T-new` and its methods `T-f`,
+taking the resource token first. Returns the list of names bound. The bindings
+are ordinary `def`s (hot-reloadable); each calls the export inline — wrap with
+`call-blocking` yourself for exports that run long.
 
     (wasm/use-native inst)   ;=> (add greet) -- now callable as (add 2 3)"
   (map (exports inst)
     (fn (e)
-      (let (name (first e))
-        (reflect/eval (list 'defn
-                        (string/->symbol name)
-                        '(& args)
-                        (list '%wasm-call inst name '(into [] args))))
-        (string/->symbol name)))))
+      (let (name (str (first e))
+            symbol (string/->symbol (native-name name)))
+        (reflect/eval (list 'defn symbol '(& args) (list '%wasm-call inst name '(into [] args))))
+        symbol))))

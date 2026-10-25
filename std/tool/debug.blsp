@@ -79,7 +79,10 @@ pause with `break`, and correlate with `span` (`span-spawn` is now just
     ([:span-exit span pid value] (debug-loop (debug-record state
                                                {:kind :span-exit :span span :pid pid :value value})))
     ([:break pid snapshot]
-      ;; The worker is now blocked on receive awaiting [:resume] — record it as paused.
+      ;; The worker is now blocked on receive awaiting [:resume] — record it as paused,
+      ;; and tell whoever watches for breaks (`watch-breaks`: an editor, a DAP adapter).
+      (doseq (watcher (or (get state :watchers) []))
+        (send watcher [:debug-break (self) pid snapshot]))
       (debug-loop (debug-record (assoc-in state [:paused pid] snapshot)
                     {:kind :break :pid pid :label (get snapshot :label)})))
     ([:resume pid] (send pid [:resume])
@@ -87,10 +90,21 @@ pause with `break`, and correlate with `span` (`span-spawn` is now just
     ([:resume-all reply] (doseq (p (keys (get state :paused))) (send p [:resume]))
       (when reply (send reply [:resumed (count (get state :paused))]))
       (debug-loop (assoc state :paused {})))
+    ([:watch watcher] (debug-loop (assoc state
+                                    :watchers (conj (or (get state :watchers) []) watcher))))
     ([:query reply] (send reply [:state state])
       (debug-loop state))
     ([:stop reply] (when reply (send reply [:stopped]))
       :stopped)))
+
+(defn watch-breaks (dbg watcher)
+  "Have debugger `dbg` tell `watcher` (a pid) of every break as it happens, as
+`[:debug-break dbg pid snapshot]` — what a front end that is not polling `paused` needs (a
+Debug Adapter Protocol server sends its `stopped` event from it). Returns nil.
+
+    (debug/watch-breaks d (self))   ;=> nil; the next break arrives as [:debug-break d pid snapshot]"
+  (send dbg [:watch watcher])
+  nil)
 
 (defn start-debugger ()
   "Spawn a fresh debugger process and return its pid. Wire it in with `with-debugger`, then `spy` / `break` / `span` stream to it.

@@ -164,6 +164,9 @@ struct Ctl {
     /// A listener's fd, shared with the reactor so `close` can shut it on the calling
     /// thread. `None` for a stream.
     listener: Option<ListenerSlot>,
+    /// A TLS client stream's negotiated ALPN protocol (`tls-connect`), set by the reactor
+    /// when the handshake completes; `None` for every other socket.
+    alpn: Option<Arc<OnceLock<String>>>,
 }
 
 /// A listener's fd, held jointly by its control-plane entry and the reactor. `close`
@@ -339,6 +342,8 @@ enum Cmd {
         server_name: ServerName<'static>,
         request: Vec<u8>,
         config: Arc<ClientConfig>,
+        /// `Some` for a persistent `tls-connect` stream: no request, announce when ready.
+        announce: Option<Arc<OnceLock<String>>>,
     },
     /// Start reading a passive (accepted) stream — the claim half of
     /// `tcp-controlling-process` (the owner is retargeted control-side).
@@ -696,6 +701,11 @@ struct TlsConn {
     idle: Option<Duration>,
     /// Last time bytes moved (inbound plaintext or outbound `Send`).
     last_activity: Instant,
+    /// A persistent client (`tls-connect`) still to announce itself: when the handshake
+    /// completes the reactor records the negotiated ALPN protocol here and emits
+    /// `[:tcp-connected sock]`, ahead of any data. `None` once announced, and always for a
+    /// server connection or a one-shot `tls-request`.
+    announce: Option<Arc<OnceLock<String>>>,
 }
 
 /// A passive accepted TLS connection: raw materials until claimed.
@@ -970,6 +980,7 @@ fn accept_ready(
                         claimed: false,
                         port,
                         listener: None,
+                        alpn: None,
                     },
                 );
                 let entry = match &tls {
@@ -1330,6 +1341,7 @@ fn drive_tls(
                 }
                 Ok(_) => match c.conn.process_new_packets() {
                     Ok(io) => {
+                        announce_if_ready(id, c);
                         let n = io.plaintext_bytes_to_read();
                         if n > 0 {
                             let mut buf = vec![0u8; n];
@@ -1375,12 +1387,28 @@ fn drive_tls(
     // bound below is opt-in, never this.) Start the idle clock from *here*, not
     // from creation: the handshake window must not count against an idle bound
     // armed at claim time.
+    announce_if_ready(id, c);
     if c.handshake_deadline.is_some() && !c.conn.is_handshaking() {
         c.handshake_deadline = None;
         c.last_activity = Instant::now();
     }
     sync_tls_registration(id, c, registry);
     false
+}
+
+/// A persistent client whose handshake has just completed: record the protocol ALPN chose
+/// and tell the owner `[:tcp-connected sock]` — once, and before any of its data, since
+/// every caller runs this before delivering what the records decrypted to.
+fn announce_if_ready(id: u64, c: &mut TlsConn) {
+    if c.announce.is_none() || c.conn.is_handshaking() {
+        return;
+    }
+    if let Some(slot) = c.announce.take() {
+        if let Some(protocol) = c.conn.alpn_protocol() {
+            let _ = slot.set(String::from_utf8_lossy(protocol).into_owned());
+        }
+        c.owner.emit(tcp_connected_msg(id));
+    }
 }
 
 /// Apply one control-plane command on the reactor thread — one function per command.
@@ -1424,6 +1452,7 @@ fn handle_cmd(cmd: Cmd, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) 
             server_name,
             request,
             config,
+            announce,
         } => start_tls_client(
             id,
             TlsClientStart {
@@ -1433,6 +1462,7 @@ fn handle_cmd(cmd: Cmd, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) 
                 server_name,
                 request,
                 config,
+                announce,
             },
             conns,
             registry,
@@ -1525,6 +1555,8 @@ struct TlsClientStart {
     server_name: ServerName<'static>,
     request: Vec<u8>,
     config: Arc<ClientConfig>,
+    /// `Some` for a persistent `tls-connect` stream (see [`TlsConn::announce`]).
+    announce: Option<Arc<OnceLock<String>>>,
 }
 
 /// A one-shot TLS client exchange (`tls-request`): buffer the request, start the handshake.
@@ -1553,10 +1585,11 @@ fn start_tls_client(
                 closing: None,
                 registered: false,
                 pending_out: 0,
-                one_shot: true,
+                one_shot: start.announce.is_none(),
                 handshake_deadline: Some(Instant::now() + HANDSHAKE_TIMEOUT),
                 idle: None,
                 last_activity: Instant::now(),
+                announce: start.announce,
             };
             sync_tls_registration(id, &mut connection, registry);
             conns.insert(id, Rx::Tls(connection));
@@ -1604,6 +1637,7 @@ fn claim(id: u64, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
                     handshake_deadline: Some(Instant::now() + HANDSHAKE_TIMEOUT),
                     idle: None,
                     last_activity: Instant::now(),
+                    announce: None,
                 };
                 sync_tls_registration(id, &mut connection, registry);
                 conns.insert(id, Rx::Tls(connection));
@@ -1988,6 +2022,7 @@ pub fn connect(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
             claimed: true,
             port: None,
             listener: None,
+            alpn: None,
         },
     );
     // Closes the race with `reactor_died`'s sweep: the flag is set before the sweep
@@ -2081,6 +2116,7 @@ pub fn listen(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
             claimed: true,
             port: Some(local),
             listener: Some(listener.clone()),
+            alpn: None,
         },
     );
     reactor().cmd(Cmd::Listen {
@@ -2298,6 +2334,7 @@ pub fn udp_open(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> 
             claimed: true,
             port: Some(local),
             listener: None,
+            alpn: None,
         },
     );
     reactor().cmd(Cmd::Udp {
@@ -2412,6 +2449,7 @@ pub fn tls_request(
             claimed: true,
             port: None,
             listener: None,
+            alpn: None,
         },
     );
     // See `connect` — closes the race with `reactor_died`'s sweep.
@@ -2444,12 +2482,101 @@ pub fn tls_request(
                     server_name,
                     request,
                     config,
+                    announce: None,
                 });
             }
             Err(error) => fail_dial(id, &owner, &error.to_string()),
         }
     })?;
     Ok(id)
+}
+
+/// `(tls-connect host port ca alpn binary)` — a persistent TLS client stream (ADR-451): the
+/// counterpart of `connect` over TLS. Once the handshake completes the owner gets
+/// `[:tcp-connected sock]`; then `tcp-send`, `[:tcp sock data]` and `tcp-close` work as on
+/// a plaintext stream, so a connection can carry many requests (HTTP keep-alive, a
+/// WebSocket, a database protocol). `alpn` lists the protocols to offer (`["h2"
+/// "http/1.1"]`); the one the server chose is `tls_protocol` once connected. A failure
+/// before the handshake completes arrives as `[:tcp-error sock msg]` or `[:tcp-closed sock]`.
+pub fn tls_connect(
+    host: &str,
+    port: u16,
+    ca_pem: Option<String>,
+    alpn: Vec<String>,
+    binary: bool,
+    subscriber: u64,
+) -> std::io::Result<u64> {
+    reactor_up()?;
+    let base = match ca_pem {
+        Some(pem) => tls_config_with_ca(&pem)?,
+        None => tls_config(),
+    };
+    let config = if alpn.is_empty() {
+        base
+    } else {
+        let mut config = (*base).clone();
+        config.alpn_protocols = alpn.into_iter().map(String::into_bytes).collect();
+        Arc::new(config)
+    };
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let binary = Arc::new(AtomicBool::new(binary));
+    let owner = SocketOwner::new(subscriber);
+    let slot = Arc::new(OnceLock::new());
+    reg().insert(
+        id,
+        subscriber,
+        Ctl {
+            kind: Kind::TlsStream,
+            binary: binary.clone(),
+            owner: owner.clone(),
+            claimed: true,
+            port: None,
+            listener: None,
+            alpn: Some(slot.clone()),
+        },
+    );
+    // See `connect` — closes the race with `reactor_died`'s sweep.
+    if REACTOR_DOWN.load(Ordering::SeqCst) {
+        reg().remove(&id);
+        return Err(reactor_dead_err());
+    }
+    let host = host.to_string();
+    spawn_dialler(id, "brood-tls-connect", move || {
+        let server_name = match ServerName::try_from(host.clone()) {
+            Ok(name) => name,
+            Err(_) => return fail_dial(id, &owner, "tls: invalid server name"),
+        };
+        let connected = dial_tcp(&host, port, TLS_CONNECT_TIMEOUT).and_then(|stream| {
+            prepare_dialled(&stream)?;
+            Ok(stream)
+        });
+        match connected {
+            Ok(std_stream) => {
+                let stream = MioStream::from_std(std_stream);
+                hand_off_if_registered(id, || Cmd::TlsClient {
+                    id,
+                    stream,
+                    owner,
+                    binary,
+                    server_name,
+                    request: Vec::new(),
+                    config,
+                    announce: Some(slot),
+                });
+            }
+            Err(error) => fail_dial(id, &owner, &error.to_string()),
+        }
+    })?;
+    Ok(id)
+}
+
+/// The ALPN protocol a `tls-connect` stream negotiated (`"h2"`, `"http/1.1"`), or `None`:
+/// not yet connected, the server chose none, or not such a stream.
+pub fn tls_protocol(id: u64) -> Option<String> {
+    reg()
+        .get(&id)
+        .and_then(|ctl| ctl.alpn.as_ref())
+        .and_then(|slot| slot.get().cloned())
 }
 
 /// Build a rustls `ServerConfig` from a PEM certificate chain + private key (the app
@@ -2490,10 +2617,18 @@ pub fn tls_listen(
     port: u16,
     cert_pem: &str,
     key_pem: &str,
+    alpn: Vec<String>,
     subscriber: u64,
 ) -> std::io::Result<u64> {
     reactor_up()?;
-    let config = build_server_config(cert_pem, key_pem)?;
+    let base = build_server_config(cert_pem, key_pem)?;
+    let config = if alpn.is_empty() {
+        base
+    } else {
+        let mut config = (*base).clone();
+        config.alpn_protocols = alpn.into_iter().map(String::into_bytes).collect();
+        Arc::new(config)
+    };
     let std_listener = std::net::TcpListener::bind((host, port))?;
     widen_backlog(&std_listener);
     let local = std_listener.local_addr()?.port();
@@ -2511,6 +2646,7 @@ pub fn tls_listen(
             claimed: true,
             port: Some(local),
             listener: Some(listener.clone()),
+            alpn: None,
         },
     );
     reactor().cmd(Cmd::TlsListen {

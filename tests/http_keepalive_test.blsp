@@ -1,0 +1,119 @@
+;; Tests for HTTP/1.1 connections that stay open (ADR-451): `http/connection`,
+;; `http/request-on`, `http/read-response`, and `tls/connect` with ALPN — against a server
+;; written here, so what goes over the wire is exactly what each test says.
+
+(defmodule http-keepalive-test (:use test))
+
+;; ---- a small HTTP/1.1 server --------------------------------------------------
+;; Answers by path, keeps each connection open for the next request (unless told
+;; otherwise), and counts the connections it accepted — which is what keep-alive saves.
+
+(defn- answer (path)
+  (case path
+    "/chunked"
+      "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"
+    "/close" "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+    "/empty" "HTTP/1.1 204 No Content\r\n\r\n"
+    (str "HTTP/1.1 200 OK\r\nContent-Length: " (string/length path) "\r\n\r\n" path)))
+
+(defn- serve-conn (sock seed)
+  (let (head (tcp/read-until sock "\r\n\r\n" {:seed seed :timeout-ms 5000}))
+    (when (not (keyword? (first head)))
+      (let (line (first (string/split (string/bytes-> (first head)) "\r\n"))
+            path (or (nth (string/split line " ") 1) "/"))
+        (tcp/send sock (answer path))
+        (if (= path "/close")
+          (tcp/close sock)
+          (serve-conn sock (second head)))))))
+
+(defn- accept-loop (listener counter)
+  (receive
+    ([:tcp-accept ^listener client] (let (handler (spawn (fn ()
+                                                           (receive
+                                                             ([:go s] (do
+                                                                        (tcp/set-binary s true)
+                                                                        (serve-conn s #b"")))))))
+                                      (tcp/controlling-process client handler)
+                                      (send handler [:go client])
+                                      (send counter :accepted)
+                                      (accept-loop listener counter)))
+    ([:stop] (tcp/close listener))))
+
+(defn- count-loop (n)
+  (receive
+    (:accepted (count-loop (inc n)))
+    ([:how-many from] (do (send from [:accepted n]) (count-loop n)))))
+
+(defn- start-server (&optional tls)
+  ;; [port counter]: a server on 127.0.0.1, plain or over TLS (`tls` = [cert key])
+  (let (me (self)
+        counter (spawn (fn () (count-loop 0)))
+        _ (spawn (fn ()
+                   (let (listener (if tls
+                                    (tls/listen "127.0.0.1" 0 (first tls) (second tls) ["http/1.1"])
+                                    (tcp/listen "127.0.0.1" 0)))
+                     (send me [:port (tcp/local-port listener)])
+                     (accept-loop listener counter)))))
+    (receive ([:port p] [p counter]) (after 5000 (error "http-keepalive-test: no server")))))
+
+(defn- accepted (counter)
+  (send counter [:how-many (self)])
+  (receive ([:accepted n] n) (after 2000 -1)))
+
+(defn- body (resp) (string/bytes-> (:body resp)))
+
+;; ---- the tests ----------------------------------------------------------------
+
+(describe "http/connection: one socket, many requests"
+  (test "three requests travel on one connection"
+    (let ([port counter] (start-server)
+          conn (http/connection (str "http://127.0.0.1:" port)))
+      (assert= ["/a" "/bb" "/ccc"]
+        (into [] (map ["/a" "/bb" "/ccc"] (fn (path) (body (http/request-on conn "GET" path))))))
+      (assert= 1 (accepted counter))
+      (http/close-connection conn)))
+  (test "a chunked body is decoded, and the connection carries on after it"
+    (let ([port counter] (start-server)
+          conn (http/connection (str "http://127.0.0.1:" port)))
+      (assert= "hello world" (body (http/request-on conn "GET" "/chunked")))
+      (assert= "/next" (body (http/request-on conn "GET" "/next")))
+      (assert= 1 (accepted counter))))
+  (test "a 204 has no body to wait for"
+    (let ([port _] (start-server)
+          conn (http/connection (str "http://127.0.0.1:" port)))
+      (assert= 204 (:status (http/request-on conn "GET" "/empty")))
+      (assert= "/after" (body (http/request-on conn "GET" "/after")))))
+  (test "Connection: close is honoured — the next request opens a new socket"
+    (let ([port counter] (start-server)
+          conn (http/connection (str "http://127.0.0.1:" port)))
+      (assert= "ok" (body (http/request-on conn "GET" "/close")))
+      (assert= "/again" (body (http/request-on conn "GET" "/again")))
+      (assert= 2 (accepted counter))))
+  (test "nothing listening is a :status 0 response, not a raise"
+    (let (listener (tcp/listen "127.0.0.1" 0)
+          port (tcp/local-port listener)
+          _ (tcp/close listener)
+          resp (http/request-on (http/connection (str "http://127.0.0.1:" port)) "GET" "/"))
+      (assert= 0 (:status resp))
+      (is (string? (:error resp))))))
+
+(describe "tls/connect and ALPN"
+  (let ([cert key] (tls/self-signed "localhost"))
+    (test "a TLS stream stays open and reports the protocol the server chose"
+      (let ([port _] (start-server [cert key])
+            sock (tls/connect "localhost" port {:ca cert :alpn ["h2" "http/1.1"]}))
+        (assert= "http/1.1" (tls/protocol sock))
+        (tcp/send sock "GET /x HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        (assert= "/x" (body (:response (http/read-response sock))))
+        (tcp/send sock "GET /yy HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        (assert= "/yy" (body (:response (http/read-response sock))))
+        (tcp/close sock)))
+    (test "an https connection keeps its socket too"
+      (let ([port counter] (start-server [cert key])
+            conn (http/connection (str "https://localhost:" port) {:ca cert}))
+        (assert= "/one" (body (http/request-on conn "GET" "/one")))
+        (assert= "hello world" (body (http/request-on conn "GET" "/chunked")))
+        (assert= 1 (accepted counter))))
+    (test "an untrusted certificate fails the handshake with a raise"
+      (let ([port _] (start-server [cert key]))
+        (assert-error (tls/connect "localhost" port {:timeout-ms 5000}))))))

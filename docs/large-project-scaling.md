@@ -307,13 +307,13 @@ three — it is paid once — but at 300M lines an hour becomes five minutes on 
    Gate `crates/nest/tests/check_incremental.rs`: an unchanged project replays (no load, no
    parse); a leaf edit re-checks 1 file, a dependency edit 2 (`[check] reuse-test (N to
    re-check)` under `BROOD_DERIVE_DBG=1`).
-3. **`nest check` parallel walk** (Finding 2, option 2). Gate: user/wall ≥ 6 on 12 cores.
-4. **Check memory** (Finding 2, option 3). Gate RESTATED 2026-10-22 (below the load floor as written): peak ≤ load floor + the walk's state. Measured: nothing accumulates; the gap is two driver-side parse spikes (§ Item 4, re-measured).
+3. ~~**`nest check` parallel walk**~~ — **DONE 2026-09-22, ADR-386.** user/wall 11.1 on 12 cores (8.8 s against 55.9 s).
+4. **Check memory** (Finding 2, option 3) — **mostly closed 2026-10-22.** Gate restated: peak ≤ load floor + the walk's state. The lints' aggregation was the spike; sequential is 0.80 GB, 0.2 GB over the floor. Open: the parallel arm's +0.7 GB (uncollected worker replies, allocator per-thread pages), and re-timing the 2026-10-23 load-path work on the test machine.
 5. ~~**The cold load after an edit**~~ — **DONE 2026-10-22, ADR-419** (the module-level half): an
    edit reloads the edited modules and their dependents and materialises the rest; one edited
    module on the 302 × 3k rig 13.2 s → 2.7 s, and with unchanged sections COPIED rather than
    re-encoded (same day) `nest run` after an edit is **0.30 s**; check/test, which need every
-   module, ~2.2 s. Parallel loading of a COLD build: **built 2026-10-23, ADR-426** (load 8.5 s → 2.1 s), **opt-in** until bedit's load-order difference is understood. The original note: (Finding 3) — no longer "paid once": since ADR-382 it is what an EDIT
+   module, ~2.2 s. Parallel loading of a COLD build: **built 2026-10-23, ADR-426** (load 8.5 s → 2.1 s), **the default** since KI-290 explained bedit's differing image (Finding 3). The original note: (Finding 3) — no longer "paid once": since ADR-382 it is what an EDIT
    costs, because the edit invalidates the whole image and the next check loads everything
    from source before re-deriving two files. Parallel loading divides it by cores; module-level
    image staleness (materialise the unchanged modules, load the changed ones) makes it

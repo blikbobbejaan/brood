@@ -29,8 +29,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
-use wasmtime::component::{Component, Func, Linker, Type, Val};
+use wasmtime::component::{Component, Func, Linker, ResourceAny, ResourceTable, Type, Val};
 use wasmtime::{Config, Engine, ResourceLimiter, Store};
+use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use crate::core::heap::Heap;
 use crate::core::value::{self, Value};
@@ -149,23 +150,90 @@ impl ResourceLimiter for GuestBudget {
     }
 }
 
-/// The store's host data: the resource limiter fuel can't provide.
+/// What a loader grants a guest (ADR-453). WASI is wired into an instance only when its
+/// loader passes grants at all; without them a component that imports any of WASI fails to
+/// instantiate, which is the deny-by-default ADR-145 shipped. With them the guest gets
+/// clocks and randomness, plus exactly what is listed here — and never the network.
+#[derive(Default)]
+pub struct Grants {
+    /// `(host path, guest path, writable)` — each a directory the guest may open files
+    /// under, read-only unless `writable`.
+    pub dirs: Vec<(String, String, bool)>,
+    /// Environment variables the guest sees, and nothing else of the host's.
+    pub env: Vec<(String, String)>,
+    /// The guest's `argv`.
+    pub args: Vec<String>,
+    /// The guest's stdout and stderr go to the host's; otherwise they are discarded.
+    pub stdio: bool,
+}
+
+impl Grants {
+    fn context(&self) -> Result<WasiCtx, LispError> {
+        let mut builder = WasiCtxBuilder::new();
+        for (host, guest, writable) in &self.dirs {
+            let perms = if *writable {
+                FsPerms::ReadWrite
+            } else {
+                FsPerms::ReadOnly
+            };
+            builder
+                .preopened_dir(host, guest, perms)
+                .map_err(|e| wasm_err("%wasm-load", format!("cannot grant `{host}`: {e:#}")))?;
+        }
+        builder.envs(&self.env).args(&self.args);
+        if self.stdio {
+            builder.inherit_stdout().inherit_stderr();
+        }
+        Ok(builder.build())
+    }
+}
+
+/// The store's host data: the resource limiter fuel can't provide, and the WASI context —
+/// empty, and never linked, for an instance loaded without grants.
 struct HostState {
     limits: GuestBudget,
+    wasi: WasiCtx,
+    table: ResourceTable,
+}
+
+impl WasiView for HostState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
+    }
+}
+
+/// One callable export, resolved at load: the function and its WIT parameter and result
+/// types.
+struct Export {
+    func: Func,
+    params: Box<[Type]>,
+    results: Box<[Type]>,
 }
 
 struct WasmInst {
     store: Store<HostState>,
-    /// name → (callable, param types, result types), resolved at load.
-    exports: HashMap<String, (Func, Box<[Type]>, Box<[Type]>)>,
+    /// Canonical name → export. A top-level function is its own name; a function of an
+    /// exported interface is `interface#function` (`brood:sqlite/db#[method]connection.query`).
+    exports: HashMap<String, Export>,
+    /// The bare `function` of an interface export, when no other export shares it — what a
+    /// caller types (`[method]connection.query`).
+    aliases: HashMap<String, String>,
+    /// The guest resources the host holds (`own<T>` results), by token. A token is
+    /// unguessable, like an instance's, and lives only as long as its instance.
+    resources: HashMap<u64, ResourceAny>,
 }
 
-/// A fresh store with the memory/table limiter armed.
-fn new_store(engine: &Engine) -> Store<HostState> {
+/// A fresh store with the memory/table limiter armed and `wasi` as its WASI context.
+fn new_store(engine: &Engine, wasi: WasiCtx) -> Store<HostState> {
     let mut store = Store::new(
         engine,
         HostState {
             limits: GuestBudget::default(),
+            wasi,
+            table: ResourceTable::new(),
         },
     );
     store.limiter(|s| &mut s.limits);
@@ -185,15 +253,15 @@ fn reg() -> std::sync::MutexGuard<'static, OwnedTable<Arc<Mutex<WasmInst>>>> {
     crate::core::sync::lock(&REGISTRY)
 }
 
-/// A fresh, unguessable instance token: 62 random bits (positive as a Brood int), never
-/// 0 and never one already live. Sequential ids let any process reach any instance by
-/// counting from 1.
-fn fresh_token(registry: &OwnedTable<Arc<Mutex<WasmInst>>>) -> Result<u64, LispError> {
+/// A fresh, unguessable token: 62 random bits (positive as a Brood int), never 0 and
+/// never one `taken` says is live. Sequential ids let any process reach any instance —
+/// or any resource of an instance it holds — by counting from 1.
+fn fresh_token(who: &str, taken: impl Fn(u64) -> bool) -> Result<u64, LispError> {
     loop {
         let mut raw = [0u8; 8];
-        getrandom::fill(&mut raw).map_err(|e| wasm_err("%wasm-load", e))?;
+        getrandom::fill(&mut raw).map_err(|e| wasm_err(who, e))?;
         let token = u64::from_le_bytes(raw) & ((1u64 << 62) - 1);
-        if token != 0 && !registry.contains_key(&token) {
+        if token != 0 && !taken(token) {
             return Ok(token);
         }
     }
@@ -311,8 +379,9 @@ fn trap_err(who: &str, e: wasmtime::Error) -> LispError {
 /// Instantiate a component from source bytes (a compiled `.wasm` component or
 /// WAT text — `wasmtime` accepts both), owned by process `owner`. Returns the
 /// registry token. The compiled code comes from [`COMPILED`] when these bytes
-/// were loaded before; the instance and its store are always new.
-pub fn load(src: &[u8], owner: u64) -> Result<u64, LispError> {
+/// were loaded before; the instance and its store are always new. With `grants`,
+/// WASI preview 2 is linked and the guest sees what they list (see [`Grants`]).
+pub fn load(src: &[u8], owner: u64, grants: Option<&Grants>) -> Result<u64, LispError> {
     if src.len() > MAX_COMPONENT_BYTES {
         return Err(wasm_err(
             "%wasm-load",
@@ -324,49 +393,101 @@ pub fn load(src: &[u8], owner: u64) -> Result<u64, LispError> {
     }
     let engine = engine();
     let component = compiled_component(engine, src)?;
-    let mut store = new_store(engine);
+    let wasi = match grants {
+        Some(grants) => grants.context()?,
+        None => WasiCtx::builder().build(),
+    };
+    let mut store = new_store(engine, wasi);
     // Instantiation may run start functions — meter it like a call.
     store
         .set_fuel(FUEL_PER_CALL)
         .map_err(|e| wasm_err("%wasm-load", e))?;
-    let linker: Linker<HostState> = Linker::new(engine);
+    let mut linker: Linker<HostState> = Linker::new(engine);
+    if grants.is_some() {
+        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
+            .map_err(|e| wasm_err("%wasm-load", format!("{e:#}")))?;
+    }
     let instance = linker
         .instantiate(&mut store, &component)
         .map_err(|e| trap_err("%wasm-load", e))?;
-    // Resolve every top-level function export now: types via the component
-    // type, callables via the instance.
-    let mut exports = HashMap::new();
-    let sigs: Vec<(String, Box<[Type]>, Box<[Type]>)> = component
-        .component_type()
-        .exports(engine)
-        .filter_map(|(name, item)| match item.ty {
-            wasmtime::component::types::ComponentItem::ComponentFunc(f) => Some((
-                name.to_string(),
-                f.params().map(|(_, t)| t).collect(),
-                f.results().collect(),
-            )),
-            _ => None,
-        })
-        .collect();
-    for (name, params, results) in sigs {
-        if let Some(func) = instance.get_func(&mut store, name.as_str()) {
-            exports.insert(name, (func, params, results));
+    // Resolve every function export now — top-level, and one level into each exported
+    // interface: types via the component type, callables via the instance.
+    use wasmtime::component::types::ComponentItem;
+    let mut found: Vec<(
+        Option<String>,
+        String,
+        wasmtime::component::types::ComponentFunc,
+    )> = Vec::new();
+    for (name, item) in component.component_type().exports(engine) {
+        match item.ty {
+            ComponentItem::ComponentFunc(func) => found.push((None, name.to_string(), func)),
+            ComponentItem::ComponentInstance(interface) => {
+                for (function, inner) in interface.exports(engine) {
+                    if let ComponentItem::ComponentFunc(func) = inner.ty {
+                        found.push((Some(name.to_string()), function.to_string(), func));
+                    }
+                }
+            }
+            _ => {}
         }
     }
+    let mut exports = HashMap::new();
+    let mut bare_counts: HashMap<String, usize> = HashMap::new();
+    for (interface, function, signature) in found {
+        let (key, func) = match &interface {
+            None => (
+                function.clone(),
+                instance.get_func(&mut store, function.as_str()),
+            ),
+            Some(interface) => {
+                let func = instance
+                    .get_export_index(&mut store, None, interface)
+                    .and_then(|index| {
+                        instance.get_export_index(&mut store, Some(&index), &function)
+                    })
+                    .and_then(|index| instance.get_func(&mut store, index));
+                *bare_counts.entry(function.clone()).or_default() += 1;
+                (format!("{interface}#{function}"), func)
+            }
+        };
+        if let Some(func) = func {
+            let export = Export {
+                func,
+                params: signature.params().map(|(_, ty)| ty).collect(),
+                results: signature.results().collect(),
+            };
+            exports.insert(key, export);
+        }
+    }
+    let aliases = exports
+        .keys()
+        .filter_map(|key| {
+            let (_, bare) = key.split_once('#')?;
+            (bare_counts.get(bare) == Some(&1) && !exports.contains_key(bare))
+                .then(|| (bare.to_string(), key.clone()))
+        })
+        .collect();
     let mut registry = reg();
-    let id = fresh_token(&registry)?;
-    registry.insert(id, owner, Arc::new(Mutex::new(WasmInst { store, exports })));
+    let id = fresh_token("%wasm-load", |token| registry.contains_key(&token))?;
+    let inst = WasmInst {
+        store,
+        exports,
+        aliases,
+        resources: HashMap::new(),
+    };
+    registry.insert(id, owner, Arc::new(Mutex::new(inst)));
     Ok(id)
 }
 
-/// The exported functions of instance `id`: `(name, arity)` pairs.
+/// The exported functions of instance `id`: `(name, arity)` pairs, by canonical name —
+/// an interface's function as `interface#function`.
 pub fn exports(id: u64) -> Result<Vec<(String, usize)>, LispError> {
     let inst = instance("%wasm-exports", id)?;
     let inst = lock_inst(&inst);
     let mut out: Vec<(String, usize)> = inst
         .exports
         .iter()
-        .map(|(n, (_, p, _))| (n.clone(), p.len()))
+        .map(|(name, export)| (name.clone(), export.params.len()))
         .collect();
     out.sort();
     Ok(out)
@@ -376,6 +497,25 @@ pub fn exports(id: u64) -> Result<Vec<(String, usize)>, LispError> {
 /// owns — is freed when the last in-flight call releases it.
 pub fn close(id: u64) {
     reg().remove(&id);
+}
+
+/// Drop guest resource `token` of instance `id`, running the guest's destructor. True if
+/// the instance held it, false if it was already dropped or moved into the guest.
+pub fn release(id: u64, token: u64) -> Result<bool, LispError> {
+    let inst = instance("%wasm-release", id)?;
+    let mut inst = lock_inst(&inst);
+    let inst = &mut *inst;
+    let Some(resource) = inst.resources.remove(&token) else {
+        return Ok(false);
+    };
+    // A destructor is guest code: meter it like a call.
+    inst.store
+        .set_fuel(FUEL_PER_CALL)
+        .map_err(|e| wasm_err("%wasm-release", e))?;
+    resource
+        .resource_drop(&mut inst.store)
+        .map_err(|e| trap_err("%wasm-release", e))?;
+    Ok(true)
 }
 
 /// Close every instance process `pid` still owns — called from the scheduler's
@@ -397,15 +537,18 @@ fn instance(who: &str, id: u64) -> Result<Arc<Mutex<WasmInst>>, LispError> {
     })
 }
 
-/// Call export `name` of instance `id`. Marshals `args` by the export's WIT
+/// Call export `name` of instance `id` — its canonical name, or an interface function's
+/// bare name when that is unambiguous. Marshals `args` by the export's WIT
 /// parameter types, refuels, calls, lifts the results. One call at a time per
 /// instance (the store is single-threaded); a trap — including out-of-fuel —
 /// is a catchable error.
 pub fn call(heap: &mut Heap, id: u64, name: &str, args: &[Value]) -> LispResult {
     let inst = instance("%wasm-call", id)?;
     let mut inst = lock_inst(&inst);
-    let (func, param_tys, result_tys) = match inst.exports.get(name) {
-        Some(entry) => (entry.0, entry.1.clone(), entry.2.clone()),
+    let inst = &mut *inst;
+    let key = inst.aliases.get(name).map(String::as_str).unwrap_or(name);
+    let (func, param_tys, result_count) = match inst.exports.get(key) {
+        Some(export) => (export.func, export.params.clone(), export.results.len()),
         None => {
             return Err(LispError::runtime(format!(
                 "%wasm-call: no export `{name}` in this component (see %wasm-exports)"
@@ -419,25 +562,62 @@ pub fn call(heap: &mut Heap, id: u64, name: &str, args: &[Value]) -> LispResult 
             args.len()
         )));
     }
+    let mut boundary = Boundary {
+        resources: &mut inst.resources,
+        moved: Vec::new(),
+    };
     let mut lowered = Vec::with_capacity(args.len());
     for (v, t) in args.iter().zip(param_tys.iter()) {
-        lowered.push(lower(heap, name, *v, t)?);
+        lowered.push(lower(heap, name, *v, t, &mut boundary)?);
+    }
+    // An `own<T>` argument belongs to the guest from here, whether or not the call
+    // succeeds: a trapped store is poisoned and holds nothing the host can drop.
+    for token in std::mem::take(&mut boundary.moved) {
+        boundary.resources.remove(&token);
     }
     let store = &mut inst.store;
     store
         .set_fuel(FUEL_PER_CALL)
         .map_err(|e| wasm_err("%wasm-call", e))?;
-    let mut results = vec![Val::Bool(false); result_tys.len()];
+    let mut results = vec![Val::Bool(false); result_count];
     func.call(&mut *store, &lowered, &mut results)
         .map_err(|e| trap_err(&format!("%wasm-call `{name}`"), e))?;
     match results.len() {
         0 => Ok(Value::nil()),
-        1 => lift(heap, name, &results[0]),
+        1 => lift(heap, name, &results[0], &mut boundary),
         _ => {
-            let vals: Result<Vec<Value>, LispError> =
-                results.iter().map(|r| lift(heap, name, r)).collect();
+            let vals: Result<Vec<Value>, LispError> = results
+                .iter()
+                .map(|r| lift(heap, name, r, &mut boundary))
+                .collect();
             Ok(heap.alloc_vector(vals?))
         }
+    }
+}
+
+/// What a call's marshalling needs beyond the heap: the instance's resource table, to turn
+/// a token into the guest resource it names and a returned resource into a token, and the
+/// tokens of `own<T>` arguments, which move into the guest.
+struct Boundary<'a> {
+    resources: &'a mut HashMap<u64, ResourceAny>,
+    moved: Vec<u64>,
+}
+
+impl Boundary<'_> {
+    fn resource(&self, heap: &Heap, who: &str, v: Value) -> Result<ResourceAny, LispError> {
+        let token = int_arg(heap, who, v)? as u64;
+        self.resources.get(&token).copied().ok_or_else(|| {
+            LispError::runtime(format!(
+                "{who}: no such resource {token} in this instance (released, or moved into the guest?)"
+            ))
+        })
+    }
+
+    fn hold(&mut self, who: &str, resource: ResourceAny) -> LispResult {
+        let resources = &*self.resources;
+        let token = fresh_token(who, |token| resources.contains_key(&token))?;
+        self.resources.insert(token, resource);
+        Ok(Value::Int(token as i64))
     }
 }
 
@@ -455,7 +635,13 @@ fn range_err(who: &str, ty: &str, n: i64) -> LispError {
 }
 
 /// Lower one Brood value to a component value of the expected WIT type.
-fn lower(heap: &mut Heap, who: &str, v: Value, ty: &Type) -> Result<Val, LispError> {
+fn lower(
+    heap: &mut Heap,
+    who: &str,
+    v: Value,
+    ty: &Type,
+    boundary: &mut Boundary,
+) -> Result<Val, LispError> {
     Ok(match ty {
         Type::Bool => Val::Bool(!matches!(v, Value::Nil | Value::Bool(false))),
         Type::S8 => {
@@ -528,7 +714,7 @@ fn lower(heap: &mut Heap, who: &str, v: Value, ty: &Type) -> Result<Val, LispErr
             let items = seq_items(heap, who, v)?;
             let mut out = Vec::with_capacity(items.len());
             for item in items {
-                out.push(lower(heap, who, item, &elem)?);
+                out.push(lower(heap, who, item, &elem, boundary)?);
             }
             Val::List(out)
         }
@@ -544,7 +730,7 @@ fn lower(heap: &mut Heap, who: &str, v: Value, ty: &Type) -> Result<Val, LispErr
             }
             let mut out = Vec::with_capacity(tys.len());
             for (item, t) in items.into_iter().zip(tys.iter()) {
-                out.push(lower(heap, who, item, t)?);
+                out.push(lower(heap, who, item, t, boundary)?);
             }
             Val::Tuple(out)
         }
@@ -561,13 +747,21 @@ fn lower(heap: &mut Heap, who: &str, v: Value, ty: &Type) -> Result<Val, LispErr
             }
             match v {
                 Value::Nil => Val::Option(None),
-                some => Val::Option(Some(Box::new(lower(heap, who, some, &o.ty())?))),
+                some => Val::Option(Some(Box::new(lower(heap, who, some, &o.ty(), boundary)?))),
             }
+        }
+        // A resource is passed by its token. A borrow lends it for the call; an owned one
+        // moves into the guest, so its token stops naming anything once the call is made.
+        Type::Borrow(_) => Val::Resource(boundary.resource(heap, who, v)?),
+        Type::Own(_) => {
+            let resource = boundary.resource(heap, who, v)?;
+            boundary.moved.push(int_arg(heap, who, v)? as u64);
+            Val::Resource(resource)
         }
         other => {
             return Err(LispError::runtime(format!(
                 "{who}: unsupported WIT parameter type {other:?} (this slice marshals \
-                 scalars, strings, lists, tuples, and options)"
+                 scalars, strings, lists, tuples, options and resources)"
             )));
         }
     })
@@ -582,7 +776,7 @@ fn number_arg(heap: &Heap, who: &str, v: Value) -> Result<f64, LispError> {
 }
 
 /// Lift one component value back to Brood.
-fn lift(heap: &mut Heap, who: &str, v: &Val) -> LispResult {
+fn lift(heap: &mut Heap, who: &str, v: &Val, boundary: &mut Boundary) -> LispResult {
     Ok(match v {
         Val::Bool(b) => Value::Bool(*b),
         Val::S8(n) => Value::Int(*n as i64),
@@ -621,22 +815,22 @@ fn lift(heap: &mut Heap, who: &str, v: &Val) -> LispResult {
         }
         Val::List(items) | Val::Tuple(items) => {
             let vals: Result<Vec<Value>, LispError> =
-                items.iter().map(|i| lift(heap, who, i)).collect();
+                items.iter().map(|i| lift(heap, who, i, boundary)).collect();
             heap.alloc_vector(vals?)
         }
         Val::Option(o) => match o {
             None => Value::nil(),
-            Some(inner) => lift(heap, who, inner)?,
+            Some(inner) => lift(heap, who, inner, boundary)?,
         },
         Val::Result(r) => match r {
             Ok(ok) => match ok {
                 None => Value::nil(),
-                Some(inner) => lift(heap, who, inner)?,
+                Some(inner) => lift(heap, who, inner, boundary)?,
             },
             Err(err) => {
                 let payload = match err {
                     None => Value::nil(),
-                    Some(inner) => lift(heap, who, inner)?,
+                    Some(inner) => lift(heap, who, inner, boundary)?,
                 };
                 let msg = crate::syntax::printer::print(heap, payload);
                 return Err(LispError::runtime(format!(
@@ -649,7 +843,7 @@ fn lift(heap: &mut Heap, who: &str, v: &Val) -> LispResult {
             let mut pairs = Vec::with_capacity(fields.len());
             for (k, fv) in fields {
                 let key = Value::Keyword(value::intern(k));
-                pairs.push((key, lift(heap, who, fv)?));
+                pairs.push((key, lift(heap, who, fv, boundary)?));
             }
             heap.map_from_pairs(pairs)
         }
@@ -658,11 +852,14 @@ fn lift(heap: &mut Heap, who: &str, v: &Val) -> LispResult {
             match payload {
                 None => heap.alloc_vector(vec![tag]),
                 Some(inner) => {
-                    let p = lift(heap, who, inner)?;
+                    let p = lift(heap, who, inner, boundary)?;
                     heap.alloc_vector2(tag, p)
                 }
             }
         }
+        // An `own<T>` the guest hands back: the host holds it under a fresh token until
+        // `%wasm-release`, or until it is passed back as an `own<T>` argument.
+        Val::Resource(resource) => boundary.hold(who, *resource)?,
         other => {
             return Err(LispError::runtime(format!(
                 "{who}: unsupported WIT result type {other:?} in this slice"
@@ -739,7 +936,7 @@ mod tests {
         let instance = instance("test", id).expect("live instance");
         let mut instance = lock_inst(&instance);
         let instance = &mut *instance;
-        let func = instance.exports.get("bump").expect("bump export").0;
+        let func = instance.exports.get("bump").expect("bump export").func;
         instance.store.set_fuel(FUEL_PER_CALL).expect("fuel");
         let mut results = [Val::Bool(false)];
         func.call(&mut instance.store, &[], &mut results)
@@ -761,10 +958,10 @@ mod tests {
     #[test]
     fn reloading_the_same_source_reuses_the_compiled_component_but_not_its_state() {
         let source = COUNTER_WAT.as_bytes();
-        let first = load(source, 0).expect("first load");
+        let first = load(source, 0, None).expect("first load");
         assert_eq!(bump(first), 1001);
         assert_eq!(bump(first), 2002);
-        let second = load(source, 0).expect("second load");
+        let second = load(source, 0, None).expect("second load");
         assert_ne!(first, second);
         // A fresh store: the global and the linear memory both start over.
         assert_eq!(bump(second), 1001);
@@ -777,9 +974,9 @@ mod tests {
     #[test]
     fn a_source_that_fails_to_compile_is_not_cached_and_fails_again() {
         let source = b"(component (bogus";
-        assert!(load(source, 0).is_err());
+        assert!(load(source, 0, None).is_err());
         assert!(!cache_holds(source));
-        assert!(load(source, 0).is_err());
+        assert!(load(source, 0, None).is_err());
     }
 
     #[test]
@@ -809,7 +1006,7 @@ mod tests {
     fn distinct_sources_past_the_bound_still_load() {
         let mut ids = Vec::new();
         for index in 0..COMPILED_CACHE_ENTRIES + 2 {
-            ids.push(load(numbered_wat(index).as_bytes(), 0).expect("load"));
+            ids.push(load(numbered_wat(index).as_bytes(), 0, None).expect("load"));
         }
         assert!(crate::core::sync::lock(&COMPILED).entries.len() <= COMPILED_CACHE_ENTRIES);
         for id in ids {

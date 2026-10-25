@@ -1,0 +1,124 @@
+;; Tests for std/tool/dap.blsp (ADR-452): a real DAP session over TCP, driven the way an
+;; editor drives it — initialize, launch, breakpoints, configurationDone — against a small
+;; program, then the stop, threads, stack, variables, evaluate, continue and exit.
+
+(defmodule dap-test (:use test))
+
+(def- fixture-source
+  "(defmodule dap-fixture)\n\n(defn square (n)\n  (* n n))\n\n(defn main ()\n  (square 7))\n")
+
+(defn- fixture ()
+  (let (dir (path/temp "brood-dap-test-")
+        file (path/join dir "fixture.blsp"))
+    (file/mkdir dir)
+    (file/spit file fixture-source)
+    file))
+
+;; ---- a minimal DAP client -------------------------------------------------------
+
+(defn- send-request (sock seq command arguments)
+  (let (body (string/->bytes (json/encode {:seq seq
+                                           :type "request"
+                                           :command command
+                                           :arguments arguments})))
+    (tcp/send sock [(str "Content-Length: " (bytes/length body) "\r\n\r\n") body])))
+
+(defn- parse-frames (buf acc)
+  (let (marker (bytes/index-of buf (string/->bytes "\r\n\r\n")))
+    (if (< marker 0)
+      [(reverse acc) buf]
+      (let (head (string/bytes-> (bytes/slice buf 0 marker))
+            length (string/->number (string/trim (or (second (string/split head ":")) "0")))
+            n (if (int? length) length 0)
+            start (+ marker 4))
+        (if (< (bytes/length buf) (+ start n))
+          [(reverse acc) buf]
+          (parse-frames (bytes/slice buf (+ start n) (bytes/length buf))
+            (cons (json/decode (string/bytes-> (bytes/slice buf start (+ start n)))) acc)))))))
+
+(defn- await-message (sock inbox pred)
+  ;; [the first message satisfying `pred`, the inbox after it]. The inbox is
+  ;; {:queue [parsed messages not yet looked at] :buf bytes}; messages before the hit are
+  ;; dropped. [nil inbox] when none arrives in time.
+  (let (queue (:queue inbox)
+        hit-at (index-of (into [] (map queue pred)) true))
+    (if (>= hit-at 0)
+      [(nth queue hit-at) (assoc inbox :queue (seq/subvec queue (inc hit-at) (count queue)))]
+      (receive
+        ([:tcp ^sock d] (let ([messages rest] (parse-frames (bytes/concat (:buf inbox) d) nil))
+                          (await-message sock
+                            {:queue (into [] (append queue messages)) :buf rest}
+                            pred)))
+        (after 10000 [nil inbox])))))
+
+(defn- response-to (command)
+  (fn (m) (and (= (:type m) "response") (= (:command m) command))))
+
+(defn- event-named (name)
+  (fn (m) (and (= (:type m) "event") (= (:event m) name))))
+
+(defn- connect ()
+  (let ([_ port] (dap/listen)
+        sock (tcp/connect "127.0.0.1" port))
+    (tcp/set-binary sock true)
+    sock))
+
+;; ---- the session -----------------------------------------------------------------
+
+(describe "dap: a session against a real program"
+  (test "a function breakpoint stops the call; its locals are variables; evaluate and continue"
+    (let (sock (connect)
+          program (fixture)
+          _ (send-request sock 1 "initialize" {:adapterID "brood"})
+          [init buf] (await-message sock {:queue [] :buf #b""} (response-to "initialize"))
+          _ (is (get-in init [:body :supportsFunctionBreakpoints]))
+          [_ buf] (await-message sock buf (event-named "initialized"))
+          _ (send-request sock 2 "launch" {:program program})
+          [launched buf] (await-message sock buf (response-to "launch"))
+          _ (is (:success launched))
+          _ (send-request sock
+              3
+              "setFunctionBreakpoints"
+              {:breakpoints [{:name "dap-fixture/square"}]})
+          [_ buf] (await-message sock buf (response-to "setFunctionBreakpoints"))
+          _ (send-request sock 4 "configurationDone" {})
+          [stopped buf] (await-message sock buf (event-named "stopped"))
+          thread (get-in stopped [:body :threadId])
+          _ (send-request sock 5 "stackTrace" {:threadId thread})
+          [stack buf] (await-message sock buf (response-to "stackTrace"))
+          _ (send-request sock 6 "variables" {:variablesReference thread})
+          [vars buf] (await-message sock buf (response-to "variables"))
+          _ (send-request sock 7 "evaluate" {:expression "(* 2 (first args))" :frameId thread})
+          [evaluated buf] (await-message sock buf (response-to "evaluate"))
+          _ (send-request sock 8 "continue" {:threadId thread})
+          [exited buf] (await-message sock buf (event-named "exited")))
+      (assert= "dap-fixture/square" (get-in stack [:body :stackFrames 0 :name]))
+      (is (any? (get-in vars [:body :variables])
+            (fn (v) (and (= (:name v) "args") (= (:value v) "(7)")))))
+      (assert= "14" (get-in evaluated [:body :result]))
+      (assert= 0 (get-in exited [:body :exitCode]))
+      (send-request sock 9 "disconnect" {})
+      (tcp/close sock)))
+  (test "a line breakpoint stops when the function around that line is called"
+    (let (sock (connect)
+          program (fixture)
+          _ (send-request sock 1 "initialize" {:adapterID "brood"})
+          _ (send-request sock 2 "launch" {:program program})
+          ;; line 4 is `(* n n)`, inside `square`
+          _ (send-request sock
+              3
+              "setBreakpoints"
+              {:source {:path program} :breakpoints [{:line 4}]})
+          [set buf] (await-message sock {:queue [] :buf #b""} (response-to "setBreakpoints"))
+          _ (send-request sock 4 "configurationDone" {})
+          [stopped buf] (await-message sock buf (event-named "stopped")))
+      (is (get-in set [:body :breakpoints 0 :verified]))
+      (assert= "dap-fixture/square" (get-in stopped [:body :description]))
+      (send-request sock 5 "disconnect" {})
+      (tcp/close sock)))
+  (test "a program that does not exist is refused at launch"
+    (let (sock (connect)
+          _ (send-request sock 1 "launch" {:program "/nonexistent/x.blsp"})
+          [launched _] (await-message sock {:queue [] :buf #b""} (response-to "launch")))
+      (refute (:success launched))
+      (tcp/close sock))))

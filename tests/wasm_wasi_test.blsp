@@ -1,0 +1,92 @@
+;; WASI grants and guest resources (ADR-453), against a real guest:
+;; tests/support/wasm-guest.wasm, built from tests/support/wasm-guest/ (see its
+;; Cargo.toml) and committed, so the suite needs no wasm toolchain.
+
+(defmodule wasm-wasi-test (:use test))
+
+(def- *guest* (file/slurp-bytes "tests/support/wasm-guest.wasm"))
+
+(defn- scratch ()
+  (let (dir (path/temp "brood-wasi-test-")) (file/mkdir dir) dir))
+
+(describe "wasm: capabilities are granted, not ambient"
+  (test "without grants a component that imports WASI does not load"
+    (assert-error (wasm/instantiate *guest*)))
+  (test "an empty grants map links WASI: the clock, but no files and no environment"
+    (let (inst (wasm/instantiate *guest* {}))
+      (is (wasm/call inst "clock-moves"))
+      (is (nil? (wasm/call inst "env-var" "HOME")))
+      (assert-error (wasm/call inst "read-file" "/etc/hostname"))
+      (wasm/close inst)))
+  (test "a granted directory is readable under its guest path, and nothing outside it is"
+    (let (dir (scratch)
+          _ (file/spit (path/join dir "note.txt") "hello from the host")
+          inst (wasm/instantiate *guest* {:dirs [[dir "/data"]]}))
+      (assert= "hello from the host" (wasm/call inst "read-file" "/data/note.txt"))
+      (assert-error (wasm/call inst "read-file" "/data/../../etc/hostname"))
+      (wasm/close inst)))
+  (test "a directory is read-only unless granted :write"
+    (let (dir (scratch)
+          reader (wasm/instantiate *guest* {:dirs [[dir "/data"]]})
+          writer (wasm/instantiate *guest* {:dirs [[dir "/data" :write]]}))
+      (assert-error (wasm/call reader "write-file" "/data/out.txt" "no"))
+      (wasm/call writer "write-file" "/data/out.txt" "yes")
+      (assert= "yes" (file/slurp (path/join dir "out.txt")))
+      (wasm/close reader)
+      (wasm/close writer)))
+  (test "the guest sees only the environment and arguments it was given"
+    (let (inst (wasm/instantiate *guest* {:env {"GREETING" "hi"} :args ["guest" "one"]}))
+      (assert= "hi" (wasm/call inst "env-var" "GREETING"))
+      (is (nil? (wasm/call inst "env-var" "PATH")))
+      (assert= 2 (wasm/call inst "argument-count"))
+      (wasm/close inst)))
+  (test "a malformed grant is refused at load"
+    (assert-error (wasm/instantiate *guest* {:dirs [["/tmp"]]}))
+    (assert-error (wasm/instantiate *guest* {:dirs [["/tmp" "/t" :exec]]}))
+    (assert-error (wasm/instantiate *guest* {:dirs [["/no/such/dir/here" "/x"]]}))))
+
+(describe "wasm: guest resources are tokens"
+  (test "a constructor hands back a token its methods take"
+    (let (inst (wasm/instantiate *guest* {})
+          counter (wasm/call inst "[constructor]counter" 10))
+      (is (int? counter))
+      (assert= 11 (wasm/call inst "[method]counter.bump" counter))
+      (assert= 12 (wasm/call inst "brood:fixture/counter#[method]counter.bump" counter))
+      (wasm/close inst)))
+  (test "release runs the guest's destructor, once"
+    (let (inst (wasm/instantiate *guest* {})
+          counter (wasm/call inst "[constructor]counter" 0))
+      (assert= 0 (wasm/call inst "dropped"))
+      (is (wasm/release inst counter))
+      (assert= 1 (wasm/call inst "dropped"))
+      (refute (wasm/release inst counter))
+      (assert-error (wasm/call inst "[method]counter.bump" counter))
+      (wasm/close inst)))
+  (test "an own<T> argument moves the resource into the guest"
+    (let (inst (wasm/instantiate *guest* {})
+          counter (wasm/call inst "[constructor]counter" 41))
+      (wasm/call inst "[method]counter.bump" counter)
+      (assert= 42 (wasm/call inst "[static]counter.consume" counter))
+      (assert= 1 (wasm/call inst "dropped"))
+      (refute (wasm/release inst counter))
+      (wasm/close inst)))
+  (test "a token is valid only with the instance that made it"
+    (let (one (wasm/instantiate *guest* {})
+          two (wasm/instantiate *guest* {})
+          counter (wasm/call one "[constructor]counter" 0))
+      (assert-error (wasm/call two "[method]counter.bump" counter))
+      (wasm/close one)
+      (wasm/close two))))
+
+(describe "wasm: use-native names a resource's functions"
+  (test "constructors, methods and statics become type-function"
+    (assert= "counter-new" (wasm/native-name "brood:fixture/counter#[constructor]counter"))
+    (assert= "counter-bump" (wasm/native-name "[method]counter.bump"))
+    (assert= "counter-consume" (wasm/native-name "x#[static]counter.consume"))
+    (assert= "read-file" (wasm/native-name "brood:fixture/host#read-file")))
+  (test "exports lists interface functions by their full names"
+    (let (inst (wasm/instantiate *guest* {})
+          names (into #{} (map (wasm/exports inst) first)))
+      (is (contains? names "brood:fixture/counter#[constructor]counter"))
+      (is (contains? names "brood:fixture/host#read-file"))
+      (wasm/close inst))))

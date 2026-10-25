@@ -3,7 +3,7 @@
 //! `wasm/*` policy is `std/wasm.blsp`.
 
 use crate::core::heap::Heap;
-use crate::core::value::{EnvId, Value};
+use crate::core::value::{self, EnvId, Value};
 use crate::error::{LispError, LispResult};
 
 use super::args::{arg, expect_int, expect_string};
@@ -19,8 +19,8 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     #[cfg(feature = "wasm")]
     primitives.def(
         "%wasm-load",
-        Arity::exact(1),
-        Sig::new(vec![any], int),
+        Arity::range(1, 2),
+        Sig::with_rest(vec![any], int, any),
         &[],
         "",
         wasm_load,
@@ -52,19 +52,94 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "",
         wasm_close,
     );
+    #[cfg(feature = "wasm")]
+    primitives.def(
+        "%wasm-release",
+        Arity::exact(2),
+        Sig::new(vec![int, int], bool_ty),
+        &[],
+        "",
+        wasm_release,
+    );
 }
 
-/// `(%wasm-load content)` — instantiate a sandboxed WASM component from
-/// `content`: a `bytes` value (a compiled `.wasm` component) or a string (WAT
-/// text — handy for tests and the REPL). Returns the instance token. The calling
-/// process owns the instance: it is closed when that process exits.
+/// `(%wasm-load content)` / `(%wasm-load content grants)` — instantiate a sandboxed WASM
+/// component from `content`: a `bytes` value (a compiled `.wasm` component) or a string
+/// (WAT text — handy for tests and the REPL). Returns the instance token. The calling
+/// process owns the instance: it is closed when that process exits. `grants` (a map, or
+/// nil for none) links WASI preview 2 — see [`grants_arg`].
 pub(super) fn wasm_load(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let bytes: Vec<u8> = expect!(heap, "%wasm-load", arg(args, 0),
         "bytes (a compiled .wasm component) or string (WAT source)",
         Value::Bytes(id) => heap.bytes(id).as_bytes().to_vec(),
         Value::Str(id) => heap.string(id).as_bytes().to_vec(),
     )?;
-    crate::host::wasm::load(&bytes, crate::process::self_pid()).map(|id| Value::Int(id as i64))
+    let grants = grants_arg(heap, arg(args, 1))?;
+    crate::host::wasm::load(&bytes, crate::process::self_pid(), grants.as_ref())
+        .map(|id| Value::Int(id as i64))
+}
+
+/// The grants map (ADR-453): `:dirs` a vector of `[host guest]` or `[host guest :write]`
+/// (read-only unless `:write`), `:env` a map of string to string, `:args` a vector of
+/// strings, `:stdio` true to pass the guest's stdout and stderr through. Nil is no grants
+/// at all, so WASI is not linked; an empty map links it with only clocks and randomness.
+fn grants_arg(heap: &Heap, v: Value) -> Result<Option<crate::host::wasm::Grants>, LispError> {
+    const WHO: &str = "%wasm-load";
+    let map = match v {
+        Value::Nil => return Ok(None),
+        Value::Map(id) => id,
+        other => return Err(LispError::wrong_type(heap, WHO, "grants map or nil", other)),
+    };
+    let key = |name: &str| heap.map_get(map, Value::Keyword(value::intern(name)));
+    let items = |field: Value| -> Result<Vec<Value>, LispError> {
+        match field {
+            Value::Nil => Ok(Vec::new()),
+            Value::Vector(id) => Ok(heap.vector(id).to_vec()),
+            other => Err(LispError::wrong_type(heap, WHO, "vector", other)),
+        }
+    };
+    let mut grants = crate::host::wasm::Grants::default();
+    for dir in items(key("dirs").unwrap_or(Value::Nil))? {
+        let parts = items(dir)?;
+        let writable = match parts.get(2) {
+            None => false,
+            Some(Value::Keyword(k)) if *k == value::intern("write") => true,
+            Some(_) => {
+                return Err(LispError::runtime(format!(
+                    "{WHO}: a :dirs entry is [host guest] or [host guest :write]"
+                )));
+            }
+        };
+        match (parts.first(), parts.get(1)) {
+            (Some(host), Some(guest)) if parts.len() <= 3 => grants.dirs.push((
+                expect_string(heap, WHO, *host)?,
+                expect_string(heap, WHO, *guest)?,
+                writable,
+            )),
+            _ => {
+                return Err(LispError::runtime(format!(
+                    "{WHO}: a :dirs entry is [host guest] or [host guest :write]"
+                )));
+            }
+        }
+    }
+    match key("env").unwrap_or(Value::Nil) {
+        Value::Nil => {}
+        Value::Map(env) => {
+            for (name, value) in heap.map_entries(env) {
+                grants.env.push((
+                    expect_string(heap, WHO, name)?,
+                    expect_string(heap, WHO, value)?,
+                ));
+            }
+        }
+        other => return Err(LispError::wrong_type(heap, WHO, ":env map", other)),
+    }
+    for argument in items(key("args").unwrap_or(Value::Nil))? {
+        grants.args.push(expect_string(heap, WHO, argument)?);
+    }
+    grants.stdio = !matches!(key("stdio"), None | Some(Value::Nil | Value::Bool(false)));
+    Ok(Some(grants))
 }
 
 /// `(%wasm-call inst name args)` — call export `name` of instance `inst` with
@@ -98,4 +173,13 @@ pub(super) fn wasm_close(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
     let id = expect_int(heap, "%wasm-close", arg(args, 0))? as u64;
     crate::host::wasm::close(id);
     Ok(Value::nil())
+}
+
+/// `(%wasm-release inst resource)` — drop a guest resource the host holds, running the
+/// guest's destructor. True if it was held, false if already released or moved into the
+/// guest.
+pub(super) fn wasm_release(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let id = expect_int(heap, "%wasm-release", arg(args, 0))? as u64;
+    let token = expect_int(heap, "%wasm-release", arg(args, 1))? as u64;
+    crate::host::wasm::release(id, token).map(Value::Bool)
 }

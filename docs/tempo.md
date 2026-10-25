@@ -42,7 +42,7 @@ off-by-one boundary bugs by construction.
 | Tempo | Brood | Note |
 |---|---|---|
 | `%Tempo{time: [...]}` | `(defrecord tempo (by-unit res))` | a unit map plus its resolution |
-| `Tempo.new/1`, `new!/1` | `tempo/new`, `tempo/new!` | component map; `[:ok t]` / `[:error msg]` per ADR-163 |
+| `Tempo.new/1`, `new!/1` | `tempo/new`, `tempo/new!` | component map; the tempo or a failure (ADR-310); `new!` raises |
 | `~o` sigil | `tempo/parse`, `parse!` | see "sigil" below |
 | `Tempo.to_interval/1` | `tempo/->span` | half-open epoch-ms bounds |
 | `Tempo.Interval.endpoints/1` | `tempo/from`, `tempo/to`, `from-ms`, `to-ms` | |

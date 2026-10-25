@@ -1,0 +1,339 @@
+(defmodule dap
+  "A Debug Adapter Protocol server over Brood's process-native debugger (`debug`), so any
+editor that speaks DAP — VS Code, Emacs (`dape`, `dap-mode`), Neovim (`nvim-dap`), Zed —
+can debug a Brood program: function and line breakpoints, the paused processes as threads,
+their locals as variables, evaluate in a paused scope, continue (ADR-452).
+
+`nest dap` serves it on TCP (it prints the port). The protocol runs over a socket rather
+than stdio because the program runs in the adapter's own runtime: on stdio, anything the
+program or a process it spawns printed would land inside the protocol stream. Point the
+editor at the port — VS Code `\"debugServer\": PORT`, dape `port PORT`.
+
+A launch request names the `program` (a `.blsp` file) and optionally the `function` to call
+once it has loaded (default `main`, when it defines one). Breakpoints are applied between
+the two, so a breakpoint in code that runs only at load is not hit. A line breakpoint stops
+when the function defined around that line is called, which is the granularity Brood's
+debugger breaks at (`debug/break-fn`); stepping is not supported.")
+
+;; ---- framing: `Content-Length: N\\r\\n\\r\\n` then N bytes of JSON ------------------------
+
+(defn- frame-length (head)
+  ;; the Content-Length of a header block (bytes), or nil
+  (let (line (seq/find (string/split (string/bytes-> head :lossy) "\r\n")
+               (fn (l) (string/starts-with? (string/lower l) "content-length:"))))
+    (when line
+      (let (n (string/->number (string/trim (or (second (string/split line ":")) ""))))
+        (when (int? n) n)))))
+
+(defn- take-messages (buf acc)
+  ;; [messages-in-order rest]: every complete message in `buf`
+  (let (marker (bytes/index-of buf (string/->bytes "\r\n\r\n")))
+    (if (< marker 0)
+      [(reverse acc) buf]
+      (let (n (frame-length (bytes/slice buf 0 marker))
+            start (+ marker 4))
+        (cond
+          ;; a header with no length: drop it rather than wait forever
+          (nil? n) (take-messages (bytes/slice buf start (bytes/length buf)) acc)
+          (< (bytes/length buf) (+ start n)) [(reverse acc) buf]
+          :else
+            (take-messages (bytes/slice buf (+ start n) (bytes/length buf))
+              (cons (json/decode (string/bytes-> (bytes/slice buf start (+ start n)))) acc)))))))
+
+(defn- write-message (sock message)
+  (let (body (string/->bytes (json/encode message)))
+    (tcp/send sock [(str "Content-Length: " (bytes/length body) "\r\n\r\n") body])))
+
+;; ---- the session: one editor connection ----------------------------------------------
+;; State: {:sock :buf :seq :dbg :program :function :fn-bps [names] :line-bps {path [names]}
+;;         :runner pid :thread-ids {pid id} :threads {id pid} :paused {pid snapshot}}
+
+(defn- emit (state message)
+  ;; send `message` with the next sequence number; the state with it advanced
+  (do
+    (write-message (:sock state) (assoc message :seq (:seq state)))
+    (assoc state :seq (inc (:seq state)))))
+
+(defn- respond (state request body &optional (success true) (message nil))
+  (emit state
+    (merge {:type "response"
+            :request_seq (:seq request)
+            :command (:command request)
+            :success success}
+      (if message {:message message} {})
+      (if body {:body body} {}))))
+
+(defn- event (state name body)
+  (emit state {:type "event" :event name :body (or body {})}))
+
+(defn- thread-id (state pid)
+  ;; [id state]: `pid`'s thread id, assigned on first sight
+  (let (known (get (:thread-ids state) pid))
+    (if known
+      [known state]
+      (let (id (inc (count (:thread-ids state))))
+        [id
+          (assoc state
+            :thread-ids (assoc (:thread-ids state) pid id)
+            :threads (assoc (:threads state) id pid))]))))
+
+(defn- module-of (lines)
+  ;; the module a file's lines declare (`(defmodule NAME …`), or nil
+  (seq/find (map lines
+              (fn (l)
+                (when (string/starts-with? l "(defmodule ")
+                  (let (rest (string/trim (string/substring l 11 (string/length l))))
+                    (first (string/split (first (string/split rest ")")) " "))))))
+    string?))
+
+(defn- qualified-in (path name)
+  ;; `name` as the file at `path` defines it: `module/name` unless it already says a module
+  (let (text (when (and (string? path) (file/exists? path)) (file/slurp path))
+        module (when (string? text) (module-of (into [] (string/split text "\n")))))
+    (if (or (nil? module) (includes? name "/")) name (str module "/" name))))
+
+(defn- function-at-line (path line)
+  ;; the qualified name of the function whose definition starts at or above `line` in the
+  ;; file at `path` (`module/name`), or nil
+  (let (text (when (and (string? path) (file/exists? path)) (file/slurp path)))
+    (when (string? text)
+      (let (lines (into [] (string/split text "\n"))
+            module (module-of lines)
+            defn-name (fn (l)
+                        (let (rest (cond
+                                     (string/starts-with? l "(defn- ")
+                                       (string/substring l 7 (string/length l))
+                                     (string/starts-with? l "(defn ")
+                                       (string/substring l 6 (string/length l))
+                                     :else nil))
+                          (when rest (first (string/split rest " ")))))
+            above (reverse (seq/subvec lines 0 (math/min line (count lines))))
+            name (seq/find (map above defn-name) string?))
+        (when name (if module (str module "/" name) name))))))
+
+(defn- all-breakpoints (state)
+  (into [] (seq/distinct (append (:fn-bps state) (apply append (vals (:line-bps state)))))))
+
+(defn- apply-breakpoints (names)
+  ;; break on every name that is bound to a function now; the names that took
+  (do
+    (debug/untrace-all)
+    (into []
+      (seq/filter names
+        (fn (name)
+          (let (sym (symbol name))
+            (and (bound? sym)
+              (fn? (reflect/eval sym))
+              (not (failure? (try (debug/break-fn sym) (catch e (failure (error-message e)))))))))))))
+
+(defn- launch-program (session dbg path function)
+  ;; the runner: load `path` under the debugger, wait for the go-ahead (breakpoints are
+  ;; applied in between), call `function`, report how it ended
+  (spawn (fn ()
+           (debug/with-debugger dbg
+             (fn ()
+               (let (loaded (try (do (reflect/load path) :ok) (catch e (failure (error-message e)))))
+                 (send session [:dap-loaded (self) loaded])
+                 (when (= loaded :ok)
+                   (receive ([:dap-go] nil))
+                   (let (entry (symbol function)
+                         outcome (try
+                                   (do
+                                     (when (and (bound? entry) (fn? (reflect/eval entry)))
+                                       ((reflect/eval entry)))
+                                     :ok)
+                                   (catch e (failure (error-message e)))))
+                     (send session [:dap-done (self) outcome])))))))))
+
+(defn- capabilities ()
+  {:supportsConfigurationDoneRequest true
+   :supportsFunctionBreakpoints true
+   :supportsTerminateRequest true
+   :supportsEvaluateForHovers true
+   :supportsStepBack false
+   :supportsSetVariable false})
+
+(defn- variables-of (snapshot)
+  (let (locals (merge (or (get snapshot :scope) {}) (or (get snapshot :vals) {})))
+    (into []
+      (map (sort-by (into [] locals) (fn ([k _]) (pr-str k)))
+        (fn ([k v])
+          {:name (let (s (pr-str k))
+                   (if (string/starts-with? s ":") (string/substring s 1 (string/length s)) s))
+           :value (pr-str-bounded v)
+           :variablesReference 0})))))
+
+(defn- end-session (state request)
+  ;; release every parked process, stop the program, answer, and mark the session done
+  (do
+    (debug/untrace-all)
+    (debug/resume-all (:dbg state))
+    (when (:runner state) (exit (:runner state) :kill))
+    (assoc (respond state request nil) :done true)))
+
+(defn- handle (state request)
+  ;; one DAP request: the next state
+  (let (args (or (:arguments request) {}))
+    (case (:command request)
+      "initialize" (event (respond state request (capabilities)) "initialized" nil)
+      "launch"
+        (let (program (:program args))
+          (if (and (string? program) (file/exists? program))
+            (respond (assoc state
+                       :program program
+                       :function (qualified-in program (or (:function args) "main")))
+              request nil)
+            (respond state request nil false (str "launch: no such program: " (pr-str program)))))
+      "attach" (respond state request nil false "attach is not supported: launch a program")
+      "setFunctionBreakpoints"
+        (let (names (into [] (map (or (:breakpoints args) []) :name))
+              next (assoc state :fn-bps names))
+          (respond next request {:breakpoints (into [] (map names (fn (_) {:verified true})))}))
+      "setBreakpoints"
+        (let (path (get-in args [:source :path])
+              lines (into [] (map (or (:breakpoints args) []) :line))
+              names (into [] (map lines (fn (l) (function-at-line path l))))
+              next (assoc state
+                     :line-bps (assoc (:line-bps state) path (into [] (seq/filter names string?)))))
+          (respond next
+            request
+            {:breakpoints (into []
+                            (map names
+                              (fn (n)
+                                (if n
+                                  {:verified true :message (str "stops when " n " is called")}
+                                  {:verified false
+                                   :message "no function defined at or above this line"}))))}))
+      "configurationDone"
+        (let (runner (launch-program (self) (:dbg state) (:program state) (:function state)))
+          (respond (assoc state :runner runner) request nil))
+      "threads"
+        (let ([main-id s1] (if (:runner state) (thread-id state (:runner state)) [nil state])
+              listed (into []
+                       (append (if main-id [{:id main-id :name "main"}] [])
+                         (map (keys (:paused s1))
+                           (fn (pid) {:id (get (:thread-ids s1) pid) :name (pr-str pid)})))))
+          (respond s1 request {:threads (into [] (seq/distinct listed))}))
+      "stackTrace"
+        (let (pid (get (:threads state) (:threadId args))
+              snapshot (get (:paused state) pid))
+          (respond state
+            request
+            {:stackFrames (if snapshot
+                            [{:id (:threadId args)
+                              :name (or (:label snapshot) "break")
+                              :line 0
+                              :column 0}]
+                            [])
+             :totalFrames (if snapshot 1 0)}))
+      "scopes"
+        (respond state
+          request
+          {:scopes [{:name "Locals" :variablesReference (:frameId args) :expensive false}]})
+      "variables"
+        (let (snapshot (get (:paused state) (get (:threads state) (:variablesReference args))))
+          (respond state request {:variables (if snapshot (variables-of snapshot) [])}))
+      "evaluate"
+        (let (snapshot (get (:paused state) (get (:threads state) (:frameId args)))
+              locals (if snapshot (merge (or (:scope snapshot) {}) (or (:vals snapshot) {})) {})
+              result (try
+                       (pr-str-bounded (%eval-in (:expression args) locals))
+                       (catch e (failure (error-message e)))))
+          (if (failure? result)
+            (respond state request nil false (error-message result))
+            (respond state request {:result result :variablesReference 0})))
+      "continue"
+        (let (pid (get (:threads state) (:threadId args))
+              _ (when pid (debug/resume (:dbg state) pid)))
+          (respond (assoc state :paused (dissoc (:paused state) pid))
+            request
+            {:allThreadsContinued false}))
+      "disconnect" (end-session state request)
+      "terminate" (end-session state request)
+      (respond state request nil false (str (:command request) " is not supported")))))
+
+(defn- session-loop (state)
+  (if (:done state)
+    (do (tcp/close (:sock state)) (debug/dbg-stop (:dbg state)))
+    (let (sock (:sock state))
+      (receive
+        ([:tcp ^sock data] (let ([messages rest] (take-messages (bytes/concat (:buf state) data)
+                                                   nil))
+                             (session-loop (fold messages (assoc state :buf rest) handle))))
+        ([:tcp-closed ^sock] (session-loop (assoc state :done true)))
+        ([:dap-loaded runner loaded] (if (= loaded :ok)
+                                       (do
+                                         (apply-breakpoints (all-breakpoints state))
+                                         (send runner [:dap-go])
+                                         (session-loop state))
+                                       (session-loop (event (event state
+                                                              "output"
+                                                              {:category "stderr"
+                                                               :output (str (error-message loaded)
+                                                                         "\n")})
+                                                       "terminated" nil))))
+        ([:debug-break _ pid snapshot] (let ([id s1] (thread-id state pid))
+                                         (session-loop (event (assoc s1
+                                                                :paused
+                                                                  (assoc (:paused s1) pid snapshot))
+                                                         "stopped"
+                                                         {:reason "function breakpoint"
+                                                          :description (or (:label snapshot)
+                                                                         "break")
+                                                          :threadId id
+                                                          :allThreadsStopped false}))))
+        ([:dap-done _ outcome] (let (s1 (if (failure? outcome)
+                                          (event state
+                                            "output"
+                                            {:category "stderr"
+                                             :output (str (error-message outcome) "\n")})
+                                          state))
+                                 (session-loop (event (event s1
+                                                        "exited"
+                                                        {:exitCode (if (failure? outcome) 1 0)})
+                                                 "terminated" nil))))))))
+
+(defn- serve-session (sock)
+  (tcp/set-binary sock true)
+  (let (dbg (debug/start-debugger))
+    (debug/watch-breaks dbg (self))
+    (session-loop {:sock sock
+                   :buf #b""
+                   :seq 1
+                   :dbg dbg
+                   :fn-bps []
+                   :line-bps {}
+                   :runner nil
+                   :thread-ids {}
+                   :threads {}
+                   :paused {}})))
+
+(defn- accept-loop (listener)
+  (receive
+    ([:tcp-accept ^listener client] (let (session (spawn (fn ()
+                                                           (receive
+                                                             ([:dap-session s] (serve-session s))))))
+                                      (tcp/controlling-process client session)
+                                      (send session [:dap-session client])
+                                      (accept-loop listener)))))
+
+(defn listen (&optional (port 0))
+  "Start a DAP server on 127.0.0.1:`port` (0: one the OS picks) in a new process, each editor
+connection its own session. Returns `[pid port]`.
+
+    (second (dap/listen))   ;=> the port an editor connects to"
+  (let (me (self)
+        server (spawn (fn ()
+                        (let (listener (tcp/listen "127.0.0.1" port))
+                          (send me [:dap-port (tcp/local-port listener)])
+                          (accept-loop listener)))))
+    (receive ([:dap-port p] [server p]) (after 5000 (error "dap/listen: the server did not start")))))
+
+(defn main (&optional (port 0))
+  "`nest dap`: serve DAP on 127.0.0.1:`port`, say where, and run until killed.
+
+    (dap/main 4711)   ;=> never returns; prints \"dap: listening on 127.0.0.1:4711\""
+  (let ([server bound] (listen port))
+    (io/puts (str "dap: listening on 127.0.0.1:" bound))
+    (monitor server)
+    (receive ([:down _ _ _] 0))))

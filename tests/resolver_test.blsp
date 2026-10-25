@@ -20,20 +20,19 @@
   (make-provider (fn (nm) (get versions nm))
     (fn (nm v) (get (get deps nm) v))))
 
-(defn rt-ok (roots p)
-  (match (resolve roots p)
-    ([:ok solution] solution)
-    ([:error message] (error (str "expected a solution, got error: " message)))))
+(defn rt-ok-pref (roots p preferred)
+  (let (solution (resolve roots p preferred))
+    (if (failure? solution)
+      (error (str "expected a solution, got error: " (error-message solution)))
+      solution)))
+
+(defn rt-ok (roots p) (rt-ok-pref roots p nil))
 
 (defn rt-err (roots p)
-  (match (resolve roots p)
-    ([:error message] message)
-    ([:ok solution] (error (str "expected a conflict, got solution: " (pr-str solution))))))
-
-(defn rt-ok-pref (roots p preferred)
-  (match (resolve roots p preferred)
-    ([:ok solution] solution)
-    ([:error message] (error (str "expected a solution, got error: " message)))))
+  (let (solution (resolve roots p))
+    (if (failure? solution)
+      (error-message solution)
+      (error (str "expected a conflict, got solution: " (pr-str solution))))))
 
 ;; A provider with no deps anywhere — every release requires nothing.
 (defn rt-leaf-prov (versions) (rt-prov versions {}))
@@ -302,7 +301,7 @@
           deps {'a {"2.0.0" [['c "= 1.0.0"]] "1.0.0" [['c "= 2.0.0"]]}
                 'b {"1.0.0" [['c "= 2.0.0"]]}}
           roots [['a nil] ['b nil]]
-          expected [:ok {'a "1.0.0" 'b "1.0.0" 'c "2.0.0"}])
+          expected {'a "1.0.0" 'b "1.0.0" 'c "2.0.0"})
       (rt-spawn (self) 16 versions deps roots)
       (let (results (rt-collect 0 16 nil))
         (assert= 16 (count results))
@@ -430,25 +429,18 @@
 (defn rt-o-check (universe roots)
   (let (result (resolve roots (rt-o-provider universe))
         solvable (rt-o-solvable? roots universe))
-    (match result
-      ([:ok solution] (cond
-                        (not solvable)
-                          {:kind :unsound-claimed-ok
-                           :universe universe
-                           :roots roots
-                           :solution solution}
-                        (not (rt-o-resolves? roots universe solution))
-                          {:kind :invalid-solution
-                           :universe universe
-                           :roots roots
-                           :solution solution}
-                        else nil))
-      ([:error message] (if solvable
-                          {:kind :incomplete-gave-up
-                           :universe universe
-                           :roots roots
-                           :message message}
-                          nil)))))
+    (cond
+      (failure? result)
+        (if solvable
+          {:kind :incomplete-gave-up
+           :universe universe
+           :roots roots
+           :message (error-message result)}
+          nil)
+      (not solvable) {:kind :unsound-claimed-ok :universe universe :roots roots :solution result}
+      (not (rt-o-resolves? roots universe result))
+        {:kind :invalid-solution :universe universe :roots roots :solution result}
+      else nil)))
 
 (defn rt-o-scan (n seed)
   ;; the first counterexample across `n` seeded universes, or nil if all agree

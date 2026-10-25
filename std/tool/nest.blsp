@@ -192,6 +192,18 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
              :positional ["spec" nil]
              :arity 1
              :run (fn (options) (run-attach options))}
+   "profile" {:about "Run a `.blsp` FILE under the sampling CPU profiler (`dev/profile-start`) and write the samples as folded stacks — the format flamegraph.pl, inferno and speedscope read — to `--out` (default FILE.folded). The file is loaded, then `--function` (default its `main`) is called; `--hz` sets the rate (default 199)."
+              :flags {"--out" "PATH" "--hz" "N" "--function" "NAME"}
+              :positional ["file" nil]
+              :arity 1
+              :run (fn (options) (run-profile options))}
+   "dap" {:about "Serve the Debug Adapter Protocol on 127.0.0.1 (ADR-452), so VS Code, Emacs (dape), Neovim and Zed can debug a Brood program: function and line breakpoints, the paused processes as threads, their locals, evaluate, continue. Prints the port (`--port` picks it); point the editor at it — VS Code `\"debugServer\": PORT`. Runs until killed."
+          :flags {"--port" "PORT"}
+          :run (fn (options)
+                 (let (port (string/->number (or (get (get options :flags) "--port") "0")))
+                   (if (int? port)
+                     (dap/main port)
+                     (do (io/puts "nest dap: --port wants a number" :to *err*) 2))))}
    "mcp" {:about "Serve the project over Model Context Protocol on stdio, so an agent (Claude Code etc.) can eval / lookup / format / expand / run tests / read docs against its live image (ADR-036, docs/mcp.md)."
           :flags {}
           :run (fn (_options) (if (require-project "mcp" nil) (mcp/main) 2))}
@@ -1026,6 +1038,52 @@ so a matching local setup needs no flag."
             (eputs "nest observe: --cookie is ignored without --connect (the local demo opens no link)"))
           (observer/observe-run)
           0))))
+
+(defn- run-profile (options)
+  ;; load FILE, call its entry under the profiler, write the folded stacks
+  (let (file (first (get options :positionals))
+        flags (get options :flags)
+        hz (string/->number (or (get flags "--hz") "199"))
+        out (or (get flags "--out") (str file ".folded")))
+    (cond
+      (not (and (string? file) (file/exists? file)))
+        (do (io/puts (str "nest profile: no such file: " file) :to *err*) 2)
+      (not (int? hz)) (do (io/puts "nest profile: --hz wants a number" :to *err*) 2)
+      :else
+        (let (_ (dev/profile-start hz)
+              outcome (try
+                        (do
+                          (reflect/load file)
+                          (let (module (profile-module file)
+                                name (or (get flags "--function") "main")
+                                entry (symbol (if (or (nil? module) (includes? name "/"))
+                                                name
+                                                (str module "/" name))))
+                            (when (and (bound? entry) (fn? (reflect/eval entry)))
+                              ((reflect/eval entry))))
+                          :ok)
+                        (catch e (failure (error-message e))))
+              histogram (dev/profile-stop))
+          (file/spit out (dev/profile->folded histogram))
+          (io/puts (str "nest profile: "
+                     (count histogram)
+                     " stacks, "
+                     (fold histogram 0 (fn (n entry) (+ n (:count entry))))
+                     " samples -> "
+                     out)
+            :to *err*)
+          (if (failure? outcome) (do (io/puts (error-message outcome) :to *err*) 1) 0)))))
+
+(defn- profile-module (file)
+  ;; the module a `.blsp` file declares on its `(defmodule NAME` line, or nil
+  (let (line (seq/find (string/split (file/slurp file) "\n")
+               (fn (l) (string/starts-with? l "(defmodule "))))
+    (when line
+      (first (string/split (first (string/split (string/trim (string/substring line
+                                                               11
+                                                               (string/length line)))
+                                    ")"))
+               " ")))))
 
 (defn- run-attach (options)
   (let (spec (first (get options :positionals))

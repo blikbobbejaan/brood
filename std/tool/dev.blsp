@@ -76,6 +76,20 @@
     (dev/profile-stop)   ;=> ({:stack (\"inner\" \"outer\") :count 42} …)"
   (%profile-stop))
 
+(defn profile->folded (histogram)
+  "A `profile-stop` histogram as folded stacks — one line per stack, root first, frames joined
+by `;`, then a space and its sample count — the format flamegraph.pl, inferno and speedscope
+read (`nest profile` writes it to a file).
+
+    (dev/profile->folded [{:stack [\"inner\" \"outer\"] :count 42}])   → \"outer;inner 42\\n\""
+  (string/join (map histogram
+                 (fn (entry)
+                   (str (string/join (reverse (into [] (:stack entry))) ";")
+                     " "
+                     (:count entry)
+                     "\n")))
+    ""))
+
 (defn sched-stats ()
   "A snapshot map of the scheduler's cumulative counters: {:spawned :exited :preempts :steals :migrations :workers :peak-threads}. :spawned - :exited is the live-process figure; :preempts counts reduction-budget quantum exhaustions; :steals/:migrations count work-stealing activity. The scheduler half of the observability timing tier (pairs with gc-stats' :pause-* keys).
 

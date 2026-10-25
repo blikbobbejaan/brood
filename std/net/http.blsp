@@ -767,8 +767,9 @@ the caller's `extra` headers merged on top (so any of those can be overridden).
                 (assoc base "Content-Length" (str (count body-bytes)))))
     (merge base2 (or extra {}))))
 
-(defn request-head (method u headers)
-  "The HTTP/1.0 request head — request line, `headers` (a name→value map, see
+(defn request-head (method u headers &optional (version "HTTP/1.0"))
+  "The request head — request line in `version` (HTTP/1.0 by default, which `request` and
+`sse/connect` speak; the kept-alive `connection` speaks 1.1), `headers` (a name→value map, see
 `request-headers`), blank line — for `method` to the parsed url `u` (from `parse-url`).
 The target is the path plus `?query` when there is one. Shared by `request` and
 `sse/connect`, so both refuse the same things: **raises** if the method, the target or
@@ -785,7 +786,9 @@ any header carries a CR or LF (request splitting).
     (str (http-crlf-free "request method" method)
       " "
       (http-crlf-free "request target" target)
-      " HTTP/1.0\r\n"
+      " "
+      version
+      "\r\n"
       (render-headers headers)
       "\r\n")))
 
@@ -848,3 +851,227 @@ response map (`:body` is `bytes`; see `body-text`).
 
     (http/post \"http://localhost:8080/api\" \"{}\" {:headers {\"Content-Type\" \"application/json\"}})   ;=> the response map, :body as bytes"
   (request "POST" url (assoc opts :body body)))
+
+;; ---- HTTP/1.1: a connection that stays open (ADR-451) --------------------------
+;; `request` is one-shot HTTP/1.0: a socket per request, the body read to close. A
+;; `connection` is a process that holds ONE socket to one origin and sends requests on it
+;; in turn, HTTP/1.1, so a client making many calls to one API pays one TCP (and TLS)
+;; handshake instead of one per call. A response is framed the 1.1 way —
+;; `Transfer-Encoding: chunked` decoded, `Content-Length` read exactly, or (for a server
+;; that says neither) read to close — which is what lets the socket carry the next
+;; request. A socket the server closed while idle is replaced, and a request it was sent
+;; on is tried once more on the new one.
+
+(def *http-connection-timeout-ms* 30000)
+;; The idle wait for each part of a response on a `connection` (the head, a chunk, a body).
+
+(defn- http-framed (result)
+  ;; a `tcp/read-*` result as [frame rest], or a failure naming why it stopped
+  (if (keyword? (first result))
+    (failure (str "http: the response stopped short (" (pr-str (first result)) ")"))
+    result))
+
+(defn- http-read-exactly (sock n seed)
+  ;; [exactly n bytes, rest] off `seed` (bytes already read) and then the socket
+  (if (>= (bytes/length seed) n)
+    [(bytes/slice seed 0 n) (bytes/slice seed n (bytes/length seed))]
+    (let (more (http-framed (tcp/read-n sock
+                              (- n (bytes/length seed))
+                              {:timeout-ms *http-connection-timeout-ms*
+                               :max-bytes *http-max-response-bytes*})))
+      (if (failure? more) more [(bytes/concat seed (first more)) (second more)]))))
+
+(defn- http-read-line (sock seed)
+  (http-framed (tcp/read-until sock
+                 "\r\n"
+                 {:seed seed :timeout-ms *http-connection-timeout-ms* :max-bytes 8192})))
+
+(defn- http-read-chunks (sock seed acc have)
+  ;; a chunked body: `size[;ext]CRLF data CRLF` until a zero size, then trailers to a blank
+  ;; line. [body rest], or a failure.
+  (let (line (http-read-line sock seed))
+    (if (failure? line)
+      line
+      (let ([raw rest] line
+            text (string/trim (string/bytes-> raw :lossy))
+            size (string/->number (first (string/split text ";")) 16))
+        (cond
+          (or (not (int? size)) (< size 0)) (failure (str "http: a bad chunk size: " text))
+          (> (+ have size) *http-max-response-bytes*)
+            (failure "http: response exceeded *http-max-response-bytes*")
+          (= size 0) (http-read-trailers sock rest (bytes/concat (reverse acc)))
+          :else
+            (let (chunk (http-read-exactly sock (+ size 2) rest))
+              (if (failure? chunk)
+                chunk
+                (http-read-chunks sock
+                  (second chunk)
+                  (cons (bytes/slice (first chunk) 0 size) acc)
+                  (+ have size)))))))))
+
+(defn- http-read-trailers (sock seed body)
+  (let (line (http-read-line sock seed))
+    (cond
+      (failure? line) line
+      (= (bytes/length (first line)) 2) [body (second line)]
+      :else (http-read-trailers sock (second line) body))))
+
+(defn- http-read-to-close (sock seed)
+  ;; a body with no framing: everything until the server closes
+  (receive
+    ([:tcp ^sock d] (http-read-to-close sock (bytes/concat seed d)))
+    ([:tcp-closed ^sock] [seed #b""])
+    (after *http-connection-timeout-ms* (failure "http: timed out reading the body"))))
+
+(defn read-response (sock &optional (seed #b"") (method "GET"))
+  "Read one HTTP/1.1 response off `sock` (which the caller owns, in binary mode), framed as
+1.1 frames it: `{:response <response> :rest <bytes read past it> :close? <bool>}`, or a
+failure. `seed` is bytes already read (a previous response's `:rest`); `method` matters
+only for HEAD, whose response has no body. `:close?` is true when the connection cannot
+carry another request — the server said `Connection: close`, or sent a body framed by
+nothing but its close.
+
+    (http/read-response sock)   ;=> {:response #response{…} :rest #b\"\" :close? false}"
+  (let (head (http-framed (tcp/read-until sock
+                            "\r\n\r\n"
+                            {:seed seed :timeout-ms *http-connection-timeout-ms* :max-bytes 65536})))
+    (if (failure? head)
+      head
+      (let ([head-bytes rest] head
+            resp (parse-response head-bytes)
+            headers (/get resp :headers)
+            status (/get resp :status)
+            connection (string/lower (or (get headers "connection") ""))
+            chunked? (includes? (string/lower (or (get headers "transfer-encoding") "")) "chunked")
+            length (string/->number (or (get headers "content-length") "x"))
+            no-body? (or (= method "HEAD") (= status 204) (= status 304) (< status 200))
+            body (cond
+                   no-body? [#b"" rest]
+                   chunked? (http-read-chunks sock rest nil 0)
+                   (int? length) (http-read-exactly sock length rest)
+                   :else (http-read-to-close sock rest)))
+        (if (failure? body)
+          body
+          {:response (assoc resp :body (first body))
+           :rest (second body)
+           :close? (or (= connection "close")
+                     (and (not no-body?) (not chunked?) (not (int? length))))})))))
+
+(defn- http-open (u opts)
+  ;; a fresh socket to `u`'s origin, owned by the calling (connection) process, binary
+  (if (= (/get u :scheme) "https")
+    (tls/connect (/get u :host) (/get u :port) {:ca (/get opts :ca) :alpn ["http/1.1"]})
+    (let (s (tcp/connect (/get u :host) (/get u :port))) (tcp/set-binary s true) s)))
+
+(defn- http-host-header (u)
+  (let (default (if (= (/get u :scheme) "https") 443 80))
+    (if (= (/get u :port) default) (/get u :host) (str (/get u :host) ":" (/get u :port)))))
+
+(defn- http-exchange (sock u method target ropts)
+  ;; send one request on `sock` and read its response: the `read-response` map or a failure
+  (let (body (bytes/concat (or (/get ropts :body) ""))
+        target-u (parse-url (str "http://h"
+                              (if (string/starts-with? target "/") target (str "/" target))))
+        headers (merge {"Host" (http-host-header u) "User-Agent" "brood" "Connection" "keep-alive"}
+                  (if (= (bytes/length body) 0) {} {"Content-Length" (str (bytes/length body))})
+                  (or (/get ropts :headers) {}))
+        head (request-head method target-u headers "HTTP/1.1"))
+    (try
+      (do
+        (tcp/send sock [head body])
+        (read-response sock #b"" method))
+      (catch e (failure (str "http: " (error-message e)))))))
+
+(defn- http-open-or-fail (u opts)
+  (try (http-open u opts) (catch e (failure (error-message e)))))
+
+(defn- http-attempt (u opts sock method target ropts)
+  ;; one request: on `sock` when the connection has one (once more on a fresh socket if the
+  ;; server had closed it while idle), else on a new one — `{:sock :result}`, `:sock` the
+  ;; socket to keep using (nil after a failure, which closes it) and `:result` the
+  ;; `read-response` map or a failure
+  (let (fresh? (nil? sock)
+        first-sock (if fresh? (http-open-or-fail u opts) sock)
+        first-try (if (failure? first-sock)
+                    first-sock
+                    (http-exchange first-sock u method target ropts)))
+    (cond
+      (failure? first-sock) {:sock nil :result first-sock}
+      (and (failure? first-try) (not fresh?))
+        (do
+          (tcp/close first-sock)
+          (let (again (http-open-or-fail u opts))
+            (if (failure? again)
+              {:sock nil :result again}
+              (http-settle again (http-exchange again u method target ropts)))))
+      :else (http-settle first-sock first-try))))
+
+(defn- http-settle (sock result)
+  ;; keep the socket after a response that leaves it usable; close it otherwise
+  (if (or (failure? result) (:close? result))
+    (do (tcp/close sock) {:sock nil :result result})
+    {:sock sock :result result}))
+
+(defn- http-connection-loop (u opts sock owner-ref)
+  (receive
+    ([:http-request from ref method target ropts] (let (outcome (http-attempt u
+                                                                  opts sock method target ropts)
+                                                        result (:result outcome))
+                                                    (send from
+                                                      [:http-response
+                                                        ref
+                                                        (if (failure? result)
+                                                          {:status 0
+                                                           :error (error-message result)
+                                                           :headers {}
+                                                           :body #b""}
+                                                          (:response result))])
+                                                    (http-connection-loop u
+                                                      opts
+                                                      (:sock outcome)
+                                                      owner-ref)))
+    ;; idle: the server closed (or wrote out of turn) — drop the socket, open anew next time
+    ([:tcp-closed ^sock] (http-connection-loop u opts nil owner-ref))
+    ([:tcp ^sock _] (do (tcp/close sock) (http-connection-loop u opts nil owner-ref)))
+    ([:http-close from ref] (do
+                              (when (tcp/socket? sock) (tcp/close sock))
+                              (send from [:http-closed ref])))
+    ([:down ^owner-ref _ _] (when (tcp/socket? sock) (tcp/close sock)))))
+
+(defn connection (url &optional (opts {}))
+  "A connection to `url`'s origin (http or https; the path is ignored) that stays open
+across requests, HTTP/1.1 — a process; send requests on it with `request-on` and close it
+with `close-connection`. `opts`: `:ca` a PEM certificate replacing the Mozilla roots. It
+opens its socket on the first request, replaces one the server closed, and ends when the
+process that made it does.
+
+    (let (c (http/connection \"https://api.example.com\")) (http/request-on c \"GET\" \"/v1/items\"))
+    ;=> the response map, the socket kept for the next request"
+  (let (u (parse-url url)
+        owner (self))
+    (when (nil? (/get u :host))
+      (error "http/connection: expected an absolute http or https URL, got " (pr-str url)))
+    (spawn (fn () (http-connection-loop u opts nil (monitor owner))))))
+
+(defn request-on (conn method target &optional (opts {}))
+  "Send `method` `target` (a path, with `?query`) on the `connection` `conn` and return the
+response map `{:status :headers :body}` (`:body` bytes); a transport failure is `:status 0`
+with `:error`, as for `request`. `opts`: `:headers` (merged over Host, User-Agent and
+`Connection: keep-alive`) and `:body`.
+
+    (http/request-on conn \"POST\" \"/v1/items\" {:body \"{}\" :headers {\"Content-Type\" \"application/json\"}})
+    ;=> the response map"
+  (let (ref (ref))
+    (send conn [:http-request (self) ref method target opts])
+    (receive
+      ([:http-response ^ref resp] resp)
+      (after (* 3 *http-connection-timeout-ms*)
+        {:status 0 :error "http: the connection did not answer" :headers {} :body #b""}))))
+
+(defn close-connection (conn)
+  "Close the `connection` `conn` and its socket. Returns once it has.
+
+    (http/close-connection (http/connection \"http://localhost:8080\"))   ;=> nil"
+  (let (ref (ref))
+    (send conn [:http-close (self) ref])
+    (receive ([:http-closed ^ref] nil) (after 5000 nil))))
