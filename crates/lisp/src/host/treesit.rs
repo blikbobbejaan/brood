@@ -847,7 +847,8 @@ pub fn tree_open(text: ropey::Rope, lang: &str) -> Result<u64, LispError> {
 /// incrementally from `old`'s tree. `edits` is the caller's account of what changed, as CHAR
 /// triples `[start old-end new-end]` applied in order; `None` derives the edit by comparing
 /// the ropes (prefix and suffix, chunk by chunk). An edit that does not fit the two texts —
-/// whose unchanged tails differ in length — is an error, never a silently wrong tree.
+/// whose unchanged tails differ in length — is an error. Only the lengths are checked: an edit
+/// that fits them but names the wrong place gives a wrong tree.
 #[cfg(feature = "treesit")]
 pub fn tree_reparse(
     old: u64,

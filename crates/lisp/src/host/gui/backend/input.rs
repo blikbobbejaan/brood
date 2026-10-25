@@ -3,7 +3,7 @@
 //! bookkeeping that turns raw events into `[:key …]` / `[:mouse …]` messages.
 
 use super::*;
-use crate::host::gui::{KeyModifiers, named_key};
+use crate::host::gui::{KeyModifiers, character_chord, named_key};
 
 /// Max gap between consecutive presses (same button, same cell) that still counts
 /// as part of one click chain — the double/triple-click window, in milliseconds.
@@ -15,9 +15,6 @@ pub(super) const MULTI_CLICK_MS: u128 = 400;
 pub(super) fn key_message(k: &Key) -> Message {
     match k {
         Key::Char(c) => Message::Str(c.to_string()),
-        Key::Ctrl(c) => Message::Keyword(value::intern(&format!("ctrl-{c}"))),
-        Key::Alt(c) => Message::Keyword(value::intern(&format!("alt-{c}"))),
-        Key::CtrlAlt(c) => Message::Keyword(value::intern(&format!("ctrl-meta-{c}"))),
         Key::Named(s) => Message::Keyword(value::intern(s)),
     }
 }
@@ -324,6 +321,29 @@ pub(super) fn typed_text(ke: &KeyEvent, mods: ModifiersState) -> Option<String> 
     (chars.next().is_some() && !text.chars().any(char::is_control)).then(|| text.to_string())
 }
 
+/// A bare modifier or lock key: a press the app is never sent and so never answers with a
+/// frame — the latency stamp (ADR-440) waits for the key it modifies instead.
+pub(super) fn is_modifier_key(ke: &KeyEvent) -> bool {
+    matches!(
+        ke.logical_key,
+        WKey::Named(
+            NamedKey::Shift
+                | NamedKey::Control
+                | NamedKey::Alt
+                | NamedKey::AltGraph
+                | NamedKey::Super
+                | NamedKey::Meta
+                | NamedKey::Hyper
+                | NamedKey::CapsLock
+                | NamedKey::NumLock
+                | NamedKey::Fn
+                | NamedKey::FnLock
+                | NamedKey::Symbol
+                | NamedKey::SymbolLock
+        )
+    )
+}
+
 pub(super) fn translate_key(ke: &KeyEvent, mods: ModifiersState) -> Option<Key> {
     use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
     let modifiers = key_modifiers(mods);
@@ -373,38 +393,6 @@ pub(super) fn translate_key(ke: &KeyEvent, mods: ModifiersState) -> Option<Key> 
             Some(character_chord(c, modifiers))
         }
         _ => None,
-    }
-}
-
-/// A character `c` under chord `modifiers`, Shift already folded into `c`. Control chords
-/// are case-INsensitive (Emacs `C-a` = `C-A`); Meta and Super are case-SENSITIVE (`M-O`
-/// open-line-above ≠ `M-o`): a shifted letter stays upper-case so the two are distinct,
-/// while an unshifted chord lower-cases (so Caps Lock / a stray Shift can't change the
-/// binding). A chord with Super spells through `named_key` (`:super-x`, `:ctrl-super-x`).
-fn character_chord(c: char, modifiers: KeyModifiers) -> Key {
-    let case_kept = if !modifiers.ctrl && modifiers.shift {
-        c.to_ascii_uppercase()
-    } else {
-        c.to_ascii_lowercase()
-    };
-    match modifiers {
-        KeyModifiers {
-            super_key: true, ..
-        } => Key::Named(named_key(
-            &case_kept.to_string(),
-            KeyModifiers {
-                shift: false,
-                ..modifiers
-            },
-        )),
-        KeyModifiers {
-            ctrl: true,
-            alt: true,
-            ..
-        } => Key::CtrlAlt(c.to_ascii_lowercase()),
-        KeyModifiers { ctrl: true, .. } => Key::Ctrl(c.to_ascii_lowercase()),
-        KeyModifiers { alt: true, .. } => Key::Alt(case_kept),
-        _ => Key::Char(c),
     }
 }
 
@@ -618,9 +606,6 @@ mod adr_431_tests {
     fn keyword_of(key: Key) -> String {
         match key {
             Key::Named(name) => name.to_string(),
-            Key::Ctrl(c) => format!("ctrl-{c}"),
-            Key::Alt(c) => format!("alt-{c}"),
-            Key::CtrlAlt(c) => format!("ctrl-meta-{c}"),
             Key::Char(c) => c.to_string(),
         }
     }

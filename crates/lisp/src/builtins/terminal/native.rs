@@ -226,48 +226,23 @@ pub(in crate::builtins) fn key_to_value(heap: &mut Heap, k: crossterm::event::Ke
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     let alt = k.modifiers.contains(KeyModifiers::ALT);
     match k.code {
-        // Super (Emacs `s-`): a terminal reports it only under the kitty keyboard
-        // protocol, but when it does the chord spells the way the GUI's does —
-        // `:super-x`, `:ctrl-super-x`, a shifted letter upper-case unless Control is held.
-        KeyCode::Char(c) if k.modifiers.contains(KeyModifiers::SUPER) => {
-            let glyph = if !ctrl && k.modifiers.contains(KeyModifiers::SHIFT) {
-                c.to_ascii_uppercase()
-            } else {
-                c.to_ascii_lowercase()
-            };
-            value::kw(crate::host::gui::named_key(
-                &glyph.to_string(),
-                crate::host::gui::KeyModifiers {
-                    ctrl,
-                    alt,
-                    shift: false,
-                    super_key: true,
-                },
-            ))
-        }
-        // Ctrl+Alt (Emacs C-M-… — structural sexp motion C-M-f/b/u/d, mark-sexp
-        // C-M-SPC). Must precede the ctrl-only / alt-only arms so the second modifier
-        // isn't dropped (the `ctrl-meta-` spelling the keymaps bind).
-        KeyCode::Char(c) if ctrl && alt => Value::keyword(value::intern(&format!(
-            "ctrl-meta-{}",
-            c.to_ascii_lowercase()
-        ))),
-        KeyCode::Char(c) if ctrl => {
-            Value::keyword(value::intern(&format!("ctrl-{}", c.to_ascii_lowercase())))
-        }
-        // Alt/Meta combos (M-f, M-b, … — emacs word motion). Some terminals send
-        // these as an Esc prefix; crossterm normalises them to the ALT modifier.
-        KeyCode::Char(c) if alt => {
-            // Meta is case-SENSITIVE (`M-O` ≠ `M-o`): keep a shifted letter upper-case so
-            // the two are distinct; an unshifted chord lower-cases (Caps Lock / a stray
-            // Shift can't change the binding). Mirrors the GUI frontend
-            // (`gui::backend::translate_key`); Control chords above stay case-insensitive.
-            let ch = if k.modifiers.contains(KeyModifiers::SHIFT) {
-                c.to_ascii_uppercase()
-            } else {
-                c.to_ascii_lowercase()
-            };
-            Value::keyword(value::intern(&format!("alt-{ch}")))
+        // A chord — Ctrl, Alt/Meta (some terminals send it as an Esc prefix; crossterm
+        // normalises that to ALT) or Super (reported only under the kitty keyboard
+        // protocol) — spells exactly as the GUI's does: `crate::host::gui::character_chord`,
+        // the one rule for both frontends (`:ctrl-x`, `:alt-X`, `:ctrl-meta-f`, `:super-x`).
+        KeyCode::Char(c) if ctrl || alt || k.modifiers.contains(KeyModifiers::SUPER) => {
+            gui_key_to_value(
+                heap,
+                crate::host::gui::character_chord(
+                    c,
+                    crate::host::gui::KeyModifiers {
+                        ctrl,
+                        alt,
+                        shift: k.modifiers.contains(KeyModifiers::SHIFT),
+                        super_key: k.modifiers.contains(KeyModifiers::SUPER),
+                    },
+                ),
+            )
         }
         KeyCode::Char(c) => heap.alloc_string(&c.to_string()),
         // The named keys carry their modifiers in the name — `crate::host::gui::named_key`,
@@ -914,6 +889,13 @@ pub(in crate::builtins) fn gui_size_px(args: &[Value], _: EnvId, heap: &mut Heap
     Ok(heap.alloc_vector2(Value::int(w as i64), Value::int(h as i64)))
 }
 
+/// `(%gui-settle id)` — window `id`'s app finished a turn with nothing new to draw (ADR-444).
+pub(in crate::builtins) fn gui_settle(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let id = gui_window_id(heap, "%gui-settle", arg(args, 0))?;
+    crate::host::gui::settle(id).map_err(LispError::runtime)?;
+    Ok(Value::nil())
+}
+
 /// `(%gui-latency id)` — window `id`'s recent input-to-present samples, oldest first, as
 /// maps of milliseconds: `:total` (input to present) and `:paint` (the paint's share),
 /// plus the GPU paint's `:encode` `:upload` `:acquire` `:submit` `:present` phases when
@@ -930,10 +912,7 @@ pub(in crate::builtins) fn gui_latency(args: &[Value], _: EnvId, heap: &mut Heap
             (value::kw("paint"), ms(sample.paint_us)),
         ];
         if let Some(split) = sample.split {
-            for (name, us) in ["encode", "upload", "acquire", "submit", "present"]
-                .into_iter()
-                .zip(split)
-            {
+            for (name, us) in crate::host::gui::PAINT_PHASES.into_iter().zip(split) {
                 pairs.push((value::kw(name), ms(us)));
             }
         }
@@ -1249,9 +1228,6 @@ pub(in crate::builtins) fn gui_key_to_value(heap: &mut Heap, k: crate::host::gui
     use crate::host::gui::Key;
     match k {
         Key::Char(c) => heap.alloc_string(&c.to_string()),
-        Key::Ctrl(c) => Value::keyword(value::intern(&format!("ctrl-{c}"))),
-        Key::Alt(c) => Value::keyword(value::intern(&format!("alt-{c}"))),
-        Key::CtrlAlt(c) => Value::keyword(value::intern(&format!("ctrl-meta-{c}"))),
         Key::Named(s) => Value::keyword(value::intern(s)),
     }
 }

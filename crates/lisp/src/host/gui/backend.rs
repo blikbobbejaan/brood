@@ -16,13 +16,13 @@ use render::*;
 // The GPU render target (`gpu.rs`) paints with the same text metric and hairline snap.
 #[cfg(feature = "gui-gpu")]
 pub(crate) use {
-    paint::paint_stall_ms, paint::text_px_width, render::cursor_rim, render::snap_hairline,
-    render::text_units, render::unit_cells,
+    paint::paint_stall_ms, paint::text_px_width, render::cursor_rim, render::luma,
+    render::snap_hairline, render::text_units, render::unit_cells,
 };
 
 use super::{
-    CursorShape, Key, KeyRepeat, LatencySample, Mouse, MouseAction, MouseButton, Op, WheelMode,
-    WindowSpec,
+    CursorShape, Key, KeyRepeat, LatencySample, Mouse, MouseAction, MouseButton, Op, PAINT_PHASES,
+    WheelMode, WindowSpec,
 };
 
 use crate::core::sync::lock;
@@ -257,6 +257,9 @@ enum UserEvent {
     },
     /// Replace window `id`'s frame and repaint it.
     Draw { id: u64, ops: Vec<Op> },
+    /// Window `id`'s app finished a turn with nothing new to draw (ADR-444): what a Draw
+    /// would have told the window about the app's progress, without the frame.
+    Settle { id: u64 },
     /// Destroy window `id`.
     Close { id: u64 },
     /// Set window `id`'s OS title-bar text at runtime. Behind `gui-title!`.
@@ -824,6 +827,18 @@ pub fn draw(id: u64, ops: Vec<Op>) -> Result<(), String> {
         .map_err(|_| "gui thread is gone".to_string())
 }
 
+/// `(gui-settle id)` — window `id`'s app finished a turn with nothing to draw (ADR-444).
+pub fn settle(id: u64) -> Result<(), String> {
+    if headless() {
+        return Ok(());
+    }
+    gui()?
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .send_event(UserEvent::Settle { id })
+        .map_err(|_| "gui thread is gone".to_string())
+}
+
 /// `(gui-font! …)` — set a cell font (family and/or pixel size). `id: None`
 /// sets the global default (every open window + ones opened later); `id:
 /// Some(w)` targets just window `w`, leaving the global default untouched.
@@ -1256,14 +1271,11 @@ struct Win {
     /// the gate that keeps at most one OS repeat undelivered (ADR-441).
     key_repeat: KeyRepeat,
     repeat_gate: Arc<RepeatGate>,
-    /// Whether an input method may compose in this window (`WindowSpec::ime`); whether
-    /// its composition is showing now (so an IME switched off clears it); whether one
-    /// was shown since the last commit (so the commit that ends it is `[:text …]` even
-    /// though winit clears the preedit just before); and the cursor rect last handed to
-    /// it for the candidate window, so it is only told when the cursor moves.
+    /// Whether an input method may compose in this window (`WindowSpec::ime`), where its
+    /// composition stands (`Composition`), and the cursor rect last handed to it for the
+    /// candidate window, so it is only told when the cursor moves.
     ime: bool,
-    preedit_shown: bool,
-    ime_composed: bool,
+    composition: Composition,
     ime_area: Option<(isize, isize, usize, usize)>,
     /// What a wheel notch does (`WindowSpec::wheel`). Under `WheelMode::Lines`, the lines
     /// of notches that arrived while the last scroll message was not yet drawn, summed
@@ -1454,8 +1466,7 @@ fn build_window(
         key_repeat: spec.key_repeat,
         repeat_gate: Arc::new(RepeatGate::default()),
         ime: spec.ime,
-        preedit_shown: false,
-        ime_composed: false,
+        composition: Composition::Idle,
         ime_area: None,
         wheel: spec.wheel,
         wheel_backlog: 0.0,
@@ -1741,6 +1752,15 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     w.window.request_redraw();
                 }
             }
+            UserEvent::Settle { id } => {
+                if let Some(w) = self.ids.get(&id).and_then(|wid| self.wins.get_mut(wid)) {
+                    // As a Draw would: the app is done with the last scroll step, so the
+                    // next momentum step may fire — and the input it was answering changed
+                    // nothing, so no later frame is its answer.
+                    w.scroll_pending = false;
+                    w.input_at = None;
+                }
+            }
             UserEvent::Close { id } => {
                 if let Some(wid) = self.ids.remove(&id) {
                     self.wins.remove(&wid); // dropping the window closes it
@@ -1903,8 +1923,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 let family = family
                     .or(self.defaults.family)
                     .unwrap_or_else(|| value::intern(DEFAULT_FAMILY));
-                let mut info = self.families.borrow().info(family);
-                info.ligatures = self.defaults.ligatures;
+                let info = self.families.borrow().info(family, self.defaults.ligatures);
                 let _ = reply.send(info);
             }
             UserEvent::Ligatures { on } => {
@@ -1929,22 +1948,46 @@ impl ApplicationHandler<UserEvent> for GuiApp {
         let Some(w) = self.wins.get_mut(&window_id) else {
             return;
         };
-        // Stamp the input this event is (ADR-440): a key press, a button, a wheel step.
-        // The earliest unanswered one is kept; the next frame to arrive answers it. A
-        // press the arms below drop (an auto-repeat) is stamped too — the frame the
-        // app's own repeat draws answers it, which is what the user waits on.
+        // Stamp the input this event is (ADR-440): a key press, a button press, a wheel step.
+        // The earliest unanswered one is kept; the next frame to arrive answers it, and a
+        // turn that settles with nothing to draw (`settle`) drops it. A press the arms below
+        // drop (an auto-repeat) is stamped too — the frame the app's own repeat draws
+        // answers it, which is what the user waits on. A bare modifier is not: `C-x` is
+        // timed from the `x`, not from however long Ctrl was held before it.
         if w.input_at.is_none()
             && match &event {
                 WindowEvent::KeyboardInput {
                     event: key_event,
                     is_synthetic,
                     ..
-                } => key_event.state == ElementState::Pressed && !is_synthetic,
-                WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => true,
+                } => {
+                    key_event.state == ElementState::Pressed
+                        && !is_synthetic
+                        && !is_modifier_key(key_event)
+                }
+                WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,
+                // a horizontal-only wheel event scrolls nothing here, so no frame answers it
+                WindowEvent::MouseWheel { delta, .. } => match delta {
+                    MouseScrollDelta::LineDelta(_, y) => *y != 0.0,
+                    MouseScrollDelta::PixelDelta(position) => position.y != 0.0,
+                },
+                // an input method's commit is typing, whatever the keyboard did
+                WindowEvent::Ime(winit::event::Ime::Commit(_)) => true,
                 _ => false,
             }
         {
             w.input_at = Some(Instant::now());
+        }
+        // A key that reached the window ends a composition that already ended: one that
+        // was cancelled (Escape sends an empty preedit and no commit) must not make the
+        // next one-character commit read as composed text.
+        if let WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } = &event
+            && key_event.state == ElementState::Pressed
+            && w.composition == Composition::Ended
+        {
+            w.composition = Composition::Idle;
         }
         match event {
             // The window's close button → a dedicated `:close` message,
@@ -1997,27 +2040,13 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // delivered as another press of the held key — through `RepeatGate`, so
                 // at most one is ever undelivered and a slow frame cannot rebuild that
                 // backlog. A keystroke that typed several characters (a compose
-                // sequence) is `[:text …]`, not a key, and is not tracked as held.
+                // sequence) is `[:text …]`, not a key: it is held physically, so its
+                // repeats are found the same way, and reported to `gui-held-key` as none.
                 ElementState::Pressed if !is_synthetic => {
                     if let Some(text) = typed_text(&ke, w.mods) {
-                        if !ke.repeat || w.key_repeat == KeyRepeat::Os {
-                            deliver(w.subscriber, text_message(&text));
-                        }
+                        press(w, text_message(&text), None, ke.physical_key);
                     } else if let Some(k) = translate_key(&ke, w.mods) {
-                        let mut hk = lock(&w.held_key);
-                        if *hk != Some(k) {
-                            *hk = Some(k);
-                            drop(hk);
-                            w.held_physical = Some(ke.physical_key);
-                            deliver(w.subscriber, key_message(&k));
-                        } else {
-                            drop(hk);
-                            if w.key_repeat == KeyRepeat::Os
-                                && let Some(credit) = RepeatGate::charge(&w.repeat_gate)
-                            {
-                                deliver_credited(w.subscriber, key_message(&k), credit);
-                            }
-                        }
+                        press(w, key_message(&k), Some(k), ke.physical_key);
                     }
                 }
                 ElementState::Pressed => {} // synthetic press (focus-gain replay)
@@ -2060,6 +2089,9 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 *lock(&w.held_key) = None;
                 w.held_physical = None;
                 deliver(w.subscriber, Message::Keyword(value::intern("blur")));
+                // A composition does not survive the window losing focus on every
+                // platform's IME, and not every one says so: clear what the app shows.
+                end_composition(w);
                 // Same for a held mouse button: its release may land off-window /
                 // unfocused and never reach us, so synthesize one now (see CursorLeft).
                 if let Some(b) = w.held.take() {
@@ -2090,28 +2122,26 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     update_ime_area(w);
                 }
                 winit::event::Ime::Preedit(text, cursor) => {
-                    if text.is_empty() && !w.preedit_shown {
-                        return;
+                    if text.is_empty() {
+                        if w.composition != Composition::Showing {
+                            return;
+                        }
+                        w.composition = Composition::Ended;
+                    } else {
+                        w.composition = Composition::Showing;
                     }
-                    w.preedit_shown = !text.is_empty();
-                    w.ime_composed |= w.preedit_shown;
                     deliver(w.subscriber, preedit_message(&text, cursor));
                 }
                 winit::event::Ime::Commit(text) => {
-                    // winit sends the clearing preedit just before, so whether a
-                    // composition was shown is remembered here, not read from the flag.
-                    let after_preedit = std::mem::take(&mut w.ime_composed);
-                    w.preedit_shown = false;
-                    if let Some(message) = commit_message(&text, after_preedit) {
+                    // winit clears the preedit just before the commit that ends it, so a
+                    // composition that just ended counts as composed too.
+                    let composed = w.composition != Composition::Idle;
+                    w.composition = Composition::Idle;
+                    if let Some(message) = commit_message(&text, composed) {
                         deliver(w.subscriber, message);
                     }
                 }
-                winit::event::Ime::Disabled => {
-                    if std::mem::take(&mut w.preedit_shown) {
-                        deliver(w.subscriber, preedit_message("", None));
-                    }
-                    w.ime_composed = false;
-                }
+                winit::event::Ime::Disabled => end_composition(w),
             },
             WindowEvent::CursorLeft { .. } => {
                 // The pointer left the window. If a button was held, its release happens
@@ -2399,30 +2429,30 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 }
                 let _sg = crate::core::heap::stall_guard("gui-paint");
                 let paint_start = Instant::now();
-                let split = match &mut w.backend {
+                // The GPU paint's phases, or `None` from the CPU painter; nothing at all
+                // when the GPU target skipped the frame (an occluded window) — nothing
+                // reached the compositor, so the window stays hidden and the input
+                // unanswered for the frame that does.
+                let painted: Option<Option<[u64; 5]>> = match &mut w.backend {
                     Backend::Cpu { surface, .. } => {
                         paint(surface, &w.window, &mut w.renderer, &w.frame);
-                        None
+                        Some(None)
                     }
                     #[cfg(feature = "gui-gpu")]
-                    Backend::Gpu(gpu) => gpu.paint(&w.frame, &mut w.renderer).map(|times| {
-                        [
-                            times.encode_us,
-                            times.upload_us,
-                            times.acquire_us,
-                            times.submit_us,
-                            times.present_us,
-                        ]
-                    }),
+                    Backend::Gpu(gpu) => gpu
+                        .paint(&w.frame, &mut w.renderer)
+                        .map(|times| Some(times.phases())),
                 };
                 let presented = Instant::now();
-                // The frame is on its way to the compositor: now the window may appear.
-                if !w.shown {
-                    w.shown = true;
-                    w.window.set_visible(true);
-                }
-                if let Some(input_at) = w.draw_input.take() {
-                    record_latency(w, input_at, paint_start, presented, split);
+                if let Some(split) = painted {
+                    // The frame is on its way to the compositor: now the window may appear.
+                    if !w.shown {
+                        w.shown = true;
+                        w.window.set_visible(true);
+                    }
+                    if let Some(input_at) = w.draw_input.take() {
+                        record_latency(w, input_at, paint_start, presented, split);
+                    }
                 }
                 w.particles_next = w
                     .renderer
@@ -2615,6 +2645,47 @@ fn update_ime_area(w: &mut Win) {
     );
 }
 
+/// Deliver one keystroke, `message`, from `physical` — `key` when it is a key, `None` for
+/// typed text. A press of the key already held (no release between) is its repeat: dropped
+/// under `KeyRepeat::App`, where the app repeats from `gui-held-key`, and let through the
+/// `RepeatGate` under `KeyRepeat::Os`, so at most one is ever undelivered.
+fn press(w: &mut Win, message: Message, key: Option<Key>, physical: PhysicalKey) {
+    let repeat = {
+        let mut held = lock(&w.held_key);
+        let repeat = w.held_physical == Some(physical) && *held == key;
+        if !repeat {
+            *held = key;
+            w.held_physical = Some(physical);
+        }
+        repeat
+    };
+    if !repeat {
+        deliver(w.subscriber, message);
+    } else if w.key_repeat == KeyRepeat::Os
+        && let Some(credit) = RepeatGate::charge(&w.repeat_gate)
+    {
+        deliver_credited(w.subscriber, message, credit);
+    }
+}
+
+/// Where an input method's composition stands. `Ended` is the empty preedit winit sends
+/// just before the commit that ends a composition (or alone, for a cancelled one): the
+/// commit after it is composed text, `[:text …]`, though nothing shows any more.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Composition {
+    Idle,
+    Showing,
+    Ended,
+}
+
+/// Drop the composition — the IME was switched off, or the window lost focus — clearing
+/// what the app shows if one was showing.
+fn end_composition(w: &mut Win) {
+    if std::mem::replace(&mut w.composition, Composition::Idle) == Composition::Showing {
+        deliver(w.subscriber, preedit_message("", None));
+    }
+}
+
 /// Record one input-to-present sample (ADR-440): from `input_at` (the GUI thread
 /// received the input) to `presented` (the paint of the first frame that arrived after
 /// it returned from its present), with the paint's own share and, on the GPU target,
@@ -2636,17 +2707,17 @@ fn record_latency(
         && u128::from(sample.total_us) >= threshold_ms * 1000
     {
         let ms = |us: u64| us as f64 / 1000.0;
-        let phases = match sample.split {
-            Some([encode, upload, acquire, submit, present]) => format!(
-                " | encode={:.2}ms upload={:.2}ms acquire={:.2}ms submit={:.2}ms present={:.2}ms",
-                ms(encode),
-                ms(upload),
-                ms(acquire),
-                ms(submit),
-                ms(present)
-            ),
-            None => String::new(),
-        };
+        let phases: String = sample
+            .split
+            .map(|split| {
+                PAINT_PHASES
+                    .iter()
+                    .zip(split)
+                    .map(|(name, us)| format!(" {name}={:.2}ms", ms(us)))
+                    .collect::<String>()
+            })
+            .map(|named| format!(" |{named}"))
+            .unwrap_or_default();
         eprintln!(
             "[gui-latency] input->present {:.2}ms (to paint {:.2}ms, paint {:.2}ms){phases}",
             ms(sample.total_us),

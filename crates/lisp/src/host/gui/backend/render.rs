@@ -144,17 +144,16 @@ pub(super) struct FontShared {
     /// so a glyph either covers is left to it — what the renderer did before system
     /// fallback existed.
     bundled: Vec<fontdb::ID>,
-    /// Every installed face, scanned on first need (see the type's doc).
-    system: Option<fontdb::Database>,
+    /// Every installed face and its block index, scanned on first need (see the type's
+    /// doc, and `SystemFonts`).
+    system: Option<SystemFonts>,
     /// The system faces loaded into the shaping database as fallbacks, `(family,
     /// file)`, in the order they were first needed — the first place the next missing
     /// glyph is looked for, so a screen of CJK scans the system once, not per char.
     fallbacks: Vec<(String, String)>,
-    /// codepoint → the fallback family that draws it (`None`: nothing installed does).
-    fallback_for: HashMap<char, Option<String>>,
-    /// 128-codepoint blocks a full system scan already came up empty for, so a page of
-    /// glyphs nobody has (a Nerd-font icon range without a Nerd font) costs one scan.
-    empty_blocks: std::collections::HashSet<u32>,
+    /// cluster → the fallback family that draws it (`None`: nothing installed does).
+    /// Keyed by the WHOLE cluster: `क्ष` and `कि` share a first char but not their marks.
+    fallback_for: HashMap<String, Option<String>>,
     /// Font files already loaded into the shaping database.
     loaded_files: std::collections::HashSet<std::path::PathBuf>,
     /// Bumped by every registration: a family keyword can now name different faces, so
@@ -227,7 +226,6 @@ impl FontShared {
             system: None,
             fallbacks: Vec::new(),
             fallback_for: HashMap::new(),
-            empty_blocks: Default::default(),
             loaded_files: Default::default(),
             generation: 0,
         }
@@ -279,10 +277,7 @@ impl FontShared {
     /// the bundled mono, and `gui-font-info` says so (`"not-found"`).
     pub(super) fn register_installed(&mut self, id: u32, requested: &str) {
         self.generation += 1;
-        self.ensure_system();
-        let Some(system) = self.system.as_ref() else {
-            return;
-        };
+        let system = &self.system().db;
         let wanted = requested.trim();
         let family = system.faces().find_map(|face| {
             face.families
@@ -298,22 +293,19 @@ impl FontShared {
             self.resolutions.insert(id, resolution);
             return;
         };
+        // what `gui-font-info` reports: the file each style resolves to, by the same CSS
+        // matching shaping will run over the family's faces
         let mut faces: [String; 4] = Default::default();
-        let mut sources = Vec::new();
         for (slot, (weight, style)) in STYLES.iter().enumerate() {
-            let Some(face_id) = query_face(system, &family, *weight, *style) else {
-                continue;
-            };
-            if let Some((source, _)) = system.face_source(face_id) {
+            if let Some(face_id) = query_face(system, &family, *weight, *style)
+                && let Some((source, _)) = system.face_source(face_id)
+            {
                 faces[slot] = source_path(&source)
                     .map(|path| path.display().to_string())
                     .unwrap_or_default();
-                sources.push(source);
             }
         }
-        for source in sources {
-            self.load_into_shaping(source);
-        }
+        self.load_family(&family);
         self.names.insert(id, family);
         self.resolutions.insert(
             id,
@@ -327,7 +319,7 @@ impl FontShared {
 
     /// What `gui-font-info` reports for family keyword `id` (the bundled mono for one
     /// never registered, as `name_of` resolves it).
-    pub(super) fn info(&self, id: u32) -> super::super::FontInfo {
+    pub(super) fn info(&self, id: u32, ligatures: bool) -> super::super::FontInfo {
         let resolution = self
             .resolutions
             .get(&id)
@@ -340,18 +332,27 @@ impl FontShared {
             faces: resolution.faces,
             fallbacks: self.fallbacks.clone(),
             system_scanned: self.system.is_some(),
-            ligatures: false,
+            ligatures,
         }
     }
 
-    /// Scan the installed fonts (fontconfig's directories on Linux) into the system
-    /// database, once. The cost — every font file's header read — is paid by the first
-    /// call that needs it, never at startup.
-    fn ensure_system(&mut self) {
-        if self.system.is_none() {
-            let mut system = fontdb::Database::new();
-            system.load_system_fonts();
-            self.system = Some(system);
+    /// The installed fonts, scanned the first time anything asks — never at startup.
+    fn system(&mut self) -> &SystemFonts {
+        self.system.get_or_insert_with(SystemFonts::scan)
+    }
+
+    /// Load every installed face of `family` into the shaping database, so each weight and
+    /// slant a face asks for finds its own file.
+    fn load_family(&mut self, family: &str) {
+        let sources: Vec<fontdb::Source> = self
+            .system()
+            .db
+            .faces()
+            .filter(|face| face.families.iter().any(|(name, _)| name == family))
+            .map(|face| face.source.clone())
+            .collect();
+        for source in sources {
+            self.load_into_shaping(source);
         }
     }
 
@@ -370,8 +371,7 @@ impl FontShared {
         let Some(font) = self.fs.get_font(id, Weight::NORMAL) else {
             return false;
         };
-        let charmap = font.as_swash().charmap();
-        chars.iter().all(|&c| charmap.map(c) != 0)
+        draws_all(&font.as_swash(), chars)
     }
 
     /// The family to shape cluster `text` in, when it is not `family`: `Some` only when
@@ -407,12 +407,11 @@ impl FontShared {
         self.system_fallback(&chars)
     }
 
-    /// An installed family that draws `chars` (keyed by the first), loading it into the
-    /// shaping database on first use: the fallbacks already loaded first, then — unless a
-    /// scan already found this block empty — a scan of the system's regular faces,
-    /// monospaced ones first.
+    /// An installed family that draws `chars` (one cluster), loading it into the shaping
+    /// database on first use: the fallbacks already loaded first, then the system's
+    /// regular faces that touch the cluster's block, monospaced ones first.
     fn system_fallback(&mut self, chars: &[char]) -> Option<String> {
-        let key = chars[0];
+        let key: String = chars.iter().collect();
         if let Some(known) = self.fallback_for.get(&key) {
             return known.clone();
         }
@@ -429,36 +428,18 @@ impl FontShared {
                 return Some(name);
             }
         }
-        let block = key as u32 >> 7;
-        if self.empty_blocks.contains(&block) {
-            self.fallback_for.insert(key, None);
-            return None;
-        }
-        self.ensure_system();
-        let found = self
-            .system
-            .as_ref()
-            .and_then(|system| scan_system(system, chars));
+        let system = self.system();
+        let candidates = system
+            .blocks
+            .get(&(chars[0] as u32 >> 7))
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let found = scan_system(&system.db, candidates, chars);
         let Some((family, path)) = found else {
-            self.empty_blocks.insert(block);
             self.fallback_for.insert(key, None);
             return None;
         };
-        // Every face of the family, so a bold or italic fallback glyph finds its style.
-        let sources: Vec<fontdb::Source> = self
-            .system
-            .as_ref()
-            .map(|system| {
-                system
-                    .faces()
-                    .filter(|face| face.families.iter().any(|(name, _)| *name == family))
-                    .map(|face| face.source.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        for source in sources {
-            self.load_into_shaping(source);
-        }
+        self.load_family(&family);
         self.fallbacks.push((family.clone(), path));
         self.fallback_for.insert(key, Some(family.clone()));
         Some(family)
@@ -480,12 +461,29 @@ fn query_face(
     })
 }
 
-/// The first installed family whose regular face draws every char of `chars`, with
-/// the file it was found in: monospaced faces first (a fallback glyph sits in a cell),
-/// then the Noto and DejaVu families a desktop usually has for coverage, then the rest.
-/// Each candidate's character map is read from its file (memory-mapped), so this is the
-/// slow path `FontShared::system_fallback` caches around.
-fn scan_system(system: &fontdb::Database, chars: &[char]) -> Option<(String, String)> {
+/// Every installed face (fontconfig's directories on Linux), with `blocks`: each
+/// 128-codepoint block → the regular faces that have any glyph in it, in fallback preference
+/// — monospaced first (a fallback glyph sits in a cell), then the Noto and DejaVu families a
+/// desktop usually has for coverage, then the rest. A lookup then opens only the faces that
+/// can draw its block, and a block no face touches (a Nerd-font icon range without a Nerd
+/// font) costs nothing.
+struct SystemFonts {
+    db: fontdb::Database,
+    blocks: HashMap<u32, Vec<fontdb::ID>>,
+}
+
+impl SystemFonts {
+    /// Read every font file's header and every candidate's character map, once
+    /// (memory-mapped) — the cost the first lookup that needs it pays.
+    fn scan() -> Self {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        let blocks = block_index(&db);
+        SystemFonts { db, blocks }
+    }
+}
+
+fn block_index(system: &fontdb::Database) -> HashMap<u32, Vec<fontdb::ID>> {
     let rank = |face: &fontdb::FaceInfo| {
         let name = face
             .families
@@ -505,17 +503,37 @@ fn scan_system(system: &fontdb::Database, chars: &[char]) -> Option<(String, Str
         .filter(|face| face.style == Style::Normal && (350..=500).contains(&face.weight.0))
         .collect();
     candidates.sort_by_key(|face| rank(face));
-    candidates.into_iter().find_map(|face| {
+    let mut index: HashMap<u32, Vec<fontdb::ID>> = HashMap::new();
+    for face in candidates {
+        let mut blocks = std::collections::BTreeSet::new();
+        system.with_face_data(face.id, |data, face_index| {
+            if let Some(font) = swash::FontRef::from_index(data, face_index as usize) {
+                font.charmap()
+                    .enumerate(|codepoint, _| _ = blocks.insert(codepoint >> 7));
+            }
+        });
+        for block in blocks {
+            index.entry(block).or_default().push(face.id);
+        }
+    }
+    index
+}
+
+/// The first of `candidates` (faces of `system`, in preference order) that draws every
+/// char of `chars`, as its family and the file it was found in.
+fn scan_system(
+    system: &fontdb::Database,
+    candidates: &[fontdb::ID],
+    chars: &[char],
+) -> Option<(String, String)> {
+    candidates.iter().find_map(|&id| {
         let covered = system
-            .with_face_data(face.id, |data, index| {
+            .with_face_data(id, |data, index| {
                 swash::FontRef::from_index(data, index as usize)
-                    .map(|font| {
-                        let charmap = font.charmap();
-                        chars.iter().all(|&c| charmap.map(c) != 0)
-                    })
-                    .unwrap_or(false)
+                    .is_some_and(|font| draws_all(&font, chars))
             })
             .unwrap_or(false);
+        let face = system.face(id)?;
         let family = face.families.first().map(|(name, _)| name.clone())?;
         covered.then(|| {
             let path = source_path(&face.source)
@@ -524,6 +542,12 @@ fn scan_system(system: &fontdb::Database, chars: &[char]) -> Option<(String, Str
             (family, path)
         })
     })
+}
+
+/// Whether `font` has a glyph for every char of `chars`.
+fn draws_all(font: &swash::FontRef, chars: &[char]) -> bool {
+    let charmap = font.charmap();
+    chars.iter().all(|&c| charmap.map(c) != 0)
 }
 
 /// The bundled DejaVu's resolution — the `:mono` family, and what a family name that is
@@ -904,6 +928,10 @@ impl Renderer {
             return;
         }
         self.line_height = next;
+        // Unlike a size change, this one moves glyphs without changing the px the cluster
+        // cache is keyed by: a cluster is baked in its cell box at its baseline, so the
+        // old line height's would sit wrong in the new cell.
+        self.cache.clear();
         self.recompute();
     }
 
@@ -1022,11 +1050,9 @@ impl Renderer {
         // fallback glyph aligns with the surrounding text rather than floating to
         // wherever its own font's line metrics put it.
         let baseline = (self.baseline * scale as i32).max(0);
-        // `name_of` returns owned data, so the immutable borrow ends on this
-        // line — letting the `borrow_mut` below succeed (don't make it borrow).
-        let fam = self.families.borrow().name_of(fid);
         let mut shared = self.families.borrow_mut();
         let shared = &mut *shared;
+        let fam = shared.name_of(fid);
         // A glyph neither the family nor a bundled face has is drawn from an installed
         // font that has it, on the same baseline and in the same cell span (ADR-442).
         let fam = shared.fallback_family(g, &fam, bold, italic).unwrap_or(fam);
@@ -1906,7 +1932,7 @@ pub(super) fn contrast_lut(gamma: f32) -> [u8; 256] {
 /// Rec. 601 luma of an sRGB triple, in 0..=255·1000 units — a cheap "is this lighter
 /// than that" ordering, not a colorimetric quantity.
 #[inline]
-pub(super) fn luma(rgb: [u8; 3]) -> u32 {
+pub(crate) fn luma(rgb: [u8; 3]) -> u32 {
     299 * rgb[0] as u32 + 587 * rgb[1] as u32 + 114 * rgb[2] as u32
 }
 
@@ -2191,7 +2217,7 @@ mod font_tests {
             shared.system.is_none(),
             "drawing what the bundled fonts cover scanned the installed fonts"
         );
-        let info = shared.info(value::intern(DEFAULT_FAMILY));
+        let info = shared.info(value::intern(DEFAULT_FAMILY), false);
         assert_eq!(info.origin, "bundled");
         assert_eq!(info.name, MONO_FAMILY);
         assert!(!info.system_scanned);
@@ -2204,7 +2230,7 @@ mod font_tests {
         let id = value::intern("no-such-font-family-adr-432");
         shared.register_installed(id, "No Such Font Family ADR 432");
         assert_eq!(shared.name_of(id), MONO_FAMILY);
-        let info = shared.info(id);
+        let info = shared.info(id, false);
         assert_eq!(info.origin, "not-found");
         assert_eq!(
             info.requested.as_deref(),
@@ -2225,7 +2251,10 @@ mod font_tests {
                 "{family} was chosen but not loaded into the shaping database"
             );
             assert_eq!(
-                shared.info(value::intern(DEFAULT_FAMILY)).fallbacks.len(),
+                shared
+                    .info(value::intern(DEFAULT_FAMILY), false)
+                    .fallbacks
+                    .len(),
                 1
             );
         }
