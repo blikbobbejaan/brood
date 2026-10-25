@@ -2533,6 +2533,41 @@ reading, which is OTP's `logger` behaviour.
   (see `proc/system-monitor` above), so opting out restores it: nothing is ever
   reported twice, and nothing goes unreported.
 
+### Applications and shutdown signals
+
+**`(os/trap sig)`** (ADR-435) delivers a signal sent to the runtime — `:term`,
+`:int` (Ctrl-C) or `:hup` — to the calling process as the message
+`[:signal sig]` instead of its default action (for all three, ending the
+runtime). `(os/trap sig pid)` names another process; `(os/trap sig nil)`
+restores the default. One subscriber per signal, and the call returns the
+previous one. If the subscriber has exited when the signal arrives, the default
+action runs, so a forgotten trap never leaves a program unkillable.
+
+**An application** (`std/proc/application.blsp`, ADR-436) is what a
+long-running program starts, in what order, and how it stops:
+
+```lisp
+(defmodule shop (:use application))
+(defapp store {:start (fn () (supervisor/start [...]))})
+(defapp web {:start (fn () (supervisor/start [...])) :requires [store]})
+```
+
+`:start` takes no arguments and returns the application's root, usually a
+supervisor's pid; `:stop` (optional) receives that root; `:requires` lists
+applications that start first. When the manifest's `:main` names an
+application rather than a function, `nest run` and a released binary
+**run** it: start every requirement depth-first, each once, then the
+application; trap SIGTERM and SIGINT; wait; and on the signal (or
+`(application/shutdown)`) stop everything in reverse and exit 0. A pid root
+with no `:stop` gets `gen/stop` — a supervisor answers by stopping its own
+children — and is killed if it is still running after 5 s. If a root process
+exits by itself, the rest stop, and `run` returns for a `:normal` exit and
+raises with the reason otherwise. A start that raises stops what already
+started, in reverse, and re-raises. `nest run --check-boot` starts the
+application and stops it, running nothing else.
+`application/start`, `application/stop`, `application/run` and
+`application/check` are the same steps by hand.
+
 ### Timers
 
 `(timer/send-after ms pid msg)` delivers `msg` to `pid` after `ms` milliseconds
@@ -3793,6 +3828,7 @@ its names bare. Run `nest doc <module>` for the full API of any module.
 | `std/system.blsp` | `'system` | OS interaction: `env`, `env-all`, `argv`, `os-type`, `cmd`, `cmd-ok?`, `cmd-out`, `halt` (whole-machine `file/cwd`/`hostname` are root builtins) |
 | `std/crypto.blsp` | `'crypto` | Cryptography: ChaCha20-Poly1305 AEAD (`encrypt`/`decrypt`/`encrypt-str`/`decrypt-str`), `pbkdf2` (accepts a string or byte-vector password/salt — a binary salt is used as raw bytes), `random-bytes`, `random-key`, `random-nonce`, `secure=?` |
 | `std/proc/agent.blsp` | `'agent` | Process-backed state cell (Elixir-style Agent): `start`, `get`, `update`, `get-and-update`, `cast`, `stop` |
+| `std/proc/application.blsp` | `'application` | Applications (ADR-436): `defapp`, `start` (requirements first), `stop` (reverse), `run` (until SIGTERM/Ctrl-C or `shutdown`), `check`, `app?`, `new` |
 | `std/protocol.blsp` | `'protocol` | Behaviour contracts — the *module*-satisfies-a-contract seam: `defbehaviour` declares the ops a module must define (no value dispatch), claimed with `(:implements Name)` in a module header; `protocol-ops` is the introspection hook the checker and LSP read. Value dispatch is `ability` — `defprotocol`/`defimpl` were retired (ADR-168) |
 | `std/telemetry.blsp` | `'telemetry` | Erlang-`:telemetry`-style instrumentation; handlers run in an isolated listener process: `start-telemetry`, `stop-telemetry`, `emit`, `attach`, `detach`, `detach-all`, `forward`, `handlers`, `telemetry-sync`, the `span` macro |
 

@@ -1,0 +1,171 @@
+;; std/proc/application.blsp — an application: what a program starts, in what order, and
+;; how it stops.
+;;
+;; `nest run --main` calls a function; a long-running program is a supervision tree whose
+;; dependencies start first and whose shutdown is the reverse. This module is that, in
+;; Brood over the kernel's `os/trap` (ADR-435) — the only part that needed the runtime
+;; was receiving its own SIGTERM.
+
+(defmodule application
+  "An application: a process tree with dependencies, started in order and stopped in
+reverse (ADR-436).
+
+    (defapp store {:start (fn () (supervisor/start [...]))})
+    (defapp web {:start (fn () (supervisor/start [...])) :requires [store]})
+
+When the manifest's `:main` names `web`, `nest run` (and a released binary) starts
+`store`, then `web`, waits for SIGTERM or Ctrl-C, and stops `web`, then `store`.
+`nest run --check-boot` starts both and stops both. [[start]], [[stop]] and [[run]] do
+the same by hand.")
+
+(defrecord app (name start stop requires))
+
+(def- *options* #{:start :stop :requires})
+
+(defn app? (x)
+  "True if `x` is an application made by [[defapp]] or [[new]].
+
+    (application/app? (application/new 'store {:start (fn () nil)}))   ;=> true"
+  (and (record? x) (= (record-id x) :application/app)))
+
+(defn new (name opts)
+  "The application called `name` from `opts`: `:start` (a function of no arguments
+returning its root — usually a supervisor's pid), an optional `:stop` (a function of
+what `:start` returned) and an optional `:requires` (applications that start before it).
+An unknown option raises. [[defapp]] is the usual way to make one.
+
+    (application/app-name (application/new 'store {:start (fn () nil)}))   ;=> store"
+  (let (unknown (seq/reject (keys opts) (fn (k) (contains? *options* k)))
+        requires (get opts :requires []))
+    (cond
+      (not (empty? unknown))
+        (error "defapp "
+          name
+          ": unknown option "
+          (first unknown)
+          " (expected :start, :stop or :requires)")
+      (not (fn? (get opts :start)))
+        (error "defapp " name ": :start must be a function of no arguments")
+      (not (every? requires app?)) (error "defapp " name ": :requires must list applications")
+      else (app name (get opts :start) (get opts :stop) (vec requires)))))
+
+(defmacro defapp (name opts)
+  "Define `name` as an application (see [[new]] for `opts`).
+
+    (defapp web {:start (fn () (supervisor/start [...])) :requires [store]})"
+  `(def ~name (application/new '~name ~opts)))
+
+;; ---- start and stop ----------------------------------------------------------
+
+;; Depth-first, requirements before the application, each application once. `acc` is
+;; `[started-names order]`. No cycle check: `:requires` holds application VALUES, and an
+;; immutable value cannot require one made after it.
+(defn- start-order-into (acc application)
+  (if (contains? (first acc) (app-name application))
+    acc
+    (let ([seen order] (fold (app-requires application) acc start-order-into))
+      [(conj seen (app-name application)) (conj order application)])))
+
+(defn- start-each (order started)
+  (if (empty? order)
+    (reverse started)
+    (let (application (first order)
+          state (try
+                  ((app-start application))
+                  (catch e
+                    (stop (reverse started))
+                    (throw e))))
+      (start-each (rest order) (cons [application state] started)))))
+
+(defn start (application)
+  "Start `application` after everything it `:requires`, each once, in dependency order,
+and return the started list `([application root] …)` to hand to [[stop]]. When a start
+raises, the applications already started are stopped in reverse and the error re-raised.
+
+    (application/start web)   ;=> ([store <pid>] [web <pid>])"
+  (let ([_ order] (start-order-into [#{} []] application))
+    (start-each order ())))
+
+(def- *stop-wait-ms* 5000)
+
+;; A root with no `:stop` is asked to stop the way a supervisor stops a child marked
+;; `:shutdown :infinity` — `gen/stop`, which a supervisor answers by stopping its own
+;; children first — and killed if it is still running after the wait.
+(defn- stop-pid (pid)
+  (let (ref (monitor pid))
+    (gen/stop pid)
+    (receive
+      ([:down ^ref _ _] nil)
+      (after *stop-wait-ms* (exit pid :kill) nil))))
+
+(defn- stop-one (entry)
+  (let ([application root] entry
+        stopper (app-stop application))
+    (try
+      (cond
+        stopper (stopper root)
+        (pid? root) (stop-pid root)
+        else nil)
+      (catch e
+        (io/puts (str "application: stopping " (app-name application) " raised: " (error-message e))
+          :to *err*)))))
+
+(defn stop (started)
+  "Stop each `[application root]` in `started` (what [[start]] returned), the last started
+first: its `:stop` gets the root, and with no `:stop` a pid root gets `gen/stop` and is
+killed if it is still running after 5 s. A stop that raises is reported and the rest
+still stop. Returns nil.
+
+    (application/stop (application/start web))   ;=> nil; web stopped, then store"
+  (doseq (entry (reverse started)) (stop-one entry)))
+
+;; ---- running ------------------------------------------------------------------
+
+(defn- await-stop (refs)
+  (receive
+    ([:signal _] nil)
+    ([:application-stop] nil)
+    ([:down ref pid reason] :when (contains? refs ref) [pid reason])))
+
+(defn run (application & _args)
+  "Start `application` ([[start]]) and wait. SIGTERM, Ctrl-C or [[shutdown]] stops every
+application in reverse and returns `:ok`; a root process that exits on its own stops the
+rest, returning `:ok` for a `:normal` exit and raising with the reason otherwise. What
+`nest run` and a released binary do when `:main` names an application; the command-line
+arguments are ignored.
+
+    (application/run web)   ;=> :ok, once SIGTERM arrives and everything has stopped"
+  (let (started (start application)
+        roots (into {}
+                (seq/keep started
+                  (fn (entry)
+                    (let ([_ root] entry) (when (pid? root) [(monitor root) root]))))))
+    (os/trap :term)
+    (os/trap :int)
+    (proc/register :application (self))
+    (let (ended (await-stop roots))
+      (os/trap :term nil)
+      (os/trap :int nil)
+      (proc/unregister :application)
+      (if (nil? ended)
+        (do (stop started) :ok)
+        (let ([pid reason] ended)
+          (stop (seq/reject started (fn (entry) (= (second entry) pid))))
+          (if (= reason :normal)
+            :ok (error "application: the root process " pid " exited: " reason)))))))
+
+(defn shutdown ()
+  "Ask the running application ([[run]]) to stop, as SIGTERM would. Returns nil.
+
+    (application/shutdown)   ;=> nil; run stops everything and returns"
+  (send :application [:application-stop])
+  nil)
+
+(defn check (application)
+  "Start `application` and everything it requires, then stop them all: the boot check for
+an application (`nest run --check-boot`). Returns the names started, in order.
+
+    (application/check web)   ;=> (store web)"
+  (let (started (start application))
+    (stop started)
+    (map started (fn (entry) (app-name (first entry))))))

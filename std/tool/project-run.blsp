@@ -332,9 +332,18 @@ implementation `run`, `check-boot` and a released bundle share.
       (when (nil? target)
         (error who ": entry fn '" fname "' is not defined (module '" modname "')"))
       (let (f (reflect/eval target))
-        (unless (fn? f)
-          (error who ": entry '" fname "' is not callable (" (type-of f) ")"))
-        f))))
+        (cond
+          ;; An application (ADR-436) runs as one: started in dependency order, stopped in
+          ;; reverse on SIGTERM.
+          (application/app? f) (fn (& args) (application/run f))
+          (not (fn? f)) (error who ": entry '" fname "' is not callable (" (type-of f) ")")
+          else f)))))
+
+(defn- project-entry-application (modname fname)
+  (let (qual (symbol (str (->string modname) "/" (->string fname)))
+        target (cond (bound? qual) qual (bound? fname) fname else nil))
+    (when target
+      (let (value (reflect/eval target)) (when (application/app? value) value)))))
 
 ;; Why the entry point is missing, phrased as the thing the user can act on.
 ;; `require`'s own answer is `cannot find module 'main'` — a true fact about a
@@ -437,8 +446,10 @@ source paths, no such module under them, or no `:main` naming it.
 
 (defn check-boot ()
   "Load the project the way a shipped bundle does — every source module, then resolve the
-manifest's `:main` — and run nothing. Returns 0 on success; raises if a module fails to
-load, or if the entry point is missing or not callable. Backs `nest run --check-boot`.
+manifest's `:main` — and run nothing. When `:main` names an application (`defapp`), start
+it and stop it too. Returns 0 on success; raises if a module fails to load, if the entry
+point is missing or not callable, or if an application fails to start. Backs
+`nest run --check-boot`.
 
 The gate between `nest check` (names resolve) and `nest test` (the suite passes): neither
 of those loads the entry point, which is where a stale dependency actually dies (KI-66).
@@ -459,11 +470,19 @@ of those loads the entry point, which is where a stale dependency actually dies 
           fname (second entry))
       (require-one modname)
       (project-entry-fn "check-boot" modname fname)
-      (io/puts (str "boot ok: "
-                 (->string modname)
-                 "/"
-                 (->string fname)
-                 " ("
-                 (count (project/source-files root))
-                 " source files loaded, nothing run)"))
+      ;; An application's boot check also starts and stops it (ADR-436): its `:start`
+      ;; is where a missing dependency or a bad child spec dies, and it runs nothing else.
+      (let (application (project-entry-application modname fname)
+            started (when application (application/check application)))
+        (io/puts (str "boot ok: "
+                   (->string modname)
+                   "/"
+                   (->string fname)
+                   " ("
+                   (count (project/source-files root))
+                   " source files loaded, "
+                   (if application
+                     (str "started and stopped " (string/join (map started ->string) ", "))
+                     "nothing run")
+                   ")")))
       0)))

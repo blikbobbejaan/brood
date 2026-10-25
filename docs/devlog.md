@@ -3644,3 +3644,11 @@ clause may take `& rest`. Its head is a list pattern over the arguments, where `
 meant the rest; `fn` had rejected it alongside `&optional`. Macros can now take one clause per
 shape and end with a catch-all raising their own message, which is what ROADMAP's `:hint` was
 for, so no `:hint` syntax. Not run on this machine.
+
+2026-10-25 (ADR-435/436, `defapp`): `os/trap` delivers SIGTERM, SIGINT or SIGHUP sent to the
+runtime to a process as `[:signal sig]` (a self-pipe and one reader thread; a dead subscriber
+restores the default action). `std/proc/application.blsp` adds `defapp`: `:requires` start
+first, each once, and everything stops in reverse on a signal or `application/shutdown`. When
+`:main` names an application, `nest run` and a release run it, and `--check-boot` starts and
+stops it. Not run on this machine: `tests/application_test.blsp` and
+`crates/cli/tests/application_sigterm.rs` are new and run in CI.

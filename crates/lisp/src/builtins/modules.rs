@@ -417,6 +417,9 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // Process-backed state cell: start/get/update/get-and-update/cast/stop.
     // A thin Brood layer over spawn/send/receive for the common "stateful process" case.
     embedded_module!("agent", "std/proc/agent.blsp"),
+    // An application (ADR-436): a root process with dependencies, started in order and
+    // stopped in reverse on SIGTERM. CORE: `nest run` and a released bundle run one.
+    embedded_module!("application", "std/proc/application.blsp"),
     // Crash reports for processes nobody supervises (ADR-305): one system-monitor
     // subscriber printing each abnormal exit once per site. CORE, not dev-tools — a
     // released bundle arms it by default, the same as `brood file` and `nest run`.

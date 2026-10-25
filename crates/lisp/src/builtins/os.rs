@@ -56,6 +56,13 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "True if an interrupt arrived since the last call, clearing it (read-and-clear, so one Ctrl-C is acted on once). Poll this while a spawned evaluation runs and (exit pid :kill) it.",
         interrupt_taken);
     primitives.def(
+        "%trap-signal",
+        Arity::exact(2),
+        Sig::new(vec![super::signature_types::kw, pid_or_nil], pid_or_nil),
+        &["sig", "pid"],
+        "Deliver signal sig (:term, :int or :hup) to local process pid as the message [:signal sig] instead of its default action; a nil pid restores the default. Returns the previous subscriber or nil. If the subscriber has exited when the signal arrives, the default action is restored and the signal re-raised, so a trap never leaves the runtime unkillable.",
+        trap_signal);
+    primitives.def(
         "%run-process",
         Arity::exact(2),
         Sig::new(vec![string, seq], int),
@@ -741,6 +748,173 @@ pub(super) fn interrupt_taken(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult
     #[cfg(not(unix))]
     {
         Ok(Value::boolean(false))
+    }
+}
+
+// A long-running program has to stop cleanly when its supervisor (systemd, a container
+// runtime, a shell's `kill`) asks it to, and that request arrives as SIGTERM. The
+// interrupt seam above is a flag a poller reads; a shutdown wants a MESSAGE, so the
+// process that owns the shutdown can sit in `receive` like any other process (ADR-435).
+//
+// A signal handler can do almost nothing safely, and delivering to a mailbox locks. So
+// the handler writes the signal number to a self-pipe — `write` is async-signal-safe —
+// and one non-worker thread reads the pipe and delivers `[:signal sig]` to whoever
+// trapped it (ADR-059's blocking-work-delivers-to-a-mailbox rule). Policy — what a
+// shutdown stops, in what order — is Brood (`std/proc/app.blsp`).
+
+/// The signals a Brood process may trap, by the keyword it names them with.
+#[cfg(unix)]
+const TRAPPABLE_SIGNALS: [(&str, libc::c_int); 3] = [
+    ("term", libc::SIGTERM),
+    ("int", libc::SIGINT),
+    ("hup", libc::SIGHUP),
+];
+
+/// Each trappable signal's subscriber pid, by its index in [`TRAPPABLE_SIGNALS`]; 0 = none.
+#[cfg(unix)]
+static SIGNAL_SUBSCRIBERS: [std::sync::atomic::AtomicU64; 3] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 3];
+
+/// The self-pipe's write end, or -1 before the first trap.
+#[cfg(unix)]
+static SIGNAL_PIPE_WRITE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// The pipe and its reader thread, made once; an error says why the OS refused either.
+#[cfg(unix)]
+static SIGNAL_PIPE: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+
+/// The handler for a trapped signal: one `write` of the signal number, nothing else.
+#[cfg(unix)]
+extern "C" fn brood_forward_signal(signum: libc::c_int) {
+    let fd = SIGNAL_PIPE_WRITE.load(std::sync::atomic::Ordering::Relaxed);
+    if fd >= 0 {
+        let byte = signum as u8;
+        unsafe {
+            libc::write(fd, &byte as *const u8 as *const libc::c_void, 1);
+        }
+    }
+}
+
+/// Create the self-pipe and start the thread that turns its bytes into messages.
+#[cfg(unix)]
+fn start_signal_pipe() -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    let mut fds = [0 as libc::c_int; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let [read_fd, write_fd] = fds;
+    let reader = crate::process::reserve_io_thread("brood-signals").map_err(|e| e.to_string())?;
+    SIGNAL_PIPE_WRITE.store(write_fd, Ordering::Relaxed);
+    reader.run(move || {
+        loop {
+            let mut byte = 0u8;
+            let read = unsafe { libc::read(read_fd, &mut byte as *mut u8 as *mut libc::c_void, 1) };
+            if read < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+            {
+                continue;
+            }
+            if read <= 0 {
+                return;
+            }
+            let signum = byte as libc::c_int;
+            let Some(index) = TRAPPABLE_SIGNALS.iter().position(|(_, s)| *s == signum) else {
+                continue;
+            };
+            let subscriber = SIGNAL_SUBSCRIBERS[index].load(Ordering::Acquire);
+            if subscriber != 0 && crate::process::is_alive(subscriber) {
+                crate::process::deliver(
+                    subscriber,
+                    crate::process::Message::Vector(vec![
+                        crate::process::Message::Keyword(value::intern("signal")),
+                        crate::process::Message::Keyword(value::intern(TRAPPABLE_SIGNALS[index].0)),
+                    ]),
+                );
+            } else {
+                // Nobody is left to act on it: the signal does what it would have done
+                // untrapped, so a dead subscriber cannot make the runtime unkillable.
+                SIGNAL_SUBSCRIBERS[index].store(0, Ordering::Release);
+                unsafe {
+                    libc::signal(signum, libc::SIG_DFL);
+                    libc::raise(signum);
+                }
+            }
+        }
+    });
+    Ok(())
+}
+
+/// `(%trap-signal sig pid)` — route signal `sig` to local process `pid` as `[:signal sig]`,
+/// or restore its default action when `pid` is nil. Returns the previous subscriber.
+pub(super) fn trap_signal(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    #[cfg(unix)]
+    {
+        use std::sync::atomic::Ordering;
+        let name = match arg(args, 0) {
+            Value::Keyword(s) => value::symbol_name(s),
+            other => {
+                return Err(LispError::wrong_type(
+                    heap,
+                    "%trap-signal",
+                    "a signal keyword",
+                    other,
+                ));
+            }
+        };
+        let Some(index) = TRAPPABLE_SIGNALS
+            .iter()
+            .position(|(n, _)| *n == name.as_str())
+        else {
+            return Err(LispError::runtime(format!(
+                "%trap-signal: cannot trap :{name} (expected :term, :int or :hup)"
+            )));
+        };
+        let subscriber = match arg(args, 1) {
+            Value::Nil => 0,
+            Value::Pid { node, id } if crate::dist::is_local(node) => id,
+            other => {
+                return Err(LispError::wrong_type(
+                    heap,
+                    "%trap-signal",
+                    "a local pid or nil",
+                    other,
+                ));
+            }
+        };
+        let signum = TRAPPABLE_SIGNALS[index].1;
+        if subscriber != 0 {
+            SIGNAL_PIPE
+                .get_or_init(start_signal_pipe)
+                .clone()
+                .map_err(|why| {
+                    LispError::runtime(format!("%trap-signal: no signal pipe: {why}"))
+                })?;
+        }
+        let previous = SIGNAL_SUBSCRIBERS[index].swap(subscriber, Ordering::AcqRel);
+        unsafe {
+            if subscriber == 0 {
+                libc::signal(signum, libc::SIG_DFL);
+            } else {
+                let handler: extern "C" fn(libc::c_int) = brood_forward_signal;
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = handler as usize as libc::sighandler_t;
+                action.sa_flags = libc::SA_RESTART;
+                libc::sigemptyset(&mut action.sa_mask);
+                libc::sigaction(signum, &action, std::ptr::null_mut());
+            }
+        }
+        Ok(if previous == 0 {
+            Value::nil()
+        } else {
+            crate::process::pid_value(previous)
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (args, heap);
+        Err(LispError::runtime(
+            "%trap-signal: this platform has no Unix signals",
+        ))
     }
 }
 

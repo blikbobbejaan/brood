@@ -164,7 +164,11 @@ scheduler.** What is behind OTP is *around* supervision, and nearly all of it is
   error's `:trace`, the last message — deduplicated per site the way ADR-232's drop warning
   is. **Default-on** for ADR-232's reason: a flag you must arm before the bug is absent when it
   matters (KI-36). Pure Brood.
-- ⬜ **B. `defapp` — an Application behaviour.** `nest run --main` calls a function; there is
+- ✅ **B. `defapp` — an Application behaviour** (ADR-435/436, shipped 2026-10-25: `os/trap`
+  delivers SIGTERM/SIGINT/SIGHUP as `[:signal sig]`; `std/proc/application.blsp` starts
+  `:requires` depth-first, stops in reverse on a signal or `application/shutdown`; `:main`
+  naming an application runs it under `nest run` and a release; `--check-boot` starts and
+  stops it). Original note: `nest run --main` calls a function; there is
   no "this project is a tree with a root supervisor, its dependencies start first, shutdown
   is the reverse". `(defapp name {:start (fn () sup-pid) :stop … :requires [other-app]})` in
   `std/proc/app.blsp`; `nest run`/`nest release` resolve `:main` to the app when one is

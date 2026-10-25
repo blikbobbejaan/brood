@@ -1,0 +1,115 @@
+;; Applications (ADR-436) and the signal trap under them (ADR-435). The SIGTERM path a
+;; supervisor takes from outside the runtime is crates/cli/tests/application_sigterm.rs.
+
+(defmodule application-test (:use test) (:use application :exclude [run]))
+
+;; Each start and stop reports to the process running it, which is the test's own.
+(defn- note (event) (send (self) [:event event]))
+
+(defn- events (n acc)
+  (if (= n 0)
+    (reverse acc)
+    (receive
+      ([:event e] (events (- n 1) (cons e acc)))
+      (after *test-wait-ms* (reverse (cons :timeout acc))))))
+
+(defapp base
+  {:start (fn () (note [:start 'base]) :base-root) :stop (fn (root) (note [:stop root]))})
+(defapp left
+  {:start (fn () (note [:start 'left]) :left-root)
+   :stop (fn (root) (note [:stop root]))
+   :requires [base]})
+(defapp right
+  {:start (fn () (note [:start 'right]) :right-root)
+   :stop (fn (root) (note [:stop root]))
+   :requires [base]})
+(defapp top
+  {:start (fn () (note [:start 'top]) :top-root)
+   :stop (fn (root) (note [:stop root]))
+   :requires [left right]})
+(defapp broken {:start (fn () (error "no disk")) :requires [left]})
+
+(defn- idle () (receive (:never nil)))
+
+(defapp supervised
+  {:start (fn () (supervisor/start [{:id :worker :start (fn () (spawn-link (idle)))}]))})
+
+(defapp crashing {:start (fn () (spawn (do (sleep 20) (error "boom"))))})
+
+(describe "starting and stopping"
+  (test "requirements start first, and one that two applications share starts once"
+    (let (started (start top))
+      (assert= (list [:start 'base] [:start 'left] [:start 'right] [:start 'top]) (events 4 ()))
+      (assert= (list 'base 'left 'right 'top) (map started (fn (entry) (app-name (first entry)))))))
+  (test "stop runs in reverse and hands each :stop its root"
+    (stop (start top))
+    (events 4 ())
+    (assert= (list [:stop :top-root] [:stop :right-root] [:stop :left-root] [:stop :base-root])
+      (events 4 ())))
+  (test "a start that raises stops what started, in reverse, and re-raises"
+    (assert-error "no disk" (start broken))
+    (assert= (list [:start 'base] [:start 'left] [:stop :left-root] [:stop :base-root])
+      (events 4 ())))
+  (test "a pid root with no :stop is stopped, and its children with it"
+    (let (started (start supervised)
+          root (second (first started))
+          worker (get (first (supervisor/which-children root)) :pid))
+      (stop started)
+      (assert (not (proc/alive? root)))
+      (eventually "the worker stopped" (fn () (not (proc/alive? worker))))))
+  (test "check starts and stops, and names what it started"
+    (assert= (list 'base 'left 'right 'top) (check top))
+    (assert= 8 (count (events 8 ())))))
+
+(describe "options"
+  (test "an unknown option raises"
+    (assert-error "unknown option :strategy" (new 'x {:start (fn () nil) :strategy 1})))
+  (test ":start must be a function"
+    (assert-error ":start must be a function" (new 'x {})))
+  (test ":requires must list applications"
+    (assert-error ":requires must list applications"
+      (new 'x {:start (fn () nil) :requires ['base]}))))
+
+(describe "running"
+  :isolated (test "shutdown stops everything in reverse and run returns :ok"
+    (let (me (self))
+      (spawn (send me [:ran (application/run top)]))
+      (eventually "the application is running" (fn () (proc/whereis :application)))
+      (shutdown)
+      (receive
+        ([:ran outcome] (assert= :ok outcome))
+        (after *test-wait-ms* (assert= :ok :timeout)))
+      (assert (nil? (proc/whereis :application)))))
+  (test "a root that crashes stops the rest and run raises with its reason"
+    (let (me (self))
+      (spawn (send me [:ran (try (application/run crashing) (catch e (error-message e)))]))
+      (receive
+        ([:ran outcome] (assert (includes? outcome "exited")))
+        (after *test-wait-ms* (assert= :raised :timeout))))))
+
+(describe "os/trap"
+  :isolated (test "a trapped signal sent to the runtime arrives as a message"
+    (assert (nil? (os/trap :hup)))
+    (os/spawn "sh" ["-c" "kill -HUP $PPID"])
+    (receive
+      ([:signal sig] (assert= :hup sig))
+      (after *test-wait-ms* (assert= :hup :timeout)))
+    (assert= (self) (os/trap :hup nil)))
+  (test "only :term, :int and :hup can be trapped"
+    (assert-error "cannot trap :usr1" (os/trap :usr1))))
+
+(describe "applications across processes"
+  (test "an application sent to a worker and back is the same application"
+    (let (me (self))
+      (spawn (send me [:back top]))
+      (receive
+        ([:back value] (assert (app? value))
+          (assert= (list 'base 'left 'right 'top) (check value))
+          (events 8 ()))
+        (after *test-wait-ms* (assert= :back :timeout)))))
+  (test "workers each start and stop their own copy"
+    (let (me (self))
+      (doseq (i (range 0 4)) (spawn (send me [:checked (check top)])))
+      (assert= (repeat 4 (list 'base 'left 'right 'top))
+        (map (range 0 4)
+          (fn (_) (receive ([:checked names] names) (after *test-wait-ms* :timeout))))))))

@@ -52,6 +52,8 @@ pub(crate) const map_ty: Ty = Ty::of(Tag::Map);
 pub(crate) const map_or_nil: Ty = Ty::of_tags(&[Tag::Map, Tag::Nil]);
 pub(crate) const set_ty: Ty = Ty::of(Tag::Set);
 pub(crate) const pid_ty: Ty = Ty::of(Tag::Pid);
+/// A pid, or nil for "no subscriber" (`%trap-signal`).
+pub(crate) const pid_or_nil: Ty = Ty::of_tags(&[Tag::Pid, Tag::Nil]);
 pub(crate) const ref_ty: Ty = Ty::of(Tag::Ref);
 pub(crate) const list_ty: Ty = Ty::LIST;
 // `bytes` is seqable too: `first`/`rest`/`nth` iterate its octets at runtime.
