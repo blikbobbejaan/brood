@@ -527,7 +527,7 @@ vertico-directory has it: a directory is one step back, and `~` alone names noth
     (if (and (= (get state :word-mode) :path)
           (> p 0)
           (= p (string/length text))
-          (= (string/char-at text (dec p)) "/"))
+          (string/ends-with? text "/"))
       (let (start (lineedit-component-start text p))
         (assoc state :text (string/substring text 0 start) :point start :hist-idx -1))
       (lineedit-del-back state))))
