@@ -822,6 +822,8 @@ const DEV_MODULES: &[EmbeddedModule] = &[
     // The Model Context Protocol tool surface — `(mcp-tools)` returns the
     // catalogue the `nest mcp` dispatcher reads (ADR-036, docs/mcp.md, step 3).
     embedded_module!("mcp", "std/tool/mcp.blsp"),
+    // The Debug Adapter Protocol server over `debug` (ADR-452) — `nest dap`.
+    embedded_module!("dap", "std/tool/dap.blsp"),
     // One-call performance triage: `(perf/report)`/`(perf/summary)` read `(dev/vm-stats)` +
     // `(dev/gc-stats)` and apply `docs/benchmarking.md` §2's interpretation rules, so "is this
     // dispatch-, env-, or alloc-bound?" does not depend on recalling them. DEV: it serves

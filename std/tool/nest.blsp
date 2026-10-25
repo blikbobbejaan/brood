@@ -192,6 +192,13 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
              :positional ["spec" nil]
              :arity 1
              :run (fn (options) (run-attach options))}
+   "dap" {:about "Serve the Debug Adapter Protocol on 127.0.0.1 (ADR-452), so VS Code, Emacs (dape), Neovim and Zed can debug a Brood program: function and line breakpoints, the paused processes as threads, their locals, evaluate, continue. Prints the port (`--port` picks it); point the editor at it — VS Code `\"debugServer\": PORT`. Runs until killed."
+          :flags {"--port" "PORT"}
+          :run (fn (options)
+                 (let (port (string/->number (or (get (get options :flags) "--port") "0")))
+                   (if (int? port)
+                     (dap/main port)
+                     (do (io/puts "nest dap: --port wants a number" :to *err*) 2))))}
    "mcp" {:about "Serve the project over Model Context Protocol on stdio, so an agent (Claude Code etc.) can eval / lookup / format / expand / run tests / read docs against its live image (ADR-036, docs/mcp.md)."
           :flags {}
           :run (fn (_options) (if (require-project "mcp" nil) (mcp/main) 2))}

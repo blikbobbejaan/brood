@@ -7,6 +7,9 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 ## Unreleased
 
 **Added.**
+- `nest dap` (ADR-452): a Debug Adapter Protocol server on TCP over `debug`, so VS Code,
+  Emacs (dape), Neovim and Zed debug Brood: function and line breakpoints, paused processes as
+  threads, their locals, evaluate in a paused scope, continue. `debug/watch-breaks`.
 - `tls/connect` (ADR-451): a TLS stream that stays open, with ALPN (`:alpn`, `tls/protocol`);
   `tls/listen` takes the protocols a server speaks. `http/connection` + `http/request-on`:
   HTTP/1.1 on one kept-alive socket per origin (chunked and `Content-Length` framing,
