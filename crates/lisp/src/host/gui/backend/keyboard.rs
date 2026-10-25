@@ -17,6 +17,13 @@ pub(super) struct KeyReport {
 pub(super) enum KeyMessage {
     Press(Message),
     Repeat(Message, crate::process::DeliveryCredit),
+    /// A key still down now types another keystroke (Shift let go while `(` repeats, so it
+    /// repeats as `9`): the key-up of the one it typed, then the press of the new one, so
+    /// every press still has its key-up.
+    Restroke {
+        up: Message,
+        press: Message,
+    },
 }
 
 pub(super) struct Keyboard {
@@ -74,18 +81,33 @@ impl Keyboard {
         let message = keystroke_message(&stroke);
         let mut report = lock(&self.report);
         if self.held_physical != Some(physical) || report.held.as_ref() != Some(&stroke) {
-            self.down.retain(|(down, _)| *down != physical);
+            let typed_before = self
+                .down
+                .iter()
+                .position(|(down, _)| *down == physical)
+                .map(|at| self.down.remove(at).1)
+                .filter(|before| *before != stroke);
             self.down.push((physical, stroke.clone()));
             report.held = Some(stroke);
             self.held_physical = Some(physical);
             self.pressed_at = Some(at);
             self.repeated_at = None;
-            return Some(KeyMessage::Press(message));
+            return Some(match typed_before {
+                Some(before) => KeyMessage::Restroke {
+                    up: key_up_message(&before),
+                    press: message,
+                },
+                None => KeyMessage::Press(message),
+            });
         }
         let micros = |since: Instant| at.saturating_duration_since(since).as_micros() as u64;
         match self.repeated_at {
             Some(last) => report.repeats.interval_us = Some(micros(last)),
-            None => report.repeats.delay_us = self.pressed_at.map(micros),
+            // a new key's first repeat: the interval it reports is its own, once it has one
+            None => {
+                report.repeats.delay_us = self.pressed_at.map(micros);
+                report.repeats.interval_us = None;
+            }
         }
         self.repeated_at = Some(at);
         if self.repeat != KeyRepeat::Os {
@@ -210,6 +232,10 @@ mod tests {
         match answer {
             Some(KeyMessage::Press(message)) => ("press", spelled(&message)),
             Some(KeyMessage::Repeat(message, _)) => ("repeat", spelled(&message)),
+            Some(KeyMessage::Restroke { up, press }) => (
+                "restroke",
+                format!("{} then {}", spelled(&up), spelled(&press)),
+            ),
             None => ("nothing", String::new()),
         }
     }
@@ -355,5 +381,38 @@ mod tests {
                 .release(physical(KeyCode::ShiftLeft), None)
                 .is_none()
         );
+    }
+
+    // Shift let go while `(` repeats: the key repeats as `9` from then on, a keystroke of its
+    // own, so `(` comes up first and `9` is pressed, and the release names `9`. The interval
+    // the new keystroke reports starts with its own repeats.
+    #[test]
+    fn a_key_that_comes_to_type_another_keystroke_ends_the_first() {
+        let mut keyboard = Keyboard::new(KeyRepeat::Os);
+        let start = Instant::now();
+        let nine = physical(KeyCode::Digit9);
+        keyboard.press(char_key('('), nine, start);
+        let Some(KeyMessage::Repeat(_, credit)) =
+            keyboard.press(char_key('('), nine, start + Duration::from_millis(500))
+        else {
+            panic!("the first repeat goes")
+        };
+        drop(credit);
+        keyboard.press(char_key('('), nine, start + Duration::from_millis(533));
+        assert_eq!(
+            sent(keyboard.press(char_key('9'), nine, start + Duration::from_millis(566))),
+            ("restroke", ":key-up ( then 9".into())
+        );
+        assert!(held(&keyboard) == Some(char_key('9')));
+        keyboard.press(char_key('9'), nine, start + Duration::from_millis(1066));
+        assert_eq!(
+            lock(&keyboard.report).repeats.interval_us,
+            None,
+            "one repeat of `9` has no interval yet"
+        );
+        let release = keyboard
+            .release(nine, Some(Key::Char('9')))
+            .expect("a key-up");
+        assert_eq!(spelled(&release), ":key-up 9");
     }
 }
