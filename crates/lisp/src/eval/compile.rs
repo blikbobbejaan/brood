@@ -283,6 +283,16 @@ fn resolve_prim3(heap: &Heap, h: Symbol) -> Option<PrimOp3> {
             _ => None,
         };
     }
+    // `(nth v i default)`: the canonical prelude `nth`, the 3-ary twin of
+    // `resolve_prim`'s `nth` → `VectorRef` rule.
+    if crate::core::value::symbol_is(h, "nth") {
+        return match v.unpack() {
+            ValueRef::Fn(id) if id.region() == crate::core::value::PRELUDE => {
+                Some(PrimOp3::VectorRefOr)
+            }
+            _ => None,
+        };
+    }
     if crate::core::value::symbol_is(h, "assoc") {
         // `BROOD_NO_MAPASSOC` opts out — its own lever, apart from `BROOD_NO_MAPGET`, because
         // this one ALLOCATES from native code where the reads do not.

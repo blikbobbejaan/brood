@@ -780,6 +780,15 @@ pub(crate) fn resolve_prim1(heap: &Heap, h: Symbol) -> Option<PrimOp1> {
             _ => None,
         };
     }
+    // The canonical prelude `count`, by head and region exactly as `nth` is in
+    // `resolve_prim`: a user `(def count …)` is not the PRELUDE closure, so the inline
+    // drops, and the epoch guard on `Inst::Prim1` re-validates after any redefinition.
+    if value::symbol_is(h, "count") {
+        return match heap.env_get(heap.global(), h)?.unpack() {
+            ValueRef::Fn(id) if id.region() == crate::core::value::PRELUDE => Some(PrimOp1::Count),
+            _ => None,
+        };
+    }
     match heap.env_get(heap.global(), h)?.unpack() {
         ValueRef::Native(id) => PrimOp1::from_native_name(&heap.native(id).name),
         // A type predicate: `(defn vector? (x) (%eq (type-of x) :vector))` and its kin.

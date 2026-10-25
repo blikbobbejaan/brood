@@ -1,0 +1,120 @@
+;;; `count` and `(nth v i default)` as inline primitives, and the staged-call join the JIT
+;;; used to refuse (2026-10-25).
+;;;
+;;;   1. `count` was a full Brood call everywhere — ~3 100 instructions from native code for
+;;;      a four-element vector — and its body builds a closure, so it never tiered itself.
+;;;      `PrimOp1::Count` answers the sizes the heap already holds (`Heap::count_inline`) and
+;;;      dispatches the real `count` for the rest, which stays the definition.
+;;;   2. `(nth v i default)` was the same: the 2-arity `(nth v i)` inlined as `VectorRef`, the
+;;;      default-taking form cost ~1 200 instructions. `PrimOp3::VectorRefOr` is its twin.
+;;;   3. A STAGED call (KI-19: an argument that can run user code makes the call resolve its
+;;;      operator first) pushes its callee, and the JIT prepass counted it as not pushed — so
+;;;      every leader after one sat one deeper than the emit loop's stack, and the arm bailed
+;;;      with `join-depth-mismatch`. `(if (and (< i n) (digit? (nth s i -1))) …)` is that
+;;;      shape; `json`'s number scanners were all refused for it.
+;;;
+;;; Two kinds of guard, as in `jit_eq_join_test.blsp`: VALUE cases pin that the inline and
+;;; the Brood definition agree on every shape (the suite runs them on the JIT and the VM),
+;;; and TIER cases pin that the arm is NATIVE, through `%jit-arm-state`, because all three
+;;; costs produced the right answer slowly. Before the change each tier case read `:bailed`
+;;; (`count` and `nth` as calls fail the call-mediated gate; the staged join fails the
+;;; prepass), confirmed with `BROOD_JIT_BAIL_TRACE=1` against the 260c43bc binary.
+
+(defmodule count-nth-inline-test (:use test) (:use suite-helpers))
+
+(defrecord cn-box (a b))
+(defrecord cn-tally (n))
+(impl Counted count-nth-inline-test/cn-tally (->count [t] (get t :n)))
+
+;; Hot callers, so the inline runs in native code once they tier.
+(defn cn-count (v) (+ 0 (count v)))
+(defn cn-nth (v i) (+ 0 (nth v i -1)))
+(defn cn-nth-any (v i d) (nth v i d))
+(defn- cn-digit? (c) (and (>= c 48) (<= c 57)))
+(defn cn-digits (s i n) (if (and (< i n) (cn-digit? (nth s i -1))) (cn-digits s (+ i 1) n) i))
+
+(defn- sum-counts (v i acc) (if (= i 0) acc (sum-counts v (- i 1) (+ acc (cn-count v)))))
+(defn- sum-nths (v i acc) (if (= i 0) acc (sum-nths v (- i 1) (+ acc (cn-nth v (math/rem i 6))))))
+
+(describe "count, inline"
+  (test "every shape the heap holds a size for answers what the Brood definition does"
+    (assert= 4000 (sum-counts [1 2 3 4] 1000 0))
+    (assert= 0 (cn-count []))
+    (assert= 0 (cn-count nil))
+    (assert= 3 (cn-count "abc"))
+    ;; characters, not bytes
+    (assert= 2 (cn-count "é…"))
+    (assert= 5 (cn-count (range 5)))
+    (assert= 3 (cn-count (bytes 1 2 3)))
+    (assert= 2 (cn-count #{:a :b}))
+    (assert= 2 (cn-count {:a 1 :b 2}))
+    (assert= 3 (cn-count (list 1 2 3))))
+
+  (test "the shapes it declines still reach the Brood count"
+    (sum-counts [1 2 3 4] 1000 0)
+    ;; a record counts its fields, or its own Counted impl
+    (assert= 2 (cn-count (cn-box 1 2)))
+    (assert= 3 (cn-count (cn-tally 3)))
+    (assert= 3 (cn-count (seq/lmap [1 2 3] inc)))
+    (assert= 2 (cn-count (text/from-string "hi")))
+    (let (t (table/new))
+      (table/put t :k 1)
+      (assert= 1 (cn-count t)))
+    ;; a list whose tail is a range is still a list to `count`
+    (assert= 4 (cn-count (cons 0 (range 3))))
+    (assert-error (cn-count 42)))
+
+  (test "an arm whose only call was `count` is native (was: refused by the call gate)"
+    (when (%native-tier?)
+      (let (st (settle cn-count 1 (fn () (sum-counts [1 2 3] 4000 0)) 40))
+        (assert= :native st)
+        (assert= 0 (get (%jit-arm-state cn-count 1) :deopts))))))
+
+(describe "nth with a default, inline"
+  (test "in range, out of range and negative indices answer as the Brood nth does"
+    (assert= 15 (sum-nths [0 1 2 3 4 5] 6 0))
+    (assert= -1 (cn-nth [1 2 3] 3))
+    (assert= -1 (cn-nth [1 2 3] -1))
+    (assert= -1 (cn-nth [] 0))
+    (assert= nil (cn-nth-any [nil] 0 :dflt))
+    (assert= :dflt (cn-nth-any [nil] 1 :dflt)))
+
+  (test "the shapes it declines still reach the Brood nth"
+    (sum-nths [0 1 2 3 4 5] 600 0)
+    (assert= 20 (cn-nth-any (bytes 10 20) 1 :d))
+    (assert= :d (cn-nth-any (bytes 10 20) 2 :d))
+    (assert= :b (cn-nth-any (list :a :b) 1 :d))
+    (assert= :d (cn-nth-any (list :a :b) 5 :d)))
+
+  (test "an arm whose only call was `(nth v i d)` is native"
+    (when (%native-tier?)
+      (let (st (settle cn-nth 2 (fn () (sum-nths [0 1 2 3 4 5] 4000 0)) 40))
+        (assert= :native st)
+        (assert= 0 (get (%jit-arm-state cn-nth 2) :deopts))))))
+
+(def- cn-digit-codes (string/->codepoints "12345678x"))
+
+(defn- run-digits (k acc)
+  (if (= k 0) acc (run-digits (- k 1) (+ acc (cn-digits cn-digit-codes 0 9)))))
+
+(describe "a staged call before a join"
+  (test "computes the same index on every engine"
+    (assert= 8000 (run-digits 1000 0))
+    (assert= 0 (cn-digits (string/->codepoints "x1") 0 2))
+    (assert= 2 (cn-digits (string/->codepoints "12") 0 2)))
+
+  (test "the arm is native (was: join-depth-mismatch, bailed)"
+    (when (%native-tier?)
+      (assert= :native (settle cn-digits 3 (fn () (run-digits 2000 0)) 40)))))
+
+(defn- cn-worker (parent v)
+  (send parent [(count v) (cn-count v) (cn-nth [5 6 7] 1) (cn-nth-any (list 5 6) 1 :none)]))
+
+(describe "count and nth inline across processes"
+  :isolated (test "workers counting what they were sent agree with the sender"
+    (let (me (self)
+          shapes [[1 2 3] "ab" (list 1 2) {:a 1} #{1 2 3 4} (cn-tally 2) (range 7)])
+      (doseq (v shapes)
+        (spawn (cn-worker me v)))
+      (let (got (into #{} (map shapes (fn (_) (receive ([c c2 a b] [c c2 a b]))))))
+        (assert= #{[3 3 6 6] [2 2 6 6] [1 1 6 6] [4 4 6 6] [7 7 6 6]} got)))))

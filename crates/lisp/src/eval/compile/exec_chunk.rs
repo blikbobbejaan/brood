@@ -512,6 +512,14 @@ pub(crate) fn exec_chunk(
                             heap.push_root(result);
                             continue;
                         }
+                        // `count` of a size the heap holds; every other shape dispatches
+                        // the real `count` below.
+                        (PrimOp1::Count, _) if let Some(len) = heap.count_inline(sa) => {
+                            crate::perf_bump!(prim1_inline);
+                            heap.truncate_roots(n - 1);
+                            heap.push_root(Value::Int(len));
+                            continue;
+                        }
                         // `first` / `rest` / `empty?` on anything else (a vector, a set, a
                         // map, a record, a seq-view, a type error): the guard proved the head
                         // is that native, so call its body directly — what `env_get` +
@@ -630,6 +638,14 @@ pub(crate) fn exec_chunk(
                             if let ValueRef::Map(mid) = sa.unpack()
                                 && let Some(v) = heap.map_get3_inline(mid, sb, sc)
                             {
+                                crate::perf_bump!(prim2_inline);
+                                done = Some(v);
+                            }
+                        }
+                        // `(nth v i default)` on a vector: the element, or the default out
+                        // of range; every other shape defers to the real `nth` below.
+                        PrimOp3::VectorRefOr => {
+                            if let Some(v) = heap.nth3_inline(sa, sb, sc) {
                                 crate::perf_bump!(prim2_inline);
                                 done = Some(v);
                             }

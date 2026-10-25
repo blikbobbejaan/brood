@@ -2168,6 +2168,61 @@ impl Heap {
         ((span + mag - 1) / mag).max(0)
     }
 
+    /// `(nth coll i default)` on a vector with a fixnum index — the rule behind
+    /// `PrimOp3::VectorRefOr`, shared by the VM and `brood_rt_vector_ref3`: the element
+    /// when `i` is in range, else `default`. `None` for every other shape (bytes, a list,
+    /// a record, a bad index), which the prelude `nth` decides. Never allocates.
+    pub fn nth3_inline(&self, coll: Value, i: Value, default: Value) -> Option<Value> {
+        let (Value::Vector(id), Value::Int(i)) = (coll, i) else {
+            return None;
+        };
+        let v = self.vector(id);
+        Some(if i >= 0 && (i as u64) < v.len() as u64 {
+            v[i as usize]
+        } else {
+            default
+        })
+    }
+
+    /// `(count v)` for the shapes whose answer is a size the heap already holds — the
+    /// rule behind `PrimOp1::Count`, shared by the VM and `brood_rt_count`. `None` for
+    /// everything the prelude `count` decides in Brood: a record (its `Counted` /
+    /// `Seqable` impls), a seq-view, a rope or table, an improper list, a `Seqable` impl
+    /// and the type error. Never allocates. Out of line, so its list walk and map probe
+    /// stay out of `exec_chunk`'s body.
+    #[inline(never)]
+    pub fn count_inline(&self, v: Value) -> Option<i64> {
+        Some(match v {
+            Value::Nil => 0,
+            Value::Vector(id) => self.vector(id).len() as i64,
+            Value::Str(id) => self.str_metrics(id).0 as i64,
+            Value::Range(id) => self.range_len(id),
+            Value::Bytes(id) => self.bytes(id).as_bytes().len() as i64,
+            Value::Set(id) => self.map_size(id) as i64,
+            Value::Map(id) => {
+                let record_id = Value::Keyword(*crate::core::value::RECORD_ID_SYMBOL);
+                if self.map_get(id, record_id).is_some_and(crate::eval::truthy) {
+                    return None;
+                }
+                self.map_size(id) as i64
+            }
+            Value::Pair(mut id) => {
+                let mut n = 1i64;
+                loop {
+                    match self.cdr(id) {
+                        Value::Pair(next) => {
+                            id = next;
+                            n += 1;
+                        }
+                        Value::Nil => break n,
+                        _ => return None,
+                    }
+                }
+            }
+            _ => return None,
+        })
+    }
+
     /// Materialise a range's elements into a `Vec<Value>` of `Int`s — the slow
     /// path behind realising a range to a list / vector.
     ///

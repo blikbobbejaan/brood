@@ -49,9 +49,11 @@ pub(super) struct CallbackIds {
     table_get: FuncId,
     map_get: FuncId,
     vector_len: FuncId,
+    count: FuncId,
     equal: FuncId,
     table_put: FuncId,
     map_get3: FuncId,
+    vector_ref3: FuncId,
     map_assoc: FuncId,
     vector_base: FuncId,
     table_dense_base: FuncId,
@@ -99,9 +101,11 @@ pub(super) struct CallbackRefs {
     pub(super) table_get: FuncRef,
     pub(super) map_get: FuncRef,
     pub(super) vector_len: FuncRef,
+    pub(super) count: FuncRef,
     pub(super) equal: FuncRef,
     pub(super) table_put: FuncRef,
     pub(super) map_get3: FuncRef,
+    pub(super) vector_ref3: FuncRef,
     pub(super) map_assoc: FuncRef,
     pub(super) vector_base: FuncRef,
     pub(super) table_dense_base: FuncRef,
@@ -313,6 +317,12 @@ pub(super) fn declare_callbacks(module: &mut JITModule, pointer: Type) -> Option
         "brood_rt_vector_len",
         &signature(module, &[pointer, i64, i64, i64], &[i64]),
     )?;
+    // brood_rt_count(heap, value 3 words) -> count, or -1 to decline (deopt).
+    let count = import(
+        module,
+        "brood_rt_count",
+        &signature(module, &[pointer, i64, i64, i64], &[i64]),
+    )?;
     // brood_rt_equal(heap, a 3 words, b 3 words) -> 1 equal / 0 not / 2 declined — the
     // residual case of `eq_dispatch` (KI-132). The answer is the status.
     let equal = import(
@@ -327,6 +337,7 @@ pub(super) fn declare_callbacks(module: &mut JITModule, pointer: Type) -> Option
     let triple_signature = signature(module, &triple_params, &[i64]);
     let table_put = import(module, "brood_rt_table_put", &triple_signature)?;
     let map_get3 = import(module, "brood_rt_map_get3", &triple_signature)?;
+    let vector_ref3 = import(module, "brood_rt_vector_ref3", &triple_signature)?;
     let map_assoc = import(module, "brood_rt_map_assoc", &triple_signature)?;
     // (heap, 3 words, out: *mut i64) -> *const: brood_rt_vector_base resolves an invariant
     // vector's element (data_ptr, len) once for the LICM hoist (null = not a vector);
@@ -388,9 +399,11 @@ pub(super) fn declare_callbacks(module: &mut JITModule, pointer: Type) -> Option
         table_get,
         map_get,
         vector_len,
+        count,
         equal,
         table_put,
         map_get3,
+        vector_ref3,
         map_assoc,
         vector_base,
         table_dense_base,
@@ -445,9 +458,11 @@ pub(super) fn import_callbacks(
     let table_get = declare(ids.table_get, b.func);
     let map_get = declare(ids.map_get, b.func);
     let vector_len = declare(ids.vector_len, b.func);
+    let count = declare(ids.count, b.func);
     let equal = declare(ids.equal, b.func);
     let table_put = declare(ids.table_put, b.func);
     let map_get3 = declare(ids.map_get3, b.func);
+    let vector_ref3 = declare(ids.vector_ref3, b.func);
     let map_assoc = declare(ids.map_assoc, b.func);
     let vector_base = declare(ids.vector_base, b.func);
     let table_dense_base = declare(ids.table_dense_base, b.func);
@@ -490,9 +505,11 @@ pub(super) fn import_callbacks(
         table_get,
         map_get,
         vector_len,
+        count,
         equal,
         table_put,
         map_get3,
+        vector_ref3,
         map_assoc,
         vector_base,
         table_dense_base,

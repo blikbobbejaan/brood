@@ -128,6 +128,8 @@ pub(super) struct Funcs {
     /// on a CHAMP map (ADR-368), `table_put`'s `(heap, out, 3w, 3w, 3w) -> status` shape.
     pub mget3: FuncRef,
     pub massoc: FuncRef,
+    /// `brood_rt_vector_ref3` — `(nth v i default)` on a vector, the same shape.
+    pub vref3: FuncRef,
     /// `brood_rt_map_get` — the CHAMP probe behind [`PrimOp::MapGet`]. Same
     /// `(heap, out, 3 words, 3 words) -> status` shape as the table reads, and the same
     /// `table_prim` helper drives it: status 0 hands back the value, status 1 deopts to the
@@ -136,6 +138,11 @@ pub(super) struct Funcs {
     /// `brood_rt_vector_len` — the length read behind [`PrimOp1::VectorLen`]: `(heap,
     /// vec 3w) -> len`, `-1` for a non-vector (deopt). No out slot; the answer is the return.
     pub vlen: FuncRef,
+    /// `brood_rt_count` — [`Heap::count_inline`] behind [`PrimOp1::Count`]: `(heap, 3w) ->
+    /// count`, `-1` for a shape the prelude `count` decides (deopt).
+    ///
+    /// [`Heap::count_inline`]: crate::core::heap::Heap::count_inline
+    pub count: FuncRef,
     /// `brood_rt_equal` — `Heap::equal` for the operand pairs [`eq_dispatch`] cannot
     /// decide inline (strings, floats, structural values); status 2 (a seq-view) deopts.
     pub equal: FuncRef,

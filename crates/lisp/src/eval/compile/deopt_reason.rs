@@ -111,6 +111,10 @@ pub(crate) enum DeoptReason {
     VectorRefDeclined = 49,
     /// A block no control flow reaches (after a tail `SelfCall`) — unreachable.
     UnreachableLeader = 50,
+    /// `count` callback declined (a record, seq-view, rope, table, improper list, …).
+    CountDeclined = 51,
+    /// `(nth v i default)` callback declined (not a vector, or not a fixnum index).
+    VectorRef3Declined = 52,
     /// Native recursion past the depth cap: drain the subtree on the VM.
     NativeDepthExceeded = 101,
     /// Entry hoist: a vector slot's element base was null (not a vector).
@@ -180,6 +184,8 @@ impl DeoptReason {
         DeoptReason::CompareSecondOperand,
         DeoptReason::VectorRefDeclined,
         DeoptReason::UnreachableLeader,
+        DeoptReason::CountDeclined,
+        DeoptReason::VectorRef3Declined,
         DeoptReason::NativeDepthExceeded,
         DeoptReason::HoistedSlotVectorBaseNull,
         DeoptReason::HoistedGlobalUnbound,
@@ -263,6 +269,8 @@ impl DeoptReason {
             DeoptReason::CompareSecondOperand => "compare-second-operand",
             DeoptReason::VectorRefDeclined => "vector-ref-declined",
             DeoptReason::UnreachableLeader => "unreachable-leader",
+            DeoptReason::CountDeclined => "count-declined",
+            DeoptReason::VectorRef3Declined => "vector-ref3-declined",
             DeoptReason::NativeDepthExceeded => "native-depth-exceeded",
             DeoptReason::HoistedSlotVectorBaseNull => "hoisted-slot-vector-base-null",
             DeoptReason::HoistedGlobalUnbound => "hoisted-global-unbound",
@@ -370,6 +378,8 @@ mod tests {
                 | DeoptReason::CompareSecondOperand
                 | DeoptReason::VectorRefDeclined
                 | DeoptReason::UnreachableLeader
+                | DeoptReason::CountDeclined
+                | DeoptReason::VectorRef3Declined
                 | DeoptReason::NativeDepthExceeded
                 | DeoptReason::HoistedSlotVectorBaseNull
                 | DeoptReason::HoistedGlobalUnbound

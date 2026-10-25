@@ -781,9 +781,11 @@ fn jit_lower_arm_inner(
         tget: callbacks.table_get,
         mget: callbacks.map_get,
         vlen: callbacks.vector_len,
+        count: callbacks.count,
         equal: callbacks.equal,
         tput: callbacks.table_put,
         mget3: callbacks.map_get3,
+        vref3: callbacks.vector_ref3,
         massoc: callbacks.map_assoc,
         globic: callbacks.global_ic,
         pushroom: callbacks.push_room,
@@ -948,6 +950,20 @@ fn jit_lower_arm_inner(
                         frame,
                         funcs,
                         funcs.mget3,
+                        reason,
+                    )?;
+                }
+                Inst::Prim3 {
+                    op: PrimOp3::VectorRefOr,
+                    ..
+                } => {
+                    let reason = DeoptReason::VectorRef3Declined;
+                    prim::emit_prim3_callback(
+                        &mut b,
+                        &mut stack,
+                        frame,
+                        funcs,
+                        funcs.vref3,
                         reason,
                     )?;
                 }

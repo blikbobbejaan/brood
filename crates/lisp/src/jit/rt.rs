@@ -516,6 +516,18 @@ pub unsafe extern "C" fn brood_rt_vector_len(heap: *mut Heap, v0: i64, v1: i64, 
     }
 }
 
+/// `(count v)` from JIT'd code (the `PrimOp1::Count` lowering): `Heap::count_inline`'s
+/// answer as a plain `i64`, or **-1** for a shape the prelude `count` decides in Brood (a
+/// record, seq-view, rope, table, improper list, `Seqable` impl, type error) — the deopt
+/// signal. Reads the heap only; never allocates, so it is not a safepoint.
+///
+/// # Safety
+/// `heap` live; the word triple is a real `Value`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn brood_rt_count(heap: *mut Heap, v0: i64, v1: i64, v2: i64) -> i64 {
+    unsafe { (*heap).count_inline(words_to_val(v0, v1, v2)).unwrap_or(-1) }
+}
+
 /// `(%table-has? t k)` from JIT'd code (the `PrimOp::TableHas` lowering). Returns
 /// 0 = done (`*out` holds the boolean), 1 = deopt (first operand isn't a Table —
 /// the VM owns the exact type error), 2 = a real error was parked in
@@ -688,6 +700,43 @@ pub unsafe extern "C" fn brood_rt_table_dense_base(
         }
         *out_flag = 0;
         std::ptr::null()
+    }
+}
+
+/// `(nth v i default)` on a vector — the native half of `PrimOp3::VectorRefOr`. Status 0 =
+/// the element (or the default, out of range) is in `*out`; 1 = decline (not a vector, or
+/// not a fixnum index), which the prelude `nth` owns. The rule is `Heap::nth3_inline`,
+/// shared with the VM's `Inst::Prim3` arm. Pure: allocates nothing.
+///
+/// # Safety
+/// `heap`/`out` live; the word triples are bytes the JIT read out of real `Value`s.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn brood_rt_vector_ref3(
+    heap: *mut Heap,
+    out: *mut crate::core::value::Value,
+    v0: i64,
+    v1: i64,
+    v2: i64,
+    i0: i64,
+    i1: i64,
+    i2: i64,
+    d0: i64,
+    d1: i64,
+    d2: i64,
+) -> i64 {
+    unsafe {
+        let h = &*heap;
+        match h.nth3_inline(
+            words_to_val(v0, v1, v2),
+            words_to_val(i0, i1, i2),
+            words_to_val(d0, d1, d2),
+        ) {
+            Some(v) => {
+                *out = v;
+                0
+            }
+            None => 1,
+        }
     }
 }
 
