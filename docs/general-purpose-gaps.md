@@ -95,6 +95,13 @@ needs an ADR.
 
 ### 3. Native interop: no C FFI, and the WASM route is half built
 
+**Update 2026-10-26: the WASM route is built.** A guest gets WASI preview 2 by grant
+(`:dirs`, `:env`, `:args`, `:stdio`; never the network), interface exports are callable, a
+guest resource is a token, and enums, variants and records marshal both ways (ADR-453). A
+package ships its component with `include-bytes`, pinned by the package's own hash, so no
+`:native` clause was needed (ADR-454). The test passed: SQLite runs as a component from a
+package (`broodlang/sqlite`, not yet on hive). Build-on-fetch and a C embedding API remain.
+
 **Half the usual complaint.** There is no C FFI, and that is deliberate.
 docs/interop.md rejects a native `.so` ABI because it would be tied to the kernel's `Value`
 layout, could crash the runtime and would reopen ADR-037's supply-chain hole. The answer
@@ -148,6 +155,10 @@ ADR-417 because the toolchain is its second user. HTTP/2, gRPC and WebSocket cli
 hive packages.
 
 ### 5. Data access: Postgres only
+
+**Update 2026-10-26: SQLite exists**, as the `sqlite` package: SQLite 3.50 compiled to
+`wasm32-wasip2`, a connection process per handle, values both ways, transactions. It runs
+without file locks (WASI has none), so one handle per database file. Redis and MySQL remain.
 
 **Verified.** std has no database drivers, and that is correct under ADR-417.
 `store-postgres` is a Postgres wire driver and pool written in pure Brood, with SCRAM and
