@@ -209,10 +209,13 @@ scheduler.** What is behind OTP is *around* supervision, and nearly all of it is
   to a catchable raise (what `:max-heap` actually does); backpressure proper stays a
   library (`gen/call` with a timeout). Also the "Per-process resource limits" item under
   Robustness gaps.
-- ⬜ **G. Soak, not features.** The remaining gap with OTP is evidence, and no feature closes
-  it. `breakage/` and the stress ladders exist; what they lack is duration. A nightly
-  multi-hour soak — a supervised ring across three nodes, a node killed every N minutes,
-  weekly under `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1` — reported by `make green`.
+- ✅ **G. Soak, not features.** The remaining gap with the mature actor runtimes is
+  evidence, and no feature closes it. `breakage/` and the stress ladders exist; what they
+  lacked was duration. Now: the nightly runs `stress/node_soak.sh 7200 120` — a token ring
+  across three relay nodes and a hub for two hours, a relay hard-killed every 120 s and
+  restarted, failing on a stalled lap or any runtime alarm on any node — and `soak.yml`
+  runs a five-hour soak weekly under `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`; `make green`
+  reports both. What it builds is a track record, not a feature.
 
 **What the other Lisps have that fits Brood.** Value ranked; "shape" marks an import that
 needs a Brood-specific form to respect an ADR.
@@ -228,7 +231,9 @@ needs a Brood-specific form to respect an ADR.
   bitset+lazy-DFA machine untouched and unslowed — measured 511 ms → 492 ms on 80k boolean
   calls. The first customer was bedit wanting Emacs' `compilation-error-regexp-alist`,
   which a boolean-only engine cannot express at all. Remaining: backreferences, lookaround,
-  named groups. Still open for the corpora below.
+  named groups. Still open for the corpora below. *Since 2026-09-23 (ADR-389) the matching
+  is native (`regex-automata`, still linear); Brood keeps the parser — the pattern
+  language — and the Brood engines above are deleted.*
 - ✅ **3. `iterate`** (2026-10-24, ADR-431): `(seq/iterate x f)` is a source only
   `seq/transduce` consumes, ended by a stopping stage; realising it raises. Original note:
   *(shape)*. Not a lazy cons: a

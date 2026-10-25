@@ -1166,7 +1166,7 @@ inside a template stay literal — opt into `#`/`gensym` there if capture is a
 concern.
 
 The `->` and `as->` threading macros are also defined in the prelude. There is only
-**one** pipe: every collection function takes its collection first (ADR-305), so a
+**one** pipe: every collection function takes its collection first (ADR-308), so a
 thread-*last* variant would have nothing to thread (`->>` and friends were deleted):
 
 ```clojure
@@ -1175,13 +1175,13 @@ thread-*last* variant would have nothing to thread (`->>` and friends were delet
 ```
 
 A step form naming **`$`** receives the threaded value at that position instead of first
-or last (ADR-303). This matters because the stdlib carries two argument conventions —
-subject-first (`string/split s sep`) and collection-last (`map f coll`) — so a pipeline
-crossing the boundary is threaded correctly by *neither* macro:
+(ADR-303). The stdlib puts the subject first, so a pipeline over it needs no `$`; the
+hole is for a step that wants the value somewhere else — an operator's second operand, a
+separator, an element of a literal:
 
 ```clojure
 (-> 1 (- 10 $))                                  ;=> 9     ; not -9
-(-> "1 2 3" (string/split " ") (map string/->number $) first)   ;=> 1
+(-> ", " (string/join ["a" "b"] $))              ;=> "a, b"
 (-> 5 (+ 1 (* 2 $)))                             ;=> 11    ; found at any depth
 (-> 3 [$ $])                                     ;=> [3 3] ; and in vector/map literals
 ```
@@ -2787,9 +2787,9 @@ In the `math` module: `math/mod`  `math/rem`  `math/quot`  `math/floor`  `math/m
 > operators and `inc`/`dec` stay bare. Reach the library with `(:use math)`, which
 > brings them back bare inside that module, or qualify (`math/sqrt`, `math/rem`).
 
-- Integer-only arguments give an integer result (`/` stays integer only when it
-  divides evenly; otherwise it returns a float). Any float argument makes the
-  result a float.
+- Integer-only arguments give an exact result: an integer, except that `/` gives a
+  ratio when it does not divide evenly (`(/ 3 2)` → `3/2`, ADR-196). Any float
+  argument makes the result a float.
 - `(- x)` negates; `(/ x)` is the reciprocal.
 - **Decimal arithmetic preserves scale** — `+`, `-` and `*` on exact operands
   (decimal/int/bignum) give the result the standard's *ideal exponent*: the finer
