@@ -1829,6 +1829,14 @@ impl GpuWindow {
             compatible_surface: Some(&surface),
         }))
         .map_err(|e| format!("gpu adapter: {e}"))?;
+        // A machine with no GPU still offers an adapter when Mesa is installed: llvmpipe or
+        // lavapipe, the GPU emulated on the CPU. Drawing through it costs more than the CPU
+        // painter, which knows what changed, so it counts as no GPU — the caller falls back
+        // with nothing to configure.
+        let info = adapter.get_info();
+        if info.device_type == wgpu::DeviceType::Cpu {
+            return Err(format!("only a software adapter ({})", info.name));
+        }
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("brood gui"),
             required_features: wgpu::Features::empty(),
