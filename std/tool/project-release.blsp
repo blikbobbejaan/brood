@@ -98,7 +98,7 @@ written binary stay in the `nest` binary, which hosts the runtime it embeds.")
     (let (head (first (sexp/forms-of node)))
       (and (not (nil? head))
         (= (get head :kind) :symbol)
-        (= (get head :text) "include-str")))))
+        (includes? ["include-str" "include-bytes"] (get head :text))))))
 
 ;; The path an `include-str` node names, or nil when its argument is not a plain string
 ;; literal — a computed path cannot be resolved at archive time, and saying nothing here
@@ -116,7 +116,7 @@ written binary stay in the `nest` binary, which hosts the runtime it embeds.")
 
 (defn- inline-includes (source &optional (root nil))
   "`source` with every `(include-str \"path\")` form replaced by the contents of that
-file as a string literal. Unchanged when it holds none, so the ordinary module pays one
+file as a string literal, and every `(include-bytes \"path\")` by a bytes literal. Unchanged when it holds none, so the ordinary module pays one
 parse and nothing else."
   (let (nodes (include-str-nodes (sexp/top-level-forms source))
         spans (seq/keep nodes
@@ -127,7 +127,11 @@ parse and nothing else."
                         (unless (file/exists? path)
                           (error "release: include-str: no file at "
                             path " (named by " rel ")"))
-                        [(get node :start) (get node :end) (pr-str (file/slurp path))]))))))
+                        [(get node :start)
+                          (get node :end)
+                          (pr-str (if (= (get (first (sexp/forms-of node)) :text) "include-bytes")
+                                    (file/slurp-bytes path)
+                                    (file/slurp path)))]))))))
     (if (empty? spans) source (string-splice-spans source spans))))
 
 ;; What one module contributes to the bundle: its source with the tests taken out and

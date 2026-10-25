@@ -6,8 +6,10 @@
 
 (def- *guest* (file/slurp-bytes "tests/support/wasm-guest.wasm"))
 
+(purge-stale-temp "brood-wasi-")
+
 (defn- scratch ()
-  (let (dir (path/temp "brood-wasi-test-")) (file/mkdir dir) dir))
+  (let (dir (temp-dir "brood-wasi-")) (file/mkdir dir) dir))
 
 (describe "wasm: capabilities are granted, not ambient"
   (test "without grants a component that imports WASI does not load"
