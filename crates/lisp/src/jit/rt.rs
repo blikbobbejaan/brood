@@ -494,6 +494,8 @@ pub unsafe extern "C" fn brood_rt_vector_ref(
             return 1;
         }
         *out = v[idx as usize];
+        // A RUNTIME vector: note its bucket, so the next read of one beside it is inline.
+        h.note_shared_vector(vid);
         0
     }
 }

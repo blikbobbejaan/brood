@@ -38,7 +38,8 @@
 >
 > **Order of work, then:**
 >
-> 1. **Inline shared-region vector reads.** `boxcar`'s bucket for index `i` is computable: in
+> 1. ✅ **DONE 2026-10-25 — `matmul` −20.4% (`make ab --floor`), instructions 1.61G → 1.21G;
+>    the three callback symbols are gone from its profile.** **Inline shared-region vector reads.** `boxcar`'s bucket for index `i` is computable: in
 >    0.2.14 (`SKIPPED_BUCKETS = 5`, `buckets.rs`) it is `⌊log2(i + 32)⌋ − 5`, at offset
 >    `i + 32 − 2^⌊log2(i + 32)⌋`, one `lzcnt` and a shift. So native code can
 >    index a RUNTIME vector given a per-generation bucket-base table. Publish that table the way

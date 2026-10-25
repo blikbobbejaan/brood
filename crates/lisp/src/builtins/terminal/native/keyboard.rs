@@ -25,6 +25,9 @@
 //! pressed) it comes up: `[:key-up press]`, and the repeat still waiting is dropped. Typed text
 //! is held and comes up the same way but is never dropped, because a terminal sends a paste
 //! as keys too. A key tapped and let go has no key-up here: nothing says when it came up.
+//! A press and its next arrival in one read, closer together than any desktop's repeat delay
+//! ([`FIRST_REPEAT_MIN`]), are a burst — a script, `tmux send-keys`, a terminal macro — and
+//! every key of it is delivered: a held key's first repeat never comes that soon.
 //!
 //! The inline REPL (`term-raw-enter`, no `term-enter`) reads keys as a terminal always sent
 //! them: every key a press, nothing held.
@@ -251,6 +254,13 @@ impl KeyTracker {
 /// second). A desktop set to repeat slower than this is read as presses, as before.
 pub(super) const REPEAT_GAP: Duration = Duration::from_millis(70);
 
+/// The shortest wait any desktop makes between a key going down and its first repeat (GNOME,
+/// KDE and X all bottom out at 100 ms or more). A press and another of the same key that
+/// arrived closer together than this are not a key held: they are a burst — a script or
+/// a terminal macro typing the key again, `tmux send-keys`, a pasted control sequence —
+/// and every one of them is delivered.
+pub(super) const FIRST_REPEAT_MIN: Duration = Duration::from_millis(100);
+
 /// How long an inferred hold's repeats may stop before the key counts as released. Twice
 /// [`REPEAT_GAP`]: a stall in the terminal or the link longer than this ends the hold early,
 /// and the next repeat starts a new one.
@@ -314,6 +324,9 @@ struct Run {
     /// The read that brought the latest event: it arrived by then.
     last_read: Instant,
     held: bool,
+    /// Its press and the next arrival came in one read, closer than any desktop's repeat
+    /// delay ([`FIRST_REPEAT_MIN`]): a burst of presses, never held.
+    burst: bool,
 }
 
 /// The input read ahead of the app and what it says about the keys: the tracker for keys
@@ -346,6 +359,14 @@ impl Inbox {
         self.keys = KeyTracker::new();
         self.run = None;
         self.previous_read = now;
+    }
+
+    /// The app was waiting on the tty and it became readable at `at`: whatever the next read
+    /// brings arrived from then on, since the read before the wait emptied it. A tighter bound
+    /// than that read, which is what tells a burst typed at once (read the moment it came)
+    /// from a backlog that piled up behind a busy frame (read when the frame ended).
+    pub(super) fn woke(&mut self, at: Instant) {
+        self.previous_read = Some(self.previous_read.map_or(at, |read| read.max(at)));
     }
 
     /// The events one read of the tty brought, at `now`. `drained` says the read emptied the
@@ -403,6 +424,7 @@ impl Inbox {
                         paced_from: None,
                         last_read: now,
                         held: false,
+                        burst: false,
                     });
                     self.push(Input::Event(Event::Key(key)), Some((self.runs_started, 0)));
                 }
@@ -416,9 +438,21 @@ impl Inbox {
     /// is live.
     fn continue_run(&mut self, key: KeyEvent, after: Option<Instant>, now: Instant) {
         let Some(mut run) = self.run else { return };
+        // the press and this, its first follower, in one read that began less than a
+        // desktop's repeat delay before: they came together, so they are presses
+        if run.count == 1
+            && run.last_read == now
+            && after.is_some_and(|from| now.saturating_duration_since(from) < FIRST_REPEAT_MIN)
+        {
+            run.burst = true;
+        }
         run.count += 1;
         run.last_read = now;
         let place = run.count - 1;
+        if run.burst {
+            self.run = Some(run);
+            return self.push(Input::Event(Event::Key(key)), Some((run.id, place)));
+        }
         // the stretch from `start` (which arrived after `from`) to this arrival (by `now`)
         // took at most `now - from`, over `place - start` gaps
         run.held = run.held
@@ -643,7 +677,9 @@ pub(super) fn next(timeout: Duration) -> std::io::Result<Option<Polled>> {
             };
             until.saturating_duration_since(now)
         };
-        crossterm::event::poll(wait)?;
+        if crossterm::event::poll(wait)? {
+            keyboard().inbox.woke(Instant::now());
+        }
     }
 }
 
@@ -948,6 +984,36 @@ mod tests {
         assert_eq!(reads.inbox.held(), None);
         reads.read(800, &[]);
         assert_eq!(reads.drain(), vec![pressed(next_line); 3]);
+    }
+
+    // Four C-b written at once (a script, `tmux send-keys`, bedit's `drive-mspc`) and read
+    // straight after the read before: the press and its followers came closer together than
+    // any desktop's repeat delay, so they are presses — all four delivered, nothing held. As
+    // a hold the middle two were dropped, and point stopped two characters short.
+    #[test]
+    fn a_burst_of_one_control_key_is_presses_not_a_hold() {
+        let mut reads = Reads::new();
+        let back = press(KeyCode::Char('b'), CONTROL);
+        reads.read(500, &[]);
+        reads.read(503, &[back; 4]);
+        assert_eq!(reads.inbox.held(), None);
+        reads.read(900, &[]);
+        assert_eq!(reads.drain(), vec![pressed(back); 4]);
+    }
+
+    // The same burst after the app waited half a second on the tty: the read before the wait
+    // bounds nothing useful, but the wake does — the burst arrived when the tty became
+    // readable, so it is still four presses.
+    #[test]
+    fn a_burst_read_on_waking_is_presses_however_long_the_wait() {
+        let mut reads = Reads::new();
+        let back = press(KeyCode::Char('b'), CONTROL);
+        reads.read(0, &[]);
+        reads.inbox.woke(reads.at(500));
+        reads.read(501, &[back; 4]);
+        assert_eq!(reads.inbox.held(), None);
+        reads.read(900, &[]);
+        assert_eq!(reads.drain(), vec![pressed(back); 4]);
     }
 
     // A held letter is held (idle work waits, the key-up comes), but none of it is dropped:

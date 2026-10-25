@@ -572,9 +572,94 @@ pub(super) struct CodeSlabs {
     /// once promoted (read-only), so append-only is sound. `OnceLock`-wrapped for
     /// the same reserve-then-fill cycle break as `closures` above.
     pub(super) envs: boxcar::Vec<OnceLock<EnvFrame>>,
+    /// Where each `boxcar` bucket of [`Self::vectors`] keeps its `VecStore`s, so native
+    /// code can index a RUNTIME vector without the `brood_rt_vector_ref` callback (the
+    /// `matmul` lever, `docs/compute-frontier.md` 2026-10-25). Entry `b` is the address the
+    /// bucket's first `VecStore` would have, or 0 until the callback has read a vector in
+    /// that bucket and noted it ([`Self::note_vector`]). Written once per bucket and never
+    /// changed: a bucket never moves, and a generation that is replaced is a fresh
+    /// `CodeSlabs` with its own table (every replacement bumps `gen_version`).
+    #[cfg(feature = "jit")]
+    pub(super) vec_buckets: [std::sync::atomic::AtomicUsize; RT_VEC_BUCKETS],
+}
+
+/// Buckets a RUNTIME vector index can fall in: handle indices are below `2^32`, and
+/// `⌊log2(2^32 + 32)⌋ − 5` is 27.
+#[cfg(feature = "jit")]
+pub(crate) const RT_VEC_BUCKETS: usize = 28;
+
+/// `boxcar` 0.2.14's location of index `i` (`buckets.rs`, `SKIPPED_BUCKETS = 5`): bucket
+/// `⌊log2(i + 32)⌋ − 5`, at offset `i + 32 − 2^⌊log2(i + 32)⌋`. The JIT computes the same
+/// thing inline (`jit_lower/emit.rs`, `shared_vec_slot`). [`rt_vec_entry_stride`] checks
+/// it against a real `boxcar::Vec` before native code may rely on it.
+#[cfg(feature = "jit")]
+#[inline]
+pub(crate) fn rt_vec_location(i: usize) -> (usize, usize) {
+    let inner = i + 32;
+    let log = (usize::BITS - 1 - inner.leading_zeros()) as usize;
+    (log - 5, inner - (1 << log))
+}
+
+/// The distance between two consecutive `VecStore`s in a `boxcar` bucket, or `None` when
+/// [`rt_vec_location`] does not describe this build's `boxcar`, in which case native code
+/// keeps the callback for every RUNTIME vector. Asked once per process: the answer is a
+/// fact about the binary.
+#[cfg(feature = "jit")]
+pub(crate) fn rt_vec_entry_stride() -> Option<usize> {
+    static STRIDE: OnceLock<Option<usize>> = OnceLock::new();
+    *STRIDE.get_or_init(|| {
+        // Enough entries to span the first four buckets (32 + 64 + 128 + some of 256).
+        const N: usize = 300;
+        let probe: boxcar::Vec<VecStore> = boxcar::Vec::new();
+        for _ in 0..N {
+            probe.push(VecStore::from_vec(Vec::new()));
+        }
+        let addr = |i: usize| &probe[i] as *const VecStore as usize;
+        let stride = addr(1).checked_sub(addr(0))?;
+        if stride < std::mem::size_of::<VecStore>() {
+            return None;
+        }
+        // The first index of each bucket, by the same formula, is its base.
+        let mut first = [usize::MAX; RT_VEC_BUCKETS];
+        for i in 0..N {
+            let (b, off) = rt_vec_location(i);
+            if off == 0 {
+                first[b] = i;
+            }
+        }
+        for i in 0..N {
+            let (b, off) = rt_vec_location(i);
+            if first[b] == usize::MAX || addr(i) != addr(first[b]) + off * stride {
+                return None;
+            }
+        }
+        Some(stride)
+    })
 }
 
 impl CodeSlabs {
+    /// Record where vector `i`'s bucket keeps its `VecStore`s, if that is not known yet —
+    /// called by the callback after it has read vector `i`, so the next read of any vector
+    /// in the same bucket stays in native code.
+    #[cfg(feature = "jit")]
+    pub(super) fn note_vector(&self, i: usize) {
+        use std::sync::atomic::Ordering;
+        let Some(stride) = rt_vec_entry_stride() else {
+            return;
+        };
+        let (b, off) = rt_vec_location(i);
+        let Some(cell) = self.vec_buckets.get(b) else {
+            return;
+        };
+        if cell.load(Ordering::Relaxed) != 0 {
+            return;
+        }
+        if let Some(store) = self.vectors.get(i) {
+            let base = store as *const VecStore as usize - off * stride;
+            cell.store(base, Ordering::Release);
+        }
+    }
+
     /// True if this generation holds no code — every slab empty. Aging may only
     /// start a new generation in a slot that is empty (its previous generation
     /// fully reclaimed), so a fresh gen's handle indices can't collide with a
@@ -597,6 +682,38 @@ impl CodeSlabs {
 #[cfg(all(test, feature = "jit"))]
 mod vecstore_layout_tests {
     use super::*;
+
+    /// Native code finds a RUNTIME vector's `VecStore` by `rt_vec_location` and a bucket
+    /// base (`shared_vec_slot`), so the formula must place every index exactly where
+    /// `boxcar` does — far past the 300-entry startup probe, across a dozen buckets. A
+    /// `boxcar` upgrade that changes its layout fails here and in `rt_vec_entry_stride`,
+    /// which then keeps every RUNTIME read on the callback.
+    #[test]
+    fn the_shared_vector_location_is_where_boxcar_puts_it() {
+        assert!(
+            rt_vec_entry_stride().is_some(),
+            "the startup self-check must accept this build's boxcar"
+        );
+        const N: usize = 100_000;
+        let v: boxcar::Vec<u64> = boxcar::Vec::new();
+        for i in 0..N {
+            v.push(i as u64);
+        }
+        let addr = |i: usize| &v[i] as *const u64 as usize;
+        let mut first = [usize::MAX; RT_VEC_BUCKETS];
+        for i in 0..N {
+            let (b, off) = rt_vec_location(i);
+            if off == 0 {
+                first[b] = i;
+            }
+        }
+        for i in 0..N {
+            let (b, off) = rt_vec_location(i);
+            assert_eq!(addr(i), addr(first[b]) + off * 8, "index {i} (bucket {b})");
+        }
+        // The largest handle index lands in the last bucket the table has room for.
+        assert_eq!(rt_vec_location(u32::MAX as usize).0, RT_VEC_BUCKETS - 1);
+    }
     use crate::core::value::Value;
 
     /// Pin the byte layout the JIT hardcodes for its inline small-vector read

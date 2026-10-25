@@ -1299,11 +1299,78 @@ pub(super) fn call_handle(
     handle_from_out_slot(b, fu.out_slot)
 }
 
-/// Dynamic-index vector read, fully inline for a LOCAL vector (either storage):
-/// tag/region/int-index checks → slab slot → inline or spill element read — no
-/// FFI on the hot path (this was ~20 ns/element on the json/regex code-vector
-/// scans). Anything else — non-vector, non-LOCAL region (RUNTIME/PRELUDE, e.g.
-/// matmul's def'd rows), non-int index, out-of-range — falls back to the
+/// The address of RUNTIME vector `w1`'s `VecStore`, computed inline, or `None` when this
+/// binary's `boxcar` does not match the layout (`rt_vec_entry_stride`), and the caller keeps
+/// the callback. Emitted into the current block; every guard that fails branches to
+/// `fallback`, and the block left current holds the address:
+///
+/// 1. the handle's region is RUNTIME (PRELUDE, the other shared region, takes `fallback`);
+/// 2. the heap's cached version for the handle's generation equals the runtime's live
+///    `gen_version`, so `gen_slabs_addr[g]` is the generation's current `CodeSlabs`. A
+///    replaced generation (Stage-4 free, compaction) bumps the version, so native code never
+///    indexes a retired one; the callback's `code_gen_ref` refreshes both;
+/// 3. the bucket's base is known (`CodeSlabs::vec_buckets`, noted by the callback).
+///
+/// A RUNTIME object never moves within its generation (`boxcar` is append-only) and its
+/// `VecStore` is the LOCAL one, so the caller decodes it exactly as a LOCAL slot.
+pub(super) fn shared_vec_slot(
+    b: &mut FunctionBuilder,
+    w1: cranelift_codegen::ir::Value,
+    fu: Funcs,
+    fallback: Block,
+) -> Option<cranelift_codegen::ir::Value> {
+    use crate::core::heap::rt_vec_offsets as off;
+    let stride = crate::core::heap::rt_vec_entry_stride()? as i64;
+    let flags = MemFlagsData::trusted();
+    let region = b.ins().ushr_imm_s(w1, 62);
+    let is_runtime = b
+        .ins()
+        .icmp_imm_s(IntCC::Equal, region, crate::core::value::RUNTIME as i64);
+    let gen_ok = b.create_block();
+    b.ins().brif(is_runtime, gen_ok, &[], fallback, &[]);
+    b.switch_to_block(gen_ok);
+    // The generation bit (32), as a byte offset into the two-entry heap arrays.
+    let g = b.ins().ushr_imm_s(w1, 32);
+    let g = b.ins().band_imm_s(g, 1);
+    let g8 = b.ins().ishl_imm_s(g, 3);
+    let heap_g = b.ins().iadd(fu.heap, g8);
+    let cached = b.ins().load(types::I64, flags, heap_g, off::GEN_CACHE_VER);
+    let live_at = b
+        .ins()
+        .load(types::I64, flags, fu.heap, off::RT_GEN_VERSION);
+    let live = b.ins().load(types::I64, flags, live_at, 0);
+    let current = b.ins().icmp(IntCC::Equal, cached, live);
+    let slabs_ok = b.create_block();
+    b.ins().brif(current, slabs_ok, &[], fallback, &[]);
+    b.switch_to_block(slabs_ok);
+    let slabs = b.ins().load(types::I64, flags, heap_g, off::GEN_SLABS_ADDR);
+    // `rt_vec_location`: bucket ⌊log2(i + 32)⌋ − 5 at offset i + 32 − 2^⌊log2(i + 32)⌋.
+    let index = b.ins().band_imm_s(w1, 0xFFFF_FFFFi64);
+    let inner = b.ins().iadd_imm_s(index, 32);
+    let lz = b.ins().clz(inner);
+    let sixty_three = b.ins().iconst(types::I64, 63);
+    let log = b.ins().isub(sixty_three, lz);
+    let one = b.ins().iconst(types::I64, 1);
+    let bucket_start = b.ins().ishl(one, log);
+    let within = b.ins().isub(inner, bucket_start);
+    let bucket8 = b.ins().ishl_imm_s(log, 3);
+    let cell = b.ins().iadd(slabs, bucket8);
+    // `log - 5` buckets in: the table index scaled by 8 is `log*8 - 40`.
+    let base = b.ins().load(types::I64, flags, cell, off::VEC_BUCKETS - 40);
+    let known = b.ins().icmp_imm_s(IntCC::NotEqual, base, 0);
+    let slot_ok = b.create_block();
+    b.ins().brif(known, slot_ok, &[], fallback, &[]);
+    b.switch_to_block(slot_ok);
+    let within_bytes = b.ins().imul_imm_s(within, stride);
+    Some(b.ins().iadd(base, within_bytes))
+}
+
+/// Dynamic-index vector read, fully inline for a LOCAL or RUNTIME vector (either storage):
+/// tag/int-index/region checks → slab slot (a RUNTIME one through `shared_vec_slot`, e.g.
+/// matmul's `def`'d rows) → inline or spill element read — no FFI on the hot path (this
+/// was ~20 ns/element on the json/regex code-vector scans, and 31% of matmul's cycles for
+/// the RUNTIME rows). Anything else — non-vector, PRELUDE, a RUNTIME generation or bucket
+/// not yet placed, non-int index, out-of-range — falls back to the
 /// `brood_rt_vector_ref` FFI, whose nonzero status deopts (the VM owns `nth`'s
 /// exact result and errors).
 pub(super) fn vector_ref(
@@ -1324,12 +1391,6 @@ pub(super) fn vector_ref(
     let c1 = b.create_block();
     b.ins().brif(is_vec, c1, &[], ffi_blk, &[]);
     b.switch_to_block(c1);
-    // region: high 2 bits of the handle == 0 (LOCAL); RUNTIME/PRELUDE → FFI.
-    let high2 = b.ins().ushr_imm_s(vec[1], 62);
-    let is_local = b.ins().icmp_imm_s(IntCC::Equal, high2, 0);
-    let c2 = b.create_block();
-    b.ins().brif(is_local, c2, &[], ffi_blk, &[]);
-    b.switch_to_block(c2);
     // index must be an Int.
     let itag = b.ins().band_imm_s(idx[0], 0xff);
     let is_int = b.ins().icmp_imm_s(IntCC::Equal, itag, TAG_INT as i64);
@@ -1337,6 +1398,26 @@ pub(super) fn vector_ref(
     b.ins().brif(is_int, c3, &[], ffi_blk, &[]);
     b.switch_to_block(c3);
     let idxv = idx[1];
+    // Both regions' slot pointers converge on the one storage decode below.
+    let decode = b.create_block();
+    b.append_block_param(decode, fu.ptr_ty);
+    // region: high 2 bits of the handle == 0 (LOCAL); RUNTIME → `shared_vec_slot`;
+    // PRELUDE → FFI.
+    let high2 = b.ins().ushr_imm_s(vec[1], 62);
+    let is_local = b.ins().icmp_imm_s(IntCC::Equal, high2, 0);
+    let c2 = b.create_block();
+    let shared = b.create_block();
+    b.ins().brif(is_local, c2, &[], shared, &[]);
+    b.switch_to_block(shared);
+    match shared_vec_slot(b, vec[1], fu, ffi_blk) {
+        Some(slot) => {
+            b.ins().jump(decode, &[BlockArg::Value(slot)]);
+        }
+        None => {
+            b.ins().jump(ffi_blk, &[]);
+        }
+    }
+    b.switch_to_block(c2);
     // age bit 61 selects the slab base (fetched per read, like the const-index
     // inline — safe across any prior safepoint).
     let age = b.ins().ushr_imm_s(vec[1], 61);
@@ -1358,7 +1439,10 @@ pub(super) fn vector_ref(
     let sbase = b.block_params(based)[0];
     let vidx = b.ins().band_imm_s(vec[1], 0xFFFF_FFFFi64);
     let soff = b.ins().imul_imm_s(vidx, VS::JIT_STRIDE);
-    let slotp = b.ins().iadd(sbase, soff);
+    let local_slot = b.ins().iadd(sbase, soff);
+    b.ins().jump(decode, &[BlockArg::Value(local_slot)]);
+    b.switch_to_block(decode);
+    let slotp = b.block_params(decode)[0];
     let disc = b
         .ins()
         .load(types::I8, MemFlagsData::trusted(), slotp, VS::JIT_TAG_OFF);
@@ -1679,16 +1763,31 @@ pub(super) fn inline_vec_ref(
     b.ins()
         .brif(is_vec, c1, &[], deopt, &[BlockArg::Value(deopt_reason)]);
     b.switch_to_block(c1);
-    // Region: high 2 bits of the handle == 0 (LOCAL). PRELUDE/RUNTIME take the FFI
-    // (`brood_rt_vector_ref`, which reads any region) rather than deopting: the shared
-    // slabs are chunked `boxcar::Vec`s with no single base to index. Deopting here instead
-    // would latch any arm destructuring a literal or `def`'d vector off the native tier
-    // (the vector form of the pair path's cliff — see `PrimOp1::First`'s lowering).
+    // Region: high 2 bits of the handle == 0 (LOCAL). A RUNTIME handle's slot is computed
+    // inline (`shared_vec_slot`), and PRELUDE, or a RUNTIME one it cannot place yet, takes
+    // the FFI (`brood_rt_vector_ref`, which reads any region) rather than deopting.
+    // Deopting here instead would latch any arm destructuring a literal or `def`'d vector
+    // off the native tier (the vector form of the pair path's cliff — see
+    // `PrimOp1::First`'s lowering).
     let high2 = b.ins().ushr_imm_s(w1, 62);
     let is_local = b.ins().icmp_imm_s(IntCC::Equal, high2, 0);
     let c2 = b.create_block();
     let ffi_blk = b.create_block();
-    b.ins().brif(is_local, c2, &[], ffi_blk, &[]);
+    // A RUNTIME vector's slot is computed inline too (`shared_vec_slot`); both slot
+    // pointers converge on the one storage decode.
+    let decode = b.create_block();
+    b.append_block_param(decode, ptr_ty);
+    let shared = b.create_block();
+    b.ins().brif(is_local, c2, &[], shared, &[]);
+    b.switch_to_block(shared);
+    match shared_vec_slot(b, w1, funcs, ffi_blk) {
+        Some(slot) => {
+            b.ins().jump(decode, &[BlockArg::Value(slot)]);
+        }
+        None => {
+            b.ins().jump(ffi_blk, &[]);
+        }
+    }
     b.switch_to_block(c2);
     // Age bit 61 (0=nursery, 1=old) selects which slab base to fetch. Fetch it per-read
     // so a prior safepoint that moved the slab can't leave it stale.
@@ -1712,7 +1811,10 @@ pub(super) fn inline_vec_ref(
     // Slot pointer: base + slab_index * stride. slab_index = low 32 bits.
     let vidx = b.ins().band_imm_s(w1, 0xFFFF_FFFFi64);
     let slot_off = b.ins().imul_imm_s(vidx, VS::JIT_STRIDE);
-    let slot_ptr = b.ins().iadd(base, slot_off);
+    let local_slot = b.ins().iadd(base, slot_off);
+    b.ins().jump(decode, &[BlockArg::Value(local_slot)]);
+    b.switch_to_block(decode);
+    let slot_ptr = b.block_params(decode)[0];
     // Discriminant byte must be `Inline` (spilled/large vectors deopt).
     let disc = b.ins().load(
         types::I8,

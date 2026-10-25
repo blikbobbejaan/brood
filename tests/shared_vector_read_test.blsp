@@ -1,0 +1,73 @@
+;;; Native code reads a `def`'d vector inline (2026-10-25).
+;;;
+;;; A `def` promotes its vector into the shared RUNTIME region, and native code used to read
+;;; every element of one through the `brood_rt_vector_ref` callback: 31% of `matmul`'s cycles
+;;; went to its rows. `shared_vec_slot` (`jit_lower/emit.rs`) now finds a RUNTIME vector's
+;;; `VecStore` itself, from the generation the heap has cached and a per-generation table of
+;;; `boxcar` bucket bases that the callback fills on its first read in each bucket. Every
+;;; guard it fails takes the callback, so these cases pin that the inline read and the
+;;; callback agree on every shape it decides: inline storage (two elements or fewer) and spill
+;;; storage, a constant and a variable index, rows spread over several buckets, the bounds,
+;;; and reads from many processes at once. The compaction case (a generation
+;;; replaced under a native loop) is `runtime_collector.rs`, which owns its runtime.
+
+(defmodule shared-vector-read-test (:use test) (:use suite-helpers))
+
+;; Two-element rows are INLINE storage; nine-element rows SPILL. 150 rows, plus their parent
+;; vectors, put the rows' RUNTIME indices across several buckets (32, 64, 128 … entries).
+(def sv-pairs (into [] (map (range 150) (fn (i) [i (* 2 i)]))))
+(def sv-rows (into [] (map (range 150) (fn (i) (into [] (map (range 9) (fn (j) (+ (* i 10) j))))))))
+
+;; A variable index, a constant index, and a nested read, each in a self-tail loop so the arm
+;; tiers.
+(defn sv-row-sum (row j n acc) (if (= j n) acc (sv-row-sum row (+ j 1) n (+ acc (nth row j)))))
+(defn sv-rows-sum (rows i acc)
+  (if (= i (count rows)) acc (sv-rows-sum rows (+ i 1) (+ acc (sv-row-sum (nth rows i) 0 9 0)))))
+(defn sv-seconds (rows i acc)
+  (if (= i (count rows)) acc (sv-seconds rows (+ i 1) (+ acc (nth (nth rows i) 1)))))
+(defn sv-cell (rows i j) (nth (nth rows i) j))
+(defn sv-cell-or (rows i j) (nth (nth rows i) j :none))
+
+;; Σ over 150 rows × 9 columns of 10i + j, and Σ 2i over 150 pairs.
+(def- sv-rows-total (+ (* 9 10 (/ (* 149 150) 2)) (* 150 36)))
+(def- sv-seconds-total (* 2 (/ (* 149 150) 2)))
+
+(describe "a def'd vector read from native code"
+  (test "spill rows, a variable index, across every bucket the rows fall in"
+    (assert= sv-rows-total (sv-rows-sum sv-rows 0 0))
+    (assert= sv-rows-total (sv-rows-sum sv-rows 0 0)))
+
+  (test "inline rows and a constant index"
+    (assert= sv-seconds-total (sv-seconds sv-pairs 0 0))
+    ;; column 1 of the spill rows: Σ 10i + 1
+    (assert= (+ (* 10 (/ (* 149 150) 2)) 150) (sv-seconds sv-rows 0 0)))
+
+  (test "the last row and the last column, then one past each"
+    (assert= 1498 (sv-cell sv-rows 149 8))
+    (assert= 298 (sv-cell sv-pairs 149 1))
+    (assert= :none (sv-cell-or sv-rows 149 9))
+    (assert= :none (sv-cell-or sv-pairs 149 2))
+    (assert= nil (sv-cell sv-rows 149 9))
+    (assert= nil (sv-cell sv-rows 149 -1)))
+
+  (test "the arms are native and stay native"
+    (when (%native-tier?)
+      (let (st (settle sv-row-sum 4 (fn () (sv-rows-sum sv-rows 0 0)) 40))
+        (assert= :native st)
+        (assert= 0 (get (%jit-arm-state sv-row-sum 4) :deopts)))
+      (let (st (settle sv-seconds 3 (fn () (sv-seconds sv-pairs 0 0)) 40))
+        (assert= :native st)
+        (assert= 0 (get (%jit-arm-state sv-seconds 3) :deopts))))))
+
+(defn- sv-worker (parent k)
+  (send parent [k (sv-rows-sum sv-rows 0 0) (sv-seconds sv-pairs 0 0) (sv-cell sv-rows k 3)]))
+
+(describe "def'd vectors read in many processes at once"
+  :isolated (test "every worker reads the same rows"
+    (let (me (self)
+          ks (range 12))
+      (doseq (k ks)
+        (spawn (sv-worker me k)))
+      (let (got (into #{} (map ks (fn (_) (receive ([k a b c] [k a b c]))))))
+        (assert= (into #{} (map ks (fn (k) [k sv-rows-total sv-seconds-total (+ (* k 10) 3)])))
+          got)))))
