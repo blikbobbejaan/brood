@@ -70,6 +70,7 @@
    "derived predicates" :predicates
    "sequence operations" :collections
    "list accessors" :collections
+   "the compositions of" :collections
    "map operations" :maps
    "map: merge" :maps
    "I/O" :io

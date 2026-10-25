@@ -635,11 +635,6 @@ pub struct CompiledArm {
     /// `[jit-bail]` trace names (`hosts-receive`, `call-mediated-boxed`, …), readable after
     /// the fact through `%jit-arm-state`'s `:reason`.
     pub bail_reason: std::sync::OnceLock<Box<str>>,
-    /// The runtime's [`code_relocations`](crate::core::heap::Heap::code_relocations) when
-    /// `compile_epoch` was stamped: equal readings mean no RUNTIME handle the native code
-    /// baked in has moved, the one thing a moved epoch can mean that re-reading the
-    /// bindings cannot check (`jit_runtime::native_still_valid`).
-    pub compile_relocations: std::sync::atomic::AtomicU64,
     /// Deopt feedback (the dynamic replacement for the static "call-mediated boxed
     /// work" lowering gate). `deopt_watch` is true for a non-loop arm with ≥1
     /// non-tail call — the shape whose native profitability only runtime behaviour
@@ -916,7 +911,6 @@ impl Default for CompiledArm {
             jit_code: AtomicPtr::new(std::ptr::null_mut()),
             jit_calls: AtomicU32::new(0),
             bail_reason: OnceLock::new(),
-            compile_relocations: AtomicU64::new(0),
             deopt_watch: false,
             jit_deopts: AtomicU32::new(0),
             jit_deopts_total: AtomicU32::new(0),

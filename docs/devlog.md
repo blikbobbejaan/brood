@@ -3847,3 +3847,13 @@ staleness — and moves the stamp forward when none changed; the same script rea
 round 5. Global reads and calls re-check the live epoch themselves. Not run on this machine:
 `tests/jit_unrelated_rebind_test.blsp` is new and runs in CI; a `make ab` on the test machine is
 the measure of what a quieter JIT is worth on the rows.
+
+2026-10-26 (ADR-450 withdrawn; KI-303 reopened): CI run 40237227384 on the revalidation fired the
+fast-link mirror's debug cross-check (`link.rs:338`), and two JIT tests answered wrong —
+`jit_self_rebind_test` 12 for 1001, because the register worker's direct self-link is a `Call`
+on the arm's own name, which the check covered only for `SelfCall`; `optional_defaults_test`'s
+deep loop 1 for 5000050000. The code epoch carries more than the arm's own guard, so the change
+is backed out and `jit_unrelated_rebind_test` with it. The cause stays reproduced; the next
+attempt enumerates every `code_epoch` reader first and runs the suite before it lands.
+`shared_vector_read_test` and `receive_loop_jit_test`'s settle cases run `:isolated` meanwhile,
+alone, where no other test rebinds. Not run on this machine.

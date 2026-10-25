@@ -131,7 +131,9 @@
       (when (%native-tier?)
         (assert= :native (tier-of acc-loop 1 500)))
       (send pid :stop)))
-  (test "a loop that parks on EVERY message still goes native"
+  ;; `:isolated`: every rebind elsewhere in the runtime resets a native arm (KI-303), and the
+  ;; suite's other tests rebind constantly, so beside them this read `:untried`.
+  :isolated (test "a loop that parks on EVERY message still goes native"
     ;; One message at a time, each answered before the next is sent, so the loop parks
     ;; between every pair — the usual traffic of a lightly loaded server. Each interpreted
     ;; park must leave the frame at ip 0, where the resume counts toward the tier
