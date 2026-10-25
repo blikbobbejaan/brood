@@ -14998,6 +14998,68 @@ over-sized the journal.
 for that exact function, and the fixed binary lowers it (and leaf-inlines `cn-digit?` into it).
 Measured with the `count`/`nth` inlines: `json` −20.8%, `regex` −11.4% (`make ab --floor`).
 
+## KI-300 — a thin-wrapper callback did not tier within `settle`'s window ✅ FIXED 2026-10-25
+
+**Symptom.** `tests/jit_computed_call_test.blsp:77` got `:untried` for `(fn (a x) (+ a x))` in CI
+run 40133808011 (`bbb74f2b`); green in the run before.
+
+**Cause.** The test's ordering, not the runtime. The interpreter redirects a thin wrapper to its
+inner head (ADR-069, `compile/dispatch.rs`), so `add`'s arm is counted only once the caller
+`fold-with` is native and calls it through the computed head. `settle` waited only on `add`'s
+queue, never on `fold-with`'s: with `fold-with`'s compile still queued on a loaded runner, all 500
+rounds ran interpreted (~0.1 s) and `add` read `:untried`.
+
+**Why it survived.** On an idle runner `fold-with` compiles inside the window anyway; only a loaded
+one exposes the missing wait.
+
+**Fix.** Both thin-wrapper tests settle `fold-with` first, as the by-name test already settled
+`sum-by-name`, and the two tests that `def` mid-test run `:isolated`, so their epoch bump cannot
+send a native `fold-with` back to the queue between settles.
+
+**Guard.** By construction: no primitive stalls the compiler thread to force the old order.
+
+## KI-299 — a self-exit with a soft reason reported `:normal` ✅ FIXED 2026-10-25
+
+**Symptom.** Breakage P16, once in CI (run 40129996373, `d191da46`): the trapping parent took
+`[:EXIT _ :normal]` where the child's `:badness` was expected.
+
+**Cause.** The test, not the runtime. The runtime was right: a body that returns with a soft kill
+pending retires with that reason (`run_one`'s `Done` arm takes it, since ADR-311). P15's child D
+sends `:d-done` BEFORE it finishes, so it can outlive P15; P16 then turns the trap on, D's
+`:normal` exit arrives as `[:EXIT d :normal]`, and P16's unpinned `[:EXIT _ reason]` took it.
+
+**Why it survived.** D almost always finishes before P16 traps exits; only a slow scheduler turn
+leaves its exit for P16 to see.
+
+**Fix.** Every `[:EXIT …]` and `[:down …]` receive in `breakage/chaos2_process_links.blsp` (P16,
+P17, P20, P22) now pins the pid or ref it waits for, and P15 waits for its child's death.
+
+**Guard.** By construction: a pinned pattern cannot match another process's exit.
+
+## KI-298 — `(get coll k default)` with a non-nil default skipped `Lookup` ✅ FIXED 2026-10-25
+
+**Symptom.** A record collection answered the default for a key it held: `(get multimap :k [])`
+gave `[]` for a key holding values. Found while building `std/sorted` (ADR-430).
+
+**Cause.** Both `get`'s 3-arity arm and `PrimOp3::MapGet3` (`Heap::map_get3_inline`) asked
+`%lookup-miss` only for a nil result, and a non-nil default made an absent field non-nil.
+`get-in`'s step had the same blind spot through `contains?`.
+
+**Why it survived.** Every `Lookup` test read with a nil default, and
+`cli::mapprim3_differential` pinned the old rule as intended (`lookup-miss-default :d`).
+
+**Fix.** A default means absent: a record's miss asks `Lookup` whatever the default, and a
+`Lookup` that answers nil keeps it — `get`'s 3-arity and variadic arms, `Heap::map_get3_inline`
+for the VM and native code, and `get-in`'s step. Both linmap paths run a record seed as written
+(`%table-from-map` refuses a record), so they agree by construction. A first attempt
+(`58fb635d`, 2026-10-24) was withdrawn as a design question and reverted; it returned in
+`6f86cd44` and `c7882155` once the two linmap paths were shown to agree.
+
+**Guard.** `multimap_test` "a default does not hide a key the multimap holds" and "get-in steps
+through a multimap's contents"; `linmap_soundness_test` pins 102 (the ability's 100 plus two);
+`cli::mapprim3_differential` pins `lookup-miss-default [:virtual :zz 7]` across tiers. Not
+sabotage-verified: no test is run on the machine these were written on; CI ran them.
+
 ## KI-297 — a require waiter without a death watch outlived a killed claimant ✅ FIXED 2026-10-24
 
 **Symptom.** Found by review, never observed: a waiter on a module load blocks until the 30 s

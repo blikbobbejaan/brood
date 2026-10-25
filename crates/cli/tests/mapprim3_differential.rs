@@ -5,11 +5,11 @@
 //! The 3-arity `(get m k default)` is every record read-with-default in the language, and
 //! `(assoc m k v)` every record update; both compiled to a full call where the 2-arity read had
 //! been a primitive since ADR-296. The inline rules are deliberately narrow — `get`'s answers a
-//! present non-nil value, or the default when absent, and DECLINES a record's nil result so
-//! `%lookup-miss` (the `Lookup` ability) still owns it; `assoc`'s answers a map receiver only,
-//! so a vector, a record and every type error stay in Brood. Each of those is a case below,
-//! the `Lookup` record's nil-default miss most of all: it is the one result the prim must NOT
-//! answer, and the one a default-hiding bug would change silently.
+//! present non-nil value, or the default when absent, and DECLINES a record's miss, whatever
+//! the default, so `%lookup-miss` (the `Lookup` ability) still owns it (KI-298); `assoc`'s
+//! answers a map receiver only, so a vector, a record and every type error stay in Brood.
+//! Each of those is a case below, the `Lookup` record's misses most of all: they are the
+//! results the prim must NOT answer, and the ones a default-hiding bug would change silently.
 //!
 //! Both hot loops run past the tiering threshold on purpose: the native lowering is a second
 //! implementation of the same rule (it deopts where the VM returns `None`), and `assoc`'s
@@ -113,8 +113,9 @@ fn the_map_prim3_ops_answer_what_get_and_assoc_answer() {
         "a `Lookup` record's nil-default miss must still reach `%lookup-miss`:\n{on}"
     );
     assert!(
-        on.contains("lookup-miss-default :d"),
-        "a non-nil default is answered without consulting `Lookup`, as `get` does:\n{on}"
+        on.contains("lookup-miss-default [:virtual :zz 7]"),
+        "a default means absent: a `Lookup` record's miss reaches `%lookup-miss` whatever the\
+         default (KI-298):\n{on}"
     );
     // The three `assoc` results are compared in-language against their expected maps (see
     // EVERY_BRANCH), so this is what makes those comparisons a PIN rather than a pair of
