@@ -7,6 +7,11 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 ## Unreleased
 
 **Added.**
+- `nest check` warns when a module, while it loads, re-binds a global another module already
+  defined (`:cross-module-def`) — `(def theme/rows (conj theme/rows row))`, typically from the
+  owner's macro. Under the parallel cold load two modules doing it at once lose one write, and
+  the startup image does not carry it; `std/registry` is the safe shape. `describe` is the one
+  sanctioned writer in std (the runner loads test files one at a time).
 - `nest new NAME --from SOURCE [--template T]` scaffolds from a template a PACKAGE declares
   (`:templates` in its manifest: a directory of plain files, with `{{name}}` and `{{package}}`
   filled in), from a path, a git URL or a registry name (ADR-424). Nothing in the package runs.

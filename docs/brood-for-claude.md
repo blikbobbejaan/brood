@@ -1337,8 +1337,8 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
   --strict` adds values merely wider than the parameter. A finding you mean — a
   deliberately non-tail test helper, a catch whose nothing is the answer — is
   acknowledged in code with `(check-allow :category form…)`: `:non-tail-recursion`,
-  `:discarded-catch`, `:constant-condition`, `:unreachable-clause`, `:type-mismatch`,
-  `:unbound`, `:deprecated`, `:trusted` (see `docs/type-annotations.md`).
+  `:discarded-catch`, `:cross-module-def`, `:constant-condition`, `:unreachable-clause`,
+  `:type-mismatch`, `:unbound`, `:deprecated`, `:trusted` (see `docs/type-annotations.md`).
 
 ## Module skeleton (what `nest new` scaffolds)
 

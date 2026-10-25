@@ -163,6 +163,19 @@ wasm `use-native` binding (which defines a Brood fn per component export at
 load time). The one lint whose ground truth is the live image rather than
 the source; everywhere else, prefer fixing the reference.
 
+**`:cross-module-def`.** A module that, while it loads, re-binds a global another module
+already defined — `(def theme/rows (conj theme/rows row))`, usually written inside the
+owner's macro and expanded in the user's module — is a read-modify-write with no lock. Under
+the parallel cold load (ADR-426) two modules doing it at once each read the old value and one
+write is lost; the write is also missing from the startup image, which carries what loading
+creates (ADR-218). bedit's theme registered every feature's faces this way, and an image built
+in the pool dropped whole modules' worth of them. Use `std/registry` (`registry/put!`: one
+locked write, carried by the image). Read on the EXPANDED forms (the write is the owner's own
+in the macro's template), at load time only (not inside a `fn`), and only for a global that is
+already bound: a fresh name with a slash in it (the linmap rewrite's `fn/linmap-loop__N`) is a
+new definition. Where the module is the only writer — `describe` collecting its tests while the
+runner loads files one at a time — wrap the writes in `(check-allow :cross-module-def …)`.
+
 **`:discarded-catch`.** `(check-allow :discarded-catch …)` suppresses the
 discarded-catch lint: a `(try … (catch e nil))` whose handler **says nothing** —
 `nil`, `false`, or an empty `(do)` — cannot have read the error it caught, so an
@@ -532,6 +545,8 @@ scope. Recognised categories today: **`:non-tail-recursion`**,
 call-site argument the wrapped code deliberately violates), **`:unbound`** (a name
 bound only at runtime), **`:deprecated`** (ADR-283), **`:discarded-catch`** (a `(catch e nil)` whose nothing is genuinely the
 answer — read by `check/discarded_catch.rs` on the un-expanded forms),
+**`:cross-module-def`** (a module re-binding another module's global while it loads,
+where it is the only writer — read by `check/cross_module_def.rs` on the EXPANDED forms),
 **`:generated`** (the compiler's own copy of code it checks elsewhere — the linear-map
 rewrite wraps the unrewritten loop it keeps behind its seed check in one, ADR-360; the
 subtree is not walked at all, so never write it by hand), and

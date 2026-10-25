@@ -731,9 +731,11 @@ shape, a union, a tuple, another alias. Module-scoped like a `sig`: declared in 
 keyword: `:non-tail-recursion`, `:unreachable-clause`, `:type-mismatch`, `:unbound`
 (globals defined at runtime — a `reflect/eval`-driven `def`, the wasm `use-native`
 binding — that the checker cannot see in source), `:deprecated`,
-`:discarded-catch`, `:duplicate-def` (a second top-level definition of a name in
-one file that is a deliberate override), `:pure` (a `ui-memo` thunk, or a `:pure`-declared
-function, that performs an effect on purpose), `:total` (a `:total`-declared function
+`:discarded-catch`, `:cross-module-def` (a module re-binding another module's
+global while it loads, where it is the only writer), `:duplicate-def` (a second
+top-level definition of a name in one file that is a deliberate override), `:pure` (a
+`ui-memo` thunk, or a `:pure`-declared function, that performs an effect on purpose),
+`:total` (a `:total`-declared function
 the checker cannot see terminate or cover its cases) or `:trusted` (a declared return the
 checker cannot verify — the body's result is a kernel message or a primitive with no
 signature — which `--strict` otherwise reports as trusted, not verified). A runtime

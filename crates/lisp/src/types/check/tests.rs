@@ -13,6 +13,7 @@ mod abilities;
 mod callback_shapes;
 mod caps;
 mod closure_inference;
+mod cross_module_def_lint;
 mod declarations;
 mod declared_vs_curated;
 mod discarded_catch_lint;
