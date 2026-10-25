@@ -497,10 +497,13 @@ fn find_cursor(
 /// credit comes back when the message leaves the mailbox (`process::deliver_credited`),
 /// and until it does, further repeats are dropped. So an app whose frame is slower than
 /// the repeat rate repeats once per turn instead of queueing a burst that plays on after
-/// the key is released — the ADR-086 bug — while a fast app gets every repeat.
+/// the key is released — the ADR-086 bug — while a fast app gets every repeat. The
+/// release takes back the one still queued (`withdraw`), so the screen stops with the
+/// key, not a frame after it.
 #[derive(Default)]
 pub(super) struct RepeatGate {
     outstanding: AtomicBool,
+    withdrawn: AtomicBool,
 }
 
 impl RepeatGate {
@@ -509,13 +512,25 @@ impl RepeatGate {
         gate.outstanding
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()?;
+        gate.withdrawn.store(false, Ordering::Release);
         Some(crate::process::DeliveryCredit::new(gate.clone(), 1))
+    }
+
+    /// Take back the repeat still queued, if one is: the key was released, or the window
+    /// lost focus. Charging the next repeat clears it, so it only ever names the one in
+    /// flight (both run on the GUI thread).
+    pub(super) fn withdraw(&self) {
+        self.withdrawn.store(true, Ordering::Release);
     }
 }
 
 impl crate::process::CreditSource for RepeatGate {
     fn release(&self, _cost: usize) {
         self.outstanding.store(false, Ordering::Release);
+    }
+
+    fn withdrawn(&self) -> bool {
+        self.withdrawn.load(Ordering::Acquire)
     }
 }
 
@@ -720,5 +735,34 @@ mod adr_431_tests {
         );
         drop(credit); // the message left the mailbox
         assert!(RepeatGate::charge(&gate).is_some());
+    }
+}
+
+#[cfg(test)]
+mod repeat_gate_tests {
+    use super::RepeatGate;
+    use crate::process::CreditSource;
+    use std::sync::Arc;
+
+    /// One repeat in flight at a time; a release withdraws it; the next repeat, charged
+    /// only once that one has left the mailbox, starts un-withdrawn.
+    #[test]
+    fn a_release_withdraws_only_the_repeat_in_flight() {
+        let gate = Arc::new(RepeatGate::default());
+        let credit = RepeatGate::charge(&gate).expect("nothing in flight");
+        assert!(
+            RepeatGate::charge(&gate).is_none(),
+            "a second repeat waits for the first"
+        );
+        assert!(!gate.withdrawn(), "a fresh repeat is wanted");
+        gate.withdraw();
+        assert!(
+            gate.withdrawn(),
+            "the key came up: the queued repeat is taken back"
+        );
+        drop(credit); // the mailbox drops it
+        let next = RepeatGate::charge(&gate).expect("the gate reopened");
+        assert!(!gate.withdrawn(), "the next hold's repeat is not withdrawn");
+        drop(next);
     }
 }
