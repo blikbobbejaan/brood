@@ -239,6 +239,17 @@
       (assert= ((get d :poll) 500) [:note 9])
       ;; nothing waiting ⇒ nil after the timeout (ui-run treats it as :tick)
       (assert= ((get d :poll) 1) nil)))
+  (test "remote-display: a key down in the client's window holds the session's idle timers"
+    ;; the client ships whether a key is down with each input, and :key-held? answers the
+    ;; last one, so a served ui-run waits through a held key as a local window's does
+    (let (d (remote-display (self) 80 24))
+      (refute ((get d :key-held?)))
+      (send (self) [:key "a" true])
+      (assert= ((get d :poll) 500) "a")
+      (is ((get d :key-held?)))
+      (send (self) [:key [:key-up "a"] false])
+      (assert= ((get d :poll) 500) [:key-up "a"])
+      (refute ((get d :key-held?)))))
   (test "remote-display: the pixel-space seam ships a texture, its release and the window options"
     ;; The three entries a game's `run-on` uses (ADR-374): each becomes one client-bound
     ;; message the thin client's loop applies to its own display — so a served game's

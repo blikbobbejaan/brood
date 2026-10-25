@@ -102,6 +102,13 @@
     (fn? gui/latency)   → true"
   (%gui-latency id))
 
+(defn key-repeats (id)
+  "How window id's held keys have repeated since it opened, as a map: `:delivered`, the OS repeats delivered to the app; `:dropped`, those dropped because one was still waiting — the app fell behind the repeat rate, so a held key moved slower than the desktop asked; and, from the last key that repeated, the desktop's `:delay` before its first repeat and the `:interval` between its last two, in milliseconds (nil before any key has repeated). Set against `gui/latency`, it says whether the app answers a repeat before the next one comes. Counts under `{:key-repeat :os}`; all zero headless (ADR-441).
+
+    (gui/key-repeats id)   ;=> {:delivered 412 :dropped 3 :delay 500.1 :interval 33.3}
+    (fn? gui/key-repeats)   → true"
+  (%gui-key-repeats id))
+
 (defn settle (id)
   "Tell window id the app finished a turn with nothing new to draw; returns nil. What a `gui/draw` would have told the window about the app's progress, without a frame: the next wheel-glide step may fire, and the input the turn answered is dropped from `gui/latency` instead of being pinned on the next unrelated frame. `ui-run` sends it on every turn it skips (ADR-444), through the display's `:settle`. No-op headless.
 

@@ -164,9 +164,14 @@ their input. Both are deferred trade-offs (ADR-059), fine for the observer.
      :focus (fn () (gui/focus id))
      :window id}))
 
-(defn- display-key-held? (display)
+(defn display-key-held? (display)
   "Whether a key is down in `display` — its `:key-held?`, which a GUI window answers from
-the press and release it saw; false for a display that cannot tell (the terminal)."
+the press and release it saw; false for a display that cannot tell. `ui-run` holds its idle
+timers while it is true, and a thin client (`editor/serve`) ships it with each key so a
+served app's loop does the same.
+
+    (editor/ui/display-key-held? {:key-held? (fn () true)})   → true
+    (editor/ui/display-key-held? {})   → false"
   (let (held? (get display :key-held?))
     (if held? (held?) false)))
 
