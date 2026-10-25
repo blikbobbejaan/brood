@@ -99,7 +99,7 @@
   "Window id's recent input-to-present samples, oldest first (at most 64), each a map of milliseconds: `:total` — from the GUI thread receiving an input (a key press, a mouse button, a wheel step) to the paint of the first frame that arrived after it returning from its present — and `:paint`, that paint's share; a frame the GPU render target drew adds its phases `:encode` `:upload` `:acquire` `:submit` `:present`. Which frame answers an input cannot be known across the app's mailbox, so the next frame drawn is taken as its answer; a present returning means the compositor has the frame, not that the panel shows it (up to one refresh more). Empty headless. `BROOD_GUI_TRACE=1` prints each sample as it is taken (ADR-440).
 
     (gui/latency id)   ;=> [{:total 6.1 :paint 1.2 :encode 0.3 …} …]
-    (count (or (try (gui/latency 0) (catch e nil)) []))   → 0"
+    (fn? gui/latency)   → true"
   (%gui-latency id))
 
 (defn settle (id)
@@ -131,7 +131,8 @@
 (defn font-info (&optional family)
   "Where font family `family` (a keyword; the window default when omitted) got its faces, as a map: :name (the family shaping uses), :requested (the installed name a :family-name registration asked for, or nil), :origin (:bundled, :files, :system, or :not-found — asked for by name, not installed, the bundled DejaVu standing in), :regular / :bold / :italic / :bold-italic (the file each style resolved to), :fallbacks (a vector of {:name :file} — the installed fonts loaded so far to draw glyphs the primary font lacks, CJK or symbols, in the order first needed), :system-scanned (whether the installed fonts have been scanned yet: only on demand) and :ligatures. The diagnostic for \"I asked for Iosevka, why does it look like DejaVu\". Answered on the GUI thread after every registration sent before it. Errors headless and without --features gui.
 
-    (map? (try (gui/font-info) (catch e {})))   → true"
+    (gui/font-info :code)   ;=> {:name \"JetBrains Mono\" :origin :system :regular \"/usr/share/fonts/…\" :fallbacks [] …}
+    (fn? gui/font-info)   → true"
   (%gui-font-info family))
 
 (defn inset (px)
@@ -155,7 +156,8 @@
 (defn ligatures (on)
   "Turn programming ligatures on (any truthy value) or off (nil / false, the default): with them on, a run of two or more punctuation chars in a :text op (-> != === <=> |> :: /* &&) is shaped as one unit so the font's ligatures form, still occupying exactly one cell per char — the grid never moves. A font without ligatures (the bundled DejaVu) draws the same either way; register one that has them (gui/font-register with :family-name \"JetBrains Mono\", \"Fira Code\", \"Iosevka\"). Every open window and the default for ones opened later; a pure repaint. Needs --features gui. Returns nil.
 
-    (try (gui/ligatures false) (catch e nil))   → nil"
+    (gui/ligatures true)   ;=> nil; -> and != form ligatures in a font that has them
+    (fn? gui/ligatures)   → true"
   (%gui-ligatures! on))
 
 (defn text-aa (mode)
