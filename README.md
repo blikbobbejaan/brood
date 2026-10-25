@@ -195,6 +195,8 @@ from a project directory (`nest new <name>` scaffolds one):
 | `nest grammar [target]` | Generate an editor syntax grammar (see below). |
 | `nest mcp` | Serve the project over MCP on stdio (see below). |
 | `nest observe` | A full-screen TUI process observer. |
+| `nest dap` | A Debug Adapter Protocol server on TCP: VS Code, Emacs (dape), Neovim and Zed debug a Brood program (ADR-452). |
+| `nest profile FILE` | Run FILE under the sampling profiler; write folded stacks for flamegraph.pl / inferno / speedscope. |
 | `nest attach` | Attach this terminal to a `ui-run` app served by a running daemon. |
 | `nest release` | Bundle the project into a single self-contained executable (ADR-038). |
 

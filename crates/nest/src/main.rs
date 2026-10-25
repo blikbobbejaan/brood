@@ -235,6 +235,8 @@ const BLSP_SUBCOMMANDS: &[&str] = &[
     "observe",
     "attach",
     "mcp",
+    "dap",
+    "profile",
     "completions",
     "complete",
 ];

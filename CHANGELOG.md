@@ -7,6 +7,8 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 ## Unreleased
 
 **Added.**
+- `nest profile FILE`: run a program under the sampling profiler and write folded stacks
+  (flamegraph.pl, inferno, speedscope); `dev/profile->folded` for a histogram in hand.
 - `nest dap` (ADR-452): a Debug Adapter Protocol server on TCP over `debug`, so VS Code,
   Emacs (dape), Neovim and Zed debug Brood: function and line breakpoints, paused processes as
   threads, their locals, evaluate in a paused scope, continue. `debug/watch-breaks`.
