@@ -16,7 +16,7 @@
 ;;   .                   any one character, a newline included
 ;;   * + ?               greedy quantifiers (on the preceding atom or group)
 ;;   *? +? ??            lazy quantifiers — the shortest match, not the longest
-;;   {m} {m,} {m,n}      counted repetition (expanded at parse time; *max-repeat* caps it)
+;;   {m} {m,} {m,n}      counted repetition (*max-repeat* caps it)
 ;;   ^ $                 the start / end of the WHOLE string (never of a line)
 ;;   [...] [^...]        a set / negated set: literal chars, `a-z` ranges, and the
 ;;                       `\d`/`\w`/`\s` classes and their negations, written inside the
@@ -55,7 +55,7 @@ lookaround. Each pattern is parsed once and compiled once, then cached.")
 ;; ---- parse: pattern string -> AST -------------------------------------------
 ;; A pattern parses to a list of BRANCHES (the top-level alternation); each branch
 ;; is a list of PIECES; a piece is an ATOM, optionally wrapped `{:q :star/:plus/:opt
-;; :a atom}`. Atoms are tagged maps: {:t :lit :c c} {:t :any} {:t :bol} {:t :eol}
+;; :a atom}` or `{:q :count :lo :hi :a atom}`. Atoms are tagged maps: {:t :lit :c c} {:t :any} {:t :bol} {:t :eol}
 ;; {:t :set :neg b :chars (…)} {:t :class :k :digit/:word/:space} {:t :group :alt …}.
 
 (defn- regex-peek (pcs: (vector string) i:int -> (or nil string))
@@ -166,9 +166,9 @@ of) says what it looks like it says."
 ;; (under a `check-allow`, which does not hide them from inference), so
 ;; the whole chain derives `int` from here and from `regex-parse`'s `0`.
 
-;; The most a `{m,n}` may expand to. Repetition is expanded into copies of the atom
+;; The most a `{m,n}` may count to. The engine compiles a count into copies of the atom
 ;; (there is no counting state in a Thompson NFA), so `a{1,100000}` would be 100k
-;; states and a hang that looks like a bug in the engine rather than in the pattern.
+;; states and a failure that looks like a bug in the engine rather than in the pattern.
 ;; A pattern asking for more than this is refused out loud, which is the one place
 ;; this parser raises: every other malformation degrades to literal characters,
 ;; because a stray `{` or `*` in a hand-written pattern usually MEANT the character.
@@ -191,26 +191,16 @@ all — in which case the caller treats the `{` as the literal character it look
               (inc i3)]))
       else nil)))
 
-(defn- regex-repeat-copies (atom k acc)
-  (if (<= k 0) acc (regex-repeat-copies atom (dec k) (cons atom acc))))
-
-(defn- regex-repeat-opts (atom greedy k acc)
-  (if (<= k 0)
-    acc
-    (regex-repeat-opts atom greedy (dec k) (cons {:q :opt :a atom :greedy greedy} acc))))
-
+;; Counted repetition stays counted: the engine has `{m,n}` itself. Expanding it into
+;; copies here copied a capturing group too, so `(a*){2}(x)` had three groups and every
+;; group after it was misnumbered (found by the Fowler corpus); one group repeated keeps
+;; one number and the last iteration's capture.
 (defn- regex-repeat (atom lo hi greedy)
-  "Expand `atom{lo,hi}` into a non-capturing group holding `lo` required copies plus
-the optional tail — `a{2,4}` is `(?:aaa?a?)`, `a{2,}` is `(?:aaa*)`. Counted
-repetition is sugar; the NFA has no counters."
+  "`atom{lo,hi}` as a counted piece; `hi` is nil for an open end."
   (when (> (or hi lo) *max-repeat*)
     (throw {:kind :parse
             :message (str "regex: {" lo "," (or hi "") "} repeats more than " *max-repeat* " times")}))
-  (let (required (regex-repeat-copies atom lo (list))
-        tail (if (nil? hi)
-               (list {:q :star :a atom :greedy greedy})
-               (regex-repeat-opts atom greedy (- hi lo) (list))))
-    {:t :group :alt (list (append required tail)) :cap false}))
+  {:q :count :lo lo :hi hi :a atom :greedy greedy})
 
 (defn- regex-lazy? (pcs i)
   "A `?` directly after a quantifier makes it lazy (`a*?`), rather than being a
@@ -378,6 +368,7 @@ rather than handed to the engine, which refuses one. A set with no members at al
         (case (:q p)
           :star "*"
           :plus "+"
+          :count (str "{" (:lo p) "," (if (nil? (:hi p)) "" (:hi p)) "}")
           "?")
         (if (= false (:greedy p)) "?" "")))))
 

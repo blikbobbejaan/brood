@@ -800,8 +800,15 @@ extern "C" fn brood_forward_signal(signum: libc::c_int) {
 fn start_signal_pipe() -> Result<(), String> {
     use std::sync::atomic::Ordering;
     let mut fds = [0 as libc::c_int; 2];
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+    // `pipe` then `FD_CLOEXEC`, not `pipe2`: macOS has no `pipe2`. The window between the
+    // two only lets a child spawned at that instant inherit two idle descriptors.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
         return Err(std::io::Error::last_os_error().to_string());
+    }
+    for fd in fds {
+        unsafe {
+            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
     }
     let [read_fd, write_fd] = fds;
     let reader = crate::process::reserve_io_thread("brood-signals").map_err(|e| e.to_string())?;

@@ -3667,3 +3667,11 @@ applies everywhere; `call` binds `reply` for `gen/reply`. A state timeout is can
 transition and carries the transition count, so a late one is dropped. The macro writes the
 `match` dispatch, and the loop is `gen/run-statem`. Not run on this machine:
 `tests/statem_test.blsp` is new and runs in CI.
+
+2026-10-25 (regex corpus findings): the Fowler corpus found a real bug on its first run.
+`{m,n}` was expanded into copies of its atom at parse time, which copied a capturing group
+too: `(a*){2}(x)` reported three groups, and every group after a counted repetition was
+misnumbered. Counted repetition now reaches the engine as `{m,n}`, which keeps one group and
+the last iteration's capture (44 cases). Two more cases differ by design: a `]` first in a set
+closes it (`[]` is the empty set). Also `os/trap`'s pipe uses `pipe` + `FD_CLOEXEC`; macOS has
+no `pipe2`.
