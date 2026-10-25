@@ -58,7 +58,9 @@
       (let (st (settle sv-row-sum 4 (fn () (sv-row-sum (nth sv-rows 5) 0 9 0)) 400))
         (assert= :native st)
         (assert= 0 (get (%jit-arm-state sv-row-sum 4) :deopts)))
-      (let (st (settle sv-seconds 3 (fn () (sv-seconds sv-pairs 0 0)) 40))
+      ;; 150 iterations a call never reach a self-tail loop's 256-iteration boundary exit, so
+      ;; only calls count toward the threshold of 128: 40 rounds could never tier it.
+      (let (st (settle sv-seconds 3 (fn () (sv-seconds sv-pairs 0 0)) 400))
         (assert= :native st)
         (assert= 0 (get (%jit-arm-state sv-seconds 3) :deopts))))))
 

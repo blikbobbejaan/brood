@@ -230,7 +230,8 @@ pub(crate) fn vm_direct_eligible(heap: &Heap, arm: &CompiledArm, argc: usize) ->
 ///   freed generation or a compaction bumps);
 /// - every operator it inlined still resolves to the same native primitive
 ///   ([`chunk_ops_all_native`] — what an election checks before lowering);
-/// - a self-tail loop's name still names it (its native back-edge loops on this body);
+/// - its name still names it, when a self-tail loop or the register worker's direct
+///   self-call was lowered on that (both loop or call into this body);
 /// - it is not marked stale by a module load (ADR-366).
 ///
 /// Global reads and calls are not in the list: native code re-checks those against the
@@ -250,15 +251,26 @@ pub(crate) fn native_still_valid(heap: &Heap, arm: &CompiledArm, genv: EnvId) ->
     {
         return false;
     }
+    if arm.dbg_name.is_none() {
+        return true;
+    }
+    // Two lowerings bake in that `dbg_name` binds this arm: a self-tail loop's back-edge,
+    // and the register worker's direct NON-tail self-call (`jit_lower/i64.rs`), which it
+    // takes only while `self_global_ok` holds. So code lowered while the name bound this
+    // arm is stale once it no longer does — an alias of the closure would keep calling the
+    // old body (`jit_self_rebind_test`: 12 where the VM answers 1001). Code lowered while
+    // it did not never took the link, and stays right.
+    let lowered_with_self_link = arm.self_global_ok.load(Relaxed);
+    record_self_global_ok(arm, heap, genv);
+    let binds_this_arm = arm.self_global_ok.load(Relaxed);
     let self_loop = arm
         .chunk
         .as_ref()
         .is_some_and(|c| c.code.iter().any(|i| matches!(i, Inst::SelfCall { .. })));
-    if arm.dbg_name.is_some() && self_loop {
-        record_self_global_ok(arm, heap, genv);
-        return arm.self_global_ok.load(Relaxed);
+    if self_loop {
+        return binds_this_arm;
     }
-    true
+    !lowered_with_self_link || binds_this_arm
 }
 
 pub(crate) fn jit_tier_declines(heap: &Heap, arm: &CompiledArm) -> bool {

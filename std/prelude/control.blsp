@@ -92,12 +92,16 @@ processes `body` spawns is captured too; nested `with-out-str`s compose.
 ;; the bundle carries the contents and the bundle is still nothing but code.
 
 (defn %include-str-path (rel &optional (root nil))
-  "The absolute path `include-str` reads `rel` from: `rel` itself when it is absolute, else
-`rel` under `root` — which defaults to the project root, then to the working directory.
+  "The absolute path `include-str` and `include-bytes` read `rel` from: `rel` itself when it
+is absolute, else `rel` under `root` — which defaults to the root of the PACKAGE the file
+being loaded belongs to (see [[%include-package-root]]), then the project root, then the
+working directory.
 
-Project-relative rather than file-relative, because the two readers of this — macro
-expansion here, and `nest release`'s source collection — must agree on the answer, and
-only one of them is expanding a form inside a known file.
+Package-relative, because the two readers of this — macro expansion here, and `nest
+release`'s source collection — must agree on the answer, and the release resolves a
+dependency's include against that dependency (`bundle-dep-root`). Resolving it here against
+the consuming project instead made a package's `(include-str \"priv/x.sql\")` read the
+consumer's `priv/` in development and its own in a release.
 
 `root` is passed explicitly by the release path, which knows the project it is collecting
 but does not go through `project/setup` and so has no `*project-root*` bound. Without it a
@@ -108,23 +112,56 @@ release run from a subdirectory resolved every embedded file against the wrong p
     (string/starts-with? rel "/") rel
     else
       (let (base (or root
+                   (%include-package-root)
                    (when (and (bound? '*project-root*) *project-root*) *project-root*)
                    (file/cwd)))
         (if (string/ends-with? base "/") (/str base rel) (/str base "/" rel)))))
 
-;; Every file an `include-str` read in this runtime, as `{path true}`. A cached project image
-;; holds what a module built from that text, so its staleness key has to cover these files as
-;; well as the sources (KI-275); `project-image` reads them through [[%included-files]]. A
-;; registry, so the write goes through `%registry-update!`, the registry write path.
+(defn %include-package-root ()
+  "The root of the package the file being loaded belongs to — the nearest directory at or
+above it that holds a `project.blsp` — or nil when nothing is being loaded from a file (a
+REPL form, an `eval`) or the file is in no project.
+
+    (%include-package-root)   ;=> \"/home/me/app\" while loading /home/me/app/src/x.blsp"
+  (let (file (%current-file))
+    (when (string? file)
+      (%include-root-above (%include-dirname (if (string/starts-with? file "/")
+                                               file
+                                               (/str (file/cwd) "/" file)))))))
+
+(defn- %include-dirname (path)
+  (let (at (%str-last-index-of path "/")) (if (> at 0) (string/substring path 0 at) "/")))
+
+(defn- %include-root-above (dir)
+  (cond
+    (file/exists? (/str dir "/project.blsp")) dir
+    (= dir "/") nil
+    else (%include-root-above (%include-dirname dir))))
+
+;; Every file an `include-str` or `include-bytes` read in this runtime, as `{path true}`. A
+;; cached project image holds what a module built from that content, so its staleness key has
+;; to cover these files as well as the sources (KI-275); `project-image` reads them through
+;; [[%included-files]]. A registry, so the write goes through `%registry-update!`, the
+;; registry write path.
 (def- *included-files* {})
 
 (defn %included-files ()
-  "The absolute paths every `include-str` in this runtime has read, sorted."
+  "The absolute paths every `include-str` and `include-bytes` in this runtime has read,
+sorted."
   (sort (keys *included-files*)))
+
+;; The path an include reads, checked and recorded: a missing file is an error at expansion.
+(defn- %include-read-path (who rel)
+  (let (path (%include-str-path rel))
+    (unless (file/exists? path)
+      (error who ": no file at " path))
+    (%registry-update! '*included-files* :assoc [path] true)
+    path))
 
 (defmacro include-str (rel)
   "Splice the contents of the file at `rel` into the program as a string literal, read
-at expansion time — `rel` relative to the project root (see [[%include-str-path]]).
+at expansion time — `rel` relative to the root of the package that names it (see
+[[%include-str-path]]).
 
     (def *schema* (include-str \"priv/schema.sql\"))
 
@@ -140,11 +177,17 @@ built without it, and the failure should say so where it can still be fixed.
 `(include-str \"priv/schema.sql\")` → that file's text, verbatim, as a string. (Not written
 as an indented example, because the answer is whatever the file says — the case that can
 be asserted lives in `tests/project_test.blsp`.)"
-  (let (path (%include-str-path rel))
-    (unless (file/exists? path)
-      (error "include-str: no file at " path))
-    (%registry-update! '*included-files* :assoc [path] true)
-    (file/slurp path)))
+  (file/slurp (%include-read-path "include-str" rel)))
+
+(defmacro include-bytes (rel)
+  "Splice the contents of the file at `rel` into the program as a `bytes` literal, read at
+expansion time — `include-str` for a file that is not text: a compiled WASM component
+(`(wasm/instantiate (include-bytes \"native/codec.wasm\"))`), an image, a font. Resolved,
+recorded and archived by `nest release` exactly as `include-str` is.
+
+`(include-bytes \"native/codec.wasm\")` → that file's bytes. (Not an indented example, for
+the reason `include-str` gives.)"
+  (file/slurp-bytes (%include-read-path "include-bytes" rel)))
 
 ;; ---- threading macros (demonstrate that macros compute at expansion time) ----
 ;; (-> x (f a) (g b))  =>  (g (f x a) b)   ; thread as FIRST argument

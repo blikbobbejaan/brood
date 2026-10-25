@@ -604,6 +604,33 @@
           (is (not (includes? out "include-str")))
           (is (includes? out "IO.puts"))
           (assert= (last (reflect/read-first out)) contents)))))
+  (test "include-bytes splices a binary file as bytes, and a release archives it as a literal"
+    (let (root (temp-dir "brood-incl-"))
+      (file/mkdir root)
+      (let (data (path/join (or root "") "blob.bin")
+            ;; a NUL, a byte that is not UTF-8, a quote and a backslash
+            contents (bytes/concat (bytes/int-> 0 1) (bytes/int-> 255 1) (string/->bytes "\"\\")))
+        (file/spit-bytes data contents)
+        (assert= (reflect/eval (list 'include-bytes data)) contents)
+        (let (out (project-release/inline-includes (str "(def *blob* (include-bytes "
+                                                     (pr-str data)
+                                                     "))\n")))
+          (is (not (includes? out "include-bytes")))
+          (assert= (last (reflect/read-first out)) contents)))))
+  (test "a relative include resolves against the package of the file that names it"
+    ;; A dependency's `(include-str "priv/x.txt")` names ITS priv/, in development as in a
+    ;; release (`bundle-dep-root`) — not the consuming project's, which is what
+    ;; `*project-root*` is while the suite runs.
+    (let (root (temp-dir "brood-incl-"))
+      (file/mkdir (path/join (or root "") "src"))
+      (file/mkdir (path/join (or root "") "priv"))
+      (file/spit (path/join (or root "") "project.blsp") "(project :name \"incl-pkg\")\n")
+      (file/spit (path/join (or root "") "priv/x.txt") "from the package\n")
+      (let (module (path/join (or root "") "src/incl-pkg-probe.blsp"))
+        (file/spit module
+          "(defmodule incl-pkg-probe)\n(def text (include-str \"priv/x.txt\"))\n")
+        (reflect/load module)
+        (assert= "from the package\n" (reflect/eval 'incl-pkg-probe/text)))))
   (test "inline-includes leaves a source with no include-str byte-identical"
     (let (source "(defmodule m)\n(defn f () 1)\n")
       (assert= (project-release/inline-includes source) source)))

@@ -14945,6 +14945,26 @@ looking for".
 Runs: [39950556262](https://github.com/broodlang/brood/actions/runs/39950556262) (`7ed008cf`),
 [39954644031](https://github.com/broodlang/brood/actions/runs/39954644031) (`e9e1af8b`).
 
+## KI-303 — a hot arm never stayed native while anything else in the runtime was being defined ✅ FIXED 2026-10-25
+
+**Seen.** `shared_vector_read_test`'s `sv-row-sum` read `:untried` after 6 000 calls (threshold
+128), in both suite jobs, every try (CI run 40232107201).
+
+**Cause.** Not the call path. Every rebind moves the global code epoch, and a native arm entered
+after one was reset to untried and recompiled, whatever the rebind was. The suite rebinds
+constantly — module publishes, registry writes, isolate restores — so the arm kept being thrown
+back. Reproduced on the dev desktop with a diagnostic script: with one process redefining an
+unrelated function in a loop, the inner loop sat at `:queued` for every round. It did not
+reproduce outside the runner (the shape at top level, in a module, spawned, with contracts — all
+`:native`) for the same reason: an idle runtime rebinds nothing.
+
+**Fix.** `native_still_valid` checks what native code baked in — relocations, the inlined
+operators, a leaf derivation, a self-loop's name, ADR-366 staleness — and moves the stamp forward
+when none changed (ADR-450); the same script then reads `:native` from round 5 on. Guard:
+`tests/jit_unrelated_rebind_test.blsp`, by construction — without the check the call resets the
+arm and the state reads `:untried`; its second case pins that a rebound callee is still reached.
+`shared_vector_read_test` keeps driving its arm directly.
+
 ## KI-302 — `startup` +3%: the prelude crossed a doubling of the image load's position table ✅ FIXED 2026-10-25
 
 **Seen:** the 2026-10-25 benchmark refresh read `startup` +5.4% against the e9e1af8b column, and
