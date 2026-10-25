@@ -520,6 +520,13 @@ carried in a reserved `:__id__` field (a record is *not* `=` to a bare map, thou
 a `:type` field**, stays `:map` and lands on the `:map` impl. That is the ADR-011 line —
 the identity is explicit and construction-time, never inferred from a field.
 
+A record whose contents are not its fields (a multimap, a sorted map) implements
+`Lookup`, and bare `get` asks it on a **miss**: a key that is not a field, or a field
+holding `nil`. That holds with a default too: `(get mm :k [])` is `:k`'s values when the
+multimap holds them, and `[]` only when `lookup-get` also answers `nil` (KI-298). A
+present field is answered without asking. A plain map never consults `Lookup`, and
+`(get {:a nil} :a 99)` stays `nil`.
+
 > **On-ramp: reach for `defrecord` *before* you want polymorphism.** Because dispatch is
 > nominal, there is no structural path — you cannot `impl` an ability for "a map whose
 > `:kind` is `:circle`". If you are building a value on plain maps told apart by a tag

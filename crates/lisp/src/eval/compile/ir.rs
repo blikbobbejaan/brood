@@ -97,8 +97,9 @@ pub enum PrimOp {
 pub enum PrimOp3 {
     TablePut,
     /// `(get m k default)` on a CHAMP map — `Heap::map_get3_inline` is the rule: a present
-    /// non-nil value, or the default when absent, is answered; a nil result on a RECORD
-    /// declines to `get` (its `%lookup-miss` → the `Lookup` ability). Pure: never allocates.
+    /// non-nil value is answered, and so is a plain map's miss (its stored nil, else the
+    /// default); a RECORD's miss declines to `get`, whose `%lookup-miss` asks the `Lookup`
+    /// ability whatever the default (KI-298). Pure: never allocates.
     MapGet3,
     /// `(assoc m k v)` on a CHAMP map — `Heap::map_assoc`, a fresh path-copied trie. A
     /// vector receiver declines to the wrapper's `%vector-assoc` branch. ALLOCATES (never

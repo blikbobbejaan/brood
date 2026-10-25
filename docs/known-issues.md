@@ -68,22 +68,6 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 
 (An open entry's `## KI-N` section goes here until it is resolved.)
 
-## KI-298 — should a `get` default suppress `Lookup`? (design question)
-
-`(get coll k default)` with a non-nil default answers the default for a key that is not
-one of the record's FIELDS, without asking `Lookup`. So `(get multimap :k [])` gives `[]`
-for a key holding values, while `(get multimap :k)` gives the values. A fix that sent a
-record's miss to `Lookup` whatever the default (`58fb635d`) was reverted (`00cebadf`), for
-two reasons. `tests/linmap_soundness_test.blsp` pins the current rule on purpose ("`get`
-consults `Lookup` only when the map lookup answers nil — so `(get c :zz 0)` never reaches
-it"). And the linmap rewrite's loop path keeps that rule, so the fix made the fold-literal
-and loop paths disagree.
-
-**Open:** whether a default should suppress `Lookup` is a language decision. Changing it
-means changing `get`'s 3-arity arm, `PrimOp3::MapGet3` (`Heap::map_get3_inline`), the linmap
-tally rewrite's record handling and that test together. Until then a record collection
-gives its own `get` with a default (`sorted/get`; `multimap/get-all`).
-
 ## KI-300 — a thin-wrapper callback did not tier within the test's window (watch)
 
 **Seen once:** CI run 40133808011 (`bbb74f2b`), the `test` job.
@@ -128,7 +112,7 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 | KI-301 | **the JIT prepass counted a staged call (KI-19) as unstaged, so every arm with one before a branch join bailed** — `join-depth-mismatch`, e.g. `(if (and (< i n) (digit? (nth s i -1))) …)`; `json`'s number scanners and `object-acc` ran interpreted for good | ✅ **FIXED 2026-10-25** — the prepass and the checkpoint-depth model count the staged callee. Guard: `count_nth_inline_test` tier case (`:bailed` on the old binary under the bail trace) |
 | KI-300 | **a thin-wrapper callback did not tier within `settle`'s window** — `tests/jit_computed_call_test.blsp:77` got `:untried` for `(fn (a x) (+ a x))` in CI run 40133808011 (`bbb74f2b`); green in the run before | 👁 **WATCH** — section above |
 | KI-299 | **a self-exit with a soft reason reported `:normal`** — breakage P16, once in CI | 👁 **WATCH** — section above |
-| KI-298 | **`(get coll k default)` with a non-nil default skipped `Lookup`, so a record collection answered the default for a key it held** — `(get multimap :k [])` gave `[]` for a key holding values. Both `get`'s 3-arity arm and `PrimOp3::MapGet3` (`Heap::map_get3_inline`) asked `%lookup-miss` only for a nil result, and a non-nil default made an absent field non-nil. Found while building `std/sorted` | ↩️ **WITHDRAWN 2026-10-24 — by design, reopened as a design question.** The fix (`58fb635d`) sent a record's miss to `Lookup` whatever the default. CI then failed `linmap_soundness_test` "a fold literal is the same tally as the loop", which pins the rule on purpose: "`get` consults `Lookup` only when the map lookup answers nil — so `(get c :zz 0)` never reaches it". The linmap rewrite's loop path keeps that rule, so the fix made the fold-literal path and the loop path disagree. Reverted. Whether a default should suppress `Lookup` is the user's call. Until then a record collection gives its own `get` with a default (`sorted/get`; `multimap/get-all`) |
+| KI-298 | **`(get coll k default)` with a non-nil default skipped `Lookup`, so a record collection answered the default for a key it held** — `(get multimap :k [])` gave `[]` for a key holding values. Both `get`'s 3-arity arm and `PrimOp3::MapGet3` (`Heap::map_get3_inline`) asked `%lookup-miss` only for a nil result, and a non-nil default made an absent field non-nil. Found while building `std/sorted` | ✅ **FIXED 2026-10-25** — a record's miss asks `Lookup` whatever the default; the default applies when `lookup-get` answers nil. `get`'s 3-arity arm, `Heap::map_get3_inline` (VM and JIT) and the linmap tests changed together. Guards: `multimap_test` "a default does not hide a key the multimap holds", `linmap_soundness_test` record seeds (102 through `Lookup`) |
 | KI-297 | **a require waiter that missed its claimant's pid set no death watch, so a hard-killed claimant left it waiting for the 30 s backstop** — `%require-await` read the claimant, then checked the claim separately; a failed load re-claimed by another process between the two left `mref` nil, and a hard kill of the new claimant skips its catch and sends no completion. Needs a failed load, a re-claim within microseconds and a `:kill`. Found by review | ✅ **FIXED 2026-10-24** — each 250 ms tick, a waiter without a death watch watches the claim's current holder. By construction (no test can schedule the microsecond window) |
 | KI-296 | **a guest could gain reach to any local pid, or pose as a full peer to `std/editor/serve`, by putting a guessed pid in a message** — the link translated only the guest's own spelling and passed other pids through; `note_outbound` made any local pid echoed back to the guest reachable, and serve takes a client's identity from the grant of its pid's node, so `[:attach <full peer's pid> …]` was no guest at all. ADR-425's "Not done". Found by review | ✅ **FIXED 2026-10-24** (ADR-425 amendment) — a guest's `Send` and `Down` reason may hold only its own node's pids and pids this node sent it. Guard: `dist::guest::tests::a_guest_reaches_its_names_and_the_pids_it_was_sent_and_nothing_else` (red with the check disabled); the distribution guest test green |
 | KI-295 | **pipeline fusion dropped a parameter inside a vector, map or set literal** — the default rewrite of `(fold (seq/lmap …) init (fn …))` inlines a plain `fn` stage or reducer by renaming its parameters, and the renaming walked lists only: `(fn (x) [x])` left `x` unbound in the fused body, and `(fn (acc x) (conj acc {:v x}))` under an outer `x` read the OUTER value, silently. The guards that decline the inlining (`form_binds_any`, `form_has_quote`) were blind to literals too. Found by review | ✅ **FIXED 2026-10-24** — the renaming and every guard walk enter collection literals (`literal_items`). Guards: two `pipeline_fusion_test` cases (red with the old walkers: `unbound symbol: x`), green with `BROOD_LINMAP=0` too |

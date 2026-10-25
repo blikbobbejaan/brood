@@ -216,12 +216,12 @@
     (assert= :map (type-of (lm-idiom '(:a) {:b 1}))))
 
   (test "a record seed keeps its Lookup answers"
-    ;; `get` consults `Lookup` only when the map lookup answers nil — so the tally's
-    ;; `(get c :zz 0)` never reaches it (the default is 0) and counts from 0 either way,
-    ;; while the 2-arity `(get acc :never)` base case is 100 through `Lookup`, where a table
-    ;; would have answered nil. The result is still the record (its `:__id__` kept).
+    ;; A record's miss consults `Lookup` whatever the default (KI-298), so the tally's first
+    ;; `(get c :zz 0)` is 100 through `Lookup` and the second reads the field the first
+    ;; stored: 102, where a table would have counted from 0. The 2-arity `(get acc :never)`
+    ;; base case is 100 the same way. The result is still the record (its `:__id__` kept).
     (let (out (lm-idiom '(:zz :zz) (lm-counter 5)))
-      (assert= 2 (get out :zz))
+      (assert= 102 (get out :zz))
       (assert= 5 (get out :hits))
       (assert= (lm-counter 5) (dissoc out :zz)))
     (assert= 100 (lm-idiom-get2 0 (lm-counter 5)))
@@ -247,7 +247,7 @@
     ;; answers, a non-map its own error — the same as the source on every one.
     (let (r (text/from-string "x"))
       (assert= {:r r :a 2} (lm-fold '(:a :a) {:r r})))
-    (assert= 2 (get (lm-fold '(:zz :zz) (lm-counter 5)) :zz))
+    (assert= 102 (get (lm-fold '(:zz :zz) (lm-counter 5)) :zz))
     (assert-error "get: expected a collection" (lm-fold '(:a) 5))
     ;; A shadowed `fold` is the shadow's, untouched.
     (assert= :mine (lm-fold-shadowed '(:a)))

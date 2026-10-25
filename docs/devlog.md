@@ -3732,3 +3732,12 @@ prelude functions took it past 7 168, one more full rehash on every start. The p
 (v5) now carries the count (`message::positioned_lists`) and the load reserves it once: `startup`
 87.43M → 85.26M instructions, −5.6% on `make ab --floor`. Not run on this machine: the new
 `positioned_list_tests` and the suite run in CI.
+
+2026-10-25 (KI-298 fixed): a record's miss asks `Lookup` whatever the `get` default, so
+`(get multimap :k [])` finds `:k`'s values, and the default applies when `lookup-get` answers
+nil. This is the reverted `58fb635d` again, with the linmap tests corrected. The revert's premise,
+that the linmap loop path keeps the old rule, did not hold on the current tree: the loop, the
+fold literal and a let-bound read all answer 102 through `Lookup` at every tier, because a record
+seed runs the loop as written. Plain maps are unchanged. `docs/language.md` now states the rule.
+`make ab --floor` and `make ab-vm`: noise. Not run on this machine: the multimap and linmap tests
+run in CI.
