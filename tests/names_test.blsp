@@ -1,0 +1,159 @@
+(defmodule names-test (:use test) (:use gen :only [defserver]))
+
+;; Each test starts its own registry under its own name, so tests running side by side
+;; never share one.
+
+;; A process that holds until told to stop, so a test controls when a holder dies.
+(defn- holder () (spawn (receive (:stop :ok))))
+
+;; Poll `ready?` every 5 ms for up to 2 s: a registry handles a holder's death on the
+;; `[:down …]` it receives, after the death itself.
+(defn- eventually (ready?)
+  (letrec (step (fn (tries)
+                  (cond (ready?) true (= tries 0) false else (do (sleep 5) (step (dec tries))))))
+    (step 400)))
+
+(defserver echo
+  (n)
+  (call :ping [[:pong n] n]))
+
+(describe "a unique registry"
+  (test "a registered key is found by whereis and lookup"
+    (names/start :names-test-a)
+    (let (p (holder))
+      (assert= p (names/register :names-test-a [:user 7] p {:since 3}))
+      (assert= p (names/whereis :names-test-a [:user 7]))
+      (assert= [[p {:since 3}]] (names/lookup :names-test-a [:user 7]))
+      (assert= nil (names/whereis :names-test-a [:user 8]))
+      (assert= [] (names/lookup :names-test-a [:user 8]))
+      (send p :stop)))
+
+  (test "a key another live process holds is refused with a failure naming it"
+    (names/start :names-test-b)
+    (let (first-holder (holder) second-holder (holder))
+      (names/register :names-test-b :k first-holder)
+      (let (refused (names/register :names-test-b :k second-holder))
+        (is (failure? refused))
+        (is (includes? (error-message refused) (pr-str first-holder))))
+      (assert= first-holder (names/whereis :names-test-b :k))
+      ;; the holder itself registering again replaces its value
+      (names/register :names-test-b :k first-holder :new)
+      (assert= [[first-holder :new]] (names/lookup :names-test-b :k))
+      (send first-holder :stop)
+      (send second-holder :stop)))
+
+  (test "a holder's death drops its keys, and the key is free again"
+    (names/start :names-test-c)
+    (let (p (holder))
+      (names/register :names-test-c :a p)
+      (names/register :names-test-c :b p)
+      (assert= 2 (names/count :names-test-c))
+      (send p :stop)
+      ;; `count` reads the table, so this proves the registry forgot, not that reads filter
+      (is (eventually (fn () (= 0 (names/count :names-test-c)))))
+      (let (next-holder (holder))
+        (assert= next-holder (names/register :names-test-c :a next-holder))
+        (send next-holder :stop))))
+
+  (test "unregister drops only the named entry"
+    (names/start :names-test-d)
+    (let (p (holder))
+      (names/register :names-test-d :a p)
+      (names/register :names-test-d :b p)
+      (assert= nil (names/unregister :names-test-d :a p))
+      (assert= nil (names/whereis :names-test-d :a))
+      (assert= p (names/whereis :names-test-d :b))
+      (send p :stop))))
+
+(describe "a duplicate registry"
+  (test "a key holds every process registered under it, each with its value"
+    (names/start :names-test-dup {:keys :duplicate})
+    (let (one (holder) two (holder))
+      (names/register :names-test-dup :topic one 1)
+      (names/register :names-test-dup :topic two 2)
+      (assert= #{[one 1] [two 2]} (into #{} (names/lookup :names-test-dup :topic)))
+      (names/unregister :names-test-dup :topic one)
+      (assert= [[two 2]] (names/lookup :names-test-dup :topic))
+      (send two :stop)
+      (is (eventually (fn () (= 0 (names/count :names-test-dup)))))
+      (send one :stop)))
+
+  (test "start refuses an unknown mode or option"
+    (assert-error "must be :unique or :duplicate" (names/start :names-test-bad {:keys :many}))
+    (assert-error "unknown option" (names/start :names-test-bad {:size 3}))))
+
+(describe "the registry's own lifetime"
+  (test "a stopped registry takes its names with it, and a new one starts empty"
+    (let (registry (names/start :names-test-life) p (holder))
+      (names/register :names-test-life :k p)
+      (let (watch (monitor registry))
+        (gen/stop registry)
+        (receive ([:down ^watch _ _] :ok) (after 2000 :timeout)))
+      (assert= nil (names/whereis :names-test-life :k))
+      (assert= 0 (names/count :names-test-life))
+      (names/start :names-test-life)
+      (assert= nil (names/whereis :names-test-life :k))
+      (send p :stop))))
+
+(describe "a {:via registry :key key} address"
+  (test "gen/start registers a server, and gen/call reaches it through the address"
+    (names/start :names-test-via)
+    (let (address {:via :names-test-via :key [:echo 1]}
+          pid (gen/start echo 5 {:name address}))
+      (assert= pid (names/whereis :names-test-via [:echo 1]))
+      (assert= [:pong 5] (gen/call address :ping))
+      (gen/stop address)
+      (is (eventually (fn () (nil? (names/whereis :names-test-via [:echo 1])))))))
+
+  (test "a key taken by a live server is refused, and the second server stopped"
+    (names/start :names-test-via-taken)
+    (let (address {:via :names-test-via-taken :key :one}
+          first-server (gen/start echo 1 {:name address})
+          refused (gen/start echo 2 {:name address}))
+      (is (failure? refused))
+      (assert= [:pong 1] (gen/call address :ping))
+      (gen/stop first-server)))
+
+  (test "a call to a key nobody holds raises; a cast to it is dropped"
+    (names/start :names-test-via-empty)
+    (let (address {:via :names-test-via-empty :key :nobody})
+      (assert-error "no process holds" (gen/call address :ping))
+      (assert= nil (gen/cast address :ping)))))
+
+(describe "across processes"
+  :isolated (test "eight workers registering at once each get their own key and read every other"
+    (names/start :names-test-many)
+    (let (me (self)
+          workers (into []
+                    (map (range 0 8)
+                      (fn (k)
+                        (spawn (do
+                                 (names/register :names-test-many [:worker k] (self) k)
+                                 (send me [:registered k])
+                                 (receive (:stop :ok))))))))
+      (each (range 0 8) (fn (_) (receive ([:registered _] :ok) (after 5000 :timeout))))
+      (assert= 8 (names/count :names-test-many))
+      ;; every worker's entry, read from another process than the one that wrote it
+      (spawn (send me
+               [:read
+                 (into [] (map (range 0 8) (fn (k) (names/lookup :names-test-many [:worker k]))))]))
+      (let (reads (receive ([:read found] found) (after 5000 :timeout)))
+        (assert= (into [] (map (range 0 8) (fn (k) [[(nth workers k) k]]))) reads))
+      (each workers (fn (w) (send w :stop)))
+      (is (eventually (fn () (= 0 (names/count :names-test-many)))))))
+
+  :isolated (test "of eight processes racing for one unique key, exactly one holds it"
+    (names/start :names-test-race)
+    (let (me (self)
+          racers (into []
+                   (map (range 0 8)
+                     (fn (_)
+                       (spawn (do
+                                (send me [:result (names/register :names-test-race :only (self))])
+                                (receive (:stop :ok))))))))
+      (let (results (into []
+                      (map (range 0 8) (fn (_) (receive ([:result r] r) (after 5000 :timeout))))))
+        (assert= 1 (count (seq/filter results pid?)))
+        (assert= 7 (count (seq/filter results failure?)))
+        (is (includes? racers (names/whereis :names-test-race :only))))
+      (each racers (fn (r) (send r :stop))))))

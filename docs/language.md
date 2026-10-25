@@ -30,7 +30,7 @@ these are the ones to unlearn:
 | Clojure habit | Brood reality | What you get if you guess wrong |
 |---|---|---|
 | `(try … (catch Type e body))` | `catch` takes a **bare binding**: `(catch e body)`. There is no exception class. | A clean error naming the fix. (It used to bind the *class name* as the variable and evaluate `e` as a statement — and since the prelude defines `e`, `(catch Exception e (io/puts "caught" e))` silently printed 2.718…, a wrong program with no diagnostic.) |
-| Multi-arity `(fn ((x) …) ((x y) …))` | **Supported** (ADR-047) — dispatch by argument count, like Clojure. But param lists are **lists** `(x)`, not vectors `[x]`, and a clause head may *also* be a same-arity **pattern** (Erlang-style; see [Pattern matching](#pattern-matching)). | A **clean error** with a hint: vector-headed clauses `([x] …) ([x y] …)` are rejected. (They used to read as one 2-parameter pattern clause with an empty body — a completely different function, diagnosed only later as a misleading arity error at the call site.) |
+| Multi-arity `(fn ((x) …) ((x y) …))` | **Supported** (ADR-047) — dispatch by argument count, like Clojure. But param lists are **lists** `(x)`, not vectors `[x]`, and a clause head may *also* be a same-arity **pattern** (see [Pattern matching](#pattern-matching)). | A **clean error** with a hint: vector-headed clauses `([x] …) ([x y] …)` are rejected. (They used to read as one 2-parameter pattern clause with an empty body — a completely different function, diagnosed only later as a misleading arity error at the call site.) |
 | `{:a 1}` map literal | **Supported.** Immutable; `get`/`assoc`/`dissoc`/`keys`/`vals`/`contains?` (see [Maps](#maps)). Iteration order is **hash-derived, not insertion order** (unlike Clojure's array-map — see [Maps](#maps)). | Works as you'd expect, except don't rely on key order. |
 | `{:keys [a b]}` / `:or` map destructuring | **Supported** — a map literal in pattern position binds each `:keys` symbol to the same-named keyword's value (nil if absent, or the `:or` default): `(let ({:keys [a b] :or {b 0}} m) …)`, works in `let`/`fn`/`match`. General `{:key subpattern}` nesting and `:as` are deferred (ADR-011). | Works as in Clojure for the `:keys`/`:or` subset. |
 | `(defn f [x y] …)`, `(let [a 1 b 2] …)` | Param lists and `let` bindings are **lists** — `(x y)` / `(a 1 b 2)`. A vector *inside* one is still destructuring: `(let ([x y] p) …)`. | A clean error with a hint (ADR-149). The vector spelling was once accepted as an alias; that is what turned every Clojure binding shape into a silent misread — `(let [[a 1] [b 2]] …)` destructured `[a 1]` against `[b 2]` and reported `unbound symbol: b`. |
@@ -130,8 +130,8 @@ a binding is made, it never changes. Concretely:
   embedded std module — is **reserved**, and `(def get …)` is an error (ADR-166). The
   boundary is the binary: *if it came with Brood it is reserved; if you or a package
   author wrote it, it is yours*. Hot reload is untouched, because it was always about
-  your code. This is the Erlang model — you cannot patch `Enum.map/2` on the BEAM
-  either — and it is what lets the compiler bind those names early. Three things stay
+  your code. The language's own functions are fixed for the life of the binary, and
+  that is what lets the compiler bind those names early. Three things stay
   legal: a local `let` shadow (that binds a local, it isn't a redefinition), a
   module-scoped `(defn get …)` (which defines `your/mod/get`), and rebinding the
   prelude's *data* registries such as `*load-path*` (prelude functions do that
@@ -144,9 +144,9 @@ a binding is made, it never changes. Concretely:
   stack — or, for state that must evolve over time, a **process** (`spawn` /
   `receive`) that carries the state through its own loop.
 - **Mutable state, when truly needed, is never a mutable `Value`.** It takes one
-  of two shapes: a **process** holding evolving state in its receive-loop (the
-  Erlang model), or a **Rust-backed opaque resource handle** exposed through
-  primitives (the rope/buffer, or the [`table`](#in-memory-tables-broods-ets) store
+  of two shapes: a **process** holding evolving state in its receive-loop, or a
+  **Rust-backed opaque resource handle** exposed through
+  primitives (the rope/buffer, or the [`table`](#in-memory-tables) store
   below — like a file handle) — mutation hidden behind the kernel, never aliasable
   Lisp data.
 
@@ -160,11 +160,10 @@ also shrinks the core — two fewer special forms (`set!`, `while`). See
 immutable `assoc`/`append` is O(n²); `reduce`/`fold` and future persistent
 structures are the mitigations).
 
-## In-memory tables (Brood's ETS)
+## In-memory tables
 
-A `table` is shared, concurrently-mutable key→value state — Brood's answer to
-Erlang's ETS (ADR-107). It's the escape hatch for the case immutable maps and
-message-passing don't cover well: state that **many processes read and write
+A `table` is shared, concurrently-mutable key→value state (ADR-107). It's the
+escape hatch for the case immutable maps and message-passing don't cover well: state that **many processes read and write
 directly**, without routing every access through one owning process's mailbox. It is
 a Rust-backed opaque handle (genuine mutable state, never a mutable `Value`):
 
@@ -189,7 +188,7 @@ How it behaves, and why it's safe:
   identity — two tables with equal contents are not `=`.
 - **Copy-in / copy-out.** `table/put` stores a **deep clone** of the key and value;
   `table/get` returns a **fresh copy** into the caller. So no two processes ever alias
-  a stored value (exactly ETS semantics), and the store is invisible to the garbage
+  a stored value, and the store is invisible to the garbage
   collector — it can't corrupt across a collection.
 - **Keys are structural**, identical to map keys (`[1 2]`, `:k`, `"s"`, `42` all
   work).
@@ -202,7 +201,7 @@ How it behaves, and why it's safe:
   `reduce`) on it.
 - **Local to the runtime.** A table can't cross a node link (send its
   `table/snapshot` — a plain map — instead).
-- **It dies with the process that created it** (ETS ownership, ADR-418), or at
+- **It dies with the process that created it** (table ownership, ADR-418), or at
   `table/drop`. Other processes holding the handle then get `no such table`. The
   exception is a table reachable from a **global**: `(def cache (table/new))`, a table
   a `def`'d closure captures, or one inside a `def`'d map lives as long as the runtime,
@@ -337,7 +336,7 @@ field:
 The accessors are the reason to reach for it: `(point-x p)` names the field, and a
 typo `(point-witdh p)` is a call to an **undefined function** — caught by `nest check`
 and at runtime — whereas `(get p :witdh)` silently returns `nil`. Records are **nominal,
-not structural** (Elixir-struct semantics): a record is never `=` to a bare map with the
+not structural**: a record is never `=` to a bare map with the
 same fields, and `record?`/`record-id`/`fields` are the identity API. Functional update
 is plain `assoc`/`merge` (the id rides along).
 
@@ -433,8 +432,8 @@ mismatch.
 `(op [args] :-> ret? body…)` — is *provided*: `defability` registers that body as the
 op's `:default` impl. An `impl` that supplies only the **required** ops (the bodyless
 specs) inherits every provided op; an id-keyed impl of a provided op **overrides** its
-default. Write the minimal contract and derive the rest (Rust/Haskell *provided methods*,
-Elixir's derived protocol defaults) — implement `compare-to`, get the rest free:
+default. Write the minimal contract and derive the rest (Rust/Haskell *provided methods*) —
+implement `compare-to`, get the rest free:
 
 ```clojure
 (defability Ord
@@ -453,7 +452,7 @@ A provided op called on an id that implements *none* of the ability runs the def
 which raises the ordinary `no-impl` for the required op it delegates to.
 
 **Deriving (`:derives`).** A record can auto-generate an ability impl instead of writing it,
-Elixir `@derive` / Rust `#[derive]` style. The ability declares **how** it derives itself
+Rust `#[derive]` style. The ability declares **how** it derives itself
 with a `:derive-record` recipe (field names → `impl` method forms for its *required* ops);
 the record opts in with `:derives`:
 
@@ -587,7 +586,7 @@ size without walking its view implements `Counted` (op `->count`), which `count`
 explicitly; nothing else should read
 `:__id__` directly (the stable seam a future hidden slot would swap behind).
 A record being `≠` a bare map with the same fields, and printing with its id, are
-*intended* (Elixir-struct semantics), not leaks; `json-encode` omits the id, so it
+*intended* (records are nominal), not leaks; `json-encode` omits the id, so it
 never reaches the wire.
 
 **What the checker does.** `nest check` verifies each `impl` provides the ability's
@@ -748,7 +747,7 @@ ability when third-party or later code must be able to add a case.
 
 #### The display protocol: customizing how a record prints
 
-The `Display` ability — Elixir's `String.Chars` for Brood (ADR-171/172) — is **core
+The `Display` ability (ADR-171/172) is **core
 and always on**. Its op **`(->string x)`** turns a value into its display string; the
 `:default` impl is the native `str`. The **screen writers** (`io/write` / `io/puts` /
 `io/inspect`) route a *record* through its `Display` impl out of the box — no
@@ -1221,8 +1220,7 @@ existed for.
 `each` applies a function to
 each item for effect (`(each io/puts xs)`, the function form of `doseq`).
 
-`tap` and `then` are the single-**function** pipe helpers (Elixir's `Kernel.tap`/`then`),
-where `doto`/`->` splice *forms*: `(tap x f)` calls `(f x)` for its side effects and returns
+`tap` and `then` are the single-**function** pipe helpers, where `doto`/`->` splice *forms*: `(tap x f)` calls `(f x)` for its side effects and returns
 `x` unchanged (a probe — `(-> v (tap log) (process))`); `(then x f)` returns `(f x)`, letting a
 `->` step call an arbitrary function on the threaded value instead of splicing it as a first
 argument (`(-> v (then (fn (n) (g n other))))`).
@@ -1257,10 +1255,10 @@ the cause. The binding target may destructure (`(with ([a b] (pair-of x)) …)`)
 is bound to a temporary and tested first, so a failure never reaches a pattern that could
 not match it.
 
-This is deliberately **not** Elixir's `with`, which Brood had until ADR-315. Elixir needs
-`{:ok, a} <- expr` because it has no failure kind — the tuple *shape* carries the signal,
-so every step spells out a pattern for "kept going" and an `:else` section re-matches the
-shapes that did not. Brood has a failure kind, so both are redundant: what falls out is
+This is deliberately **not** a pattern-per-step `with` (`[:ok a] <- expr`), which Brood had
+until ADR-315. That shape is needed only where there is no failure kind — the tuple *shape*
+carries the signal, so every step spells out a pattern for "kept going" and an `:else`
+section re-matches the shapes that did not. Brood has a failure kind, so both are redundant: what falls out is
 always a failure, and `if`/`match`/`failure?` handle it at the call site.
 
 **Local loops** — there is **no `loop`/`recur`**; Brood has proper tail calls, so a
@@ -1281,8 +1279,7 @@ value between the literal text and lowers to a plain `(str …)` (no runtime cos
 (fmt "sum={(+ a b)} for {name}")   ;=> "sum=7 for ada"
 ```
 
-**`spy`** — a homoiconic tree-tracing debug macro (Brood's answer to Elixir's `dbg`,
-ADR-173). `(spy expr)` evaluates `expr`, traces **every** evaluated subexpression's
+**`spy`** — a homoiconic tree-tracing debug macro (ADR-173). `(spy expr)` evaluates `expr`, traces **every** evaluated subexpression's
 value in evaluation order, and returns the value **unchanged** — so it's referentially
 transparent: wrap or drop `spy` around any form with no behavioural change.
 
@@ -1326,7 +1323,7 @@ no-op to silence it without editing code:
 
 ## Pattern matching
 
-Erlang/Elixir-style pattern matching, with **one pattern grammar reused at every
+Pattern matching, with **one pattern grammar reused at every
 binding site**: `match`, refutable `let`, and `fn`/`defn` clauses. The compiler
 is written in Brood (`std/prelude/match.blsp`) — no new special form. For the full
 design and rationale see [pattern-matching.md](pattern-matching.md).
@@ -1344,7 +1341,7 @@ design and rationale see [pattern-matching.md](pattern-matching.md).
 | `(p1 & rest)` | head(s) + the tail bound to `rest` |
 | `[p1 p2 …]` | a vector of that exact length — the **tagged-data / tuple idiom** |
 | `{:keys [a b] :or {a 0}}` | a **map** — binds each `:keys` symbol to the same-named keyword's value (nil if absent, or the `:or` default); fails if the value isn't a map. `{}` matches any map. |
-| `(bytes seg…)` | a **`bytes` value**, destructured segment-by-segment — Erlang/Elixir bit syntax (see below) |
+| `(bytes seg…)` | a **`bytes` value**, destructured segment-by-segment — bit syntax (see below) |
 | `(or p q …)` | any alternative — first match wins; every alternative must bind the same names |
 | `(and p q …)` | every pattern, against the same value — the capture-while-destructuring (`:as`) idiom |
 | `{:k p}` | a map with key `:k` **present**, whose value matches `p` (nests to any depth) |
@@ -1380,12 +1377,12 @@ while destructuring it — Clojure's `:as`, Rust's `x @ pat`:
 
 A map pattern's **explicit keys are sub-patterns**: `{:status 200}` requires the key
 to be *present* and its value to match, nesting to any depth
-(`{:user {:id id}}`). Note the deliberate split, one convention from each ecosystem:
+(`{:user {:id id}}`). Note the deliberate split:
 
 | Spelling | Semantics | If the key is absent |
 |---|---|---|
 | `{:keys [a b]}` | Clojure **destructuring** | binds `nil` (or the `:or` default); never fails |
-| `{:k pat}` | Erlang/Elixir **map pattern** | the clause **fails** |
+| `{:k pat}` | **map pattern** (a refutable match) | the clause **fails** |
 
 Both may appear in one pattern (`{:type :circle :keys [radius]}`), and `{}` still
 matches any map.
@@ -1406,8 +1403,7 @@ otherwise silently mean something else:
 
 ### Bytes patterns (bit syntax)
 
-A `(bytes seg…)` pattern destructures a `bytes` value left-to-right, Erlang
-bit-syntax style. Each segment consumes bytes:
+A `(bytes seg…)` pattern destructures a `bytes` value left-to-right. Each segment consumes bytes:
 
 | Segment | Consumes / binds |
 |---|---|
@@ -1486,12 +1482,11 @@ parameter form. `:when` does **not** combine with `&optional`/`&` in one clause 
 error — one dispatch mechanism per fn); express a guarded variadic with a `match` on the
 rest argument in the body.
 
-A guard is **any expression** — unlike Erlang/Elixir, Brood does not restrict it to a
-whitelist of guard-safe operators: it may call your own functions, closures, `let`, or any
+A guard is **any expression** — Brood does not restrict it to a whitelist of guard-safe operators: it may call your own functions, closures, `let`, or any
 computation that yields a truthy value. Two consequences: a guard **can** have side effects,
 be slow, or not terminate (discipline keeps it pure, not the compiler); and a guard that
 **throws propagates** the error rather than silently falling through to the next clause. For
-Erlang-style "on error, try the next clause," guard the guard: `:when (try (test x) (catch _ false))`.
+"on error, try the next clause," guard the guard: `:when (try (test x) (catch _ false))`.
 
 ### `case` — literal dispatch
 
@@ -1554,7 +1549,7 @@ Multi-clause dispatch has **two axes** (ADR-047):
   and among matches the most-specific (most required params) wins. Each arm binds
   its params *directly* (no rest-list), so it's as cheap as a single-clause fn —
   this is how the prelude's variadic `+`/`-`/`<`/`=` stay fast and stay Brood.
-- **By pattern** (Erlang-style same-arity dispatch) when a head contains
+- **By pattern** (same-arity dispatch) when a head contains
   literals or destructuring — the clauses share an arity and the first matching
   shape (and `:when` guard) wins.
 
@@ -1748,8 +1743,7 @@ lock held in a `gen` server — where letting the process die is not an option:
   (finally (release port)))
 ```
 
-`finally` does **not** run on an untrappable kill (`(exit pid :kill)`), the same as
-OTP's `after`: a kill is not an error and unwinds no handler. A rethrown built-in
+`finally` does **not** run on an untrappable kill (`(exit pid :kill)`): a kill is not an error and unwinds no handler. A rethrown built-in
 error is rebuilt from its map by `throw` (`kind`, message, position, hint and
 `:trace` restored), so what escapes a `finally` — or a `(catch e (throw e))` —
 prints and propagates exactly as the original did rather than as a printed map. A
@@ -1778,7 +1772,7 @@ have no `:fn`). It covers the frames between the raise and the `catch` that
 caught it, capped at 32 (deep recursion keeps the innermost frames — the end
 that shows the cycle). Proper tail calls collapse into their caller's frame, so
 a tail chain `outer → middle → boom` shows one frame named for where the chain
-ended — the Erlang behaviour, and a direct picture of the real (O(1)-stack)
+ended — a direct picture of the real (O(1)-stack)
 frame structure. Uncaught errors print it as `at fn (file:line:col)` lines under
 the diagnostic; it costs nothing on the non-throwing path. A frame that was running
 as **JIT-compiled native code** when the error passed through it is recorded too
@@ -2150,7 +2144,7 @@ when static information is ambiguous.
 
 ## Processes (concurrency)
 
-Erlang-style **green processes**: cheap, lightweight, share-nothing (each runs
+**Green processes**: cheap, lightweight, share-nothing (each runs
 with its **own data heap**), communicating only by **message passing**. They run
 on a small pool of worker threads (≈ one per core, or the CLI's `-j N`), so they
 use every core; scheduling is **preemptively fair** — a CPU-bound process yields
@@ -2180,21 +2174,20 @@ redefinitions — ADR-013), but messages cross as deep copies.
 `(spawn (worker me))`. The expression is *unevaluated*: it runs in the child, and its
 free local variables are captured lexically (so `me` above crosses to the child like
 any message). Because the body runs in the child, **`(self)` inside `spawn` is the
-child's own pid** — to hand the parent's pid in, bind it in an enclosing `let` first
-(the Erlang `Self = self(), spawn(fun() -> … end)` idiom).
+child's own pid** — to hand the parent's pid in, bind it in an enclosing `let` first.
 
 | Form | Meaning |
 |---|---|
 | `(spawn expr)` | Run `expr` (unevaluated) in a new green process; returns its pid. Free locals are captured — copied into the child's own heap as a message would copy them, while the code itself stays shared (ADR-405) — and `(self)` inside is the *child's* pid. |
-| `(spawn-link expr)` | As `spawn`, but the child is **linked to the caller atomically** — before it can run (Erlang `spawn_link`), so even an instant exit reports its *true* reason. What supervised children use. See *Links* below. |
-| `(spawn-monitor expr)` | As `spawn`, but the caller **monitors** the child atomically — returns `[pid ref]`, and the `[:down …]` carries the *true* reason even for an instant exit (Erlang `spawn_monitor`). One-shot, never kills. See *Links* below. |
+| `(spawn-link expr)` | As `spawn`, but the child is **linked to the caller atomically** — before it can run, so even an instant exit reports its *true* reason. What supervised children use. See *Links* below. |
+| `(spawn-monitor expr)` | As `spawn`, but the caller **monitors** the child atomically — returns `[pid ref]`, and the `[:down …]` carries the *true* reason even for an instant exit. One-shot, never kills. See *Links* below. |
 | `(send target msg)` | Copy `msg` into `target`'s mailbox (non-blocking; a dead/unknown target is a no-op). `target` is a pid (local **or remote** — see [Distributed nodes](#distributed-nodes)) or a `{:name :node}` address. |
 | `(receive clause...)` | Take the first matching message (see below); suspend until one arrives. `(receive)` with no clauses takes the next message. |
 | `(self)` | Your own pid — a `:pid` value carrying this node's identity. |
 | `(ref)` | A fresh unique reference token — see *Synchronous calls* below. |
 | `(monitor pid)` | Watch `pid`; returns a monitor `ref`. See *Monitors* below. |
 | `(demonitor mref)` | Drop the monitor created by `(monitor …)`. |
-| `(exit pid reason)` | Send an exit signal to a local process (Erlang `exit/2`). `reason` `:kill` is the **untrappable** hard kill — the target dies at its next reduction tick, or immediately if parked, even in a tight loop. Any other `reason` is the **soft** signal — the target dies at its next `receive` (a tight non-`receive` loop won't honour it). Monitors fire `[:down ref pid reason]`. No-op for a dead/unknown pid. |
+| `(exit pid reason)` | Send an exit signal to a local process. `reason` `:kill` is the **untrappable** hard kill — the target dies at its next reduction tick, or immediately if parked, even in a tight loop. Any other `reason` is the **soft** signal — the target dies at its next `receive` (a tight non-`receive` loop won't honour it). Monitors fire `[:down ref pid reason]`. No-op for a dead/unknown pid. |
 | `(spawn-count)` | How many green processes have been spawned since the program started. |
 | `(peak-threads)` | High-water mark of processes running *simultaneously* (bounded by the worker pool). |
 | `(worker-threads)` | Size of the worker-thread pool (≈ `nproc`, or `-j N`). |
@@ -2204,7 +2197,7 @@ child's own pid** — to hand the parent's pid in, bind it in an enclosing `let`
 `receive` takes **pattern clauses** — the same grammar as `match`/`fn`
 ([Pattern matching](#pattern-matching)). It scans the mailbox in order, runs the
 **first message that matches any clause**, and leaves non-matching messages
-queued for a later `receive` (true Erlang selective receive — no head-of-line
+queued for a later `receive` (true selective receive — no head-of-line
 blocking). Clauses may carry a `:when` guard.
 
 ```clojure
@@ -2217,7 +2210,7 @@ blocking). Clauses may carry a `:when` guard.
 An optional trailing **`(after ms body...)`** clause bounds the wait: if no
 message matches within `ms` milliseconds, `body` runs instead. `(after 0 …)` is a
 non-blocking poll. Because the timeout body is ordinary code, a timeout is
-**catchable** — throw from it and catch with `try`/`catch` (Erlang's idiom):
+**catchable** — throw from it and catch with `try`/`catch`:
 
 ```clojure
 (try
@@ -2244,7 +2237,7 @@ and [pattern-matching.md](pattern-matching.md) for the clause grammar.
 
 `send` is fire-and-forget. To wait for a result, you don't need an `await`
 primitive — the **blocking `receive` is the synchronisation**. The idiom is
-Erlang's `gen_server` distinction: a *cast* is a bare `send`; a *call* is a
+the cast/call distinction: a *cast* is a bare `send`; a *call* is a
 request whose reply you `receive`. The catch with concurrent calls is telling
 replies apart, which is what **`(ref)`** is for: a fresh, opaque, unforgeable
 token you put in the request and the server echoes in the reply, so a pinned
@@ -2272,12 +2265,11 @@ of yours will ever match again**. It is unreachable garbage — it never gets
 consumed, it grows the mailbox without bound over a retry loop, and every later
 *selective* receive re-scans it.
 
-Erlang lived with this through OTP 23 by having the caller simply **exit** on a
-`gen_server:call` timeout, which made a late reply moot. OTP 24 added **process
-aliases** instead: the reply is addressed to a one-shot alias rather than the pid,
-and once the alias is deactivated the VM *drops* later replies addressed to it.
-Brood does the same thing without a new value kind, because a `ref` is already the
-unforgeable per-request token a reply carries:
+Having the caller simply **exit** on a call timeout makes a late reply moot, but
+costs the caller. Brood instead gives the reply a **one-shot alias**: once the alias
+is deactivated the runtime *drops* later replies addressed to it. It needs no new
+value kind, because a `ref` is already the unforgeable per-request token a reply
+carries:
 
 ```clojure
 (%ref-deactivate r)   ;; r is a ref THIS process minted
@@ -2303,13 +2295,13 @@ handle v]` / `[:task-error handle msg]` / `[:task-timeout handle]` message to
 `:reply-to`; `cancel-task` stops it early; and `(await thunk timeout-ms)` is the
 *synchronous* run-with-timeout that blocks for the value (throwing on error or
 timeout). This `await` is a userland convenience for bounding a single
-computation — distinct from the gen_server `gen/call` idiom above, which is the
+computation — distinct from the `gen/call` idiom above, which is the
 right tool for request/reply to a long-lived process.
 
-### The `gen` server framework (gen_server in Brood)
+### The `gen` server framework
 
 `std/proc/gen.blsp` packages the request/reply idiom above into a
-gen_server-style framework — ~180 lines of Brood over `spawn`/`send`/`receive`/
+server framework — ~180 lines of Brood over `spawn`/`send`/`receive`/
 `ref`/`monitor`, no kernel surface (ADR-099). A server carries one immutable
 state value through a tail-recursive `receive` loop; `defserver` declares how it
 handles each kind of message.
@@ -2341,8 +2333,7 @@ Without `(:use gen)` the same three lines are `(gen/cast c :inc)`,
 `(gen/call c :value)`, `(gen/stop c)`, and the definition head is
 `(gen/defserver counter (n) …)`.
 
-The clause kinds map onto Erlang's `handle_cast`/`handle_call`/`handle_info` plus
-two lifecycle hooks: **`cast`** (body → next state), **`call`** (body →
+There are three message clause kinds plus two lifecycle hooks: **`cast`** (body → next state), **`call`** (body →
 `[reply next-state]`; the caller blocks for the reply), **`query`** (a read-only
 `call` — body → reply, state untouched), and **`info`** — a message that is *not*
 a cast/call envelope: a monitor `[:down …]`, a link `[:EXIT …]`, a timer tick, or
@@ -2350,23 +2341,22 @@ a plain `send`. Optional **`init`** runs once at startup (the place to
 `(proc/trap-exit true)`, `(monitor …)`, arm a timer, or transform the seed) and
 **`terminate`** runs on a clean `(stop pid)`. Envelope clauses are always matched
 before `info` clauses, and **any message matched by no clause is dropped** rather
-than left to pile up in the mailbox (OTP's default `handle_info`).
+than left to pile up in the mailbox.
 
 Client API: `(gen/cast pid payload)` casts; `(gen/call pid payload)` calls and
 blocks up to 5 s (it `monitor`s the server, so a *dead* server raises at once
 instead of hanging); `(gen/call-timeout pid payload ms)` sets a custom deadline;
 `(gen/stop pid)` ends the loop; `(gen/code-change pid)` asks a running server to
 migrate its state after a hot reload. Spawn with `(gen/start f state)`, which takes an
-options map: `{:link true}` links the server to the caller (Erlang `start_link`) and
+options map: `{:link true}` links the server to the caller and
 `{:name :k}` registers it for `proc/whereis`, together or apart (ADR-433). A `defserver` server
 composes directly under `supervisor` (see `std/proc/supervisor.blsp`).
 
 **A call that times out leaves nothing behind.** `gen/call-timeout` mints a fresh
 `(ref)` for the reply and, on the deadline path, **deactivates** it with
 `(%ref-deactivate r)` — the kernel then *drops a later reply carrying that ref at
-delivery*, so it never enters the caller's mailbox at all. This is OTP 24's
-process-alias mechanism (`{alias, demonitor}`): before it, a slow-but-live server
-answering after the deadline left an unmatchable `[:reply ^r v]` queued forever,
+delivery*, so it never enters the caller's mailbox at all. Without it, a slow-but-live
+server answering after the deadline would leave an unmatchable `[:reply ^r v]` queued forever,
 growing the mailbox over a retry loop and re-scanned by every later selective
 receive. See "One-shot reply aliases" under Synchronous calls above.
 
@@ -2399,6 +2389,35 @@ starts in the first state listed, or in what `(init body…)` returns (`[state
 data]`, optionally with opts); `(terminate reason body…)` runs on `gen/stop` and
 on `[:stop data]`.
 
+### A process registry: `names`
+
+`proc/register` binds a keyword to one pid. A **registry** (`std/proc/names.blsp`,
+ADR-445) binds a key that is any value — `[:session 42]` — to one holder (`:unique`,
+the default) or to many (`:duplicate`), each with a value beside it:
+
+```clojure
+(names/start :sessions)                              ; a registry, registered as :sessions
+(names/register :sessions [:user 7] (self) {:since 0})
+(names/whereis :sessions [:user 7])                  ; the pid, or nil
+(names/lookup :sessions [:user 7])                   ; [[pid {:since 0}]]
+(names/start :topics {:keys :duplicate})             ; a key holds any number of processes
+```
+
+The registry is a server that owns a table, so writes are serialised and a `:unique`
+key another live process holds is refused with a `failure` naming it. Reads —
+`lookup`, `whereis`, `count` — go straight to the table, in the caller. A holder's
+entries go when it dies, and every entry goes when the registry does.
+
+A `{:via registry :key key}` address works wherever `gen` takes a pid: `gen/call`,
+`gen/cast`, `gen/stop`, `gen/code-change`, and `gen/start`'s `:name`, which registers
+the new server (a taken key stops it and answers the failure). A call to a key nobody
+holds raises; a cast to one is dropped.
+
+```clojure
+(gen/start counter 0 {:name {:via :sessions :key [:counter 1]}})
+(gen/call {:via :sessions :key [:counter 1]} :value)
+```
+
 ### Monitors
 
 `(monitor pid)` starts watching another process and returns a monitor `ref`.
@@ -2412,7 +2431,7 @@ When that process dies, the watcher receives one message:
 the map a `catch` in the dying process would have bound: a thrown map as thrown, a
 contract violation with its `:kind :contract`, `:blame`, `:expected` and `:got`, a
 built-in error as its structured `{:kind :message [:code :file :line :col :hint
-:trace]}` map (call `:trace` included — BEAM's `{Reason, Stacktrace}`). Any of
+:trace]}` map (call `:trace` included). Any of
 those standard fields the bound map lacks is filled in from the error, and a throw
 of a non-map reads as `{:kind :user :message <printed value> …}`, so the reason is
 always a map, and a supervisor can log `(get m :message)` and walk `(get m :trace)`
@@ -2438,7 +2457,7 @@ in Brood.
 ### Links
 
 `(link pid)` ties the current process and `pid` together **symmetrically**
-(Erlang `link/1`; `(unlink pid)` unties, `spawn-link` spawns pre-linked). When
+(`(unlink pid)` unties, `spawn-link` spawns pre-linked). When
 either side dies abnormally, the other is notified: a process that set
 `(proc/trap-exit true)` receives a trappable `[:EXIT pid reason]` message; a
 non-trapping process **dies too** — propagation, cascading through *its* links
@@ -2460,7 +2479,7 @@ reason ends the program at once with exit status 1 and
 #### `spawn-link` — spawn and link atomically
 
 `(spawn-link expr)` spawns `expr` in a new process **already linked** to the
-caller (Erlang `spawn_link`) and returns its pid. It takes one expression, like
+caller and returns its pid. It takes one expression, like
 `spawn`, and a `(fn () …)` body is passed through rather than re-wrapped; there
 is no named form (`proc/register` the child if it needs a name).
 
@@ -2498,8 +2517,8 @@ macro expands to the `%spawn-link` primitive (ADR-067).
 
 #### `spawn-monitor` — spawn and monitor atomically
 
-`(spawn-monitor expr)` is the same guarantee on the **monitor** side (Erlang
-`spawn_monitor`), returning `[pid ref]`. The child is monitored before it is
+`(spawn-monitor expr)` is the same guarantee on the **monitor** side,
+returning `[pid ref]`. The child is monitored before it is
 enqueued, so `[:down ref pid reason]` always carries the child's real reason.
 One-shot and unidirectional like `monitor`: it never kills, and `demonitor`
 takes the returned ref.
@@ -2549,7 +2568,7 @@ supervisor's own give-up another; a raise with no position keys on
 not a fault. The process that armed the reporter is excluded too (its crash is
 the CLI's to print). A *handled* crash is still reported — a linked, trapping
 parent that restarts its child does not make the child's error less worth
-reading, which is OTP's `logger` behaviour.
+reading.
 
 - `(crash-report/start [opts])` arms it (idempotent; registered as
   `:crash-reporter`); `{:sink f}` hands each rendered report to `f` instead of
@@ -2603,12 +2622,12 @@ machine, where a start would bind the application's ports.
 
 ### Timers
 
-`(timer/send-after ms pid msg)` delivers `msg` to `pid` after `ms` milliseconds
-(Erlang `send_after/3`, same argument order); `(timer/send-interval ms pid msg)`
+`(timer/send-after ms pid msg)` delivers `msg` to `pid` after `ms` milliseconds;
+`(timer/send-interval ms pid msg)`
 delivers it every `ms` until cancelled. Both return a **timer handle** (the
 timer's pid — a tiny green process parked on the scheduler's timer wheel, so a
 pending timer costs no worker thread); `(cancel-timer h)` stops it, idempotently
-(and, like Erlang, cancellation races an in-flight fire — a message already sent
+(cancellation races an in-flight fire — a message already sent
 stays sent). An interval timer monitors its target and exits when the target
 dies, so a forgotten interval can't tick forever.
 
@@ -2622,8 +2641,7 @@ dies, so a forgotten interval can't tick forever.
 
 A long or blocking native — a git clone, a key derivation, big file IO — would
 pin its scheduler worker for the whole call. `(offload f & args)` runs it on
-the **dirty-offload OS pool** instead (the BEAM dirty-scheduler shape,
-ADR-144): only the calling *process* waits (a selective receive under the
+the **dirty-offload OS pool** instead (ADR-144): only the calling *process* waits (a selective receive under the
 hood, so other mailbox messages stay queued), and errors rethrow at the call
 site, catchable as usual.
 
@@ -2642,9 +2660,8 @@ they must be sendable values. The package manager's clones already ride it.
 ### Per-process limits (`proc/flag`)
 
 `(proc/flag flag [value])` reads or sets a runtime flag on the **current**
-process (Erlang's `process_flag/2` shape) and returns the previous — or, with no
-value, current — setting. The first flag is **`:max-heap`**: a per-process heap
-limit in bytes, the BEAM `max_heap_size` analogue.
+process and returns the previous — or, with no value, current — setting. The
+first flag is **`:max-heap`**: a per-process heap limit in bytes.
 
 ```clojure
 (proc/flag :max-heap 8000000)  ; cap this process at ~8 MB; returns previous
@@ -2693,8 +2710,7 @@ a sticky flag that the *flooded process itself* raises as a catchable `E0046` at
 its next safepoint or `receive` — the same one-process-only protocol as
 `:max-heap`, with the same rescue: a handler can drain the backlog (`receive`
 still works after the raise), clear or raise the bound, or let the supervisor
-restart it. This is the guard against a slow receiver quietly eating the machine
-— BEAM has no queue bound either, and the request for one is perennial there.
+restart it. This is the guard against a slow receiver quietly eating the machine.
 Backpressure proper stays a library concern: `gen/call` with a timeout is
 already a bounded round-trip.
 
@@ -2702,9 +2718,8 @@ already a bounded round-trip.
 
 `(proc/hibernate)` tells the runtime this process is about to wait a long time, so it
 should give back everything it can: collect, shrink its heap, and drop its
-inline caches and compiled-body cache. It returns the bytes released. This is
-Erlang's `erlang:hibernate/3` (without the continuation argument — a Brood
-process resumes from its own `receive`).
+inline caches and compiled-body cache. It returns the bytes released. It takes no
+continuation: the process resumes from its own `receive`.
 
 ```clojure
 ;; a pooled connection that will sit idle between requests
@@ -2751,13 +2766,13 @@ transparently.
 | `(node/monitor name)` | Deliver `[:nodedown name]` when the link to `name` goes down (clean close or heartbeat timeout). |
 | `(pid? x)` | True if `x` is a process id. |
 
-The cookie is a shared secret (Erlang-style; links are encrypted — ADR-089). One
+The cookie is a shared secret (links are encrypted — ADR-089). One
 node per OS process. Remote `spawn`/code-shipping, distributed monitors/links,
 heartbeat node-down detection, and mesh join have all shipped — full reference:
 [distribution.md](distribution.md).
 
 **Send semantics across a net-split:** `send` to a *disconnected* node silently
-drops the message (Erlang's default). A process that must not lose messages opts
+drops the message (the default). A process that must not lose messages opts
 in with `(proc/flag :send-errors true)` — its sends then raise a catchable
 `E0060` noconnection error, so it can queue and resend. Pair it with
 **`reconnect`** (a `reconnect/…` reference auto-loads it): `(reconnect/watch spec)`
@@ -3422,7 +3437,7 @@ above or a `nil?` guard.
 
 The byte-producing write boundaries — `tcp-send`, `proc-send`, `file/spit`,
 `file/spit-append`, `file/spit-bytes`, `file/spit-bytes-append`, and the in-memory materialiser
-`bytes-concat` — accept any **iolist** (ADR-139, the Erlang/Elixir model): a
+`bytes-concat` — accept any **iolist** (ADR-139): a
 **string**, a **`bytes`** value, a **byte int 0–255**, or an arbitrarily nested
 **list/vector** of iolists (`nil` is empty; an improper tail is a final leaf).
 Describe the output as a tree and nothing is copied until the single flatten at
@@ -3494,16 +3509,15 @@ iolist in memory.
   call stack at its next VM frame boundary after every tick: no signals, and
   near-zero cost when off. (A JIT-resident loop is attributed when it yields
   at its reduction-budget preempt; the legacy tree-walker isn't sampled.)
-- `(proc/system-monitor [pid opts])` — the **runtime event stream** (Erlang
-  `system_monitor/2` shape): the kernel pushes selected runtime events to
-  subscriber processes as ordinary `[:system kind subject-pid detail]` mailbox
-  messages — `:gc` (a collection finished; detail
-  `{:pause-us :collections :live}`, filtered by `:gc-min-pause-us`, BEAM's
-  `long_gc`), `:spawn` (detail = parent pid), `:exit` (detail = the structured
+- `(proc/system-monitor [pid opts])` — the **runtime event stream**: the kernel
+  pushes selected runtime events to subscriber processes as ordinary
+  `[:system kind subject-pid detail]` mailbox messages — `:gc` (a collection
+  finished; detail `{:pause-us :collections :live}`, filtered by
+  `:gc-min-pause-us`), `:spawn` (detail = parent pid), `:exit` (detail = the structured
   exit reason monitors see) or `:exit-abnormal` (only a reason other than
   `:normal`, filtered before any message is built), `:deopt` (detail = the
   JIT arm's fn name), and `:long-schedule` (a scheduling quantum held its worker
-  at least `:long-schedule-us` µs — detail `{:us}`, BEAM's `long_schedule`, ADR-404;
+  at least `:long-schedule-us` µs — detail `{:us}`, ADR-404;
   selected by its threshold, and at 10 ms when every event is armed). **One subscription per subscriber pid** (ADR-305): no args
   reads the *caller's* subscription, `:all` lists every one, `nil` clears the
   caller's and `(proc/system-monitor nil pid)` clears `pid`'s;
@@ -3860,10 +3874,11 @@ its names bare. Run `nest doc <module>` for the full API of any module.
 | `std/path.blsp` | `'path` | Path string manipulation: `string/join`, `split`, `basename`, `dirname`, `extension`, `stem`, `normalize`, `relative-to`, `absolute?`, `absolute`, `abbreviate` (`~` for `$HOME`, the inverse), `with-extension` |
 | `std/system.blsp` | `'system` | OS interaction: `env`, `env-all`, `argv`, `os-type`, `cmd`, `cmd-ok?`, `cmd-out`, `halt` (whole-machine `file/cwd`/`hostname` are root builtins) |
 | `std/crypto.blsp` | `'crypto` | Cryptography: ChaCha20-Poly1305 AEAD (`encrypt`/`decrypt`/`encrypt-str`/`decrypt-str`), `pbkdf2` (accepts a string or byte-vector password/salt — a binary salt is used as raw bytes), `random-bytes`, `random-key`, `random-nonce`, `secure=?` |
-| `std/proc/agent.blsp` | `'agent` | Process-backed state cell (Elixir-style Agent): `start`, `get`, `update`, `get-and-update`, `cast`, `stop` |
+| `std/proc/agent.blsp` | `'agent` | Process-backed state cell (an agent): `start`, `get`, `update`, `get-and-update`, `cast`, `stop` |
+| `std/proc/names.blsp` | `'names` | A process registry (ADR-445): `start` (`:unique` or `:duplicate` keys), `register`, `unregister`, `lookup`, `whereis`, `count`; a `{:via registry :key key}` address works wherever `gen` takes a pid |
 | `std/proc/application.blsp` | `'application` | Applications (ADR-436): `defapp`, `start` (requirements first), `stop` (reverse), `run` (until SIGTERM/Ctrl-C or `shutdown`), `check`, `app?`, `new` |
 | `std/protocol.blsp` | `'protocol` | Behaviour contracts — the *module*-satisfies-a-contract seam: `defbehaviour` declares the ops a module must define (no value dispatch), claimed with `(:implements Name)` in a module header; `protocol-ops` is the introspection hook the checker and LSP read. Value dispatch is `ability` — `defprotocol`/`defimpl` were retired (ADR-168) |
-| `std/telemetry.blsp` | `'telemetry` | Erlang-`:telemetry`-style instrumentation; handlers run in an isolated listener process: `start-telemetry`, `stop-telemetry`, `emit`, `attach`, `detach`, `detach-all`, `forward`, `handlers`, `telemetry-sync`, the `span` macro |
+| `std/telemetry.blsp` | `'telemetry` | Event instrumentation; handlers run in an isolated listener process: `start-telemetry`, `stop-telemetry`, `emit`, `attach`, `detach`, `detach-all`, `forward`, `handlers`, `telemetry-sync`, the `span` macro |
 
 The following modules are also opt-in and live under `std/net/` and `std/tool/`.
 Load each the same way — reference it qualified (`tcp/tcp-listen`, which
@@ -3890,7 +3905,7 @@ eval-server  ; persistent image-isolated evaluator for a dedicated child
 
 ### Telemetry (`:use telemetry`)
 
-An Erlang-`:telemetry`-style instrumentation seam (ADR-106), written in Brood. Code
+An instrumentation seam (ADR-106), written in Brood. Code
 **emits** a named event with a measurements map and a metadata map; **handlers**
 attached to that event run on each emit — but in an **isolated listener process**, so
 a handler can never affect the emitting process:
@@ -3926,16 +3941,16 @@ listener**:
   *uncatchable* fault (stack overflow, `(exit … :kill)`) kills only the listener;
   **supervise it** (it's an ordinary `:permanent` child) and it restarts with the
   handler table intact (the table is a separate global, ADR-013).
-- **The trade-off vs. Erlang.** Erlang runs handlers inline in the caller (fast, but
-  a bad handler degrades the caller). Brood chooses total emitter isolation, at the
+- **The trade-off.** Running handlers inline in the caller would be fast, but a bad
+  handler would degrade the caller. Brood chooses total emitter isolation, at the
   cost of one listener as a serialization point. Keep handlers cheap, or use
   `(forward id event pid)` to ship events to a process you own and do the heavy work
   there.
 - **Events are plain Brood values** compared by structural `=` — a keyword
-  (`:request`) or, Erlang-style, a vector of keyword segments
+  (`:request`) or a vector of keyword segments
   (`[:http :request :stop]`).
 - **Zero-cost when off.** `emit` with no listener started is a cheap no-op.
 - `telemetry-sync` flushes (a FIFO round-trip) — handy in tests and before shutdown.
 
 `attach`/`detach` update a shared global, so call them at startup, not concurrently
-from many processes (configuration-time, as in Erlang). See `std/telemetry.blsp`.
+from many processes (it is configuration-time). See `std/telemetry.blsp`.
