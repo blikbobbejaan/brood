@@ -90,6 +90,20 @@
       (assert= (count mm) 1)
       (is (not (includes? (into [] (keys mm)) :__id__)))
       (is (not (contains? (multimap/->map mm) :__id__)))))
+  ;; KI-298: with a non-nil default, `get` answered the default on the record's field miss
+  ;; without asking `Lookup`, so a key holding values read as absent.
+  (test "a default does not hide a key the multimap holds"
+    (let (mm (multimap/assoc (multimap/empty) :k 1))
+      (assert= [1] (into [] (get mm :k :none)))
+      (assert= [1] (into [] (get mm :k [])))
+      (assert= :none (get mm :missing :none))))
+  (test "get-in steps through a multimap's contents, as get does"
+    (let (mm (multimap/assoc (multimap/empty) :k 1))
+      (assert= [1] (into [] (get-in {:m mm} [:m :k])))
+      (assert= :none (get-in {:m mm} [:m :missing] :none))))
+  (test "a record still answers a field, or the default for a missing one"
+    (assert= 5 (get (assoc (multimap/empty) :extra 5) :extra :none))
+    (assert= :none (get {:__id__ :x/y :a 1} :b :none)))
   (test "an empty multimap is empty by its own count, not the wrapper's"
     (is (multimap/empty? (multimap/empty)))
     (is (not (multimap/empty? (multimap/assoc (multimap/empty) :k 1)))))
@@ -123,16 +137,6 @@
     (let (mm (multimap/assoc (multimap/empty) :k 1))
       (assert= (get mm :nope) nil)
       (assert= (get mm :nope :none) :none)))
-  ;; KI-298: with a non-nil default, the 3-arity `get` answered the default on the record's
-  ;; field miss without asking `Lookup`, so a key holding values read as absent.
-  (test "a default does not hide a key the multimap holds"
-    (let (mm (multimap/assoc (multimap/empty) :k 1))
-      (assert= (get mm :k :none) (list 1))
-      (assert= (get mm :k []) (list 1))))
-  (test "a plain record still answers a field, or the default for a missing one"
-    (let (mm (multimap/empty))
-      (assert= (get (assoc mm :extra 5) :extra :none) 5)
-      (assert= (get {:__id__ :x/y :a 1} :b :none) :none)))
   (test "bare `keys` gives the DISTINCT keys, and `vals` every value"
     ;; `keys` read the `Seqable` view and answered one key per VALUE; it consults
     ;; `Lookup`'s `lookup-keys` now. `multimap/keys` and `multimap/values` are GONE — bare `keys`

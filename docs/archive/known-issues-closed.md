@@ -14945,38 +14945,6 @@ looking for".
 Runs: [39950556262](https://github.com/broodlang/brood/actions/runs/39950556262) (`7ed008cf`),
 [39954644031](https://github.com/broodlang/brood/actions/runs/39954644031) (`e9e1af8b`).
 
-## KI-298 — a `get` default hid a key a record collection holds ✅ FIXED 2026-10-25
-
-**Symptom.** `(get coll k default)` with a non-nil default answered the default for a key that
-is not one of the record's FIELDS, without asking `Lookup`. So `(get multimap :k [])` gave `[]`
-for a key holding values, while `(get multimap :k)` gave the values. Found while building
-`std/sorted`.
-
-**History.** The first fix (`58fb635d`) was reverted in `00cebadf`. CI failed
-`linmap_soundness_test` "a fold literal is the same tally as the loop": `lm-fold` over an
-`lm-counter` seed answered 102 where the test pinned 2. The revert read that as the linmap loop
-path keeping the old rule, and the entry became a design question.
-
-**Decision and fix.** A key the collection holds must answer its value whatever the caller's
-default, so a record's miss (an absent field, or a field holding nil) asks `Lookup`, and the
-default applies only when `lookup-get` answers nil too. A present field is answered without
-asking, and a plain map never asks: `(get {:a nil} :a 99)` stays nil. The change is `get`'s
-3-arity arm and `%lookup-miss` (`std/prelude/map.blsp`) plus `Heap::map_get3_inline`, which both
-the VM's `PrimOp3::MapGet3` arm and `brood_rt_map_get3` call.
-
-**The revert's premise did not hold.** Re-measured on `39c418cf` with the fix applied, the three
-spellings of the record-seeded tally all answer 102 at tiers 0, 1 and 2, cold and after a
-5 000-call warm-up, at top level and inside a module: the loop as written (`lm-idiom`), the fold
-literal (`lm-fold`), and a let-bound read. `%table-from-map` answers nil for the record, so the
-linmap wrapper runs the loop as written and the real `get` decides. 102 is the source's own
-answer: `Lookup` gives 100 for `:zz`, then two increments. So `linmap_soundness_test`'s two
-record-seed assertions were pinning the old rule, and they now expect 102.
-
-**Guards.** `multimap_test` "a default does not hide a key the multimap holds" (`:none` and `[]`
-on the old rule), "a plain record still answers a field, or the default for a missing one", and
-the `linmap_soundness_test` record-seed cases. `make ab --floor` and `make ab-vm` against
-`39c418cf`: every row noise.
-
 ## KI-302 — `startup` +3%: the prelude crossed a doubling of the image load's position table ✅ FIXED 2026-10-25
 
 **Seen:** the 2026-10-25 benchmark refresh read `startup` +5.4% against the e9e1af8b column, and

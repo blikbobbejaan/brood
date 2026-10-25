@@ -3733,11 +3733,19 @@ prelude functions took it past 7 168, one more full rehash on every start. The p
 87.43M → 85.26M instructions, −5.6% on `make ab --floor`. Not run on this machine: the new
 `positioned_list_tests` and the suite run in CI.
 
-2026-10-25 (KI-298 fixed): a record's miss asks `Lookup` whatever the `get` default, so
-`(get multimap :k [])` finds `:k`'s values, and the default applies when `lookup-get` answers
-nil. This is the reverted `58fb635d` again, with the linmap tests corrected. The revert's premise,
-that the linmap loop path keeps the old rule, did not hold on the current tree: the loop, the
-fold literal and a let-bound read all answer 102 through `Lookup` at every tier, because a record
-seed runs the loop as written. Plain maps are unchanged. `docs/language.md` now states the rule.
-`make ab --floor` and `make ab-vm`: noise. Not run on this machine: the multimap and linmap tests
-run in CI.
+2026-10-25 (KI-298 fixed: a `get` default means absent; KI-299 was the test): `(get coll k default)`
+answered a non-nil default for a key that is not a record field without asking `Lookup`, so
+`(get multimap :k [])` gave `[]` for a key holding values. Now a record's miss asks `Lookup` whatever
+the default, and a `Lookup` that answers nil keeps it: `get`'s 3-arity arm (its variadic arm forwards
+to it), `Heap::map_get3_inline` for the VM and native code, and `get-in`'s step, which had the same
+blind spot through `contains?`. The October 24 attempt was reverted on the belief that the linmap
+loop path kept the old rule; both linmap paths run a record seed as written (`%table-from-map`
+refuses a record), so they agree by construction, and `linmap_soundness_test` pins 102 (the
+ability's 100 plus two) where it pinned 2. KI-299: P16 in `breakage/chaos2_process_links.blsp`
+read `:normal` because P15's child announces itself before it finishes and can die after P16
+turns the trap on; P16's unpinned `[:EXIT _ reason]` took that exit. Every exit and down receive
+in the file now pins its pid or ref, and P15 waits for its child's death. KI-300: the
+interpreter redirects a thin wrapper to its inner head, so `jit_computed_call_test`'s wrapper is
+counted only once its caller `fold-with` is native, and `settle` never waited on `fold-with`'s
+compile; each thin-wrapper test settles `fold-with` first and the redefining tests run
+`:isolated`. Not run on this machine.

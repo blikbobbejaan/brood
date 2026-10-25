@@ -216,10 +216,11 @@
     (assert= :map (type-of (lm-idiom '(:a) {:b 1}))))
 
   (test "a record seed keeps its Lookup answers"
-    ;; A record's miss consults `Lookup` whatever the default (KI-298), so the tally's first
-    ;; `(get c :zz 0)` is 100 through `Lookup` and the second reads the field the first
-    ;; stored: 102, where a table would have counted from 0. The 2-arity `(get acc :never)`
-    ;; base case is 100 the same way. The result is still the record (its `:__id__` kept).
+    ;; A record's miss goes through `Lookup` whatever the default (KI-298), so the tally's
+    ;; first `(get c :zz 0)` is the ability's 100, not the default — a table would have
+    ;; answered 0 — and the second reads the field the first stored. The 2-arity
+    ;; `(get acc :never)` base case is 100 through `Lookup` too, where a table would have
+    ;; answered nil. The result is still the record (its `:__id__` kept).
     (let (out (lm-idiom '(:zz :zz) (lm-counter 5)))
       (assert= 102 (get out :zz))
       (assert= 5 (get out :hits))

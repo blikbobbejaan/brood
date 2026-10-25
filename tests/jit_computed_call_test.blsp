@@ -72,15 +72,24 @@
 ;; redirected by the dispatcher to its inner head on every call from native code (two
 ;; by-name hops through `+`, ~1 900 instructions), so its own arm never ran and never tiered.
 ;; Native code now runs the wrapper's compiled arm like any closure's.
+;;
+;; The interpreter still redirects the wrapper (ADR-069), so its arm is counted only once
+;; `fold-with` is native: each test settles `fold-with` first, or a compile of `fold-with`
+;; still queued on a loaded runner left the wrapper `:untried` for all of `settle`'s rounds,
+;; which wait only on the WRAPPER's queue (KI-300). The redefining tests run `:isolated`, so
+;; their `def` — a global epoch bump — cannot send another test's native `fold-with` back to
+;; the queue between its two settles.
 (describe "a thin-wrapper callback from native code"
   (test "runs its own arm, which tiers up"
     (let (add (fn (a x) (+ a x)))
       (when (%native-tier?)
+        (assert= :native (settle fold-with 3 (fn () (fold-with add 500 0)) 500))
         (assert= :native (settle add 2 (fn () (fold-with add 500 0)) 500)))
       (assert= (tri 2000) (fold-with add 2000 0))))
 
-  (test "still reaches its inner function by name after a redefinition"
+  :isolated (test "still reaches its inner function by name after a redefinition"
     (when (%native-tier?)
+      (assert= :native (settle fold-with 3 (fn () (fold-with via-inner 500 0)) 500))
       (assert= :native (settle via-inner 2 (fn () (fold-with via-inner 500 0)) 500)))
     (assert= (tri 2000) (fold-with via-inner 2000 0))
     (def cc-inner (fn (a x) (+ a (* 2 x))))
@@ -94,7 +103,7 @@
 (defn- sum-by-name (i acc) (if (= i 0) acc (sum-by-name (- i 1) (bn-wrap acc i))))
 
 (describe "a thin wrapper called by name from native code"
-  (test "sees a redefinition of its inner function and of itself"
+  :isolated (test "sees a redefinition of its inner function and of itself"
     (when (%native-tier?)
       (assert= :native (settle sum-by-name 2 (fn () (sum-by-name 500 0)) 500))
       (assert= :native (settle bn-wrap 2 (fn () (sum-by-name 500 0)) 500)))

@@ -823,14 +823,15 @@ impl Heap {
     }
 
     /// `(get m k default)` on a map — the 3-arity twin of [`Self::map_get_inline`], and
-    /// exactly `get`'s own arm: `(let (v (%map-get m k nil)) (if (nil? v) (%lookup-miss m k
-    /// (%map-get m k default)) v))`. So a present non-nil value is answered; anything else —
-    /// an absent key or a stored nil — is `%lookup-miss`: for a plain map the stored nil, or
-    /// the default when the key is absent; DECLINED (`None`) for a record, whose miss the
-    /// `Lookup` ability may resolve. A record with an absent key is declined even when the
-    /// default is non-nil: answering the default there skipped `Lookup`, so `(get multimap k
-    /// [])` answered `[]` for a key holding values (KI-298). Shared by the VM's
-    /// `Inst::Prim3` arm and `brood_rt_map_get3`, so the two cannot disagree (ADR-368).
+    /// exactly `get`'s own arm: `(let (v (%map-get m k nil)) (if (nil? v) (let (r
+    /// (%lookup-miss m k nil)) (if (nil? r) (%map-get m k default) r)) v))`. So a present
+    /// non-nil value is answered; anything else — an absent key or a stored nil — answers,
+    /// for a plain map, the stored nil or the default when the key is absent, and is
+    /// DECLINED (`None`) for a record, whose miss the `Lookup` ability may resolve. A record
+    /// is declined even when the default is non-nil: answering the default there skipped
+    /// `Lookup`, so `(get multimap k [])` answered `[]` for a key holding values (KI-298).
+    /// Shared by the VM's `Inst::Prim3` arm and `brood_rt_map_get3`, so the two cannot
+    /// disagree (ADR-368).
     pub fn map_get3_inline(&self, mid: MapId, k: Value, default: Value) -> Option<Value> {
         let found = self.map_get(mid, k);
         if let Some(v) = found
