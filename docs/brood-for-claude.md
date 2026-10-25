@@ -1022,6 +1022,8 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
 `editor/display`/`editor/buffer`/`editor/ansi`; `apropos`/`doc-search` search it interactively.)
 
 - **list / seq**: `first` `rest` `cons` `list` `count` `empty?` `nth`
+  `second` `third`, and Lisp's compositions `caar` to `cdddr` (each `a` a `first`, each
+  `d` a `rest`, right to left: `cadr` is `(first (rest x))`, ADR-447)
   `reverse` `map` `reduce` `fold` `append` (variadic, over
   lists *and* vectors, returning a list) `mapcat` `sort` `take`
   `drop` `range` `partition` `repeat`. Everything else sequence-shaped lives in the

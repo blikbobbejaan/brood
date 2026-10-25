@@ -3802,3 +3802,10 @@ reps, inside the floor), most likely the larger code every vector read now compi
 compiler thread. +24 B per heap. New guards: `shared_vector_read_test.blsp`,
 `the_shared_vector_location_is_where_boxcar_puts_it`, and
 `native_shared_vector_reads_survive_a_runtime_compaction`. Not run on this machine: those, in CI.
+
+2026-10-25 (`caar` to `cdddr` in the prelude; ADR-447): the compositions of `first` and `rest`,
+two and three deep, beside `second` and `third` in `std/prelude/predicates.blsp`, for a nested
+list taken apart, which was `(first (first (first x)))` written inside out. Over `first` and
+`rest`, so over lists, vectors and nil. Asked for by the wos work, whose device compiler expands
+each into its `car`s and `cdr`s. Not run on this machine: the new
+`tests/list_compositions_test.blsp`, in CI.

@@ -1,0 +1,31 @@
+;; tests/list_compositions_test.blsp — `caar` to `cdddr`, the compositions of `first` and
+;; `rest` (ADR-447): each is what its letters say, over a list and over a vector.
+
+(defmodule list-compositions-test (:use test))
+
+(def- tree (list (list (list 1 2) 3) (list 4 5) 6 7))
+
+(describe "each composition is its firsts and rests, right to left"
+  (test "two deep"
+    (assert= (list (caar tree) (cadr tree) (cdar tree) (cddr tree))
+      (list (list 1 2) (list 4 5) (list 3) (list 6 7))))
+
+  (test "three deep"
+    (assert= (list (caaar tree)
+               (caadr tree)
+               (cadar tree)
+               (caddr tree)
+               (cdaar tree)
+               (cdadr tree)
+               (cddar tree)
+               (cdddr tree))
+      (list 1 4 3 6 (list 2) (list 5) nil (list 7))))
+
+  (test "cadr and caddr are second and third"
+    (assert= (list (cadr tree) (caddr tree)) (list (second tree) (third tree))))
+
+  (test "over a vector, as first and rest take one"
+    (assert= (list (cadr [1 2 3]) (cddr [1 2 3]) (caar [[9] 8])) (list 2 (list 3) 9)))
+
+  (test "past the end is nil, as first of nil is"
+    (assert= (list (caddr (list 1)) (cdddr nil)) (list nil nil))))

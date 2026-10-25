@@ -162,6 +162,73 @@ itself (a type is a set of runtime tags): it does not walk the tail, so an impro
   ;; you had to know to qualify. Any of the three should read the same way.
   (first (rest (rest coll))))
 
+;; ---- the compositions of `first` and `rest` (ADR-447) ----
+;; `(first (first (first x)))` and `(first (rest (rest x)))` were written out wherever a
+;; nested list was taken apart — a row's kind three deep, a record's field four along — and
+;; read inside out. These are Lisp's names for them, two and three deep: each `a` a
+;; `first` and each `d` a `rest`, read right to left as they apply, so `cadr` is the first
+;; of the rest. Over `first` and `rest`, so over every collection those take.
+(defn caar (coll)
+  "The first of the first: `(first (first coll))`.
+
+    (caar '((1 2) 3))    → 1"
+  (first (first coll)))
+(defn cadr (coll)
+  "The first of the rest, the second item: `(first (rest coll))`.
+
+    (cadr '(1 2 3))      → 2"
+  (first (rest coll)))
+(defn cdar (coll)
+  "The rest of the first: `(rest (first coll))`.
+
+    (cdar '((1 2) 3))    → (2)"
+  (rest (first coll)))
+(defn cddr (coll)
+  "The rest of the rest: everything from the third item on.
+
+    (cddr '(1 2 3))      → (3)"
+  (rest (rest coll)))
+(defn caaar (coll)
+  "`(first (first (first coll)))`.
+
+    (caaar '(((1)) 2))   → 1"
+  (first (first (first coll))))
+(defn caadr (coll)
+  "`(first (first (rest coll)))`: the first of the second item.
+
+    (caadr '(1 (2 3)))   → 2"
+  (first (first (rest coll))))
+(defn cadar (coll)
+  "`(first (rest (first coll)))`: the second of the first item.
+
+    (cadar '((1 2) 3))   → 2"
+  (first (rest (first coll))))
+(defn caddr (coll)
+  "`(first (rest (rest coll)))`, the third item.
+
+    (caddr '(1 2 3))     → 3"
+  (first (rest (rest coll))))
+(defn cdaar (coll)
+  "`(rest (first (first coll)))`.
+
+    (cdaar '(((1 2)) 3)) → (2)"
+  (rest (first (first coll))))
+(defn cdadr (coll)
+  "`(rest (first (rest coll)))`: the rest of the second item.
+
+    (cdadr '(1 (2 3)))   → (3)"
+  (rest (first (rest coll))))
+(defn cddar (coll)
+  "`(rest (rest (first coll)))`: the first item from its third on.
+
+    (cddar '((1 2 3) 4)) → (3)"
+  (rest (rest (first coll))))
+(defn cdddr (coll)
+  "`(rest (rest (rest coll)))`: everything from the fourth item on.
+
+    (cdddr '(1 2 3 4))   → (4)"
+  (rest (rest (rest coll))))
+
 ;; ---- sequence operations ----
 ;; Many eager seq ops share one structure: reverse-accumulate over `(seq coll)`,
 ;; then reverse once. `%defseq` encodes the pattern as a single `defn` whose body
