@@ -584,17 +584,47 @@ impl Default for EmitterSpec {
 pub const MAX_PARTICLES: u32 = 65_536;
 
 /// A keystroke, in a backend-neutral shape the Brood side turns into the same
-/// values `term-poll` yields: `Char` → a 1-char string, the rest → keywords
-/// (`:ctrl-c`, `:alt-f`, `:up`, …). `PartialEq` so the event loop can tell an
+/// values `term-poll` yields: `Char` → a 1-char string, `Named` → a keyword (`:ctrl-c`,
+/// `:alt-f`, `:up`, …, spelled by [`named_key`]). `PartialEq` so the event loop can tell an
 /// auto-repeat (a press for the key *already* held) from a fresh press without
 /// trusting winit's `ke.repeat` flag — unreliable on Wayland (ADR-086).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     Char(char),
-    Ctrl(char),
-    Alt(char),
-    CtrlAlt(char),
     Named(&'static str),
+}
+
+/// A character `c` under chord `modifiers`, Shift already folded into `c` — ONE rule for
+/// both frontends. Control chords are case-INsensitive (Emacs `C-a` = `C-A`); Meta and
+/// Super are case-SENSITIVE (`M-O` open-line-above ≠ `M-o`): a shifted letter stays
+/// upper-case (by Unicode case, so `M-Ä` is not `M-ä`), while an unshifted chord
+/// lower-cases, so Caps Lock or a stray Shift cannot change the binding. A chord spells
+/// through [`named_key`] (`:ctrl-x`, `:alt-X`, `:ctrl-meta-x`, `:ctrl-super-x`).
+pub fn character_chord(c: char, modifiers: KeyModifiers) -> Key {
+    // a letter whose other case is not one char (`ß` → "SS") keeps its own
+    fn single(c: char, mut cased: impl Iterator<Item = char>) -> char {
+        match (cased.next(), cased.next()) {
+            (Some(only), None) => only,
+            _ => c,
+        }
+    }
+    if !(modifiers.ctrl || modifiers.alt || modifiers.super_key) {
+        return Key::Char(c);
+    }
+    let glyph = if modifiers.ctrl && !modifiers.super_key {
+        c.to_ascii_lowercase()
+    } else if modifiers.shift && !modifiers.ctrl {
+        single(c, c.to_uppercase())
+    } else {
+        single(c, c.to_lowercase())
+    };
+    Key::Named(named_key(
+        &glyph.to_string(),
+        KeyModifiers {
+            shift: false,
+            ..modifiers
+        },
+    ))
 }
 
 /// The modifiers a key name spells, frontend-neutral: each frontend reads its own event's

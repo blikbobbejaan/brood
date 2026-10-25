@@ -3,7 +3,7 @@
 //! bookkeeping that turns raw events into `[:key …]` / `[:mouse …]` messages.
 
 use super::*;
-use crate::host::gui::{KeyModifiers, named_key};
+use crate::host::gui::{KeyModifiers, character_chord, named_key};
 
 /// Max gap between consecutive presses (same button, same cell) that still counts
 /// as part of one click chain — the double/triple-click window, in milliseconds.
@@ -15,9 +15,6 @@ pub(super) const MULTI_CLICK_MS: u128 = 400;
 pub(super) fn key_message(k: &Key) -> Message {
     match k {
         Key::Char(c) => Message::Str(c.to_string()),
-        Key::Ctrl(c) => Message::Keyword(value::intern(&format!("ctrl-{c}"))),
-        Key::Alt(c) => Message::Keyword(value::intern(&format!("alt-{c}"))),
-        Key::CtrlAlt(c) => Message::Keyword(value::intern(&format!("ctrl-meta-{c}"))),
         Key::Named(s) => Message::Keyword(value::intern(s)),
     }
 }
@@ -399,46 +396,6 @@ pub(super) fn translate_key(ke: &KeyEvent, mods: ModifiersState) -> Option<Key> 
     }
 }
 
-/// A character `c` under chord `modifiers`, Shift already folded into `c`. Control chords
-/// are case-INsensitive (Emacs `C-a` = `C-A`); Meta and Super are case-SENSITIVE (`M-O`
-/// open-line-above ≠ `M-o`): a shifted letter stays upper-case so the two are distinct,
-/// while an unshifted chord lower-cases (so Caps Lock / a stray Shift can't change the
-/// binding). A chord with Super spells through `named_key` (`:super-x`, `:ctrl-super-x`).
-fn character_chord(c: char, modifiers: KeyModifiers) -> Key {
-    // Unicode case, so `M-Ä` is not `M-ä`; a letter whose other case is not one char
-    // (`ß` → "SS") keeps its own.
-    fn single(c: char, mut cased: impl Iterator<Item = char>) -> char {
-        match (cased.next(), cased.next()) {
-            (Some(only), None) => only,
-            _ => c,
-        }
-    }
-    let case_kept = if !modifiers.ctrl && modifiers.shift {
-        single(c, c.to_uppercase())
-    } else {
-        single(c, c.to_lowercase())
-    };
-    match modifiers {
-        KeyModifiers {
-            super_key: true, ..
-        } => Key::Named(named_key(
-            &case_kept.to_string(),
-            KeyModifiers {
-                shift: false,
-                ..modifiers
-            },
-        )),
-        KeyModifiers {
-            ctrl: true,
-            alt: true,
-            ..
-        } => Key::CtrlAlt(c.to_ascii_lowercase()),
-        KeyModifiers { ctrl: true, .. } => Key::Ctrl(c.to_ascii_lowercase()),
-        KeyModifiers { alt: true, .. } => Key::Alt(case_kept),
-        _ => Key::Char(c),
-    }
-}
-
 // ---- input methods and focus ------------------------------------------------------------
 
 /// A commit of composed text as `[:text "…"]` — what an input method (or a keystroke
@@ -649,9 +606,6 @@ mod adr_431_tests {
     fn keyword_of(key: Key) -> String {
         match key {
             Key::Named(name) => name.to_string(),
-            Key::Ctrl(c) => format!("ctrl-{c}"),
-            Key::Alt(c) => format!("alt-{c}"),
-            Key::CtrlAlt(c) => format!("ctrl-meta-{c}"),
             Key::Char(c) => c.to_string(),
         }
     }

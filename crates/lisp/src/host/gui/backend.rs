@@ -1271,14 +1271,11 @@ struct Win {
     /// the gate that keeps at most one OS repeat undelivered (ADR-441).
     key_repeat: KeyRepeat,
     repeat_gate: Arc<RepeatGate>,
-    /// Whether an input method may compose in this window (`WindowSpec::ime`); whether
-    /// its composition is showing now (so an IME switched off clears it); whether one
-    /// was shown since the last commit (so the commit that ends it is `[:text …]` even
-    /// though winit clears the preedit just before); and the cursor rect last handed to
-    /// it for the candidate window, so it is only told when the cursor moves.
+    /// Whether an input method may compose in this window (`WindowSpec::ime`), where its
+    /// composition stands (`Composition`), and the cursor rect last handed to it for the
+    /// candidate window, so it is only told when the cursor moves.
     ime: bool,
-    preedit_shown: bool,
-    ime_composed: bool,
+    composition: Composition,
     ime_area: Option<(isize, isize, usize, usize)>,
     /// What a wheel notch does (`WindowSpec::wheel`). Under `WheelMode::Lines`, the lines
     /// of notches that arrived while the last scroll message was not yet drawn, summed
@@ -1469,8 +1466,7 @@ fn build_window(
         key_repeat: spec.key_repeat,
         repeat_gate: Arc::new(RepeatGate::default()),
         ime: spec.ime,
-        preedit_shown: false,
-        ime_composed: false,
+        composition: Composition::Idle,
         ime_area: None,
         wheel: spec.wheel,
         wheel_backlog: 0.0,
@@ -1927,8 +1923,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 let family = family
                     .or(self.defaults.family)
                     .unwrap_or_else(|| value::intern(DEFAULT_FAMILY));
-                let mut info = self.families.borrow().info(family);
-                info.ligatures = self.defaults.ligatures;
+                let info = self.families.borrow().info(family, self.defaults.ligatures);
                 let _ = reply.send(info);
             }
             UserEvent::Ligatures { on } => {
@@ -1971,21 +1966,28 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                         && !is_modifier_key(key_event)
                 }
                 WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,
-                WindowEvent::MouseWheel { .. } => true,
+                // a horizontal-only wheel event scrolls nothing here, so no frame answers it
+                WindowEvent::MouseWheel { delta, .. } => match delta {
+                    MouseScrollDelta::LineDelta(_, y) => *y != 0.0,
+                    MouseScrollDelta::PixelDelta(position) => position.y != 0.0,
+                },
+                // an input method's commit is typing, whatever the keyboard did
+                WindowEvent::Ime(winit::event::Ime::Commit(_)) => true,
                 _ => false,
             }
         {
             w.input_at = Some(Instant::now());
         }
-        // A key that reached the window is not part of a composition: one that was
-        // cancelled (Escape sends an empty preedit and no commit) must not make the next
-        // one-character commit read as composed text.
+        // A key that reached the window ends a composition that already ended: one that
+        // was cancelled (Escape sends an empty preedit and no commit) must not make the
+        // next one-character commit read as composed text.
         if let WindowEvent::KeyboardInput {
             event: key_event, ..
         } = &event
             && key_event.state == ElementState::Pressed
+            && w.composition == Composition::Ended
         {
-            w.ime_composed = false;
+            w.composition = Composition::Idle;
         }
         match event {
             // The window's close button → a dedicated `:close` message,
@@ -2038,27 +2040,13 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // delivered as another press of the held key — through `RepeatGate`, so
                 // at most one is ever undelivered and a slow frame cannot rebuild that
                 // backlog. A keystroke that typed several characters (a compose
-                // sequence) is `[:text …]`, not a key, and is not tracked as held.
+                // sequence) is `[:text …]`, not a key: it is held physically, so its
+                // repeats are found the same way, and reported to `gui-held-key` as none.
                 ElementState::Pressed if !is_synthetic => {
                     if let Some(text) = typed_text(&ke, w.mods) {
-                        if !ke.repeat || w.key_repeat == KeyRepeat::Os {
-                            deliver(w.subscriber, text_message(&text));
-                        }
+                        press(w, text_message(&text), None, ke.physical_key);
                     } else if let Some(k) = translate_key(&ke, w.mods) {
-                        let mut hk = lock(&w.held_key);
-                        if *hk != Some(k) {
-                            *hk = Some(k);
-                            drop(hk);
-                            w.held_physical = Some(ke.physical_key);
-                            deliver(w.subscriber, key_message(&k));
-                        } else {
-                            drop(hk);
-                            if w.key_repeat == KeyRepeat::Os
-                                && let Some(credit) = RepeatGate::charge(&w.repeat_gate)
-                            {
-                                deliver_credited(w.subscriber, key_message(&k), credit);
-                            }
-                        }
+                        press(w, key_message(&k), Some(k), ke.physical_key);
                     }
                 }
                 ElementState::Pressed => {} // synthetic press (focus-gain replay)
@@ -2103,10 +2091,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 deliver(w.subscriber, Message::Keyword(value::intern("blur")));
                 // A composition does not survive the window losing focus on every
                 // platform's IME, and not every one says so: clear what the app shows.
-                w.ime_composed = false;
-                if std::mem::take(&mut w.preedit_shown) {
-                    deliver(w.subscriber, preedit_message("", None));
-                }
+                end_composition(w);
                 // Same for a held mouse button: its release may land off-window /
                 // unfocused and never reach us, so synthesize one now (see CursorLeft).
                 if let Some(b) = w.held.take() {
@@ -2137,28 +2122,26 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     update_ime_area(w);
                 }
                 winit::event::Ime::Preedit(text, cursor) => {
-                    if text.is_empty() && !w.preedit_shown {
-                        return;
+                    if text.is_empty() {
+                        if w.composition != Composition::Showing {
+                            return;
+                        }
+                        w.composition = Composition::Ended;
+                    } else {
+                        w.composition = Composition::Showing;
                     }
-                    w.preedit_shown = !text.is_empty();
-                    w.ime_composed |= w.preedit_shown;
                     deliver(w.subscriber, preedit_message(&text, cursor));
                 }
                 winit::event::Ime::Commit(text) => {
-                    // winit sends the clearing preedit just before, so whether a
-                    // composition was shown is remembered here, not read from the flag.
-                    let after_preedit = std::mem::take(&mut w.ime_composed);
-                    w.preedit_shown = false;
-                    if let Some(message) = commit_message(&text, after_preedit) {
+                    // winit clears the preedit just before the commit that ends it, so a
+                    // composition that just ended counts as composed too.
+                    let composed = w.composition != Composition::Idle;
+                    w.composition = Composition::Idle;
+                    if let Some(message) = commit_message(&text, composed) {
                         deliver(w.subscriber, message);
                     }
                 }
-                winit::event::Ime::Disabled => {
-                    if std::mem::take(&mut w.preedit_shown) {
-                        deliver(w.subscriber, preedit_message("", None));
-                    }
-                    w.ime_composed = false;
-                }
+                winit::event::Ime::Disabled => end_composition(w),
             },
             WindowEvent::CursorLeft { .. } => {
                 // The pointer left the window. If a button was held, its release happens
@@ -2660,6 +2643,47 @@ fn update_ime_area(w: &mut Win) {
         PhysicalPosition::new(area.0.max(0) as i32, area.1.max(0) as i32),
         winit::dpi::PhysicalSize::new(width as u32, height as u32),
     );
+}
+
+/// Deliver one keystroke, `message`, from `physical` — `key` when it is a key, `None` for
+/// typed text. A press of the key already held (no release between) is its repeat: dropped
+/// under `KeyRepeat::App`, where the app repeats from `gui-held-key`, and let through the
+/// `RepeatGate` under `KeyRepeat::Os`, so at most one is ever undelivered.
+fn press(w: &mut Win, message: Message, key: Option<Key>, physical: PhysicalKey) {
+    let repeat = {
+        let mut held = lock(&w.held_key);
+        let repeat = w.held_physical == Some(physical) && *held == key;
+        if !repeat {
+            *held = key;
+            w.held_physical = Some(physical);
+        }
+        repeat
+    };
+    if !repeat {
+        deliver(w.subscriber, message);
+    } else if w.key_repeat == KeyRepeat::Os
+        && let Some(credit) = RepeatGate::charge(&w.repeat_gate)
+    {
+        deliver_credited(w.subscriber, message, credit);
+    }
+}
+
+/// Where an input method's composition stands. `Ended` is the empty preedit winit sends
+/// just before the commit that ends a composition (or alone, for a cancelled one): the
+/// commit after it is composed text, `[:text …]`, though nothing shows any more.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Composition {
+    Idle,
+    Showing,
+    Ended,
+}
+
+/// Drop the composition — the IME was switched off, or the window lost focus — clearing
+/// what the app shows if one was showing.
+fn end_composition(w: &mut Win) {
+    if std::mem::replace(&mut w.composition, Composition::Idle) == Composition::Showing {
+        deliver(w.subscriber, preedit_message("", None));
+    }
 }
 
 /// Record one input-to-present sample (ADR-440): from `input_at` (the GUI thread
