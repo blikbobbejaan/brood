@@ -3773,3 +3773,22 @@ arguments, resolves on every call as a cold site does. The size is a compile-tim
 `spawn-live` at 200 000 processes: 943 → 927 MB peak RSS. `make ab --floor` (fib, pfib, bintree,
 spawn, spawn-live, pingpong, ring, json) and `make ab-vm`: noise. Not run on this machine: the new
 `call_ic_entry_tests`, in CI.
+
+2026-10-25 (native code reads a `def`'d vector inline): a `def` promotes its vector into the
+shared RUNTIME region, and the JIT's vector reads (`vector_ref`, `inline_vec_ref`) indexed only
+LOCAL vectors, so every element of a `def`'d one went through `brood_rt_vector_ref`: 31% of
+`matmul`'s cycles. `shared_vec_slot` now finds the `VecStore` itself. RUNTIME objects never move
+within their generation (`boxcar` is append-only), so the address is `boxcar`'s bucket base plus
+offset, with bucket `⌊log2(i + 32)⌋ − 5`. Each `CodeSlabs` keeps a table of bucket bases, filled
+by the callback on its first read in a bucket. The heap keeps each cached generation's
+`CodeSlabs` address beside `gen_cache_ver`, and native code trusts it only while that version
+equals the runtime's live `gen_version`: a replaced generation (Stage-4 free, compaction) bumps
+it, and the next read takes the callback. The `boxcar` layout is never read directly. A startup
+probe checks the formula against a real `boxcar::Vec`, and if they disagree every RUNTIME read
+keeps the callback. PRELUDE vectors keep the callback. `matmul` −20.4% on `make ab --floor`
+(1.61G → 1.21G instructions); nqueens, sieve, nbody, mandelbrot, json, regex, base64, sort, fib,
+bintree, persistent-map are noise. `json` reads +1.8% instructions at equal time (+1.3% at 15
+reps, inside the floor), most likely the larger code every vector read now compiles to, on the
+compiler thread. +24 B per heap. New guards: `shared_vector_read_test.blsp`,
+`the_shared_vector_location_is_where_boxcar_puts_it`, and
+`native_shared_vector_reads_survive_a_runtime_compaction`. Not run on this machine: those, in CI.

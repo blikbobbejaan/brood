@@ -708,6 +708,17 @@ pub struct Heap {
     /// replacement (a Stage-4 free or a compaction store), so it stays tiny.
     gen_cache_retired: RefCell<slabs::LazyVec<Arc<CodeSlabs>>>,
     gen_cache_ver: [Cell<u64>; 2],
+    /// The address of each cached generation's `CodeSlabs` (the target of `gen_cache[g]`),
+    /// set with `gen_cache_ver[g]`, for native code's inline RUNTIME vector read. That read
+    /// trusts it only while `gen_cache_ver[g]` equals the live [`Self::rt_gen_version`];
+    /// otherwise it takes the callback, whose `code_gen_ref` refreshes both. `usize`, not a
+    /// pointer, so `Heap` stays `Send`.
+    #[cfg(feature = "jit")]
+    gen_slabs_addr: [Cell<usize>; 2],
+    /// The address of this heap's [`RuntimeCode::gen_version`] — stable, since `runtime` is
+    /// never reassigned — so native code can read the live version without a call.
+    #[cfg(feature = "jit")]
+    rt_gen_version: usize,
     /// **Per-process parse cache for `(fn …)` literals**, keyed by the `MakeClosure`
     /// site's `fn_rest` AST handle. Building a closure re-parses its param
     /// lists/optionals/doc and walks the (RUNTIME) body cons list on every creation —
@@ -1457,6 +1468,8 @@ pub use self::runtime_code::{
 };
 mod slabs;
 mod small_map;
+#[cfg(feature = "jit")]
+pub(crate) use self::slabs::rt_vec_entry_stride;
 use self::slabs::{
     CodeSlabs, Slabs, owned_bytes, park_trim_due, park_trim_probe, shrink_slabs, slab_bytes,
     slab_capacity_bytes, slab_live_count,
@@ -1744,6 +1757,10 @@ impl Heap {
             gen_cache: [RefCell::new(None), RefCell::new(None)],
             gen_cache_retired: RefCell::new(slabs::LazyVec::default()),
             gen_cache_ver: [Cell::new(u64::MAX), Cell::new(u64::MAX)],
+            #[cfg(feature = "jit")]
+            gen_slabs_addr: [Cell::new(0), Cell::new(0)],
+            #[cfg(feature = "jit")]
+            rt_gen_version: &runtime.gen_version as *const std::sync::atomic::AtomicU64 as usize,
             closure_tpl_cache: RefCell::new(ClosureTemplateMap::default()),
             closure_tpl_ver: Cell::new(u64::MAX),
             closure_const_cache: RefCell::new(ConstClosureMap::default()),
@@ -2367,6 +2384,8 @@ impl Heap {
         if self.gen_cache_ver[g].get() != ver {
             // First read, or generation `g`'s `Arc` was replaced — reload and re-stamp.
             let fresh = self.runtime.gens[g].load_full();
+            #[cfg(feature = "jit")]
+            self.gen_slabs_addr[g].set(Arc::as_ptr(&fresh) as usize);
             if let Some(old) = self.gen_cache[g].borrow_mut().replace(fresh) {
                 self.gen_cache_retired.borrow_mut().push(old);
             }
@@ -2383,6 +2402,15 @@ impl Heap {
         // `release_retired_gens(&mut self)` — impossible while the returned `&self`-borrow
         // lives. So the target outlives the borrow.
         unsafe { &*ptr }
+    }
+
+    /// After the callback has read RUNTIME vector `id`, record its `boxcar` bucket's base
+    /// so native code reads the next vector in that bucket inline (`CodeSlabs::note_vector`).
+    #[cfg(feature = "jit")]
+    pub(crate) fn note_shared_vector(&self, id: VecId) {
+        if id.region() == RUNTIME {
+            self.code_gen_ref(id.code_gen()).note_vector(id.index());
+        }
     }
 
     /// Drop the generation `Arc`s the cache replaced since the last call. `&mut self` is the
@@ -2803,4 +2831,20 @@ mod handle_debug_tests {
             Some(("bytes", 10_000, 0))
         );
     }
+}
+
+/// Byte offsets native code reads a RUNTIME vector through (`jit_lower/emit.rs`,
+/// `shared_vec_slot`): the heap's cached generation versions and `CodeSlabs` addresses, the
+/// live-version address, and the bucket table inside a `CodeSlabs`.
+#[cfg(feature = "jit")]
+pub(crate) mod rt_vec_offsets {
+    use super::{Heap, slabs::CodeSlabs};
+    /// `Heap::gen_cache_ver` — `[Cell<u64>; 2]`, laid out as `[u64; 2]`.
+    pub(crate) const GEN_CACHE_VER: i32 = std::mem::offset_of!(Heap, gen_cache_ver) as i32;
+    /// `Heap::gen_slabs_addr` — `[Cell<usize>; 2]`, laid out as `[usize; 2]`.
+    pub(crate) const GEN_SLABS_ADDR: i32 = std::mem::offset_of!(Heap, gen_slabs_addr) as i32;
+    /// `Heap::rt_gen_version` — the address of the runtime's live `gen_version`.
+    pub(crate) const RT_GEN_VERSION: i32 = std::mem::offset_of!(Heap, rt_gen_version) as i32;
+    /// `CodeSlabs::vec_buckets` — `[AtomicUsize; RT_VEC_BUCKETS]`.
+    pub(crate) const VEC_BUCKETS: i32 = std::mem::offset_of!(CodeSlabs, vec_buckets) as i32;
 }

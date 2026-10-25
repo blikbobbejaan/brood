@@ -1207,3 +1207,45 @@ fn an_opted_out_heap_stays_opted_out_across_a_rebaseline() {
         "an armed heap takes the finite max(floor, 2 * live) threshold"
     );
 }
+
+/// Native code reads a `def`'d (RUNTIME) vector inline through the heap's cached generation
+/// address and a per-generation bucket table (`shared_vec_slot`), trusting them only while the
+/// cached generation version equals the runtime's live one. A compaction stores a fresh
+/// `CodeSlabs` (the rows move to new indices) and bumps that version, so the reads after it
+/// must take the callback and re-place everything. Were the version check skipped, the hot
+/// loop would index the retired generation's table: stale rows, or freed memory.
+#[test]
+fn native_shared_vector_reads_survive_a_runtime_compaction() {
+    LazyLock::force(&MEM_GUARD);
+    let mut interp = Interp::new();
+    interp.heap.set_rt_auto_collect(false);
+    // Superseded vector globals FIRST, so the compaction moves the live rows down.
+    interp
+        .eval_str(
+            "(defn churn (i n) \
+               (if (= i n) :done \
+                 (do (reflect/eval (list 'def 'junk \
+                       (list 'quote (into [] (map (range 40) (fn (j) [i j])))))) \
+                     (churn (+ i 1) n)))) \
+             (churn 0 30) \
+             (def rows (into [] (map (range 60) \
+               (fn (i) (into [] (map (range 9) (fn (j) (+ (* i 10) j)))))))) \
+             (defn row-sum (row j acc) (if (= j 9) acc (row-sum row (+ j 1) (+ acc (nth row j))))) \
+             (defn all-sum (i acc) (if (= i 60) acc (all-sum (+ i 1) (+ acc (row-sum (nth rows i) 0 0))))) \
+             (defn hot (k acc) (if (= k 0) acc (hot (- k 1) (all-sum 0 0))))",
+        )
+        .expect("setup errored");
+    // Σ over 60 rows × 9 columns of 10i + j.
+    let expected = "161460";
+    let v = interp.eval_str("(hot 3000 0)").expect("hot loop errored");
+    assert_eq!(interp.print(v), expected);
+    // `Some` is the compaction having run: a fresh `CodeSlabs` and a version bump.
+    interp
+        .heap
+        .runtime_collect()
+        .expect("collect should run for a single-process Interp");
+    let v = interp
+        .eval_str("(hot 3000 0)")
+        .expect("hot loop errored after the compaction");
+    assert_eq!(interp.print(v), expected);
+}
