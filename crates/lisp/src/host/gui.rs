@@ -594,6 +594,16 @@ pub enum Key {
     Named(&'static str),
 }
 
+/// What one press delivered, and so what is held while its key is down: a [`Key`], or
+/// the text a keystroke typed when it was more than one character (a compose sequence, a
+/// layout key that types two), delivered as `[:text "…"]`. `gui-held-key` reports it and
+/// its release names it, so a held compose sequence is held like any key.
+#[derive(Clone, PartialEq, Eq)]
+pub enum Keystroke {
+    Key(Key),
+    Text(String),
+}
+
 /// A character `c` under chord `modifiers`, Shift already folded into `c` — ONE rule for
 /// both frontends. Control chords are case-INsensitive (Emacs `C-a` = `C-A`); Meta and
 /// Super are case-SENSITIVE (`M-O` open-line-above ≠ `M-o`): a shifted letter stays

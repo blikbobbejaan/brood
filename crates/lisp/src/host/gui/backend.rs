@@ -21,8 +21,8 @@ pub(crate) use {
 };
 
 use super::{
-    CursorShape, Key, KeyRepeat, LatencySample, Mouse, MouseAction, MouseButton, Op, PAINT_PHASES,
-    WheelMode, WindowSpec,
+    CursorShape, Key, KeyRepeat, Keystroke, LatencySample, Mouse, MouseAction, MouseButton, Op,
+    PAINT_PHASES, WheelMode, WindowSpec,
 };
 
 use crate::core::sync::lock;
@@ -399,7 +399,7 @@ struct OpenReply {
     id: u64,
     size: Arc<Mutex<(u16, u16)>>,
     size_px: Arc<Mutex<(u32, u32)>>,
-    held_key: Arc<Mutex<Option<Key>>>,
+    held_key: Arc<Mutex<Option<Keystroke>>>,
     latency: Arc<Mutex<VecDeque<LatencySample>>>,
 }
 
@@ -411,10 +411,10 @@ struct WinHandle {
     /// The window's inner size in PHYSICAL pixels, republished on every resize, for
     /// `gui-size-px` — the frame a pixel-space app lays itself out in.
     size_px: Arc<Mutex<(u32, u32)>>,
-    /// The key the window currently sees as physically held (set on press,
-    /// cleared on release / focus loss), so `gui-held-key` can be polled as the
+    /// The keystroke the window currently sees as physically held (set on press,
+    /// cleared on release / focus loss) — a key, or the text a compose sequence typed, so `gui-held-key` can be polled as the
     /// source of truth for a held key — immune to a missed key-up (ADR-086).
-    held_key: Arc<Mutex<Option<Key>>>,
+    held_key: Arc<Mutex<Option<Keystroke>>>,
     /// The last `LATENCY_SAMPLES` input-to-present samples, newest last, for
     /// `gui-latency` (ADR-440).
     latency: Arc<Mutex<VecDeque<LatencySample>>>,
@@ -793,11 +793,11 @@ pub fn cell_size(id: u64, px: Option<f32>) -> Result<(u16, u16), String> {
 /// from press/release transitions (not winit's unreliable `ke.repeat`), so an app
 /// can confirm a key is still down before repeating — the source of truth that
 /// makes a missed key-up unable to cause runaway repeat (ADR-086).
-pub fn held_key(id: u64) -> Result<Option<Key>, String> {
+pub fn held_key(id: u64) -> Result<Option<Keystroke>, String> {
     let w = lock(windows());
     let h = w.get(&id).ok_or("gui window not open")?;
-    let k = *lock(&h.held_key);
-    Ok(k)
+    let held = lock(&h.held_key).clone();
+    Ok(held)
 }
 
 /// `(gui-latency id)` — window `id`'s recent input-to-present samples, oldest first
@@ -1217,11 +1217,11 @@ struct Win {
     /// fresh press in the same cell with the same button within `MULTI_CLICK_MS`
     /// increments the count (double/triple-click); anything else restarts at 1.
     last_click: Option<(u8, MouseButton, (u16, u16), Instant)>,
-    /// The key currently held down (set on a fresh press, cleared on its release
+    /// The keystroke currently held down (set on a fresh press, cleared on its release
     /// or focus loss), shared with the Brood side for `gui-held-key`. Also how the
-    /// event loop suppresses auto-repeat: a press for the key already here is a
-    /// repeat, dropped — reliable on Wayland where `ke.repeat` isn't (ADR-086).
-    held_key: Arc<Mutex<Option<Key>>>,
+    /// event loop tells an auto-repeat: a press of the keystroke already here is a
+    /// repeat — reliable on Wayland where `ke.repeat` isn't (ADR-086).
+    held_key: Arc<Mutex<Option<Keystroke>>>,
     /// The PHYSICAL key of the currently-held key (set with `held_key` on a fresh
     /// press). A release is matched to the held key by *physical* key, not logical:
     /// a shifted chord (`(` = Shift+9) whose modifier is released *before* the key
@@ -1229,6 +1229,11 @@ struct Win {
     /// clear a logical `(` — leaving `held_key` stuck and the repeat running away.
     /// The physical key is the same down and up regardless of modifiers (ADR-086).
     held_physical: Option<PhysicalKey>,
+    /// Every key down in the window, by physical key, with what its press delivered, so
+    /// its release names that press: `[:key-up "("]` though Shift came up first and the
+    /// release reads `9`, `[:key-up [:text "…"]]` for a compose sequence. Entries go on a
+    /// release, and all of them on focus loss (a release elsewhere is never seen).
+    down: Vec<(PhysicalKey, Keystroke)>,
     /// Cursor hot-zones from the last drawn frame (`Op::CursorZone`), flattened to
     /// grid-relative PIXEL rects + the shape to show while the pointer is inside —
     /// pixels because a zone inside a `CellRegion` is measured in that region's cells,
@@ -1452,6 +1457,7 @@ fn build_window(
         draw_input: None,
         latency: Arc::default(),
         held_physical: None,
+        down: Vec::new(),
         zones: Vec::new(),
         shape: None,
         scroll_velocity: 0.0,
@@ -2038,35 +2044,40 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // another press through `RepeatGate`, so at most one is ever undelivered
                 // and a slow frame cannot build a backlog that plays on after key-up. A
                 // keystroke that typed several characters (a compose sequence) is
-                // `[:text …]`, not a key: it is held physically, so its repeats are
-                // found the same way, and reported to `gui-held-key` as none.
+                // `[:text …]`, not a key, and is held as itself: its repeats are found
+                // the same way, and `gui-held-key` reports it as `[:text …]`.
                 ElementState::Pressed if !is_synthetic => {
                     if let Some(text) = typed_text(&ke, w.mods) {
-                        press(w, text_message(&text), None, ke.physical_key);
+                        press(w, Keystroke::Text(text), ke.physical_key);
                     } else if let Some(k) = translate_key(&ke, w.mods) {
-                        press(w, key_message(&k), Some(k), ke.physical_key);
+                        press(w, Keystroke::Key(k), ke.physical_key);
                     }
                 }
                 ElementState::Pressed => {} // synthetic press (focus-gain replay)
-                // Key release → clear `held_key` (so `gui-held-key` and the repeat
-                // stop) and deliver `[:key-up <held-key>]` as the fast-path stop
-                // signal. Match the release to the held key by its PHYSICAL key, not
-                // its logical one: a shifted chord (`(` = Shift+9) released
-                // modifier-first sends the *base* logical key (`9`) on release, which
-                // would never match a stored `(` — leaving the key stuck and the
-                // repeat running away. The physical key is invariant under modifiers,
-                // so it always matches; we then deliver the *held* logical key's
-                // key-up so the app's stop-by-key-name also fires. Other releases
-                // (a non-held key, a bare modifier) just relay their own key-up.
+                // Key release → `[:key-up <what its press delivered>]`, and, for the
+                // held key, nothing held any more (`let_go`: `gui-held-key` and the
+                // repeat stop). Matched by PHYSICAL key, not logical: a shifted chord
+                // (`(` = Shift+9) released modifier-first sends the *base* logical key
+                // (`9`), which would never match a stored `(` — leaving the key stuck
+                // and the repeat running away. The physical key is the same down and
+                // up, so `down` names the press. A release with no press seen here (a
+                // key pressed in another window) relays its own key; a bare modifier
+                // relays nothing.
                 // Synthetic releases count too (winit emits them for a key let go
                 // while unfocused — exactly when we must stop).
                 ElementState::Released => {
                     if w.held_physical == Some(ke.physical_key) {
-                        if let Some(k) = let_go(w) {
-                            deliver(w.subscriber, key_up_message(&k));
-                        }
-                    } else if let Some(k) = translate_key(&ke, w.mods) {
-                        deliver(w.subscriber, key_up_message(&k));
+                        let_go(w);
+                    }
+                    let pressed = w
+                        .down
+                        .iter()
+                        .position(|(down, _)| *down == ke.physical_key)
+                        .map(|at| w.down.swap_remove(at).1);
+                    if let Some(stroke) =
+                        pressed.or_else(|| translate_key(&ke, w.mods).map(Keystroke::Key))
+                    {
+                        deliver(w.subscriber, key_up_message(&stroke));
                     }
                 }
             },
@@ -2080,6 +2091,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // so `gui-held-key` must not keep reporting it (the poll-based stop)
                 // and the `:blur` is the event-based stop. Both, belt-and-braces.
                 let_go(w);
+                w.down.clear();
                 deliver(w.subscriber, Message::Keyword(value::intern("blur")));
                 // A composition does not survive the window losing focus on every
                 // platform's IME, and not every one says so: clear what the app shows.
@@ -2643,16 +2655,18 @@ fn update_ime_area(w: &mut Win) {
     );
 }
 
-/// Deliver one keystroke, `message`, from `physical` — `key` when it is a key, `None` for
-/// typed text. A press of the key already held (no release between) is its repeat: dropped
+/// Deliver one keystroke from `physical`. A press of the keystroke already held (no release between) is its repeat: dropped
 /// under `KeyRepeat::App`, where the app repeats from `gui-held-key`, and let through the
 /// `RepeatGate` under `KeyRepeat::Os`, so at most one is ever undelivered.
-fn press(w: &mut Win, message: Message, key: Option<Key>, physical: PhysicalKey) {
+fn press(w: &mut Win, stroke: Keystroke, physical: PhysicalKey) {
+    let message = keystroke_message(&stroke);
     let repeat = {
         let mut held = lock(&w.held_key);
-        let repeat = w.held_physical == Some(physical) && *held == key;
+        let repeat = w.held_physical == Some(physical) && held.as_ref() == Some(&stroke);
         if !repeat {
-            *held = key;
+            w.down.retain(|(down, _)| *down != physical);
+            w.down.push((physical, stroke.clone()));
+            *held = Some(stroke);
             w.held_physical = Some(physical);
         }
         repeat
@@ -2668,11 +2682,10 @@ fn press(w: &mut Win, message: Message, key: Option<Key>, physical: PhysicalKey)
 
 /// The held key was released, or the window lost focus with it down: nothing is held
 /// any more, and the repeat still queued for it is taken back (`RepeatGate::withdraw`).
-/// Returns the key that was held — `None` for typed text, or when nothing was.
-fn let_go(w: &mut Win) -> Option<Key> {
+fn let_go(w: &mut Win) {
     w.held_physical = None;
     w.repeat_gate.withdraw();
-    lock(&w.held_key).take()
+    *lock(&w.held_key) = None;
 }
 
 /// Where an input method's composition stands. `Ended` is the empty preedit winit sends

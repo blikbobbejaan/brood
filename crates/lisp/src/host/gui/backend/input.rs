@@ -19,15 +19,24 @@ pub(super) fn key_message(k: &Key) -> Message {
     }
 }
 
-/// A key *release*, as the `[:key-up <key>]` vector — the press value (what
-/// `key_message` yields) tagged so the app can tell it from a press. The press
+/// What a press delivers: the key value (`key_message`), or `[:text "…"]` for a keystroke
+/// that typed several characters.
+pub(super) fn keystroke_message(stroke: &Keystroke) -> Message {
+    match stroke {
+        Keystroke::Key(k) => key_message(k),
+        Keystroke::Text(text) => text_message(text),
+    }
+}
+
+/// A key *release*, as the `[:key-up <press>]` vector — what its press delivered
+/// (`keystroke_message`) tagged so the app can tell it from a press. The press
 /// itself stays the bare value, so existing dispatch is untouched; release is
-/// purely additive. Apps pair down→up to track a held key and drive their own
-/// repeat (consumer-paced), rather than relying on the OS auto-repeat we drop.
-pub(super) fn key_up_message(k: &Key) -> Message {
+/// purely additive. An app that repeats a held key itself (`{:key-repeat :app}`)
+/// pairs down→up to know when to stop.
+pub(super) fn key_up_message(stroke: &Keystroke) -> Message {
     Message::Vector(vec![
         Message::Keyword(value::intern("key-up")),
-        key_message(k),
+        keystroke_message(stroke),
     ])
 }
 
@@ -764,5 +773,46 @@ mod repeat_gate_tests {
         let next = RepeatGate::charge(&gate).expect("the gate reopened");
         assert!(!gate.withdrawn(), "the next hold's repeat is not withdrawn");
         drop(next);
+    }
+}
+
+#[cfg(test)]
+mod keystroke_tests {
+    use super::*;
+
+    /// `message` is `[:<tag> payload]`; the payload.
+    fn payload<'message>(message: &'message Message, tag: &str) -> &'message Message {
+        match message {
+            Message::Vector(parts) if parts.len() == 2 => {
+                assert!(
+                    matches!(parts[0], Message::Keyword(k) if k == value::intern(tag)),
+                    "tagged :{tag}"
+                );
+                &parts[1]
+            }
+            _ => panic!("a two-element vector"),
+        }
+    }
+
+    /// A release names what its press delivered: the key value for a key, `[:text …]` for
+    /// a keystroke that typed several characters.
+    #[test]
+    fn a_release_is_tagged_with_what_its_press_delivered() {
+        let release = key_up_message(&Keystroke::Key(Key::Char('(')));
+        assert!(matches!(payload(&release, "key-up"), Message::Str(s) if s == "("));
+
+        let release = key_up_message(&Keystroke::Text("ǘ̃".to_string()));
+        let text = payload(payload(&release, "key-up"), "text");
+        assert!(matches!(text, Message::Str(s) if s == "ǘ̃"));
+    }
+
+    #[test]
+    fn a_keystroke_delivers_its_key_or_its_text() {
+        assert!(matches!(
+            keystroke_message(&Keystroke::Key(Key::Named("up"))),
+            Message::Keyword(k) if k == value::intern("up")
+        ));
+        let press = keystroke_message(&Keystroke::Text("ab".to_string()));
+        assert!(matches!(payload(&press, "text"), Message::Str(s) if s == "ab"));
     }
 }

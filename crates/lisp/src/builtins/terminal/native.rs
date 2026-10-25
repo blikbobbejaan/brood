@@ -1232,15 +1232,20 @@ pub(in crate::builtins) fn gui_key_to_value(heap: &mut Heap, k: crate::host::gui
     }
 }
 
-/// `(gui-held-key id)` — the key window `id` currently sees as physically held (the
-/// same value its press delivered), or nil when none. Tracked from press/release
+/// `(gui-held-key id)` — the keystroke window `id` currently sees as physically held (the
+/// same value its press delivered: a key, or `[:text "…"]` for a keystroke that typed
+/// several characters), or nil when none. Tracked from press/release
 /// transitions, not winit's unreliable `ke.repeat`, so it's the source of truth a
 /// consumer-paced key repeat polls to stop the instant the key is up — making a
 /// missed key-up unable to cause runaway repeat (ADR-086).
 pub(in crate::builtins) fn gui_held_key(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let id = gui_window_id(heap, "%gui-held-key", arg(args, 0))?;
     match crate::host::gui::held_key(id).map_err(LispError::runtime)? {
-        Some(k) => Ok(gui_key_to_value(heap, k)),
+        Some(crate::host::gui::Keystroke::Key(k)) => Ok(gui_key_to_value(heap, k)),
+        Some(crate::host::gui::Keystroke::Text(text)) => {
+            let text = heap.alloc_string(&text);
+            Ok(heap.alloc_vector2(value::kw("text"), text))
+        }
         None => Ok(Value::nil()),
     }
 }
