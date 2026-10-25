@@ -134,6 +134,71 @@ fn check_boot_runs_nothing() {
     );
 }
 
+#[test]
+fn check_boot_starts_and_stops_an_application_and_fails_when_it_cannot_start() {
+    // ADR-436: an application's `:start` is where a missing dependency or a bad child spec
+    // dies, so for an application `:main` the check starts it and stops it.
+    let tmp = project("bootapp");
+    let root = &tmp.path;
+    let main_source = |store_start: &str| {
+        format!(
+            "(defmodule main \"entry\")\n\n\
+             (application/defapp store\n  \
+               {{:start (fn () {store_start}) :stop (fn (_root) (io/puts \"store stopped\"))}})\n\n\
+             (application/defapp main\n  \
+               {{:start (fn () (io/puts \"main started\") :main)\n   \
+                 :stop (fn (_root) (io/puts \"main stopped\"))\n   \
+                 :requires [store]}})\n"
+        )
+    };
+    write(
+        &root.join("src/main.blsp"),
+        &main_source("(io/puts \"store started\") :store"),
+    );
+    let (code, out) = nest(root, &["run", "--check-boot"]);
+    assert_eq!(
+        code, 0,
+        "a healthy application must boot-check clean:\n{out}"
+    );
+    let order: Vec<&str> = out
+        .lines()
+        .filter(|line| line.ends_with(" started") || line.ends_with(" stopped"))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            "store started",
+            "main started",
+            "main stopped",
+            "store stopped"
+        ],
+        "requirements start first and everything stops in reverse:\n{out}"
+    );
+    assert!(
+        out.contains("started and stopped store, main"),
+        "the check must say what it started:\n{out}"
+    );
+
+    // SABOTAGE: a start that raises, the way a missing dependency does at boot.
+    write(
+        &root.join("src/main.blsp"),
+        &main_source("(error \"store has no disk\")"),
+    );
+    let (code, out) = nest(root, &["run", "--check-boot"]);
+    assert_ne!(
+        code, 0,
+        "an application that cannot start must fail:\n{out}"
+    );
+    assert!(
+        out.contains("store has no disk"),
+        "the failure must carry the start's error:\n{out}"
+    );
+    assert!(
+        !out.contains("main started"),
+        "nothing that requires a failed start may start:\n{out}"
+    );
+}
+
 // ---------- nest check --fix-renames ----------
 
 /// A project carrying one of each rename-recovery class, so a single run exercises

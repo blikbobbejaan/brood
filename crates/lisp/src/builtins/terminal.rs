@@ -51,8 +51,15 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![int], string.union(kw).union(nil_ty)),
         &["ms"],
-        "Wait up to ms milliseconds for an input event; return a key (a 1-char string for printables, or a keyword for specials: :up :down :left :right :enter :escape :backspace :tab :back-tab :delete :home :end :page-up :page-down, ctrl combos like :ctrl-c, alt combos like :alt-f), a mouse event as a vector [:mouse action button row col mods] (action: :press :release :drag :scroll-up :scroll-down — :drag is motion with a button held, reported once per cell crossed; button: :left :right :middle or nil for scroll; row/col 0-based cells; mods a vector of held modifier keywords in :ctrl :alt :shift order, [] when none — so Ctrl+wheel etc. are bindable), or nil on timeout. Always pass a finite ms.",
+        "Wait up to ms milliseconds for an input event; return a key (a 1-char string for printables, or a keyword for specials: :up :down :left :right :enter :escape :backspace :tab :back-tab :delete :home :end :page-up :page-down, ctrl combos like :ctrl-c, alt combos like :alt-f), a mouse event as a vector [:mouse action button row col mods] (action: :press :release :drag :scroll-up :scroll-down — :drag is motion with a button held, reported once per cell crossed; button: :left :right :middle or nil for scroll; row/col 0-based cells; mods a vector of held modifier keywords in :ctrl :alt :shift order, [] when none — so Ctrl+wheel etc. are bindable), or nil on timeout. In a terminal that speaks the kitty keyboard protocol (term-enter turns it on) a release is also delivered, as [:key-up press] with press the value that key's press delivered (though Ctrl or Shift came up first), and a held key's repeat already superseded in the buffered input (by a later repeat or the release) is dropped, so a backlog never plays on after the key is up; a press is never dropped. term-held-key names the key held. Always pass a finite ms.",
         term_poll);
+    primitives.def(
+        "%term-held-key",
+        Arity::exact(0),
+        Sig::new(vec![], string.union(kw).union(nil_ty)),
+        &[],
+        "The key held down in the terminal now — the same value its press delivered (a 1-char string, or a keyword like :ctrl-n / :up) — or nil when none is. Known only in a terminal that speaks the kitty keyboard protocol (kitty, foot, WezTerm, Ghostty, Alacritty 0.13+), which term-enter turns on: it reports releases. A key becomes held from its press once the terminal has reported a release or a repeat of it, so a key whose release it never sends is never held. Always nil in any other terminal, and outside term-enter.",
+        term_held_key);
     primitives.def(
         "%term-draw",
         Arity::exact(1),
@@ -218,6 +225,13 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["id"],
         "Window id's recent input-to-present samples, oldest first (at most 64), each a map of milliseconds: :total — from the GUI thread receiving an input (a key press, a mouse button, a wheel step) to the paint of the first frame that arrived after it returning from its present — and :paint, that paint's share; a frame drawn by the GPU render target adds its phases :encode :upload :acquire :submit :present. Which frame answers an input cannot be known across the app's mailbox, so the next frame drawn is taken as the answer; a present returning means the compositor has the frame, not that the panel shows it (up to one refresh more). Empty headless. BROOD_GUI_TRACE=1 prints each sample as it is taken. ADR-440.",
         gui_latency);
+    primitives.def(
+        "%gui-key-repeats",
+        Arity::exact(1),
+        Sig::new(vec![int], map_ty),
+        &["id"],
+        "How window id's held keys have repeated since it opened, as a map: :delivered, the OS repeats delivered to the app; :dropped, those dropped because one was still waiting (the app fell behind the repeat rate); and, from the last key that repeated, the desktop's :delay before its first repeat and the :interval between its last two, in milliseconds (nil before any key has repeated). Counts every repeat under {:key-repeat :os}; under :app nothing is delivered or dropped, the timings still kept. All zero headless. ADR-441.",
+        gui_key_repeats);
     primitives.def(
         "%gui-settle",
         Arity::exact(1),

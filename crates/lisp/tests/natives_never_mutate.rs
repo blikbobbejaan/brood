@@ -52,6 +52,7 @@ const EFFECTFUL: &[&str] = &[
     "%gui-fullscreen!",
     "%gui-grab-cursor",
     "%gui-held-key",
+    "%gui-key-repeats",
     "%gui-icon!",
     "%gui-input!",
     "%gui-inset!",

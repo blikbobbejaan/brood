@@ -19,15 +19,24 @@ pub(super) fn key_message(k: &Key) -> Message {
     }
 }
 
-/// A key *release*, as the `[:key-up <key>]` vector — the press value (what
-/// `key_message` yields) tagged so the app can tell it from a press. The press
+/// What a press delivers: the key value (`key_message`), or `[:text "…"]` for a keystroke
+/// that typed several characters.
+pub(super) fn keystroke_message(stroke: &Keystroke) -> Message {
+    match stroke {
+        Keystroke::Key(k) => key_message(k),
+        Keystroke::Text(text) => text_message(text),
+    }
+}
+
+/// A key *release*, as the `[:key-up <press>]` vector — what its press delivered
+/// (`keystroke_message`) tagged so the app can tell it from a press. The press
 /// itself stays the bare value, so existing dispatch is untouched; release is
-/// purely additive. Apps pair down→up to track a held key and drive their own
-/// repeat (consumer-paced), rather than relying on the OS auto-repeat we drop.
-pub(super) fn key_up_message(k: &Key) -> Message {
+/// purely additive. An app that repeats a held key itself (`{:key-repeat :app}`)
+/// pairs down→up to know when to stop.
+pub(super) fn key_up_message(stroke: &Keystroke) -> Message {
     Message::Vector(vec![
         Message::Keyword(value::intern("key-up")),
-        key_message(k),
+        keystroke_message(stroke),
     ])
 }
 
@@ -492,33 +501,6 @@ fn find_cursor(
     })
 }
 
-/// The gate that keeps at most ONE OS auto-repeat undelivered per window
-/// (`{:key-repeat :os}`, ADR-441). A repeat is delivered with a credit charged here; the
-/// credit comes back when the message leaves the mailbox (`process::deliver_credited`),
-/// and until it does, further repeats are dropped. So an app whose frame is slower than
-/// the repeat rate repeats once per turn instead of queueing a burst that plays on after
-/// the key is released — the ADR-086 bug — while a fast app gets every repeat.
-#[derive(Default)]
-pub(super) struct RepeatGate {
-    outstanding: AtomicBool,
-}
-
-impl RepeatGate {
-    /// A credit for one repeat, or `None` while the last one is still queued.
-    pub(super) fn charge(gate: &Arc<RepeatGate>) -> Option<crate::process::DeliveryCredit> {
-        gate.outstanding
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .ok()?;
-        Some(crate::process::DeliveryCredit::new(gate.clone(), 1))
-    }
-}
-
-impl crate::process::CreditSource for RepeatGate {
-    fn release(&self, _cost: usize) {
-        self.outstanding.store(false, Ordering::Release);
-    }
-}
-
 #[cfg(test)]
 mod shift_char_tests {
     use super::shift_char;
@@ -709,16 +691,45 @@ mod adr_431_tests {
         assert!(matches!(&several[1], Message::Str(s) if s == "啊不"));
         assert!(commit_message("", true).is_none());
     }
+}
+
+#[cfg(test)]
+mod keystroke_tests {
+    use super::*;
+
+    /// `message` is `[:<tag> payload]`; the payload.
+    fn payload<'message>(message: &'message Message, tag: &str) -> &'message Message {
+        match message {
+            Message::Vector(parts) if parts.len() == 2 => {
+                assert!(
+                    matches!(parts[0], Message::Keyword(k) if k == value::intern(tag)),
+                    "tagged :{tag}"
+                );
+                &parts[1]
+            }
+            _ => panic!("a two-element vector"),
+        }
+    }
+
+    /// A release names what its press delivered: the key value for a key, `[:text …]` for
+    /// a keystroke that typed several characters.
+    #[test]
+    fn a_release_is_tagged_with_what_its_press_delivered() {
+        let release = key_up_message(&Keystroke::Key(Key::Char('(')));
+        assert!(matches!(payload(&release, "key-up"), Message::Str(s) if s == "("));
+
+        let release = key_up_message(&Keystroke::Text("ǘ̃".to_string()));
+        let text = payload(payload(&release, "key-up"), "text");
+        assert!(matches!(text, Message::Str(s) if s == "ǘ̃"));
+    }
 
     #[test]
-    fn the_repeat_gate_holds_one_until_it_is_received() {
-        let gate = Arc::new(RepeatGate::default());
-        let credit = RepeatGate::charge(&gate).expect("the first repeat goes");
-        assert!(
-            RepeatGate::charge(&gate).is_none(),
-            "a second waits while the first is queued"
-        );
-        drop(credit); // the message left the mailbox
-        assert!(RepeatGate::charge(&gate).is_some());
+    fn a_keystroke_delivers_its_key_or_its_text() {
+        assert!(matches!(
+            keystroke_message(&Keystroke::Key(Key::Named("up"))),
+            Message::Keyword(k) if k == value::intern("up")
+        ));
+        let press = keystroke_message(&Keystroke::Text("ab".to_string()));
+        assert!(matches!(payload(&press, "text"), Message::Str(s) if s == "ab"));
     }
 }

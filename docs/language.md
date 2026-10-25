@@ -2568,9 +2568,11 @@ reading, which is OTP's `logger` behaviour.
 `:int` (Ctrl-C) or `:hup` — to the calling process as the message
 `[:signal sig]` instead of its default action (for all three, ending the
 runtime). `(os/trap sig pid)` names another process; `(os/trap sig nil)`
-restores the default. One subscriber per signal, and the call returns the
-previous one. If the subscriber has exited when the signal arrives, the default
-action runs, so a forgotten trap never leaves a program unkillable.
+gives the signal back what it did before it was trapped (the default, or the
+`SIG_IGN` a `nohup` leaves). One subscriber per signal, and the call returns
+the previous one. If the subscriber has exited when the signal arrives, the
+signal does what it did before the trap, so a forgotten trap never leaves a
+program unkillable.
 
 **An application** (`std/proc/application.blsp`, ADR-436) is what a
 long-running program starts, in what order, and how it stops:
@@ -2593,7 +2595,9 @@ children — and is killed if it is still running after 5 s. If a root process
 exits by itself, the rest stop, and `run` returns for a `:normal` exit and
 raises with the reason otherwise. A start that raises stops what already
 started, in reverse, and re-raises. `nest run --check-boot` starts the
-application and stops it, running nothing else.
+application and stops it, running nothing else; the boot check `nest release`
+runs on the binary it built only resolves it, since that runs on the build
+machine, where a start would bind the application's ports.
 `application/start`, `application/stop`, `application/run` and
 `application/check` are the same steps by hand.
 

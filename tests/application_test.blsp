@@ -73,14 +73,18 @@
 (describe "running"
   :isolated (test "shutdown stops everything in reverse and run returns :ok"
     (let (me (self))
+      ;; A trap made before `run` is handed back after it.
+      (os/trap :term)
       (spawn (send me [:ran (application/run top)]))
       (eventually "the application is running" (fn () (proc/whereis :application)))
       (shutdown)
       (receive
         ([:ran outcome] (assert= :ok outcome))
         (after *test-wait-ms* (assert= :ok :timeout)))
-      (assert (nil? (proc/whereis :application)))))
-  (test "a root that crashes stops the rest and run raises with its reason"
+      (assert (nil? (proc/whereis :application)))
+      (assert= me (os/trap :term nil))))
+  ;; Isolated like the test above: `run` traps the whole runtime's SIGTERM and Ctrl-C.
+  :isolated (test "a root that crashes stops the rest and run raises with its reason"
     (let (me (self))
       (spawn (send me [:ran (try (application/run crashing) (catch e (error-message e)))]))
       (receive

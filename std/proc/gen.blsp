@@ -309,7 +309,8 @@ clause is dropped (so the mailbox can't leak)."
   (when (get st :timer) (timer/cancel (get st :timer)))
   (let (generation (inc (get st :generation))
         ms (get opts :timeout))
-    (assoc (assoc st :generation generation)
+    (assoc st
+      :generation generation
       :timer (when ms (timer/send-after ms (self) [:$state-timeout generation])))))
 
 (defn- statem-handle (handler st event)
@@ -320,7 +321,7 @@ clause is dropped (so the mailbox can't leak)."
       ([:keep data] (assoc st :data data))
       ([:next state data] (statem-enter handler st state data {}))
       ([:next state data opts] (statem-enter handler st state data opts))
-      ([:stop data] (assoc (assoc st :data data) :stopped true))
+      ([:stop data] (assoc st :data data :stopped true))
       (_ (error "defstatem: a clause returned "
            (pr-str action)
            " (expected [:next state data], [:next state data opts], [:keep data], [:postpone] or [:stop data])")))))
@@ -332,7 +333,7 @@ clause is dropped (so the mailbox can't leak)."
     (statem-replay handler (statem-handle handler st (first events)) (rest events))))
 
 (defn- statem-enter (handler st state data opts)
-  (let (moved (statem-arm (assoc (assoc st :state state) :data data) opts))
+  (let (moved (statem-arm (assoc st :state state :data data) opts))
     (if (= state (get st :state))
       moved
       (statem-replay handler (assoc moved :postponed []) (get st :postponed)))))
@@ -343,18 +344,17 @@ clause is dropped (so the mailbox can't leak)."
       (when (get st :timer) (timer/cancel (get st :timer)))
       (when terminate (terminate :normal (get st :data)))
       nil)
-    (let (generation (get st :generation)
-          event (receive
-                  ([:$cast payload] [:cast payload])
-                  ([:$call from r payload] [:call payload [from r]])
-                  ([:$stop] :stop)
-                  ([:$state-timeout ^generation] [:timeout])
-                  ([:$state-timeout _] :stale)
-                  (message [:info message])))
-      (cond
-        (= event :stop) (statem-loop handler terminate (assoc st :stopped true))
-        (= event :stale) (statem-loop handler terminate st)
-        else (statem-loop handler terminate (statem-handle handler st event))))))
+    (let (generation (get st :generation))
+      (statem-loop handler
+        terminate
+        (receive
+          ([:$cast payload] (statem-handle handler st [:cast payload]))
+          ([:$call from r payload] (statem-handle handler st [:call payload [from r]]))
+          ([:$stop] (assoc st :stopped true))
+          ([:$state-timeout ^generation] (statem-handle handler st [:timeout]))
+          ;; A timeout armed in a state since left.
+          ([:$state-timeout _] st)
+          (message (statem-handle handler st [:info message])))))))
 
 (defn run-statem (handler terminate initial)
   "The loop a `defstatem` expands to; call `gen/start` on the machine, not this.
@@ -376,11 +376,13 @@ clause is dropped (so the mailbox can't leak)."
 ;; state's keyword, or `_` for an `any` clause. A `call` clause binds `reply`, the token
 ;; `gen/reply` answers, so a call may be answered now, later, or postponed with it.
 (defn- statem-clause (state-pattern c)
-  (let (kind (first c))
+  (let (kind (first c)
+        pattern (second c)
+        body (drop c 2))
     (cond
-      (= kind 'cast) `([~state-pattern [:cast ~(second c)]] ~@(rest (rest c)))
-      (= kind 'call) `([~state-pattern [:call ~(second c) ~'reply]] ~@(rest (rest c)))
-      (= kind 'info) `([~state-pattern [:info ~(second c)]] ~@(rest (rest c)))
+      (= kind 'cast) `([~state-pattern [:cast ~pattern]] ~@body)
+      (= kind 'call) `([~state-pattern [:call ~pattern ~'reply]] ~@body)
+      (= kind 'info) `([~state-pattern [:info ~pattern]] ~@body)
       (= kind 'timeout) `([~state-pattern [:timeout]] ~@(rest c))
       else
         (error "defstatem: a state's clause must start with cast, call, info or timeout, got "
@@ -439,6 +441,8 @@ with `gen/start`; drive it with `gen/cast`, `gen/call` and `gen/stop`.
                   `(do ~@(rest init-clause))
                   `[~(first (first state-blocks)) ~data-sym])
         entry `(gen/run-statem ~handler ~terminate ~initial))
+    (when (not (symbol? data-sym))
+      (error "defstatem " name ": the parameter list must start with the data parameter"))
     (when (empty? state-blocks) (error "defstatem " name ": no states"))
     (when (not (= known (count clauses)))
       (error "defstatem "

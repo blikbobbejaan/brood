@@ -121,6 +121,9 @@
   (test "a clause that is no state, init, terminate or any is an error"
     (assert-error "every clause must be"
       (reflect/eval-string "(gen/defstatem bad (d) (:a (cast :x [:keep d])) (bogus 1))")))
+  (test "a machine needs its data parameter"
+    (assert-error "must start with the data parameter"
+      (reflect/eval-string "(gen/defstatem bad () (:a (cast :x [:keep nil])))")))
   (test "a state clause must be cast, call, info or timeout"
     (assert-error "must start with cast"
       (reflect/eval-string "(gen/defstatem bad (d) (:a (query :x d)))")))

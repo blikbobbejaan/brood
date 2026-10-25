@@ -252,8 +252,16 @@ pub(super) struct Envelope {
 /// socket past a high-water mark and resumes when enough of its chunks are consumed).
 /// `release` runs on whatever thread drops the envelope, possibly under that mailbox's
 /// state lock, so it must not block or take a mailbox lock.
+///
+/// A source may also take back a message it delivered and that has not been received
+/// (`withdrawn`): a receive scanning past it drops it unseen, which returns its credit.
+/// A window's key-repeat gate does, so the repeat queued behind a slow frame is not
+/// played after the key is released. Read under the mailbox lock, so it must not block.
 pub(crate) trait CreditSource: Send + Sync {
     fn release(&self, cost: usize);
+    fn withdrawn(&self) -> bool {
+        false
+    }
 }
 
 /// One message's share of a [`CreditSource`]'s budget. The source charges `cost` when
@@ -268,6 +276,11 @@ pub(crate) struct DeliveryCredit {
 impl DeliveryCredit {
     pub(crate) fn new(source: Arc<dyn CreditSource>, cost: usize) -> DeliveryCredit {
         DeliveryCredit { source, cost }
+    }
+
+    /// Whether the source has taken this message back (see [`CreditSource::withdrawn`]).
+    fn withdrawn(&self) -> bool {
+        self.source.withdrawn()
     }
 }
 
@@ -1720,6 +1733,16 @@ fn scan_mailbox(
                     st.scanned = st.queue.len();
                     return Ok(None); // scanned to the end with no match
                 }
+                // A message its source took back is dropped unseen, returning its credit
+                // (`CreditSource::withdrawn`); the next one moves up to `*i`.
+                if st.queue[*i]
+                    .credit
+                    .as_ref()
+                    .is_some_and(|credit| credit.withdrawn())
+                {
+                    st.queue.remove(*i);
+                    continue;
+                }
                 let rejected = match &st.queue[*i].msg {
                     Payload::Wire(m) => tag_rejects(&tagbuf[..ntags.unwrap_or(0)], m),
                     // Already a heap value: the copy is spent, so there is nothing to save
@@ -2428,6 +2451,68 @@ mod tests {
                 Some(crate::error::Control::Suspend { deadline: None })
             ),
             "an indefinite receive carries no deadline"
+        );
+    }
+
+    /// A credited message its source took back before it was received (a key repeat queued
+    /// behind a slow frame, the key since released) is dropped by the receive that reaches
+    /// it — not matched, not left queued — and dropping it returns the source's credit.
+    #[test]
+    fn a_withdrawn_message_is_dropped_unseen_and_returns_its_credit() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        #[derive(Default)]
+        struct Source {
+            withdrawn: AtomicBool,
+            released: AtomicUsize,
+        }
+        impl CreditSource for Source {
+            fn release(&self, cost: usize) {
+                self.released.fetch_add(cost, Ordering::SeqCst);
+            }
+            fn withdrawn(&self) -> bool {
+                self.withdrawn.load(Ordering::SeqCst)
+            }
+        }
+
+        let mailbox = Mailbox::new();
+        let source = Arc::new(Source::default());
+        {
+            let mut envelope = Envelope::plain(Message::Keyword(value::intern("down")));
+            envelope.credit = Some(Box::new(DeliveryCredit::new(source.clone(), 1)));
+            crate::core::sync::lock(&mailbox.state).push(envelope);
+        }
+        source.withdrawn.store(true, Ordering::SeqCst);
+
+        let ctx = crate::process::scheduler::Ctx {
+            pid: 999_998,
+            mailbox: Arc::clone(&mailbox),
+            capture: Vec::new(),
+        };
+        crate::process::scheduler::CURRENT.with(|c| *c.borrow_mut() = Some(ctx));
+        let mut heap = Heap::new();
+        // `(receive (after 0 …))` over it: the matcher (nil here) is never applied, since
+        // the only message is dropped before a clause sees it, so the receive times out.
+        let answer = receive_match(
+            &mut heap,
+            Value::nil(),
+            Value::int(0),
+            Value::nil(),
+            Value::nil(),
+        );
+        crate::process::scheduler::CURRENT.with(|c| *c.borrow_mut() = None);
+
+        assert!(
+            matches!(answer, Ok(Value::Nil)),
+            "nothing is left to receive, so the receive times out"
+        );
+        assert!(
+            crate::core::sync::lock(&mailbox.state).queue.is_empty(),
+            "the withdrawn message is gone from the queue"
+        );
+        assert_eq!(
+            source.released.load(Ordering::SeqCst),
+            1,
+            "dropping it returned its credit"
         );
     }
 }

@@ -3676,6 +3676,36 @@ the last iteration's capture (44 cases). Two more cases differ by design: a `]` 
 closes it (`[]` is the empty set). Also `os/trap`'s pipe uses `pipe` + `FD_CLOEXEC`; macOS has
 no `pipe2`.
 
+2026-10-25 (review of ADR-435..437): lifting a trap, or a dead subscriber giving one up,
+set the signal to `SIG_DFL`, so a `nohup`'d program that trapped SIGHUP died on its next
+hangup, and the REPL lost its Ctrl-C handler. The first trap now saves the disposition and
+both paths put it back, under a lock that also stops a trap racing the reader thread
+(`crates/cli/tests/application_sigterm.rs` starts a runtime with SIGHUP ignored).
+`application/run` hands each signal back to whoever trapped it before, rather than to
+nobody, and drops its root monitors before stopping them; its crash test is `:isolated`, as
+it traps the test runner's own signals. `defstatem` refuses a machine with no data
+parameter, and a backwards `{3,1}` is literal text as the regex dialect's malformation rule
+says, rather than an engine error. Not run on this machine: every test, and the new ones
+run in CI.
+
+2026-10-25 (simplification, no behaviour change): a signal's subscriber and its saved
+disposition are one `Trap` behind one lock (`SIGNAL_TRAPS`), so the reader thread no longer
+needs a compare-and-retry against an atomic. `application/start` is a fold over the start
+order, which is a plain vector (the `[seen order]` pair and `start-each` are gone), and
+returns a vector. `defstatem`'s loop takes the next state straight from `receive`, without
+the `:stop`/`:stale` sentinels. `project-entry` resolves an entry point once for
+`project-entry-fn` and `check-boot`, replacing the near-copy `project-entry-application`.
+
+2026-10-25 (ADR-436, the two boot checks): `nest run --check-boot` starts and stops an
+application `:main`; a release's boot check resolves it and says `an application, not
+started`, because it runs on the build machine. That difference is now the rule, written in
+ADR-436 and in both checks: they resolve through one public `project-run/project-entry` and
+print through one `project-run/boot-ok-message`, so the start is the only step between them.
+New guards: `--check-boot` prints the starts and stops in dependency order and fails on a
+start that raises (`crates/nest/tests/boot_check_and_renames.rs`), and a bundle's boot check
+never starts the application the same binary starts when run
+(`crates/cli/tests/release_bundle.rs`). Not run on this machine.
+
 2026-10-25 (`count` and `(nth v i default)` inline; KI-301): profiling `json` found that a call
 to a small prelude function cost ~2 000–3 000 instructions from native code, whatever it did:
 `count` of a four-element vector 3 100, `(nth v i -1)` 1 200, `seq/subvec` ~6 000. `count`

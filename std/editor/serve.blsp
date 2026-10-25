@@ -51,7 +51,10 @@ window) — same protocol, different frontend. Many clients may attach at once
 (defn remote-display (client cols rows)
   "A `ui-run` display (`{:enter :leave :size :draw :poll}`) bound to a remote
 frontend `client` (its pid): `:draw` ships the frame to `client` as `[:frame f]`,
-`:poll` returns the next key the client shipped back (`[:key k]`). Runs inside the
+`:poll` returns the next key the client shipped back (`[:key k held?]`, `held?`
+whether a key is down in the client's window, which `:key-held?` then answers, so the
+session's `ui-run` holds its idle timers through a held key as a local window's does; a
+client that sends `[:key k]` is taken as holding none). Runs inside the
 session process (the one `ui-run` runs in), so the client's keys land in *this*
 process's mailbox. `:size` is the `[cols rows]` the client reported at attach (live
 resize is deferred — re-attach to resize). `:leave` tells the client to restore its
@@ -67,33 +70,40 @@ those messages would strand in the session's mailbox (a selective receive never
 consumes them), leaving a served app deaf to everything but keys.
 
     (editor/serve/remote-display client 80 24)   ;=> {:enter … :leave … :size … :draw … :poll …} shipping frames to `client`"
-  {:enter (fn () nil)
-   ; the *client* owns the real terminal, not us
-   :leave (fn () (send client [:bye]))
-   :size (fn () [cols rows])
-   :draw (fn (f) (send client [:frame f]))
-   ;; The pixel-space seam (ADR-374) over the wire: a texture, its release, and the
-   ;; window options an app asks for after attaching (`:input :pixels`, a title) each
-   ;; go to the client as a message its loop applies to its own display — so a game
-   ;; written against a display map serves to a thin client's window unchanged.
-   :texture (fn (tex rgba w h) (send client [:texture tex rgba w h]))
-   :texture-free (fn (tex) (send client [:texture-free tex]))
-   :sound (fn (snd pcm rate channels) (send client [:sound-data snd pcm rate channels]))
-   :sound-free (fn (snd) (send client [:sound-free snd]))
-   :configure (fn (o) (send client [:window o]))
-   :poll (fn (ms)
-           (receive
-             ([:key k] k)
-             ([:detach] :close)
-             ;; only THE CLIENT's death closes the session — the session process may
-             ;; monitor other things (a collab app monitors every hosted buffer process,
-             ;; whose [:down …] must reach its update as app input for rehost/reshare,
-             ;; not tear the session down)
-             ; client process died / link net-split
-             ([:down _ ^client _] :close)
-             ; anything else is async app input — the event bus, as local displays deliver it
-             (m m)
-             (after ms nil)))})
+  (let (held (table))
+    {:enter (fn () nil)
+     ; the *client* owns the real terminal, not us
+     :leave (fn () (send client [:bye]))
+     :size (fn () [cols rows])
+     ;; whether a key is down in the CLIENT's window, as its last key said: every change
+     ;; to it comes with a key, so this is as current as the input the loop has taken.
+     ;; The table dies with the session process, which made it
+     :key-held? (fn () (table-get held :held? false))
+     :draw (fn (f) (send client [:frame f]))
+     ;; The pixel-space seam (ADR-374) over the wire: a texture, its release, and the
+     ;; window options an app asks for after attaching (`:input :pixels`, a title) each
+     ;; go to the client as a message its loop applies to its own display — so a game
+     ;; written against a display map serves to a thin client's window unchanged.
+     :texture (fn (tex rgba w h) (send client [:texture tex rgba w h]))
+     :texture-free (fn (tex) (send client [:texture-free tex]))
+     :sound (fn (snd pcm rate channels) (send client [:sound-data snd pcm rate channels]))
+     :sound-free (fn (snd) (send client [:sound-free snd]))
+     :configure (fn (o) (send client [:window o]))
+     :poll (fn (ms)
+             (receive
+               ([:key k held?] (do (table-put held :held? held?) k))
+               ; a client that does not say
+               ([:key k] k)
+               ([:detach] :close)
+               ;; only THE CLIENT's death closes the session — the session process may
+               ;; monitor other things (a collab app monitors every hosted buffer process,
+               ;; whose [:down …] must reach its update as app input for rehost/reshare,
+               ;; not tear the session down)
+               ; client process died / link net-split
+               ([:down _ ^client _] :close)
+               ; anything else is async app input — the event bus, as local displays deliver it
+               (m m)
+               (after ms nil)))}))
 ;; ---- daemon side -------------------------------------------------------------
 
 (defn- serve-session (client cols rows opts make-model view update)
@@ -195,14 +205,16 @@ that died *without* a clean `[:bye]` (e.g. a throwing `make-model`, which runs b
 
 (defn- attach-loop (peer session)
   "The thin client loop: draw any pushed frames, then poll the local terminal briefly
-and ship each key to the daemon's `session`. Tail-recursive (O(1) stack). Ends when
+and ship each key to the daemon's `session`, with whether a key is down here. Tail-recursive (O(1) stack). Ends when
 the daemon says `[:bye]` or the link drops."
   (if (= (attach-drain peer) :closed)
     nil
     (let (k (term/poll 30))
       (if (nil? k)
         (attach-loop peer session)
-        (do (send session [:key k]) (attach-loop peer session))))))
+        (do
+          (send session [:key k (display-key-held? *term-display*)])
+          (attach-loop peer session))))))
 
 (defn- attach-handshake (peer cols rows &optional opts)
   "Report our `cols`×`rows` (and, when given, our identity `opts` map — e.g.
@@ -263,7 +275,8 @@ always restored on exit.
 process's mailbox, so one `receive` serves them. A `[:frame f]` is painted to `display`;
 `[:bye]` (the app quit), `[:nodedown]` (link dropped), or `[:down …]` (the session died)
 ends the loop; `:close` (the window's X button) ships a `[:detach]` and ends; anything
-else is a key/mouse input shipped to the daemon `session` as `[:key …]`. Tail-recursive."
+else is a key/mouse input shipped to the daemon `session` as `[:key input held?]`, `held?`
+whether a key is down in this window. Tail-recursive."
   (receive
     ([:frame f] (do ((get display :draw) f) (attach-display-loop peer session display)))
     ;; The pixel-space seam: applied to the local display when it has the entry (a
@@ -288,7 +301,11 @@ else is a key/mouse input shipped to the daemon `session` as `[:key …]`. Tail-
     ([:nodedown ^peer] nil)
     ([:down _ _ _] nil)
     (:close (send session [:detach]))
-    (m (do (send session [:key m]) (attach-display-loop peer session display)))))
+    ;; with whether a key is down here, read after the window delivered `m`: a press, its
+    ;; key-up and a blur each change it, so the session learns of every change
+    (m (do
+         (send session [:key m (display-key-held? display)])
+         (attach-display-loop peer session display)))))
 
 (defn attach-display (spec display &optional cookie opts)
   "Attach `display` — any `ui-run` frontend map, e.g. `(gui-display)` (a native window)
@@ -398,6 +415,9 @@ which is dropped (a nil ⇒ tick) rather than leaked to the app."
    :draw (fn (f) (send hub [:frame f]))
    :poll (fn (ms)
            (receive
+             ;; any client's key; whether a key is down is per client, and one shared
+             ;; model has no client to ask, so a shared session keeps its idle timers
+             ([:key k _held?] k)
              ([:key k] k)
              ; a :size reply past its 200ms window — drop, tick
              ([:hub-size _ _] nil)

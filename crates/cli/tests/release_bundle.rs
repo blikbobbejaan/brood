@@ -287,3 +287,57 @@ fn a_bundle_with_a_corrupt_archive_is_refused_not_run_as_plain_brood() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// ADR-436: a release's boot check resolves an application `:main` and never starts it —
+/// it runs on the machine that built the release, where a start would bind the app's
+/// ports. Run without the flag, the SAME binary starts the application, so the missing
+/// `STARTED` below is the boot check's doing, not an application that cannot start.
+#[test]
+fn bundled_boot_check_resolves_an_application_without_starting_it() {
+    let (app, cwd) = write_app(
+        "application",
+        "(project :name \"t\" :version \"0\")",
+        &[(
+            "main",
+            "(defmodule main)\n\
+             (defn- shut-down-when-running ()\n\
+               (if (proc/whereis :application)\n\
+                 (application/shutdown)\n\
+                 (do (sleep 10) (shut-down-when-running))))\n\
+             (application/defapp main\n\
+               {:start (fn () (io/puts \"STARTED\") (spawn (shut-down-when-running)) :root)})",
+        )],
+    );
+
+    let mut cmd = Command::new(&app);
+    cmd.arg(brood::bundle::BUNDLE_BOOT_CHECK_ARG)
+        .current_dir(&cwd);
+    support::dies_with_parent(&mut cmd);
+    let out = run_bundle(&mut cmd);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("an application, not started"),
+        "the boot check must say what it resolved: {stdout}"
+    );
+    assert!(
+        !stdout.contains("STARTED"),
+        "the boot check started the application: {stdout}"
+    );
+
+    let mut cmd = Command::new(&app);
+    cmd.current_dir(&cwd);
+    support::dies_with_parent(&mut cmd);
+    let out = run_bundle(&mut cmd);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "STARTED");
+    let _ = std::fs::remove_dir_all(app.parent().unwrap());
+}

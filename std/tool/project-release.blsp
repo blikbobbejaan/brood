@@ -410,7 +410,7 @@ release` bundle. Loads the embedded manifest + modules and invokes `:main`
 ;; that was never collected are all invisible to `check-boot` and fatal here.
 (defn check-bundle-boot ()
   "Load this release bundle's embedded modules and resolve its entry point, running
-nothing. Returns 0; raises if a module fails to load or the entry fn is missing or not
+nothing — an application (`defapp`) too is resolved, not started. Returns 0; raises if a module fails to load or the entry fn is missing or not
 callable. Reached by running a bundle with the reserved `--brood-boot-check` argument,
 which is what `nest release --smoke` does to the binary it just wrote.
 
@@ -419,14 +419,17 @@ which is what `nest release --smoke` does to the binary it just wrote.
     (error "check-bundle-boot: this executable is not a `nest release` bundle"))
   (let ([modname fname] (bundle-boot-load))
     (require-one modname)
-    (project-run/project-entry-fn "check-bundle-boot" modname fname)
-    (io/puts (str "boot ok: "
-               (->string modname)
-               "/"
-               (->string fname)
-               " ("
-               (count (%bundle-module-names))
-               " modules loaded, nothing run)"))
+    ;; An application is resolved, never started (ADR-436): this runs on the machine that
+    ;; BUILT the release, where starting would bind its ports and open its files, and
+    ;; what can differ from `nest run --check-boot` is the bundle's snapshot of sources,
+    ;; which loading every module and resolving `:main` already covers.
+    (let (entry (project-run/project-entry "check-bundle-boot" modname fname))
+      (io/puts (project-run/boot-ok-message modname
+                 fname
+                 (str (count (%bundle-module-names)) " modules loaded")
+                 (if (application/app? entry)
+                   "an application, not started"
+                   "nothing run"))))
     0))
 
 ;; --- `nest release`: naming the artifacts, and saying what was written -------

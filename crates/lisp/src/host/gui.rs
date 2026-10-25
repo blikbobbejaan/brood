@@ -210,6 +210,21 @@ pub struct LatencySample {
     pub split: Option<[u64; 5]>,
 }
 
+/// How a window's held keys have repeated since it opened (`gui-key-repeats`, ADR-441):
+/// the OS repeats delivered to the app and those dropped because one was still waiting
+/// (the app fell behind the repeat rate), and, from the last key that repeated, the
+/// desktop's delay before its first repeat and the interval between its last two — so an
+/// app can compare how long it takes to answer one with how often they come.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RepeatCounts {
+    pub delivered: u64,
+    pub dropped: u64,
+    /// press -> first repeat, microseconds
+    pub delay_us: Option<u64>,
+    /// between the last two repeats, microseconds
+    pub interval_us: Option<u64>,
+}
+
 /// The names of `LatencySample::split`'s phases, in order.
 pub const PAINT_PHASES: [&str; 5] = ["encode", "upload", "acquire", "submit", "present"];
 
@@ -594,6 +609,16 @@ pub enum Key {
     Named(&'static str),
 }
 
+/// What one press delivered, and so what is held while its key is down: a [`Key`], or
+/// the text a keystroke typed when it was more than one character (a compose sequence, a
+/// layout key that types two), delivered as `[:text "…"]`. `gui-held-key` reports it and
+/// its release names it, so a held compose sequence is held like any key.
+#[derive(Clone, PartialEq, Eq)]
+pub enum Keystroke {
+    Key(Key),
+    Text(String),
+}
+
 /// A character `c` under chord `modifiers`, Shift already folded into `c` — ONE rule for
 /// both frontends. Control chords are case-INsensitive (Emacs `C-a` = `C-A`); Meta and
 /// Super are case-SENSITIVE (`M-O` open-line-above ≠ `M-o`): a shifted letter stays
@@ -829,15 +854,17 @@ pub(crate) mod gpu; // the wgpu render target behind `BROOD_GUI_GPU=1`
 #[cfg(not(feature = "gui"))]
 pub use disabled::{
     TextAa, bg, cell_size, close, drag_move, drag_resize, draw, focus, font, font_info, fullscreen,
-    grab, held_key, host_main_thread, icon, input_mode, inset, latency, ligatures, line_height,
-    maximize, minimize, next_texture_id, open, register_family, register_installed_family, settle,
-    size, size_px, sound, sound_free, text_aa, text_contrast, texture, texture_free, title,
+    grab, held_key, host_main_thread, icon, input_mode, inset, key_repeats, latency, ligatures,
+    line_height, maximize, minimize, next_texture_id, open, register_family,
+    register_installed_family, settle, size, size_px, sound, sound_free, text_aa, text_contrast,
+    texture, texture_free, title,
 };
 
 #[cfg(feature = "gui")]
 pub use backend::{
     TextAa, bg, cell_size, close, drag_move, drag_resize, draw, focus, font, font_info, fullscreen,
-    grab, held_key, host_main_thread, icon, input_mode, inset, latency, ligatures, line_height,
-    maximize, minimize, next_texture_id, open, register_family, register_installed_family, settle,
-    size, size_px, sound, sound_free, text_aa, text_contrast, texture, texture_free, title,
+    grab, held_key, host_main_thread, icon, input_mode, inset, key_repeats, latency, ligatures,
+    line_height, maximize, minimize, next_texture_id, open, register_family,
+    register_installed_family, settle, size, size_px, sound, sound_free, text_aa, text_contrast,
+    texture, texture_free, title,
 };

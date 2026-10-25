@@ -43,7 +43,14 @@ beat. The observer and the editor are both `ui-run` clients — see
 (defdyn *term-display*
   ;; the terminal (crossterm) frontend — always available, and single (one
   ;; terminal), so it's a fixed display map of the 0-arg `term-*` primitives.
-  {:enter term/enter :leave term/leave :size term/size :draw term/draw :poll term/poll})
+  ;; `:key-held?` is only ever true in a terminal speaking the kitty keyboard protocol,
+  ;; the one kind that reports a release (`term/held-key`).
+  {:enter term/enter
+   :leave term/leave
+   :size term/size
+   :draw term/draw
+   :poll term/poll
+   :key-held? (fn () (not (nil? (term/held-key))))})
 
 (defn- ui-coalesce-motion (msg)
   "Collapse a flood of pointer-motion events — a `:drag` or a `:move` — down to the
@@ -114,14 +121,14 @@ runtime built with `--features gui` (`./configure --with-gui && make install`), 
 `opts` is passed through to `gui/open`, so a frontend can ask for a window that
 suits it: `:title` names it, `:width`/`:height` size it (logical pixels), `:input :pixels`
 and `:vsync true` are the game options (ADR-374), `:key-repeat :os` hands a held key's repeat
-to the OS (the user's delay and rate; at most one undelivered), `:ime false` turns the input
-method off and `:wheel :glide` makes a wheel notch glide instead of scrolling its three lines
-at once (ADR-441), and `{:decorations false}` drops the OS title bar and
-frame for an app that draws its own chrome (a browser's tab strip and toolbar) and
-would otherwise sit under a redundant second title. A shipped app should also pass
-`:app-id` — the desktop application id the installed `<app-id>.desktop` entry is
-named after, which is what earns the window its own icon and name in a GNOME dash
-or alt-tab instead of the desktop's generic fallback.
+to the OS (the user's delay and rate; at most one undelivered, taken back at the
+release), `:ime false` turns the input method off and `:wheel :glide` makes a wheel notch
+glide instead of scrolling its three lines at once (ADR-441), and `{:decorations false}`
+drops the OS title bar and frame for an app that draws its own chrome (a browser's tab
+strip and toolbar) and would otherwise sit under a redundant second title. A shipped app
+should also pass `:app-id` — the desktop application id the installed
+`<app-id>.desktop` entry is named after, which is what earns the window its own icon and
+name in a GNOME dash or alt-tab instead of the desktop's generic fallback.
 
 **Create and poll it in the same process.** `:draw`/`:size`/`:leave` act on the
 captured window id, but `:poll` is a `receive` on the *calling* process's mailbox
@@ -141,6 +148,8 @@ their input. Both are deferred trade-offs (ADR-059), fine for the observer.
      ;; a turn the loop skipped (ADR-444): the window still learns the app is done with
      ;; it — its wheel glide paces on that, and the latency trace drops the input
      :settle (fn () (gui/settle id))
+     ;; a key is down: the loop holds its idle timers until it comes up
+     :key-held? (fn () (not (nil? (gui/held-key id))))
      ;; The pixel-space seam (ADR-374), for a game: a texture under a handle the app
      ;; allocated (`gui/alloc-texture`), released again, and the window told which
      ;; input unit / title the app wants — the three things that also cross the wire
@@ -161,6 +170,17 @@ their input. Both are deferred trade-offs (ADR-059), fine for the observer.
      ;; can surface an already-open singleton window (e.g. a second `(observe)`).
      :focus (fn () (gui/focus id))
      :window id}))
+
+(defn display-key-held? (display)
+  "Whether a key is down in `display` — its `:key-held?`, which a GUI window answers from
+the press and release it saw (the terminal too, when it speaks the kitty keyboard protocol);
+false for a display that cannot tell. `ui-run` holds its idle timers while it is true, and a
+thin client (`editor/serve`) ships it with each key so a served app's loop does the same.
+
+    (editor/ui/display-key-held? {:key-held? (fn () true)})   → true
+    (editor/ui/display-key-held? {})   → false"
+  (let (held? (get display :key-held?))
+    (if held? (held?) false)))
 
 (defn- display-min-size (displays)
   "The smallest cols×rows across all frontends, so one broadcast frame fits every
@@ -197,6 +217,7 @@ fits everywhere. Pure Brood over the `term-*`/`gui-*` mechanism.
    :size (fn () (display-min-size displays))
    :draw (fn (f) (doseq (d displays) ((get d :draw) f)))
    :settle (fn () (doseq (d displays) (when (get d :settle) ((get d :settle)))))
+   :key-held? (fn () (any? displays display-key-held?))
    :poll (fn (ms) (display-poll-any displays ms))})
 
 (defn with-events (display)
@@ -232,6 +253,7 @@ synthesized back-compat timer below and any app that hasn't moved to named timer
 ;; (repeating) or `{:after ms}` (one-shot), optionally with `:idle? true` (count from
 ;; the last *real* input, not from arm/last-fire). Each firing delivers `[:timer name]`
 ;; as loop input; an idle timer pauses while input flows and resumes once it settles.
+;; A key held down counts as input flowing, before its first repeat as after it.
 ;; This replaces juggling a single `:tick-ms` beat: a steady animation timer (cursor
 ;; blink) and several idle one-shots (debounce, which-key) now coexist, each with its
 ;; own clock and its own fired-event identity. Named timers are **opt-in by the
@@ -264,17 +286,29 @@ off a scripted clock deterministically, with no real sleeping."
   "A timer spec's interval in ms — its `:every` (repeating) or `:after` (one-shot)."
   (or (get spec :every) (get spec :after)))
 
-(defn- ui-deadline (spec armed fired last-input)
+(def *ui-held-quiet-ms* 2000)
+;; While a key is held, an `:idle?` timer waits at least this long after the last input.
+;; Held is not idle: under the OS repeat each repeat is an input and pushes the timer out
+;; anyway, but the desktop's delay before the FIRST repeat (250 ms to over a second) is a
+;; gap no input fills, and an idle beat, a debounce or a caret blink would run in it. The
+;; bound is for a hold that never repeats (repeat switched off) and a release the window
+;; never saw: idle work is held back, never lost.
+
+(defn- ui-deadline (spec armed fired last-input &optional (held? false))
   "When timer `spec` next wants to fire, as an absolute ms time. `armed` is when it
 first appeared; `fired` is when it last fired (nil if never). A repeating timer counts
 from its last fire (or, before the first fire, from `armed`); a one-shot always counts
 from `armed`, so its deadline is fixed and it fires exactly once per arming. An
 `:idle?` timer counts from the later of that base and `last-input`, so a real key
-pushes it out — it fires only after input settles."
+pushes it out — it fires only after input settles — and, while `held?` (a key is down),
+no sooner than `*ui-held-quiet-ms*` after that input."
   (let (ms (ui-timer-ms spec)
+        idle? (get spec :idle?)
         base0 (if (contains? spec :every) (or fired armed) armed)
-        base (if (get spec :idle?) (math/max base0 last-input) base0))
-    (+ base ms)))
+        deadline (+ (if idle? (math/max base0 last-input) base0) ms))
+    (if (and idle? held?)
+      (math/max deadline (+ last-input *ui-held-quiet-ms*))
+      deadline)))
 
 (defn- ui-timer-live? (fired deadline)
   "Whether a timer with last-fire `fired` and next-fire `deadline` can still fire — its
@@ -302,6 +336,7 @@ removed-then-re-added timer re-arms clean and stale entries can't leak), and sta
 1ms), or `*ui-idle-cap*` when no live timer is pending — capped at the idle ceiling so
 a far-future timer can't oversleep a responsive app."
   (let (last-input (get clock :last-input)
+        held? (get clock :key-held?)
         armed (get clock :armed)
         fired (get clock :fired)
         best (map/reduce-kv timers
@@ -310,7 +345,8 @@ a far-future timer can't oversleep a responsive app."
                  (let (d (ui-deadline spec
                            (get armed name)
                            (get fired name)
-                           last-input))
+                           last-input
+                           held?))
                    (if (and (ui-timer-live? (get fired name) d) (or (nil? acc) (< d acc)))
                      d
                      acc)))))
@@ -325,12 +361,13 @@ records the firing. When none is due, `[nil clock]` — the loop re-parks withou
 Only one timer fires per call; simultaneous timers serialize over successive iterations
 (each next poll clamps to 1ms while another is overdue)."
   (let (last-input (get clock :last-input)
+        held? (get clock :key-held?)
         armed (get clock :armed)
         fired (get clock :fired)
         due (map/reduce-kv timers
               nil
               (fn (acc name spec)
-                (let (d (ui-deadline spec (get armed name) (get fired name) last-input))
+                (let (d (ui-deadline spec (get armed name) (get fired name) last-input held?))
                   (if (and (>= now d)
                         (ui-timer-live? (get fired name) d)
                         (or (nil? acc) (< d (second acc))))
@@ -622,7 +659,12 @@ re-raises, surfacing a genuine startup bug instead of spinning."
             ;; due and `ui-fire` decides what (if anything) fired.
             (let (timers (get model :timers)
                   now1 (ui-now model)
-                  clock1 (if (nil? timers) clock (ui-clock-init clock timers now1))
+                  ;; whether a key is down is read before the park: every change to it
+                  ;; (a press, its key-up, a blur) arrives as input and wakes the poll
+                  clock1 (if (nil? timers)
+                           clock
+                           (assoc (ui-clock-init clock timers now1)
+                             :key-held? (display-key-held? display)))
                   poll-ms (if (nil? timers) (ui-tick-ms model) (ui-poll-ms timers clock1 now1))
                   raw ((get display :poll) poll-ms))
               (cond
@@ -704,7 +746,10 @@ model and sets `:done` to quit.
 **Timers (ADR-102).** Declare time-driven work as data on the model: `:timers`, a map
 `name -> {:every ms}` / `{:after ms}` (optionally `:idle? true`). The loop parks the
 poll until the soonest is due and folds `[:timer name]` when it fires — so a steady
-animation timer and several idle one-shots coexist, each on its own clock. A model
+animation timer and several idle one-shots coexist, each on its own clock. An idle timer
+waits for input to settle, and a key held down is not settled: while the display's
+`:key-held?` says one is down (a GUI window does), idle timers wait for it to come up, at
+most `*ui-held-quiet-ms*` past the last input. A model
 with no `:timers` key keeps the legacy single beat (`:tick-ms`, default 1000 ms),
 delivered as the bare keyword `:tick`. See `ui-loop` and the named-timers section.
 

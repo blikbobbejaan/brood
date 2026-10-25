@@ -5,10 +5,12 @@
 //! child modules.
 
 mod input;
+mod keyboard;
 mod paint;
 mod render;
 
 use input::*;
+use keyboard::*;
 use paint::*;
 pub(crate) use render::Renderer;
 pub use render::TextAa;
@@ -21,8 +23,8 @@ pub(crate) use {
 };
 
 use super::{
-    CursorShape, Key, KeyRepeat, LatencySample, Mouse, MouseAction, MouseButton, Op, PAINT_PHASES,
-    WheelMode, WindowSpec,
+    CursorShape, Key, KeyRepeat, Keystroke, LatencySample, Mouse, MouseAction, MouseButton, Op,
+    PAINT_PHASES, RepeatCounts, WheelMode, WindowSpec,
 };
 
 use crate::core::sync::lock;
@@ -399,7 +401,7 @@ struct OpenReply {
     id: u64,
     size: Arc<Mutex<(u16, u16)>>,
     size_px: Arc<Mutex<(u32, u32)>>,
-    held_key: Arc<Mutex<Option<Key>>>,
+    keys: Arc<Mutex<KeyReport>>,
     latency: Arc<Mutex<VecDeque<LatencySample>>>,
 }
 
@@ -411,10 +413,10 @@ struct WinHandle {
     /// The window's inner size in PHYSICAL pixels, republished on every resize, for
     /// `gui-size-px` — the frame a pixel-space app lays itself out in.
     size_px: Arc<Mutex<(u32, u32)>>,
-    /// The key the window currently sees as physically held (set on press,
-    /// cleared on release / focus loss), so `gui-held-key` can be polled as the
-    /// source of truth for a held key — immune to a missed key-up (ADR-086).
-    held_key: Arc<Mutex<Option<Key>>>,
+    /// What the window's keyboard reports (`Keyboard::report`): the keystroke held down,
+    /// for `gui-held-key` (the source of truth for a held key — immune to a missed key-up,
+    /// ADR-086), and how its repeats went, for `gui-key-repeats`.
+    keys: Arc<Mutex<KeyReport>>,
     /// The last `LATENCY_SAMPLES` input-to-present samples, newest last, for
     /// `gui-latency` (ADR-440).
     latency: Arc<Mutex<VecDeque<LatencySample>>>,
@@ -637,7 +639,7 @@ pub fn open(subscriber: u64, spec: WindowSpec) -> Result<u64, String> {
             WinHandle {
                 size: Arc::new(Mutex::new(headless_cells(spec.size))),
                 size_px: Arc::new(Mutex::new(headless_px(spec.size))),
-                held_key: Arc::new(Mutex::new(None)),
+                keys: Arc::default(),
                 latency: Arc::default(),
             },
         );
@@ -659,7 +661,7 @@ pub fn open(subscriber: u64, spec: WindowSpec) -> Result<u64, String> {
         id,
         size,
         size_px,
-        held_key,
+        keys,
         latency,
     } = reply_rx
         .recv()
@@ -669,7 +671,7 @@ pub fn open(subscriber: u64, spec: WindowSpec) -> Result<u64, String> {
         WinHandle {
             size,
             size_px,
-            held_key,
+            keys,
             latency,
         },
     );
@@ -793,11 +795,21 @@ pub fn cell_size(id: u64, px: Option<f32>) -> Result<(u16, u16), String> {
 /// from press/release transitions (not winit's unreliable `ke.repeat`), so an app
 /// can confirm a key is still down before repeating — the source of truth that
 /// makes a missed key-up unable to cause runaway repeat (ADR-086).
-pub fn held_key(id: u64) -> Result<Option<Key>, String> {
+pub fn held_key(id: u64) -> Result<Option<Keystroke>, String> {
     let w = lock(windows());
     let h = w.get(&id).ok_or("gui window not open")?;
-    let k = *lock(&h.held_key);
-    Ok(k)
+    let held = lock(&h.keys).held.clone();
+    Ok(held)
+}
+
+/// `(gui-key-repeats id)` — how window `id`'s held keys have repeated since it opened
+/// (`RepeatCounts`): repeats delivered and dropped, and the desktop's delay and interval
+/// as the last key that repeated showed them. All zero headless.
+pub fn key_repeats(id: u64) -> Result<RepeatCounts, String> {
+    let w = lock(windows());
+    let h = w.get(&id).ok_or("gui window not open")?;
+    let repeats = lock(&h.keys).repeats;
+    Ok(repeats)
 }
 
 /// `(gui-latency id)` — window `id`'s recent input-to-present samples, oldest first
@@ -1217,18 +1229,8 @@ struct Win {
     /// fresh press in the same cell with the same button within `MULTI_CLICK_MS`
     /// increments the count (double/triple-click); anything else restarts at 1.
     last_click: Option<(u8, MouseButton, (u16, u16), Instant)>,
-    /// The key currently held down (set on a fresh press, cleared on its release
-    /// or focus loss), shared with the Brood side for `gui-held-key`. Also how the
-    /// event loop suppresses auto-repeat: a press for the key already here is a
-    /// repeat, dropped — reliable on Wayland where `ke.repeat` isn't (ADR-086).
-    held_key: Arc<Mutex<Option<Key>>>,
-    /// The PHYSICAL key of the currently-held key (set with `held_key` on a fresh
-    /// press). A release is matched to the held key by *physical* key, not logical:
-    /// a shifted chord (`(` = Shift+9) whose modifier is released *before* the key
-    /// translates its release to a different logical key (`9`), which would never
-    /// clear a logical `(` — leaving `held_key` stuck and the repeat running away.
-    /// The physical key is the same down and up regardless of modifiers (ADR-086).
-    held_physical: Option<PhysicalKey>,
+    /// The held key, every key down, and the gate on the OS repeat (`Keyboard`).
+    keyboard: Keyboard,
     /// Cursor hot-zones from the last drawn frame (`Op::CursorZone`), flattened to
     /// grid-relative PIXEL rects + the shape to show while the pointer is inside —
     /// pixels because a zone inside a `CellRegion` is measured in that region's cells,
@@ -1267,10 +1269,6 @@ struct Win {
     /// delivered while this is set, so the queue never grows beyond one pending event
     /// even when Brood's render pipeline is slower than the 12 ms tick rate.
     scroll_pending: bool,
-    /// Who repeats a held key (`WindowSpec::key_repeat`), and — under `KeyRepeat::Os` —
-    /// the gate that keeps at most one OS repeat undelivered (ADR-441).
-    key_repeat: KeyRepeat,
-    repeat_gate: Arc<RepeatGate>,
     /// Whether an input method may compose in this window (`WindowSpec::ime`), where its
     /// composition stands (`Composition`), and the cursor rect last handed to it for the
     /// candidate window, so it is only told when the cursor moves.
@@ -1444,14 +1442,13 @@ fn build_window(
         cursor_at: (0.0, 0.0),
         held: None,
         last_click: None,
-        held_key: Arc::new(Mutex::new(None)),
+        keyboard: Keyboard::new(spec.key_repeat),
         shown: false,
         drawn: false,
         opened_at: Instant::now(),
         input_at: None,
         draw_input: None,
         latency: Arc::default(),
-        held_physical: None,
         zones: Vec::new(),
         shape: None,
         scroll_velocity: 0.0,
@@ -1463,8 +1460,6 @@ fn build_window(
         particles_next: None,
         scroll_last_tick: Instant::now(),
         scroll_pending: false,
-        key_repeat: spec.key_repeat,
-        repeat_gate: Arc::new(RepeatGate::default()),
         ime: spec.ime,
         composition: Composition::Idle,
         ime_area: None,
@@ -1527,7 +1522,7 @@ impl GuiApp {
                     id,
                     size: win.size.clone(),
                     size_px: win.size_px.clone(),
-                    held_key: win.held_key.clone(),
+                    keys: win.keyboard.report(),
                     latency: win.latency.clone(),
                 }));
                 self.ids.insert(id, wid);
@@ -2024,56 +2019,48 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 is_synthetic,
                 ..
             } => match ke.state {
-                // A fresh press goes through; an auto-repeat is dropped. We detect
-                // a repeat by TRANSITION, not winit's `ke.repeat` flag: on
+                // Every press goes through `Keyboard::press`, which tells a repeat from a fresh
+                // press by TRANSITION, not winit's `ke.repeat` flag: on
                 // GNOME/Wayland that flag is unreliable — held keys arrive as a
-                // flood of `repeat == false` presses (ADR-086) — so a press for the
-                // key already in `held_key` (no release has cleared it) is the
-                // repeat, and we drop it. A genuine re-press (double-tap) comes only
-                // after a release, which clears `held_key`, so it still registers.
-                // Synthetic presses (winit replaying held keys on focus *gain*) are
-                // dropped too — they'd be phantom keystrokes. Relaying the flood was
-                // the original bug: it outran the mailbox drain, so a backlog kept
-                // "playing" after key-up (the cursor scrolling on past).
+                // flood of `repeat == false` presses (ADR-086). A press for the
+                // key already held (no release between) is the repeat. A genuine
+                // re-press (double-tap) comes only after a release, so it still
+                // registers. Synthetic presses (winit replaying held keys on focus
+                // *gain*) are dropped — they'd be phantom keystrokes.
                 //
-                // Under `{:key-repeat :os}` (ADR-441) the repeat is not dropped but
-                // delivered as another press of the held key — through `RepeatGate`, so
-                // at most one is ever undelivered and a slow frame cannot rebuild that
-                // backlog. A keystroke that typed several characters (a compose
-                // sequence) is `[:text …]`, not a key: it is held physically, so its
-                // repeats are found the same way, and reported to `gui-held-key` as none.
+                // A repeat is dropped under `{:key-repeat :app}` (ADR-086: the app
+                // repeats from `gui-held-key`) and, under `:os` (ADR-441), delivered as
+                // another press through `RepeatGate`, so at most one is ever undelivered
+                // and a slow frame cannot build a backlog that plays on after key-up. A
+                // keystroke that typed several characters (a compose sequence) is
+                // `[:text …]`, not a key, and is held as itself: its repeats are found
+                // the same way, and `gui-held-key` reports it as `[:text …]`.
                 ElementState::Pressed if !is_synthetic => {
-                    if let Some(text) = typed_text(&ke, w.mods) {
-                        press(w, text_message(&text), None, ke.physical_key);
-                    } else if let Some(k) = translate_key(&ke, w.mods) {
-                        press(w, key_message(&k), Some(k), ke.physical_key);
+                    let stroke = typed_text(&ke, w.mods)
+                        .map(Keystroke::Text)
+                        .or_else(|| translate_key(&ke, w.mods).map(Keystroke::Key));
+                    match stroke.and_then(|stroke| {
+                        w.keyboard.press(stroke, ke.physical_key, Instant::now())
+                    }) {
+                        Some(KeyMessage::Press(message)) => deliver(w.subscriber, message),
+                        Some(KeyMessage::Repeat(message, credit)) => {
+                            deliver_credited(w.subscriber, message, credit)
+                        }
+                        None => {}
                     }
                 }
                 ElementState::Pressed => {} // synthetic press (focus-gain replay)
-                // Key release → clear `held_key` (so `gui-held-key` and the repeat
-                // stop) and deliver `[:key-up <held-key>]` as the fast-path stop
-                // signal. Match the release to the held key by its PHYSICAL key, not
-                // its logical one: a shifted chord (`(` = Shift+9) released
-                // modifier-first sends the *base* logical key (`9`) on release, which
-                // would never match a stored `(` — leaving the key stuck and the
-                // repeat running away. The physical key is invariant under modifiers,
-                // so it always matches; we then deliver the *held* logical key's
-                // key-up so the app's stop-by-key-name also fires. Other releases
-                // (a non-held key, a bare modifier) just relay their own key-up.
-                // Synthetic releases count too (winit emits them for a key let go
-                // while unfocused — exactly when we must stop).
+                // Key release → `[:key-up <what its press delivered>]` (`Keyboard::release`,
+                // which matches it to its press by PHYSICAL key, so a shifted chord whose
+                // Shift came up first still names its press). Synthetic releases count too
+                // (winit emits them for a key let go while unfocused — exactly when we must
+                // stop).
                 ElementState::Released => {
-                    if w.held_physical == Some(ke.physical_key) {
-                        let mut hk = lock(&w.held_key);
-                        let held = *hk;
-                        *hk = None;
-                        drop(hk);
-                        w.held_physical = None;
-                        if let Some(k) = held {
-                            deliver(w.subscriber, key_up_message(&k));
-                        }
-                    } else if let Some(k) = translate_key(&ke, w.mods) {
-                        deliver(w.subscriber, key_up_message(&k));
+                    if let Some(message) = w
+                        .keyboard
+                        .release(ke.physical_key, translate_key(&ke, w.mods))
+                    {
+                        deliver(w.subscriber, message);
                     }
                 }
             },
@@ -2086,8 +2073,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // Drop the held key: we can't observe its release while unfocused,
                 // so `gui-held-key` must not keep reporting it (the poll-based stop)
                 // and the `:blur` is the event-based stop. Both, belt-and-braces.
-                *lock(&w.held_key) = None;
-                w.held_physical = None;
+                w.keyboard.blur();
                 deliver(w.subscriber, Message::Keyword(value::intern("blur")));
                 // A composition does not survive the window losing focus on every
                 // platform's IME, and not every one says so: clear what the app shows.
@@ -2649,29 +2635,6 @@ fn update_ime_area(w: &mut Win) {
         PhysicalPosition::new(area.0.max(0) as i32, area.1.max(0) as i32),
         winit::dpi::PhysicalSize::new(width as u32, height as u32),
     );
-}
-
-/// Deliver one keystroke, `message`, from `physical` — `key` when it is a key, `None` for
-/// typed text. A press of the key already held (no release between) is its repeat: dropped
-/// under `KeyRepeat::App`, where the app repeats from `gui-held-key`, and let through the
-/// `RepeatGate` under `KeyRepeat::Os`, so at most one is ever undelivered.
-fn press(w: &mut Win, message: Message, key: Option<Key>, physical: PhysicalKey) {
-    let repeat = {
-        let mut held = lock(&w.held_key);
-        let repeat = w.held_physical == Some(physical) && *held == key;
-        if !repeat {
-            *held = key;
-            w.held_physical = Some(physical);
-        }
-        repeat
-    };
-    if !repeat {
-        deliver(w.subscriber, message);
-    } else if w.key_repeat == KeyRepeat::Os
-        && let Some(credit) = RepeatGate::charge(&w.repeat_gate)
-    {
-        deliver_credited(w.subscriber, message, credit);
-    }
 }
 
 /// Where an input method's composition stands. `Ended` is the empty preedit winit sends

@@ -9,8 +9,10 @@
 
 (defn enter ()
   "Enter raw mode + the alternate screen, hide the cursor, and enable mouse capture,
-taking over the terminal for a full-screen UI (so click/scroll reach `term/poll`). Pair
-with `term/leave`.
+taking over the terminal for a full-screen UI (so click/scroll reach `term/poll`). A
+terminal that speaks the kitty keyboard protocol is asked to report repeats and releases
+(popped again by `term/leave` and every exit path), so `term/poll` delivers `[:key-up …]`
+and `term/held-key` knows the key held. Pair with `term/leave`.
 
     (term/enter)   ;=> the terminal taken over: raw mode, alternate screen, mouse capture"
   (%term-enter))
@@ -36,10 +38,26 @@ combos like :alt-f), a mouse event as a vector [:mouse action button row col mod
 (action: :press :release :drag :scroll-up :scroll-down — :drag is motion with a button
 held, reported once per cell crossed; button: :left :right :middle or nil for scroll;
 row/col 0-based cells; mods a vector of held modifier keywords in :ctrl :alt :shift order,
-[] when none), or nil on timeout. Always pass a finite `ms`.
+[] when none), or nil on timeout. In a terminal that speaks the kitty keyboard protocol
+(`term/enter` turns it on) a release is delivered too, as `[:key-up press]`, `press` the
+value that key's press delivered though Ctrl or Shift came up first, and a held key's
+repeat already superseded in the buffered input — by a later repeat or the release — is
+dropped, so a backlog never plays on after the key is up; a press is never dropped.
+`term/held-key` names the key held. Always pass a finite `ms`.
 
-    (term/poll 50)   ;=> \"a\", :ctrl-c, [:mouse :press :left 3 10 []], or nil on timeout"
+    (term/poll 50)   ;=> \"a\", :ctrl-c, [:mouse :press :left 3 10 []], [:key-up :ctrl-n], or nil on timeout"
   (%term-poll ms))
+
+(defn held-key ()
+  "The key held down in the terminal now — the value its press delivered (a 1-char string,
+or a keyword like :ctrl-n / :up) — or nil when none is. Known only in a terminal that
+speaks the kitty keyboard protocol (kitty, foot, WezTerm, Ghostty, Alacritty 0.13+), which
+`term/enter` turns on, because only it reports releases. A key is held from its press once
+the terminal has reported a release or a repeat of it, so a key whose release it never
+sends is never held. Always nil in any other terminal, and outside `term/enter`.
+
+    (term/held-key)   ;=> :down while the down arrow is held, nil when no key is"
+  (%term-held-key))
 
 (defn draw (frame)
   "Paint a `frame` — a vector of render ops: [:clear], [:text row col str], [:text row col
