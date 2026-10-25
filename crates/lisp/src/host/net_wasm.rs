@@ -45,6 +45,14 @@ pub fn local_port(_id: u64) -> Option<u16> {
     None
 }
 
+pub fn udp_open(_host: &str, _port: u16, _subscriber: u64) -> std::io::Result<u64> {
+    unsupported()
+}
+
+pub fn udp_send(_id: u64, _host: &str, _port: u16, _data: &[u8]) -> std::io::Result<()> {
+    unsupported()
+}
+
 pub fn tls_request(
     _host: &str,
     _port: u16,

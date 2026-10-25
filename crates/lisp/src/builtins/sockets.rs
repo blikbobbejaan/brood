@@ -37,6 +37,21 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["host", "port"],
         "Bind a listening socket on host:port (port 0 = OS-assigned); connections arrive as [:tcp-accept lsock client] messages to the calling process. Returns a socket.",
         tcp_listen);
+    // UDP (ADR-449): a bound socket on the same reactor, datagrams to its owner's mailbox.
+    primitives.def(
+        "%udp-open",
+        Arity::exact(2),
+        Sig::new(vec![string, int], socket_ty),
+        &["host", "port"],
+        "Bind a UDP socket on host:port (an IP address or localhost; port 0 = OS-assigned), owned by the calling process: each datagram arrives as [:udp sock host port data], data bytes (tcp-set-binary false for text). Close with tcp-close, hand over with tcp-controlling-process, read the port with tcp-local-port. Returns a socket.",
+        udp_open);
+    primitives.def(
+        "%udp-send",
+        Arity::exact(4),
+        Sig::new(vec![socket_ty, string, int, any], nil_ty),
+        &["sock", "host", "port", "data"],
+        "Send one datagram (data an iolist: a string, bytes or a nested tree) from sock to host:port, an IP address or localhost. Asynchronous: a datagram the network loses or refuses is simply gone. Returns nil.",
+        udp_send);
     primitives.def(
         "%tls-request",
         Arity::range(3, 5),
@@ -151,6 +166,29 @@ pub(super) fn tcp_listen(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
                 .with_code(crate::error::error_codes::FILE_IO),
         ),
     }
+}
+
+pub(super) fn udp_open(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let host = expect_string(heap, "%udp-open", arg(args, 0))?;
+    let port = socket_port("%udp-open", expect_int(heap, "%udp-open", arg(args, 1))?)?;
+    let owner = crate::process::self_pid();
+    match crate::host::net::udp_open(&host, port, owner) {
+        Ok(id) => Ok(Value::socket(id)),
+        Err(e) => Err(
+            LispError::runtime(format!("udp-open {}:{}: {}", host, port, e))
+                .with_code(crate::error::error_codes::FILE_IO),
+        ),
+    }
+}
+
+pub(super) fn udp_send(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let id = expect_socket(heap, "%udp-send", arg(args, 0))?;
+    let host = expect_string(heap, "%udp-send", arg(args, 1))?;
+    let port = socket_port("%udp-send", expect_int(heap, "%udp-send", arg(args, 2))?)?;
+    let out = send_payload(heap, "%udp-send", arg(args, 3))?;
+    crate::host::net::udp_send(id, &host, port, &out)
+        .map_err(|e| LispError::runtime(format!("%udp-send: {}", e)))?;
+    Ok(Value::nil())
 }
 
 pub(super) fn tls_listen(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {

@@ -395,6 +395,8 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // no UDP and DNS over TCP is a required transport (RFC 7766), so it needs no new
     // Rust. Pure Brood over tcp. Opt-in.
     embedded_module!("dns", "std/net/dns.blsp"),
+    // UDP sockets (ADR-449): `[:udp sock host port data]` per datagram, on the TCP reactor.
+    embedded_module!("udp", "std/net/udp.blsp"),
     // Server-Sent Events (text/event-stream): a client reader process that streams
     // events to a subscriber's mailbox (pairs with ui's `with-events`) + server-side
     // framing. Pure frame parsing + a thin IO loop over tcp; reuses http's URL/header
@@ -456,6 +458,10 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // Date and time utilities (UTC): epoch↔datetime conversion, ISO 8601
     // format/parse, arithmetic, calendar predicates. Pure Brood over `now`.
     embedded_module!("datetime", "std/datetime.blsp"),
+    // Named time zones over the system's zoneinfo (TZif, RFC 8536) and POSIX TZ rules: the
+    // civil time in a zone, the instant a civil time there denotes, when a zone shifts. Pure
+    // Brood over `file/slurp-bytes` + `bytes`. Opt-in, never in the prelude.
+    embedded_module!("tz", "std/tz.blsp"),
     // Time as an interval, not an instant (adapted from Tempo, Apache-2.0): one
     // resolution-carrying value type whose span is half-open, Allen's thirteen
     // relations, and an interval-set algebra (union/intersection/difference/gaps).

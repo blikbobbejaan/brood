@@ -1,0 +1,64 @@
+;; std/net/udp.blsp — UDP sockets, the Brood layer.
+;;
+;; A UDP socket lives on the same reactor as TCP's (ADR-062/143) and delivers to its owning
+;; process's mailbox (ADR-059): each datagram is one message,
+;;
+;;   [:udp sock host port data]   `host` the sender's IP address, `data` bytes (or a string
+;;                                after `(tcp/set-binary sock false)`)
+;;
+;; There is no connection: `send` names the destination every time, and a datagram the
+;; network loses, reorders or refuses is simply gone — retries and timeouts are the
+;; protocol's business above this. Addresses are IP literals or `localhost`: a name is
+;; resolved first (`net/dns`), since a datagram has no dialler thread to hide a lookup in.
+
+(defmodule udp
+  "UDP sockets (ADR-449): `open` binds one, `send` sends a datagram, `recv` waits for
+the next, `close` closes it. Datagrams arrive in the owning process's mailbox as `[:udp sock
+host port data]`, so a server is a `receive` loop.
+
+    (let (a (udp/open \"127.0.0.1\" 0) b (udp/open \"127.0.0.1\" 0))
+      (udp/send a \"127.0.0.1\" (udp/local-port b) \"ping\")
+      (:data (udp/recv b 1000)))
+    ;=> #b\"ping\"")
+
+(defn open (host:string port:int -> socket)
+  "A UDP socket bound to `host`:`port` — `\"0.0.0.0\"` (or `\"::\"`) for every interface,
+`\"127.0.0.1\"` for this machine only, port 0 for one the OS picks — owned by the calling
+process, which receives its datagrams.
+
+    (udp/socket? (udp/open \"127.0.0.1\" 0))   → true"
+  (%udp-open host port))
+
+(defn send (sock:socket host:string port:int data:any -> nil)
+  "Send one datagram, `data` (a string, bytes, or a nested list of them), from `sock` to
+`host`:`port`. Returns at once; there is no delivery report.
+
+    (udp/send (udp/open \"127.0.0.1\" 0) \"127.0.0.1\" 9 \"discarded\")   → nil"
+  (%udp-send sock host port data))
+
+(defn recv (sock &optional (timeout-ms 5000))
+  "The next datagram on `sock` as `{:host :port :data}`, or a failure when none arrives
+within `timeout-ms`. Only the caller's own socket is taken; other messages stay queued.
+
+    (failure? (udp/recv (udp/open \"127.0.0.1\" 0) 10))   → true"
+  (receive
+    ([:udp ^sock host port data] {:host host :port port :data data})
+    (after timeout-ms (failure (str "udp/recv: nothing within " timeout-ms " ms")))))
+
+(defn close (sock:socket -> nil)
+  "Close `sock`: no datagram for it reaches any mailbox after this returns.
+
+    (udp/close (udp/open \"127.0.0.1\" 0))   → nil"
+  (%tcp-close sock))
+
+(defn local-port (sock:socket -> (or int nil))
+  "The port `sock` is bound to — the one the OS picked for port 0.
+
+    (> (udp/local-port (udp/open \"127.0.0.1\" 0)) 0)   → true"
+  (%tcp-local-port sock))
+
+(defn socket? (x)
+  "True for a socket handle (UDP and TCP sockets are one kind of handle).
+
+    (udp/socket? 42)   → false"
+  (%eq (type-of x) :socket))

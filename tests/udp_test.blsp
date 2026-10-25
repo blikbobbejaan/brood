@@ -1,0 +1,63 @@
+;; Tests for std/net/udp.blsp and the %udp-* primitives (ADR-449) — loopback only.
+
+(defmodule udp-test (:use test))
+
+(defn- pair ()
+  [(udp/open "127.0.0.1" 0) (udp/open "127.0.0.1" 0)])
+
+(defn- port-of (sock)
+  (let (port (udp/local-port sock))
+    (if (int? port) port (error "udp-test: no port for " sock))))
+
+(describe "udp: datagrams between two sockets"
+  (test "a datagram arrives with the sender's address, and the reply finds its way back"
+    (let ([a b] (pair))
+      (udp/send a "127.0.0.1" (port-of b) "ping")
+      (let (got (udp/recv b 2000))
+        (assert= (string/->bytes "ping") (:data got))
+        (assert= "127.0.0.1" (:host got))
+        (assert= (port-of a) (:port got))
+        (udp/send b (:host got) (:port got) "pong")
+        (assert= (string/->bytes "pong") (:data (udp/recv a 2000))))
+      (udp/close a)
+      (udp/close b)))
+  (test "every byte value survives: a datagram is bytes"
+    (let ([a b] (pair)
+          all (bytes/concat (into [] (map (range 256) (fn (i) (bytes/int-> i 1))))))
+      (udp/send a "localhost" (port-of b) all)
+      (assert= all (:data (udp/recv b 2000)))))
+  (test "text mode, as for a TCP socket"
+    (let ([a b] (pair))
+      (tcp/set-binary b false)
+      (udp/send a "127.0.0.1" (port-of b) "héllo")
+      (assert= "héllo" (:data (udp/recv b 2000)))))
+  (test "a hundred datagrams on loopback all arrive, in order"
+    (let ([a b] (pair) port (port-of b))
+      (doseq (i (range 100)) (udp/send a "127.0.0.1" port (str i)))
+      (assert= (into [] (map (range 100) str))
+        (into [] (map (range 100) (fn (_) (string/bytes-> (:data (udp/recv b 2000))))))))))
+
+(describe "udp: what it refuses"
+  (test "a name, not an address, is refused: resolve it first"
+    (let ([a _] (pair))
+      (assert-error (udp/send a "example.com" 53 "x"))))
+  (test "tcp-send on a UDP socket says which to use"
+    (let ([a _] (pair))
+      (assert-error (%tcp-send a "x"))))
+  (test "nothing arrives within the timeout: a failure, not a hang"
+    (is (failure? (udp/recv (udp/open "127.0.0.1" 0) 50)))))
+
+(describe "udp: ownership"
+  (test "tcp-controlling-process hands the datagrams to another process"
+    (let ([a b] (pair)
+          me (self)
+          worker (spawn (fn () (let (got (udp/recv b 2000)) (send me [:worker-got (:data got)])))))
+      (tcp/controlling-process b worker)
+      (udp/send a "127.0.0.1" (port-of b) "for the worker")
+      (assert= (string/->bytes "for the worker")
+        (receive ([:worker-got data] data) (after 2000 :timeout)))))
+  (test "after close nothing more is delivered"
+    (let ([a b] (pair) port (port-of b))
+      (udp/close b)
+      (udp/send a "127.0.0.1" port "too late")
+      (is (failure? (udp/recv b 200))))))

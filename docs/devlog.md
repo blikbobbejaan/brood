@@ -3835,3 +3835,15 @@ per-process RSS slope unchanged. The rule is now `< 1 → 0`, and the map/into p
 instructions (−29%). Checked by a differential (tree-walker = JIT) and under
 `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`. Guard: `hof_loop_native_test.blsp` (`hl-map` bailed on
 the 6577bfaf binary, native here). Not run on this machine: it runs in CI.
+
+2026-10-25 (a moved code epoch revalidates a native arm; ADR-450; KI-303): every rebind moved the
+global code epoch, and a native arm entered after one reset and recompiled, whatever had been
+rebound. The suite rebinds constantly — module publishes, registry writes, isolate restores — so
+`shared_vector_read_test`'s inner loop read `:untried` after 6 000 calls. A diagnostic script on the
+desktop (approved for this) reproduced it with one process redefining an unrelated function in a
+loop: the inner loop sat at `:queued` every round. `native_still_valid` now checks what native
+code baked in — relocations, inlined operators, a leaf derivation, a self-loop's name, ADR-366
+staleness — and moves the stamp forward when none changed; the same script reads `:native` from
+round 5. Global reads and calls re-check the live epoch themselves. Not run on this machine:
+`tests/jit_unrelated_rebind_test.blsp` is new and runs in CI; a `make ab` on the test machine is
+the measure of what a quieter JIT is worth on the rows.

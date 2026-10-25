@@ -1,0 +1,106 @@
+;; Tests for std/tz.blsp — named time zones over the system's zoneinfo, and POSIX TZ rules.
+;; Run via `nest test` or `cargo run -p cli -- --test tests/tz_test.blsp`.
+;;
+;; The rule tests need no files. The zone tests read `/usr/share/zoneinfo` (every CI image
+;; and Linux desktop has tzdata) and pass vacuously, saying so, where it is missing.
+
+(defmodule tz-test (:use test))
+
+(defn- iso (s)
+  (let (dt (datetime/parse-iso8601 s))
+    (if (failure? dt) (error "tz-test: a bad fixture: " s) dt)))
+
+(defn- zone (name)
+  (let (z (tz/zone name))
+    (if (failure? z) (error "tz-test: no zone " name ": " (error-message z)) z)))
+
+(defn- rule-zone (rule)
+  (let (z (tz/rule-zone rule))
+    (if (failure? z) (error "tz-test: not a rule " rule) z)))
+
+(def- zoneinfo? (file/exists? "/usr/share/zoneinfo/Europe/Berlin"))
+
+(describe "POSIX TZ rules"
+  (test "offsets count hours west, and are kept as seconds east"
+    (let (rule (tz/posix-rule "EST5EDT,M3.2.0,M11.1.0"))
+      (assert= ["EST" -18000 "EDT" -14400] [(:std rule) (:std-offset rule) (:dst rule) (:dst-offset rule)])))
+  (test "a quoted name and a minutes offset"
+    (let (rule (tz/posix-rule "<+0330>-3:30"))
+      (assert= ["+0330" 12600 nil] [(:std rule) (:std-offset rule) (:dst rule)])))
+  (test "a change time other than 02:00, and an explicit DST offset"
+    (let (rule (tz/posix-rule "CET-1CEST,M3.5.0,M10.5.0/3"))
+      (assert= 10800 (get-in rule [:end :time]))
+      (assert= {:kind :m :month 10 :week 5 :day 0} (get-in rule [:end :date]))))
+  (test "a string that is no rule is a failure, not a raise"
+    (is (failure? (tz/posix-rule "")))
+    (is (failure? (tz/rule-zone "<unterminated")))))
+
+(describe "a zone from a rule alone"
+  (let (ny (rule-zone "EST5EDT,M3.2.0,M11.1.0"))
+    (test "daylight time starts at 02:00 local on the second Sunday of March"
+      (assert= "2024-03-10T01:59:59-05:00" (tz/->iso ny (iso "2024-03-10T06:59:59Z")))
+      (assert= "2024-03-10T03:00:00-04:00" (tz/->iso ny (iso "2024-03-10T07:00:00Z"))))
+    (test "and ends at 02:00 daylight time on the first Sunday of November"
+      (assert= "2024-11-03T01:59:59-04:00" (tz/->iso ny (iso "2024-11-03T05:59:59Z")))
+      (assert= "2024-11-03T01:00:00-05:00" (tz/->iso ny (iso "2024-11-03T06:00:00Z"))))
+    (test "the abbreviation and the flag follow the offset"
+      (assert= {:offset -14400 :dst? true :abbr "EDT"}
+        (tz/offset ny (datetime/->epoch-ms (iso "2024-07-01T12:00:00Z")))))))
+
+(describe "a southern zone's daylight time spans the new year"
+  (let (sydney (rule-zone "AEST-10AEDT,M10.1.0,M4.1.0/3"))
+    (test "summer in January, winter in July"
+      (assert= "2024-01-15T11:00:00+11:00" (tz/->iso sydney (iso "2024-01-15T00:00:00Z")))
+      (assert= "2024-07-15T10:00:00+10:00" (tz/->iso sydney (iso "2024-07-15T00:00:00Z"))))))
+
+(describe "zones from the system's zoneinfo"
+  (test "Berlin changes at 01:00 UTC on the last Sunday of March and October"
+    (if (not zoneinfo?)
+      (do (io/puts "  (no /usr/share/zoneinfo — skipped)") (is true))
+      (let (berlin (zone "Europe/Berlin"))
+        (assert= "2024-03-31T01:59:59+01:00" (tz/->iso berlin (iso "2024-03-31T00:59:59Z")))
+        (assert= "2024-03-31T03:00:00+02:00" (tz/->iso berlin (iso "2024-03-31T01:00:00Z")))
+        (assert= "2024-10-27T02:59:59+02:00" (tz/->iso berlin (iso "2024-10-27T00:59:59Z")))
+        (assert= "2024-10-27T02:00:00+01:00" (tz/->iso berlin (iso "2024-10-27T01:00:00Z"))))))
+  (test "past the file's last transition, its footer rule answers"
+    (if (not zoneinfo?)
+      (is true)
+      (let (berlin (zone "Europe/Berlin"))
+        (is (not (nil? (:rule berlin))))
+        (assert= "2090-07-01T14:00:00+02:00" (tz/->iso berlin (iso "2090-07-01T12:00:00Z")))
+        (assert= "2090-12-01T13:00:00+01:00" (tz/->iso berlin (iso "2090-12-01T12:00:00Z"))))))
+  (test "a half-hour offset"
+    (if (not zoneinfo?)
+      (is true)
+      (assert= "2024-01-01T05:30:00+05:30" (tz/->iso (zone "Asia/Kolkata") (iso "2024-01-01T00:00:00Z")))))
+  (test "an unknown zone, or a name that climbs out of the directory, is a failure"
+    (is (failure? (tz/zone "Nowhere/Land")))
+    (is (failure? (tz/zone "../../etc/passwd")))
+    (is (failure? (tz/parse-tzif (string/->bytes "not a zone file") "x")))))
+
+(describe "->utc: a civil time back to the instant"
+  (test "a wall time that exists once"
+    (if (not zoneinfo?)
+      (is true)
+      (let (berlin (zone "Europe/Berlin"))
+        (assert= "2024-07-01T12:00:00+02:00"
+          (tz/->iso berlin (tz/->utc berlin (iso "2024-07-01T12:00:00Z")))))))
+  (test "the skipped spring hour lands as far past the change as it was into the gap"
+    (if (not zoneinfo?)
+      (is true)
+      (let (berlin (zone "Europe/Berlin"))
+        (assert= "2024-03-31T03:30:00+02:00"
+          (tz/->iso berlin (tz/->utc berlin (iso "2024-03-31T02:30:00Z")))))))
+  (test "the repeated autumn hour is the earlier reading, or the later when asked"
+    (if (not zoneinfo?)
+      (is true)
+      (let (berlin (zone "Europe/Berlin")
+            wall (iso "2024-10-27T02:30:00Z"))
+        (assert= "2024-10-27T02:30:00+02:00" (tz/->iso berlin (tz/->utc berlin wall)))
+        (assert= "2024-10-27T02:30:00+01:00" (tz/->iso berlin (tz/->utc berlin wall :later)))))))
+
+(describe "offset->string"
+  (test "sign, hours and minutes"
+    (assert= "+00:00" (tz/offset->string 0))
+    (assert= "+05:45" (tz/offset->string 20700))
+    (assert= "-09:30" (tz/offset->string -34200))))

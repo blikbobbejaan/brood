@@ -264,6 +264,10 @@ x25519-dalek = { version = "3",features = ["static_secrets"] }
 # dalek family as x25519 above — the `%ed25519-*` primitives are the one new mechanism;
 # key management + the publish/verify/TOFU flow are Brood policy (std/tool/package.blsp).
 ed25519-dalek = "3"
+# Argon2id password hashing (ADR-448): the memory-hard hash a stored password wants, which
+# PBKDF2 is not. Pure-Rust RustCrypto, same family and digest generation as sha2/hmac above,
+# so it builds for wasm too.
+argon2 = "0.6"
 chacha20poly1305 = "0.11"
 # Constant-time byte comparison for the handshake MAC check — prevents a
 # timing side-channel from leaking information about the shared cookie.
@@ -382,6 +386,9 @@ crossterm = "0.29"
 rustls = "0.23"
 webpki-roots = "1"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+# ECDSA (P-256/P-384) and RSA signatures for `std/crypto` (ADR-448): the provider rustls
+# already links here, so no new crate — and, like rustls, native only.
+aws-lc-rs = { version = "1.18", default-features = false, features = ["aws-lc-sys", "alloc"] }
 
 # WASM (browser playground) entropy: enable getrandom's browser backends so
 # transitive users build for wasm32. Renamed, unused deps that only turn on the

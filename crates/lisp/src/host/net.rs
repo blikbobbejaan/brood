@@ -1,5 +1,5 @@
-//! TCP sockets (ADR-062) on one **reactor thread** (ADR-143), delivering to
-//! process mailboxes (ADR-059).
+//! TCP sockets (ADR-062) — and UDP sockets (ADR-449) — on one **reactor thread** (ADR-143),
+//! delivering to process mailboxes (ADR-059).
 //!
 //! A socket never blocks a worker — and no longer costs a thread. One reactor
 //! thread runs a `mio` poll loop that multiplexes **every** socket the runtime
@@ -56,7 +56,7 @@ use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::Duration;
 use web_time::Instant;
 
-use mio::net::{TcpListener as MioListener, TcpStream as MioStream};
+use mio::net::{TcpListener as MioListener, TcpStream as MioStream, UdpSocket as MioUdp};
 use mio::{Events, Interest, Poll, Token, Waker};
 
 use rustls::pki_types::pem::{self, PemObject};
@@ -142,6 +142,8 @@ enum Kind {
     TlsStream,
     Listener,
     TlsListener,
+    /// A bound UDP socket (`udp-open`): datagrams in either direction, no connection.
+    Udp,
 }
 
 /// The control-plane entry for one socket id: what the builtins need for
@@ -347,6 +349,19 @@ enum Cmd {
     /// The owner consumed enough of a paused stream's chunks — read it again
     /// ([`InboundFlow::release`]).
     Resume { id: u64 },
+    /// A bound UDP socket (from `udp-open`): start reading at once.
+    Udp {
+        id: u64,
+        socket: MioUdp,
+        owner: Arc<SocketOwner>,
+        binary: Arc<AtomicBool>,
+    },
+    /// One datagram for a UDP socket to send to `to`.
+    UdpSend {
+        id: u64,
+        to: std::net::SocketAddr,
+        bytes: Vec<u8>,
+    },
     /// Queue outbound bytes.
     Send { id: u64, bytes: Vec<u8> },
     /// Arm/disarm an established stream's idle timeout (`ms` = 0 disarms).
@@ -433,6 +448,17 @@ fn tcp_data_msg(id: u64, payload: Message) -> Message {
     Message::Vector(vec![
         Message::Keyword(value::intern("tcp")),
         Message::Socket(id),
+        payload,
+    ])
+}
+
+/// `[:udp sock host port data]` — one datagram, with the address it came from.
+fn udp_msg(id: u64, from: std::net::SocketAddr, payload: Message) -> Message {
+    Message::Vector(vec![
+        Message::Keyword(value::intern("udp")),
+        Message::Socket(id),
+        Message::Str(from.ip().to_string()),
+        Message::Int(i64::from(from.port())),
         payload,
     ])
 }
@@ -681,6 +707,20 @@ struct TlsPending {
     accepted_at: Instant,
 }
 
+/// One UDP socket's reactor state (`udp-open`). No connection, so nothing to linger or
+/// hand over: inbound datagrams go to the owner under the same flow control as a stream's
+/// chunks, and outbound ones are sent at once, queued only while the kernel buffer is full.
+struct UdpConn {
+    socket: MioUdp,
+    owner: Arc<SocketOwner>,
+    flow: Arc<InboundFlow>,
+    binary: Arc<AtomicBool>,
+    /// Datagrams the kernel refused for now (`WouldBlock`), in order, and their bytes.
+    out: std::collections::VecDeque<(std::net::SocketAddr, Vec<u8>)>,
+    out_total: usize,
+    registered: bool,
+}
+
 // The `Tls` variant (rustls state) is much larger than the others, but the
 // reactor holds exactly one `Rx` per live socket and a TLS connection genuinely
 // needs that state inline — boxing would just add an indirection on the hot
@@ -689,6 +729,7 @@ struct TlsPending {
 enum Rx {
     Plain(PlainConn),
     Tls(TlsConn),
+    Udp(UdpConn),
     TlsPending(TlsPending),
     Listener {
         listener: ListenerSlot,
@@ -865,6 +906,10 @@ fn drive(
         }
         Rx::Plain(c) => drive_plain(id, c, readable, writable, registry),
         Rx::Tls(c) => drive_tls(id, c, readable, writable, registry),
+        Rx::Udp(c) => {
+            drive_udp(id, c, readable, writable, registry);
+            false
+        }
         Rx::TlsPending(_) => false,
     }
 }
@@ -1149,6 +1194,66 @@ fn discard_until_blocked(stream: &mut MioStream) -> bool {
     }
 }
 
+/// What a UDP socket waits for: datagrams (unless its owner is full) and, while some are
+/// queued, room to send.
+fn sync_udp_registration(id: u64, c: &mut UdpConn, registry: &mio::Registry) {
+    let interest = interests_for(!c.flow.is_paused(), !c.out.is_empty());
+    let token = Token(id as usize);
+    let result = match (interest, c.registered) {
+        (Some(interest), true) => registry.reregister(&mut c.socket, token, interest),
+        (Some(interest), false) => registry.register(&mut c.socket, token, interest),
+        (None, true) => registry.deregister(&mut c.socket),
+        (None, false) => Ok(()),
+    };
+    if result.is_ok() {
+        c.registered = interest.is_some();
+    }
+}
+
+/// Read every datagram waiting (until the kernel is empty or the owner's mailbox is full)
+/// and send what is queued. A receive error is a previous send's ICMP refusal surfacing
+/// (`ECONNREFUSED`) — not this socket failing — so it is skipped, not fatal; a send that
+/// cannot go now waits for writability.
+fn drive_udp(id: u64, c: &mut UdpConn, readable: bool, writable: bool, registry: &mio::Registry) {
+    if readable {
+        let mut buf = vec![0u8; 65_536];
+        while !c.flow.is_paused() {
+            match c.socket.recv_from(&mut buf) {
+                Ok((n, from)) => {
+                    let payload = if c.binary.load(Ordering::Acquire) {
+                        Message::Bytes(crate::core::blob::SharedBlob::new(&buf[..n]))
+                    } else {
+                        Message::Str(String::from_utf8_lossy(&buf[..n]).into_owned())
+                    };
+                    c.owner
+                        .emit_credited(udp_msg(id, from, payload), c.flow.charge(n));
+                    if c.flow.pause_if_full() {
+                        break;
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => {}
+            }
+        }
+    }
+    if writable || !c.out.is_empty() {
+        while let Some((to, bytes)) = c.out.front() {
+            match c.socket.send_to(bytes, *to) {
+                Ok(_) => {}
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                // unroutable, too large, refused: a datagram is sent or it is not
+                Err(_) => {}
+            }
+            if let Some((_, sent)) = c.out.pop_front() {
+                c.out_total -= sent.len();
+            }
+        }
+    }
+    sync_udp_registration(id, c, registry);
+}
+
 fn tls_interests(c: &TlsConn) -> Option<Interest> {
     // See `plain_interests` — a paused stream drops read interest.
     interests_for(!c.read_done && !c.flow.is_paused(), c.conn.wants_write())
@@ -1332,6 +1437,34 @@ fn handle_cmd(cmd: Cmd, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) 
             conns,
             registry,
         ),
+        Cmd::Udp {
+            id,
+            socket,
+            owner,
+            binary,
+        } => {
+            let mut connection = UdpConn {
+                socket,
+                owner,
+                flow: InboundFlow::new(id),
+                binary,
+                out: std::collections::VecDeque::new(),
+                out_total: 0,
+                registered: false,
+            };
+            sync_udp_registration(id, &mut connection, registry);
+            conns.insert(id, Rx::Udp(connection));
+        }
+        Cmd::UdpSend { id, to, bytes } => {
+            if let Some(Rx::Udp(connection)) = conns.get_mut(&id) {
+                // past the cap a datagram is dropped, which is what UDP promises anyway
+                if connection.out_total + bytes.len() <= OUT_CAP {
+                    connection.out_total += bytes.len();
+                    connection.out.push_back((to, bytes));
+                    drive_udp(id, connection, false, true, registry);
+                }
+            }
+        }
         Cmd::Claim { id } => claim(id, conns, registry),
         Cmd::Retarget { id } => retarget(id, conns, registry),
         Cmd::Resume { id } => resume_reading(id, conns, registry),
@@ -1495,6 +1628,7 @@ fn retarget(id: u64, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
     let flow = match conns.get_mut(&id) {
         Some(Rx::Plain(connection)) => Some(&mut connection.flow),
         Some(Rx::Tls(connection)) => Some(&mut connection.flow),
+        Some(Rx::Udp(connection)) => Some(&mut connection.flow),
         _ => None,
     };
     let was_paused = match flow {
@@ -1595,6 +1729,11 @@ fn close_connection(id: u64, conns: &mut HashMap<u64, Rx>, registry: &mio::Regis
                 drive_tls(id, connection, false, true, registry)
             }
         }
+        // no linger for datagrams: one last try at what is queued, then gone
+        Some(Rx::Udp(connection)) => {
+            drive_udp(id, connection, false, true, registry);
+            true
+        }
         Some(Rx::TlsPending(_)) | Some(Rx::Listener { .. }) | Some(Rx::TlsListener { .. }) => true,
         None => false,
     };
@@ -1620,6 +1759,10 @@ fn resume_reading(id: u64, conns: &mut HashMap<u64, Rx>, registry: &mio::Registr
         Some(Rx::Tls(c)) if !c.flow.is_paused() => {
             c.last_activity = Instant::now();
             drive_tls(id, c, true, false, registry)
+        }
+        Some(Rx::Udp(c)) if !c.flow.is_paused() => {
+            drive_udp(id, c, true, false, registry);
+            false
         }
         _ => false,
     };
@@ -1652,6 +1795,11 @@ fn teardown(id: u64, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
             Rx::Tls(mut c) => {
                 if c.registered {
                     let _ = registry.deregister(&mut c.stream);
+                }
+            }
+            Rx::Udp(mut c) => {
+                if c.registered {
+                    let _ = registry.deregister(&mut c.socket);
                 }
             }
             Rx::TlsPending(_) => {}
@@ -1955,7 +2103,7 @@ pub fn controlling_process(id: u64, pid: u64) -> std::io::Result<()> {
     let claim = {
         let mut registry = reg();
         match registry.get_mut(&id) {
-            Some(ctl) if matches!(ctl.kind, Kind::Stream | Kind::TlsStream) => {
+            Some(ctl) if matches!(ctl.kind, Kind::Stream | Kind::TlsStream | Kind::Udp) => {
                 ctl.owner.retarget(pid);
                 let was_claimed = ctl.claimed;
                 ctl.claimed = true;
@@ -2050,6 +2198,9 @@ pub fn send(id: u64, data: &[u8]) -> std::io::Result<()> {
                     ));
                 }
             }
+            Some(ctl) if ctl.kind == Kind::Udp => {
+                return Err(invalid("tcp-send: a UDP socket sends with udp-send"));
+            }
             Some(_) => return Err(invalid("tcp-send: socket is a listener, not a stream")),
             None => return Err(bad_socket()),
         }
@@ -2105,6 +2256,80 @@ fn retire(id: u64, ctl: Ctl) {
 /// The local port `sock` is bound to.
 pub fn local_port(id: u64) -> Option<u16> {
     reg().get(&id).and_then(|ctl| ctl.port)
+}
+
+/// An IP address from what a UDP call names: a literal, or `localhost`. Datagrams have
+/// no dialler thread to hide a name lookup in, so a name is resolved before the call
+/// (`net/dns`), never here on a worker.
+fn udp_address(what: &str, host: &str, port: u16) -> std::io::Result<std::net::SocketAddr> {
+    let ip = if host == "localhost" {
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+    } else {
+        host.parse::<std::net::IpAddr>().map_err(|_| {
+            invalid(&format!(
+                "{what}: {host} is not an IP address (resolve a name with net/dns first)"
+            ))
+        })?
+    };
+    Ok(std::net::SocketAddr::new(ip, port))
+}
+
+/// `(udp-open host port)` — a UDP socket bound to `host`:`port` (`"0.0.0.0"` or `"::"` for
+/// every interface, port 0 for one the OS picks), owned by `subscriber`: each datagram
+/// arrives as `[:udp sock host port data]`, `data` bytes until `tcp-set-binary` says text.
+/// Closed by `tcp-close`; handed to another process by `tcp-controlling-process`.
+pub fn udp_open(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
+    reactor_up()?;
+    let std_socket = std::net::UdpSocket::bind(udp_address("udp-open", host, port)?)?;
+    std_socket.set_nonblocking(true)?;
+    let local = std_socket.local_addr()?.port();
+    let socket = MioUdp::from_std(std_socket);
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    // datagrams are binary by nature: a DNS answer or a game packet is not text
+    let binary = Arc::new(AtomicBool::new(true));
+    let owner = SocketOwner::new(subscriber);
+    reg().insert(
+        id,
+        subscriber,
+        Ctl {
+            kind: Kind::Udp,
+            binary: binary.clone(),
+            owner: owner.clone(),
+            claimed: true,
+            port: Some(local),
+            listener: None,
+        },
+    );
+    reactor().cmd(Cmd::Udp {
+        id,
+        socket,
+        owner,
+        binary,
+    });
+    // See `connect` — closes the race with `reactor_died`'s sweep.
+    if REACTOR_DOWN.load(Ordering::SeqCst) {
+        reg().remove(&id);
+        return Err(reactor_dead_err());
+    }
+    Ok(id)
+}
+
+/// `(udp-send sock host port data)` — send one datagram from `sock` to `host`:`port`.
+/// Asynchronous like `tcp-send`; a datagram the network loses or refuses is simply gone.
+pub fn udp_send(id: u64, host: &str, port: u16, data: &[u8]) -> std::io::Result<()> {
+    reactor_up()?;
+    let to = udp_address("udp-send", host, port)?;
+    match reg().get(&id) {
+        Some(ctl) if ctl.kind == Kind::Udp => {}
+        Some(_) => return Err(invalid("udp-send: not a UDP socket")),
+        None => return Err(bad_socket()),
+    }
+    reactor().cmd(Cmd::UdpSend {
+        id,
+        to,
+        bytes: data.to_vec(),
+    });
+    Ok(())
 }
 
 // ---- TLS configuration + entry points ----
