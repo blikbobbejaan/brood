@@ -3,7 +3,7 @@
 //! eval loop's tick, a native activation's poll — so the policy has one home and the places
 //! that run code only ask.
 //!
-//! A quantum is a budget of reductions (~2000, the BEAM's default). Code that can capture a
+//! A quantum is a budget of reductions (~2000). Code that can capture a
 //! continuation yields when the budget is spent. Code that cannot — a nested evaluation
 //! behind a builtin, a native activation that cannot unwind — runs on into a fresh budget,
 //! and the process OWES the scheduler a preemption that the next point that can capture
@@ -52,7 +52,7 @@ pub(crate) fn end(pid: u64) {
 }
 
 /// The reductions the quantum used — the budget less what is left (a preempted process left
-/// 0). Erlang counts `:reductions` the same way.
+/// 0).
 pub(super) fn used() -> u32 {
     reduction_budget().saturating_sub(REDUCTIONS.with(|r| r.get()))
 }
@@ -293,7 +293,7 @@ pub(crate) fn charge(n: u32) {
     REDUCTIONS.with(|r| r.set(r.get().saturating_sub(n)));
 }
 
-/// Dirty-CPU accounting for native builtins (BEAM's NIF-reduction model). A long-running
+/// Dirty-CPU accounting for native builtins (charged in reductions). A long-running
 /// native cannot be preempted mid-call and holds its worker; what we CAN do is charge the
 /// time it held the worker against the budget afterwards, so the **next** safepoint
 /// preempts promptly. ~2 reductions per µs (a 2000-reduction quantum ≈ ~1 ms of Brood

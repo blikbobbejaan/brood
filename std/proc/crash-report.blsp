@@ -7,7 +7,7 @@
 ;;    exits with a structured reason that nothing reads. That is the gap
 ;;    ADR-039's reversal left open (kernel supervision was the scheduler-race
 ;;    surface; userland supervision does not cover what nobody supervises), and
-;;    it is the gap OTP closes with the `logger` process, not with the kernel:
+;;    it is closed here with a reporting process, not with the kernel:
 ;;    every crash is *reported* whether or not it is *handled*.
 ;;  - Mechanism is the kernel system monitor (`proc/system-monitor`), which
 ;;    already pushes `[:system :exit pid reason]` for every exit; this module is

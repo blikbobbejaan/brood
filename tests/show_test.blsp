@@ -1,6 +1,6 @@
 ;; The display protocol (std/show.blsp): the `Display` ability + `->string`, and the
-;; `*show*` hook that makes the screen printers let a record define how it prints
-;; (Elixir's `String.Chars`). Register-only — discovered and run by `nest test`.
+;; `*show*` hook that makes the screen printers let a record define how it prints.
+;; Register-only — discovered and run by `nest test`.
 (defmodule show-test (:use test))
 
 (defrecord usd (cents))
@@ -24,7 +24,7 @@
   (test "a record without an impl falls to :default (its raw map form)"
     (assert= (->string (plain 7)) (str (plain 7)))
     (is (includes? (->string (plain 7)) ":__id__")))
-  (test "usable inside str/fmt — the Elixir to_string move"
+  (test "usable inside str/fmt — a record interpolates as its display"
     (assert= (str "total=" (->string (usd 999))) "total=$9.99")))
 
 (describe "screen printers honor Display"

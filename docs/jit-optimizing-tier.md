@@ -194,7 +194,7 @@ the benefit gate is revisited (that's the lever-2/allocation interaction, `alloc
 **DONE (2026-06-17) — Phase B / Phase 3 shipped, ~1.7× on fib.** The §6b self-inliner landed on top
 of Phase A: `shift_slots` + `inline_self_calls` + `self_inline_arm` in `compile.rs`, gated exactly as
 designed (top-level no-capture recursive `defn`, no `SelfCall`/`MakeClosure`, fixed arity,
-`SELF_INLINE_MAX_BODY = 64`). fib(35) 0.53 → 0.31 s (~1.7×, ~4.4× → ~2.6× of Elixir); the inlined arm
+`SELF_INLINE_MAX_BODY = 64`). fib(35) 0.53 → 0.31 s (~1.7×, ~4.4× → ~2.6× of the actor-runtime baseline); the inlined arm
 lowers to native (4 leaf calls, 3-handle spill — Phase A was the prerequisite). `BROOD_NO_INLINE=1`
 disables for A/B. **One miscompile was caught + fixed before shipping** (the §6b silent-wrong-result
 risk): `shift_slots` must **demote spliced `Call`s to `tail: false`** — a body's tail-position helper
@@ -239,7 +239,7 @@ body**, and the protocol is dominated by per-call frame setup the dispatch-cell 
 (the roots-`Vec` frame-rep blocker, §6a). **Inlining sidesteps that** — the inlined body runs
 in the *caller's* already-set-up frame, no new frame per level. Depth-1 self-inline collapses
 ~2 levels per protocol entry (~2.6–3× fewer protocol calls → fib protocol ~63%→~22%, toward
-Elixir parity); depth-2 more.
+parity with the mature actor runtimes); depth-2 more.
 
 **The transform (Node-level, in `compile_arm` after `compile_body`, before `compile_chunk`).**
 A non-tail self-recursive call is `Node::Call { callee: GlobalIc{sym}|Global(sym), args, tail:

@@ -167,7 +167,7 @@ tree-sitter-elixir = { version = "0.3", optional = true }
 # Lock-free, append-only vector for the shared RUNTIME code region: stable
 # references survive concurrent pushes, so many process threads read closure
 # bodies lock-free while `def` appends new code (old versions never move/free —
-# in-flight calls keep running them; Erlang-style hot reload). See docs/shared-code.md.
+# in-flight calls keep running them; live code reload). See docs/shared-code.md.
 boxcar = "0.2"
 # Segmented stack growth (rustc's own approach) for the recursive heap walkers —
 # promote / GC flush / structural equal / hash recurse per *car* nesting level, so
@@ -244,7 +244,7 @@ blake3 = { version = "1.8", features = ["pure"] }
 # Cryptographically-strong random nonces for the handshake. `getrandom` reads
 # the OS RNG directly — no allocator, no global state, just bytes.
 getrandom = "0.4"
-# gzip/zlib/raw-deflate compression (the `zlib` builtins, Erlang's :zlib shape).
+# gzip/zlib/raw-deflate compression (the `zlib` builtins).
 # Already in the tree transitively; a direct dep pins it for the compress builtins.
 flate2 = "1"
 # Brotli compression (the `%brotli`/`%unbrotli` builtins) — the `Content-Encoding: br`

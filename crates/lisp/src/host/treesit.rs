@@ -50,7 +50,7 @@ pub fn parse(heap: &mut Heap, src: &str, lang: &str) -> LispResult {
 ///
 /// An editor asks the SAME text several questions in a row — fontify while redrawing,
 /// then the enclosing chain when you press RET, then a sibling list when you press
-/// C-M-f — and each one was re-parsing from scratch. Parsing 22 KB of Elixir is ~10 ms,
+/// C-M-f — and each one was re-parsing from scratch. Parsing 22 KB of source is ~10 ms,
 /// which is the whole cost of a structural motion once the projection is gone, so
 /// repeated motion over an unchanged buffer went from paying it every time to paying it
 /// once.
@@ -117,7 +117,7 @@ fn derive_edit(old: &str, new: &str) -> Option<tree_sitter::InputEdit> {
 fn parse_cached(src: &str, lang: &str) -> Result<tree_sitter::Tree, LispError> {
     // An exact hit is free; a NEAR hit — the same buffer one keystroke later — is the
     // common case while typing, and is what decides how a large file feels. A full parse
-    // of 250 KB of Elixir is ~500 ms, so paying it per edit is the whole of "the editor
+    // of 250 KB of source is ~500 ms, so paying it per edit is the whole of "the editor
     // is sluggish"; reparsing from the previous tree is ~1 ms.
     let reuse: Option<(usize, tree_sitter::Tree)> = {
         let mut cache = crate::core::sync::lock(&TREE_CACHE);
@@ -137,7 +137,7 @@ fn parse_cached(src: &str, lang: &str) -> Result<tree_sitter::Tree, LispError> {
         // not just the latest one: an editor parses the same document in more than one
         // shape (the view colours the visible window, the indenter asks about the whole
         // file), and with only the latest entry consulted each shape evicted the other,
-        // so every keystroke was a full reparse (18 ms a RET in a 1,300-line Elixir file).
+        // so every keystroke was a full reparse (18 ms a RET in a 1,300-line source file).
         // The CLOSEST such entry, not the first: a small text (the view's window) is "an edit"
         // of anything by `derive_edit`'s measure, so taking the first match let a whole-document
         // parse claim — and then replace — the window's entry. The edit touching the fewest
@@ -218,7 +218,7 @@ fn char_to_byte(b2c: &[u32], ch: u32) -> usize {
 /// outermost first, each without its children.
 ///
 /// **Why this exists rather than walking `tree-sitter-parse`'s result.** That call
-/// projects the WHOLE tree into Brood maps: 9,561 of them for a 22 KB Elixir file. Every
+/// projects the WHOLE tree into Brood maps: 9,561 of them for a 22 KB source file. Every
 /// consumer that wants "what encloses this point" — an indenter, `backward-up-list`,
 /// a which-function display — then walks that to read about ten of them, and pays ~17 ms
 /// to do it. The editor calls it on every RET, twice, and it was a quarter of a second of
@@ -1293,7 +1293,7 @@ fn node_to_positioned(heap: &mut Heap, node: tree_sitter::Node, src: &str, b2c: 
     // keeps that as a bit on every node, so asking is O(1) — where deciding it in
     // Brood means walking the whole projected tree, which is what the indenter was
     // doing on every keypress (two trees, thousands of nodes, ~250 ms on a 22 KB
-    // Elixir file). Only the root carries it: a caller wanting per-node state has
+    // source file). Only the root carries it: a caller wanting per-node state has
     // `:error`/`:missing` already, and putting a redundant flag on every node would
     // grow every tree to save one lookup.
     if node.parent().is_none() && node.has_error() {

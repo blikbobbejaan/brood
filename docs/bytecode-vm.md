@@ -48,7 +48,7 @@
 > and the dated devlog entries.
 
 This is the project's "big lever" for performance: closing the tree-walker's
-structural ~50–220× tax (ADR-069's measurement) over the Node/Elixir range. It is
+structural ~50–220× tax (ADR-069's measurement) over the Node / actor-runtime range. It is
 the commitment ADR-069 deferred when it said *"the honest fix for a tree-walker's
 structural tax is a bytecode / closure-compiling VM … revisit [lexical addressing]
 when we commit to the compilation step."* **This plan is that commitment, and

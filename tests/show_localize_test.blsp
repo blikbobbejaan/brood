@@ -1,4 +1,4 @@
-;; A worked example / prototype: locale-aware display, the Elixir-`Money` shape.
+;; A worked example / prototype: locale-aware display of money.
 ;; Shows how `Display`/`Inspect` (std/show.blsp) compose with an app-defined
 ;; `Localize` ability + a `*locale*` dynamic var so even a plain `(io/puts money)`
 ;; localizes — the reusable half of an i18n story. Register-only; run by `nest test`.

@@ -29,7 +29,7 @@
 //! - [`scheduler`] — the state-capture driver (`Process`, `Ctx`), the run queue +
 //!   worker pool, `spawn`, `tick`/`preempt`, `GcBlockGuard`, `self_pid`,
 //!   `pid_value`, `deregister`.
-//! - [`monitor`] — Erlang-style monitors (`Watcher`, `MONITORS`,
+//! - [`monitor`] — process monitors (`Watcher`, `MONITORS`,
 //!   `PENDING_REMOTE`, the full `monitor`/`demonitor`/`add_monitor`/
 //!   `drop_monitor`/`handle_node_down`/`fire_noconnection` surface).
 //! - [`timer`] — `(after ms expr)` deadlines: the min-heap + one OS
@@ -116,7 +116,7 @@ pub(crate) const THREAD_LIMIT_HINT: &str = "the operating system refused a threa
      thread limit (ulimit -u, a container's pids limit)";
 
 pub use monitor::{demonitor, monitor, monitored_by, next_ref};
-// Erlang-style links (ADR-067): symmetric failure coupling + `trap_exit`.
+// Process links (ADR-067): symmetric failure coupling + `trap_exit`.
 pub use links::{link_count, link_self, set_trap_exit, unlink_self};
 // Cross-node link machinery, used by `dist` (the senders + inbound handlers).
 pub(crate) use links::{

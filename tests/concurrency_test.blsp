@@ -99,7 +99,7 @@
       ; well inside the 1000ms window
       (assert= (receive) :got)))
 
-  ;; ---- catchable timeouts (Erlang-style: the `after` body can throw) ---------
+  ;; ---- catchable timeouts (the `after` body can throw) ----------------------
 
   (test "a throwing (after …) body is catchable via try/catch (root)"
     (assert= (try (receive (:never x) (after 30 (throw [:timeout]))) (catch e e)) [:timeout]))
@@ -175,7 +175,7 @@
     (assert= (sched-collect 0 50) :all-done))
 
   ;; A receive *loop* must stay O(1) native stack however many messages it handles
-  ;; — Erlang's core guarantee. The trampoline (`%receive` returns the body thunk,
+  ;; — a core guarantee of a server loop. The trampoline (`%receive` returns the body thunk,
   ;; the macro applies it in tail position) is what makes this hold; before it, a
   ;; server driven through interleaved casts + calls overflowed the green-process
   ;; coroutine stack and SIGSEGV'd around ~60 cycles. 500 cycles proves the fix.

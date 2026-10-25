@@ -18,7 +18,7 @@
 ;; (the `io/` writers). Declared here; the Display protocol (core,
 ;; defined at the end of this prelude) sets it to `%show-print-hook`, which routes a
 ;; *record* through the `Display` ability's `->string` op so a record can define how it
-;; prints (Elixir's `String.Chars` model) while built-ins keep the fast native render.
+;; prints while built-ins keep the fast native render.
 ;; An ordinary dynamic var, so `(binding (*show* nil) …)` disables the transform for a
 ;; scope. Only the screen printers consult it; `str`/`pr-str`/`fmt` stay native.
 (%declare-dynamic '*show*)
@@ -268,17 +268,17 @@ The steps after a failure never run, so a pipe does not have to end in `(if (fai
        ~@(map forms (fn (form) (%thread-first-step v form)))
        ~v)))
 
-;; `tap`/`then` — the single-function pipe helpers (Elixir's `Kernel.tap`/`then`).
+;; `tap`/`then` — the single-function pipe helpers.
 ;; `doto` splices *forms* (`->`-style); these take a *function value*, so they compose
 ;; with `->` where a plain function or a one-off closure is what you have in hand.
 (defn tap (x f)
-  "Call `(f x)` for its side effects and return `x` unchanged — a pass-through probe for a `->` pipeline: `(-> v (tap log) (process))` logs `v` and keeps threading it. Elixir's `Kernel.tap`.
+  "Call `(f x)` for its side effects and return `x` unchanged — a pass-through probe for a `->` pipeline: `(-> v (tap log) (process))` logs `v` and keeps threading it.
 
     (with-out-str (tap 5 io/write))   → \"5\"
     (tap 5 (fn (n) nil))              → 5     ; the value passes through unchanged"
   (do (f x) x))
 (defn then (x f)
-  "Return `(f x)` — apply `f` to `x`. Lets a `->` pipeline step call an arbitrary function on the threaded value, not only splice it as a first argument: `(-> v (then (fn (n) (g n other))))`. Elixir's `Kernel.then`.
+  "Return `(f x)` — apply `f` to `x`. Lets a `->` pipeline step call an arbitrary function on the threaded value, not only splice it as a first argument: `(-> v (then (fn (n) (g n other))))`.
 
     (then 5 (fn (n) (* n 3)))   → 15"
   (f x))
@@ -347,9 +347,9 @@ The steps after a failure never run, so a pipe does not have to end in `(if (fai
 ;; `with` — the FAILURE let. Bindings read exactly like `let`'s; the first value that is a
 ;; failure short-circuits the whole form to that failure, so the steps after it never run.
 ;;
-;; This is deliberately NOT Elixir's `with`, which we had and removed (ADR-315). Elixir
-;; needs `{:ok, a} <- expr` because it has no failure kind — the tuple SHAPE carries the
-;; signal, so every step must spell out a pattern for "kept going", and an `:else` section
+;; This is deliberately NOT a `with` of `pattern <- expr` steps, which we had and removed
+;; (ADR-315). That form needs a pattern because without a failure kind a tuple SHAPE carries
+;; the signal, so every step must spell out a pattern for "kept going", and an `:else` section
 ;; must then re-match the shapes that did not. Brood has a failure kind, so the pattern is
 ;; redundant and so is `:else`: what falls out is always a failure, and `if`/`match`/
 ;; `failure?` handle it at the call site in the language you already have.
@@ -491,7 +491,7 @@ absence and failure stay distinct; and `error-message` reads it.
 ;; it describes by `throw` (`LispError::from_error_map`), so what escapes a `finally`
 ;; prints and propagates as the original did. `%try` never catches a control
 ;; signal (a `receive` suspend) or an untrappable kill, so `finally` does not run
-;; on `(exit pid :kill)` — OTP's `after` doesn't either.
+;; on `(exit pid :kill)`.
 (defn- %try-finally-split (body)
   "Split `body` into `[forms finally-forms]` when its last form is a `(finally …)`
 clause, else `[body nil]`. A `finally` anywhere but last is an error."

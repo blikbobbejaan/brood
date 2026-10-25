@@ -183,7 +183,7 @@ test discovery, lints, release, config)."
     "  (test \"step advances in open space\" (assert= (step 5 1 20) [6 1]))\n"
     "  (test \"render marks the right column\" (assert= (render 0 3) \"[*  ]\")))\n"))
 
-;; `gen`: a stateful process (gen_server-style) via the `gen` framework.
+;; `gen`: a stateful server process via the `gen` framework.
 ;; Genuine mutable state lives in a process's loop, not a variable (ADR-026):
 ;; async `cast` threads new state, synchronous `call` reads/updates it.
 (defn- project-gen-main-template (nm)
@@ -618,7 +618,7 @@ only one, else the one called \"default\"."
 (defn new-project (nm &optional template from)
   "Scaffold a new project named `nm` (or `\".\"` for the current directory, taking the project name from the cwd's basename): a `project.blsp` manifest, the baked-in language guide, and starter code. Without `from`, `template` picks a built-in starter — `\"default\"` (a `main`+`hello` module pair, the default), `\"tui-loop\"` (a tail-recursive animation loop), `\"gen\"` (a stateful gen_server process), `\"editor\"` (a tiny text editor on the `ui` framework) or `\"gui\"` (a windowed app on the `ui` framework, opened with `(gui-display)` — needs a `--features gui` runtime). With `from` — a package's path, git URL (`url#ref`) or registry name — the starter is one of the templates that package declares (`:templates` in its manifest, ADR-424), `template` naming which when it has several; its files fill in `{{name}}` and `{{package}}` (the dependency entry that reaches the package). Existing scaffold files are overwritten, not rejected. Backs `nest new [--template …] [--from …]`.
 
-    (scaffold/new-project \"myapp\" \"gen\")   ;=> myapp/ created — project.blsp, the language guide and a gen_server starter
+    (scaffold/new-project \"myapp\" \"gen\")   ;=> myapp/ created — project.blsp, the language guide and a `gen` server starter
     (scaffold/new-project \"shop\" \"app\" \"hatch\")   ;=> shop/ created from hatch's app template, depending on hatch from the registry"
   ;; `nest new .` scaffolds into the current directory (cargo init's shape);
   ;; the project name is then the cwd's basename. Both forms — `nest new .` and

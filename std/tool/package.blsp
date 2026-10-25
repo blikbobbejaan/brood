@@ -1430,7 +1430,7 @@ temp, and the second rename would find it gone.
 ;; deps can both provide a `parser` with no collision. `%require-force` loads the file
 ;; under `foo`'s package context (its `%in-ns`/`(:use …)` root); the root project's own
 ;; modules are NOT registered here, so they stay short (the asymmetry ADR-070 records —
-;; the Elixir-style uniform root-project rooting is the recorded next step).
+;; uniform root-project rooting is the recorded next step).
 (defn- package-register-rooting (entries)
   (map entries
     (fn (e)

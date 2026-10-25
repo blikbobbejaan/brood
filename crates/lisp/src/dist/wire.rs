@@ -7,7 +7,7 @@
 //! - **Frame** (`[u32 len][payload]`). The unit of transport; `payload` starts
 //!   with a `FRAME_*` tag byte, then variant fields. [`read_frame`] /
 //!   [`write_frame`].
-//! - **Message** — Erlang-style deep-copied value, encoded inline inside a
+//! - **Message** — a deep-copied value, encoded inline inside a
 //!   `Frame::Send` (and embedded in `ClosureMsg` for closure shipping).
 //!   Symbols travel by name; the receiver re-interns them.
 //!
@@ -98,7 +98,7 @@ pub(super) enum Frame {
     /// (`(monitor {:name n :node peer})`, which `gen/call` makes): the receiver resolves the
     /// name at arrival and watches that pid, or — unregistered — fires `:noproc` at once,
     /// exactly as a local `monitor` of an unregistered name does. The name is resolved
-    /// once; a later re-registration is a different process, as in Erlang.
+    /// once; a later re-registration is a different process.
     MonitorName {
         watcher_pid: u64,
         name: Symbol,
@@ -506,8 +506,8 @@ const M_PID: u8 = 12;
 /// defaults are S-expression forms — already messages — so the wire encoding
 /// is a flat record: name?, params, optionals, rest?, body, doc?, captured.
 /// The receiver's `closure_from_message` chains captured frees onto its own
-/// global scope; free globals re-resolve there (Erlang's "the module must be
-/// loaded on both nodes").
+/// global scope; free globals re-resolve there (the module must be loaded on
+/// both nodes).
 const M_CLOSURE: u8 = 13;
 /// An arbitrary-precision integer, sent as its decimal string (see
 /// [`Message::BigInt`]) — portable across nodes with independent heaps.

@@ -210,8 +210,8 @@
   ;; A backend is told which attempt a spawn is, so it can start its child differently once
   ;; the optimistic way has been shown not to work. Without it, a child that cannot boot in
   ;; the configuration asked for is retried identically until the strikes run out — which is
-  ;; what a Phoenix app whose `Application.start/2` raises did to the Elixir playground:
-  ;; three dead boots and then nothing, where `mix run --no-start` would have worked.
+  ;; what a web app whose start hook raises did to a playground backend: three dead
+  ;; boots and then nothing, where booting without starting the app would have worked.
   (test "a spawn is told which attempt it is, and a respawn is a later one"
     ;; the attempts this backend was asked for, in order, collected in a table
     (let (seen (%table)

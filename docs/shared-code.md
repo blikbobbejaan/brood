@@ -3,13 +3,13 @@
 > Status: **implemented.** This documents **Option A** from the concurrency
 > discussion — *true* shared code (not copy-on-spawn). A runtime's inner
 > processes share its live code + global table; redefining a function reaches a
-> running process on its next lookup (Erlang-style hot reload across processes).
+> running process on its next lookup (live code reload across running processes).
 > Separate runtimes (future nodes) stay independent; data is never shared.
 
 ## Why
 
 Today each process has its own `Heap`, its own copy of the prelude, and can't see
-another process's `defn`s. We want Erlang's split — **share code, isolate data** —
+another process's `defn`s. We want the split — **share code, isolate data** —
 which unlocks three things at once:
 
 1. **Cheap spawn** — a new process shares the existing code instead of reloading
@@ -86,7 +86,7 @@ mechanics, gives cheap spawn + shared prelude), and add the mutable-shared regio
 - **Hot-reload:** redefinition adds new shared code and rebinds; because old code
   is never freed (append-only), a call already running the old closure finishes on
   it, while every new lookup — in any process — gets the new version. This is the
-  Erlang/Emacs semantics we want.
+  live-reload semantics we want (Emacs has the same).
 
 ## Closures capture the global env *symbolically*
 
@@ -153,9 +153,9 @@ The reconciliation is a matter of *scope*:
 - **Inner processes** — everything a runtime `spawn`s — **share that runtime's
   live code + global table.** They resolve globals against the shared table
   (late binding), so a `def` is visible to them on their next call. This is the
-  cross-process hot reload (`docs` / the Erlang code-server model: shared current
-  code, every call re-dispatches through it — and since Brood is a Lisp-1 with
-  late binding, *every* call already re-dispatches, no `Module:fun` needed).
+  cross-process hot reload (shared current code, every call re-dispatches through
+  it — and since Brood is a Lisp-1 with late binding, *every* call already
+  re-dispatches, no qualified remote call needed).
 - **Separate runtimes (future nodes)** each get their **own** `RuntimeCode`, so
   updating one never touches another.
 

@@ -67,8 +67,7 @@ A `Ty` **is a set of values**, and the type operations *are* set operations:
   **redefinable global under hot reload** — is `dynamic()`, **not** `ANY` (`ANY`
   relates by subtyping and *would* error when an `int` is wanted; `dynamic()`
   defers). This is the valve that lets typing coexist with live redefinition.
-  (Castagna & Lanvin, ICFP 2017; Castagna et al., POPL 2019 — the reconciliation
-  Elixir uses.) **Note:** the advisory *checker*'s working vocabulary is
+  (Castagna & Lanvin, ICFP 2017; Castagna et al., POPL 2019.) **Note:** the advisory *checker*'s working vocabulary is
   `Option<Ty>` (known / unknown); `GradualTy` is consulted at the one place that
   needs the bounded-dynamic reading `Option<Ty>` cannot express — the
   gradual-*assignment* check on `(def x …)` against a declared value type.

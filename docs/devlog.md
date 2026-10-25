@@ -3750,6 +3750,20 @@ counted only once its caller `fold-with` is native, and `settle` never waited on
 compile; each thin-wrapper test settles `fold-with` first and the redefining tests run
 `:isolated`. Not run on this machine.
 
+2026-10-25 (`names`, a process registry; ADR-445; ROADMAP gap E, local half): a key that is
+any value, held by one process (`:unique`) or many (`:duplicate`), with a value beside each
+holder. The registry is a `defserver` owning a table (ADR-418), so writes are serialised and
+its entries die with it; a via directory in `gen` points each registry's name at its table,
+so `lookup`/`whereis`/`count` read without a message. A holder is monitored once and its down
+drops its keys; reads keep live holders only, for the window before the down is handled.
+`gen` resolves `{:via registry :key key}` in `call`/`cast`/`stop`/`code-change` and registers
+through it in `start`'s `:name`. The directory is `gen`'s and `gen/start` sends the
+registry's register call itself, because a `names/…` reference in `gen` made each module load
+the other first (`nest format --check` found it: `defserver` unbound while `names` loaded). Cluster-wide process groups stay open. Same day: forward-facing docs, std, tests and
+Rust comments describe Brood in its own terms (the August decision), `docs/elixir-parity.md`
+is gone, and history files are untouched. Not run on this machine:
+`tests/names_test.blsp` is new and runs in CI.
+
 2026-10-25 (the call IC entry is 48 bytes, was 64): `CallIcEntry` is one per call site a process has
 run, the largest item in a parked green process. A `spawn-live` unit holds 7. Its callee is now a
 one-byte kind plus a `u64` handle instead of a 24-byte `Value` (24 for `Pid`'s second word, which no

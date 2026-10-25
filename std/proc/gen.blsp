@@ -1,15 +1,15 @@
-;; std/proc/gen.blsp — the gen_server-style process framework.
+;; std/proc/gen.blsp — the server process framework.
 ;;
 ;; Design notes (the *why*; the *what* is in the docstrings below):
 ;;  - Messages ride internal envelopes — [:$cast …] / [:$call from ref …] — so the
 ;;    receive loop can tell a cast from a call, and match a call to its reply by a
 ;;    fresh (ref) (the request/reply idiom in docs/language.md). A message that is
 ;;    *not* one of those envelopes (a monitor `[:down …]`, a link `[:EXIT …]`, a
-;;    timer tick, a plain send) is an `info` message — Erlang's handle_info.
+;;    timer tick, a plain send) is an `info` message.
 ;;  - An ORDINARY module, not prelude: a framework does not get to reserve generic
 ;;    globals like `call`/`cast`/`stop` (ADR-243).
 ;;
-;; A gen_server-style process framework on the kernel's spawn / send / receive / ref /
+;; A server process framework on the kernel's spawn / send / receive / ref /
 ;; monitor (ADR-006). A server carries one immutable state value through its receive loop
 ;; and handles four message kinds: CAST (fire-and-forget; body is the next state), CALL
 ;; (synchronous; body is [reply next-state], caller blocks), QUERY (synchronous read-only;
@@ -32,7 +32,7 @@
 ;;   (gen/cast c :inc) (gen/call c :value) (gen/stop c)
 
 (defmodule gen
-  "The gen_server-style actor framework: a server carries one immutable state value
+  "The server framework: a server carries one immutable state value
 through a tail-recursive `receive` loop, and `defserver` declares how it handles each
 kind of message — CAST (async), CALL (sync), QUERY (sync, read-only), INFO (anything
 else), plus the `init` / `terminate` / `code-change` lifecycle clauses.
@@ -53,19 +53,70 @@ a module like any other — `(def call …)` in your own code is yours.")
 
 ;; ---- client side ------------------------------------------------------------
 
+;; Every client function takes a pid, a kernel name, a `{:name …}` address — all of which
+;; `send` routes — or a `{:via registry :key key}` address: a key in a `names` registry,
+;; resolved to its live holder at each call. A key nobody holds resolves to nil: a cast,
+;; stop or code-change to it is dropped, as a send to a dead pid is, and a call raises.
+;;
+;; The registries' directory lives HERE, not in `names`: `names` is built on `gen`, so `gen`
+;; naming `names` would make each load the other first. Each registry's name maps to [its
+;; pid, its table]; a module-level `def` pins this table, not the tables it points to, which
+;; stay owned by their registries (ADR-418), so a dead registry's handle reads as dropped.
+(def- via-directory (table/new))
+
+(defn %via-publish (registry pid entries)
+  "Point `registry`'s name at its pid and its entries table. Internal: `names`'s registry
+calls it once, at its start.
+
+    (gen/%via-publish :sessions (self) (table/new))   ;=> the directory"
+  (table/put via-directory registry [pid entries]))
+
+(defn %via-table (registry)
+  "The entries table of the running registry named `registry`, or nil. Internal: what
+`names`'s reads and `gen`'s `{:via …}` addresses read.
+
+    (gen/%via-table :no-such-registry)   → nil"
+  (let (published (table/get via-directory registry))
+    (when (and published (proc/alive? (first published))) (second published))))
+
+;; The raw entry under `key`, or nil. The catch covers a registry that dies between
+;; `%via-table`'s liveness check and the read, whose table is then dropped.
+(defn %via-entry (registry key)
+  "The raw entry under `key` in the running registry named `registry` — `[pid value]` for a
+unique key, a map pid → value for a duplicate one — or nil. Internal, for `names`.
+
+    (gen/%via-entry :no-such-registry :k)   → nil"
+  (let (entries (%via-table registry))
+    (when entries
+      (check-allow :discarded-catch
+        (try (table/get entries key) (catch _ nil))))))
+
+(defn- gen-target (pid)
+  (if (and (map? pid) (contains? pid :via))
+    (let (entry (%via-entry (get pid :via) (get pid :key)))
+      (cond
+        (nil? entry) nil
+        (vector? entry) (when (proc/alive? (first entry)) (first entry))
+        else (seq/find (keys entry) proc/alive?)))
+    pid))
+
+(defn- gen-send (pid message)
+  (let (target (gen-target pid))
+    (when target (send target message))
+    nil))
+
 (defn cast (pid: (or map pid) payload:any -> nil)
   "Send `payload` to a server process as a cast — fire-and-forget, the asynchronous
 counterpart to `call` (no reply, the caller never blocks).
 
     (gen/cast server [:put :k 1])   ;=> nil — the server handles it asynchronously"
-  (send pid [:$cast payload]))
+  (gen-send pid [:$cast payload]))
 
 (defn call (pid payload)
-  "Send `payload` as a synchronous call and block up to 5 s for the reply (OTP's
-default `gen_server:call` timeout). Monitors the server, so a *dead* server
-raises at once rather than hanging; a timeout raises too. Use `call-timeout`
-for a custom deadline. Other messages stay queued — the reply is matched by a
-fresh (ref).
+  "Send `payload` as a synchronous call and block up to 5 s for the reply. Monitors the
+server, so a *dead* server raises at once rather than hanging; a timeout raises too. Use
+`call-timeout` for a custom deadline. Other messages stay queued — the reply is matched by
+a fresh (ref).
 
     (gen/call server :ping)   ;=> the server's reply, e.g. :pong"
   (call-timeout pid payload 5000))
@@ -74,21 +125,27 @@ fresh (ref).
   "Like `call`, but wait at most `ms` milliseconds. Monitors the server for
 the duration: a reply returns its value, the server dying raises
 `call: server … died: …`, and crossing the deadline raises
-`call: timed out …`. Both errors are catchable with `try`. **Every** exit path
-drops the monitor, deactivates this call's reply `ref` as a one-shot alias, and
-flushes anything already queued for it — so a call that gives up leaves nothing
-addressed to its `ref` behind, and nothing can arrive for it afterwards either.
+`call: timed out …`, and a `{:via …}` address nobody holds raises `call: no process
+holds …`. All are catchable with `try`. **Every** exit path drops the monitor,
+deactivates this call's reply `ref` as a one-shot alias, and flushes anything already
+queued for it — so a call that gives up leaves nothing addressed to its `ref` behind, and
+nothing can arrive for it afterwards either.
 
-The reply `ref` is a **one-shot alias** (OTP 24's `{alias, demonitor}` mechanism).
-Flushing alone only clears what is *already* queued; a reply the server posts
+The reply `ref` is a **one-shot alias**. Flushing alone only clears what is *already*
+queued; a reply the server posts
 strictly after the deadline would still land, unmatchable, and sit in the mailbox
 forever — unbounded growth over a retry loop, plus a re-scan by every later
 selective receive. `(%ref-deactivate r)` closes that: the kernel drops a message
 addressed to a deactivated ref **at delivery**, so it never enters the queue at
-all (ADR-244). (Erlang through OTP 23 solved the same problem by having the caller
-simply exit on timeout, which made a late reply moot.)
+all (ADR-244).
 
     (gen/call-timeout server [:get :k] 500)   ;=> the reply, or raises `call: timed out …` after 500 ms"
+  (let (target (gen-target pid))
+    (when (nil? target)
+      (error "call: no process holds " (pr-str pid)))
+    (gen-call target payload ms)))
+
+(defn- gen-call (pid payload ms)
   (let (r (ref) m (monitor pid))
     (send pid [:$call (self) r payload])
     (receive
@@ -145,7 +202,7 @@ acknowledgement (the process is gone by the time the caller could check). Safe t
 send to a pid that has already exited.
 
     (gen/stop server)   ;=> nil — the server runs its `terminate` clause and exits"
-  (send pid [:$stop]))
+  (gen-send pid [:$stop]))
 
 (defn code-change (pid: (or map pid) -> nil)
   "Ask a running server to migrate its state to the current code shape — its
@@ -159,7 +216,7 @@ need to observe the migrated state. A supervisor (or an `on-reload` hook) is the
 usual caller, once per affected child after a reload.
 
     (gen/code-change server)   ;=> nil — the server migrates its state on its next message"
-  (send pid [:$code-change]))
+  (gen-send pid [:$code-change]))
 
 ;; One entry with options rather than a verb per combination (ADR-433): `start-link` and
 ;; `start-named` were one-line wrappers that did not compose, so a linked AND named server
@@ -170,9 +227,10 @@ usual caller, once per affected child after a reload.
   "Spawn a `defserver` server `f` with its initial `state`; return its pid. `opts` is an
 optional map:
   - `:link` — `spawn-link` the server to the caller, so a crash propagates either way
-    (Erlang `start_link`)
   - `:name` — `register` it under this keyword, so it is reachable as
-    `(proc/whereis name)` or by sending to `{:name name}`
+    `(proc/whereis name)` or by sending to `{:name name}`; or a `{:via registry :key key}`
+    address, which registers it in that `names` registry. A key another live process
+    holds there is not taken: the new server is stopped and the answer is the failure.
 
     (gen/start counter 0)                                 ;=> the pid of a `counter` server with state 0
     (gen/start counter 0 {:link true :name :counter})     ;=> the pid, linked to the caller and registered as :counter"
@@ -182,8 +240,15 @@ optional map:
       (error "gen/start: unknown option " (pr-str (first unknown)) " (expected :link or :name)"))
     (let (pid (if (get options :link) (spawn-link (f state)) (spawn (f state)))
           name (get options :name))
-      (when name (proc/register name pid))
-      pid)))
+      (cond
+        (nil? name) pid
+        (map? name)
+        ;; the registry's own register call (`names/register`), sent directly: `names` is
+        ;; built on `gen`, so `gen` does not name it
+          (let (held (call (get name :via) [:register (get name :key) pid nil]))
+            (when (failure? held) (stop pid))
+            held)
+        else (do (proc/register name pid) pid)))))
 
 ;; ---- defserver -------------------------------------------------------------
 
@@ -279,7 +344,7 @@ clause is dropped (so the mailbox can't leak)."
                                                       ~@(rest (rest cc-clause))))))
                      nil)
         ;; Default catch-all (last): drop an unrecognised message and keep state,
-        ;; so it cannot pile up unmatched in the mailbox (OTP's default handle_info).
+        ;; so it cannot pile up unmatched in the mailbox.
         catch-all `(~junk (~loop ~state-sym))
         loop-body `(receive ~@env-receive ~stop-clause ~@cc-receive ~@info-receive ~catch-all)
         ;; `init` runs once: its body sees the state param and returns the initial

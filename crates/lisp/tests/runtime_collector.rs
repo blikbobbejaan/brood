@@ -498,7 +498,7 @@ fn checker_ns_caches_reflect_hot_reload_adds() {
     assert!(after.iter().any(|n| n == "aaa"), "aaa still exported");
 }
 
-/// Step 2 — **aging** (the Erlang-style 2-generation core). `age_runtime` flips
+/// Step 2 — **aging** (the 2-generation core). `age_runtime` flips
 /// the RUNTIME code region to a fresh generation slot; code promoted *before* the
 /// flip keeps executing (read from its own `code_gen` slot), and code promoted
 /// *after* lands in the new slot — both live simultaneously with no rewrite. This
@@ -941,7 +941,7 @@ fn reused_slot_runs_new_code_not_stale_cache() {
 /// Stage 4 — **migration lets a generation with a stable global still be freed**. This
 /// is the case that *stalls* without live-globals migration: a global defined once and
 /// never redefined stays in its birth generation, pinning it forever (Brood's `def` is
-/// per-global, unlike an Erlang module reload that re-exports every function). After
+/// per-global, not a whole-module reload that replaces every function). After
 /// `migrate_live_globals` re-exports the live globals into the current generation, the
 /// aged-out one is unreferenced and freeable — while every binding keeps working.
 #[test]

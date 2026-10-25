@@ -5,7 +5,7 @@
 coverage wiring behind `nest test`), `run` (`nest run`, with the entry-point resolution
 and its advice) and `check-boot` (load everything, resolve `:main`, run nothing — KI-66).")
 
-;; --- the `--failed` set (mix test --failed) -----------------------------------
+;; --- the `--failed` set ----------------------------------------------------------
 ;; Which tests failed last time, as full `"group › name"` labels, persisted beside
 ;; the check caches. Maintained as a SET-DIFFERENCE, not an overwrite: a test that
 ;; just ran and passed leaves the set, a test that just failed joins it, and a test
@@ -40,7 +40,7 @@ and its advice) and `check-boot` (load everything, resolve `:main`, run nothing 
         (check-allow :discarded-catch (try (file/spit f (pr-str {:failed merged})) (catch _ nil)))))))
 
 ;; --- `--stale`: skip test files whose dependencies are unchanged ---------------
-;; `mix test --stale`: a test file only re-runs when it, or one of the source files it
+;; A test file only re-runs when it, or one of the source files it
 ;; transitively requires, has changed since it last ran. The dependency graph is the KI-17
 ;; require-closure already computed for the checker (`project-require-closures`); the
 ;; "changed" signal is the newest mtime across a test file + its dependency source files,

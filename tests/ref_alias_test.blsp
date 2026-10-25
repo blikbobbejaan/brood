@@ -1,4 +1,4 @@
-;; One-shot reply aliases — `%ref-deactivate` (OTP 24's `{alias, demonitor}`).
+;; One-shot reply aliases — `%ref-deactivate`.
 ;;
 ;; A `ref` is the unforgeable token a request/reply pair is matched by. Deactivating one
 ;; makes the KERNEL drop any later message addressed to it — `[:tag <ref> …]` — at
@@ -80,8 +80,7 @@
   (test "a monitor's [:down] is dropped too — the wire delivery path checks as well"
     ;; A `[:down <mref> pid reason]` is built by the KERNEL and handed to `deliver`
     ;; directly (`monitor::fire_down`), never through the local-send path — so it is
-    ;; what exercises the wire-format check. It also happens to be the shape OTP's own
-    ;; alias rides on (`{alias, demonitor}`): the monitor ref *is* the alias there.
+    ;; what exercises the wire-format check. The monitor ref itself is the alias here.
     (let (p (spawn (sleep 10))
           m (monitor p))
       (%ref-deactivate m)

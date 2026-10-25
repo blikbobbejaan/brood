@@ -186,7 +186,7 @@ pub(super) struct Funcs {
 /// The size of a `Value` in bytes — the frame-slot stride in `roots`.
 const STRIDE: i64 = std::mem::size_of::<crate::core::value::Value>() as i64;
 
-/// BEAM-style reduction batch for the self-tail loop: the in-register countdown that
+/// Batched reduction count for the self-tail loop: the in-register countdown that
 /// gates the back-edge preemption poll + hoisted-global epoch guard. Shared by the
 /// entry-block initializer (`jit_lower_arm_inner`) and the `SelfCall` back-edge
 /// (`call::emit_self_call`), so both must agree.

@@ -425,8 +425,7 @@ record built at root and an impl for it at root must land on the same dispatch i
 `rec-field` accessor per field. A record is an immutable map that also carries a
 **nominal identity**: a reserved `:__id__` field holding a `:module/name` keyword baked
 in at definition, so `ability` dispatch tells it apart from a bare map and from other
-records (Elixir-struct semantics — a record is NOT `=` to a bare map with the same
-fields). `record?`/`record-id`/`fields` are the clean, id-free view.
+records (a record is NOT `=` to a bare map with the same fields). `record?`/`record-id`/`fields` are the clean, id-free view.
 
 A field is a bare symbol or `(field type)`; the constructor result is inferred as a
 record SHAPE carrying the `:__id__` keyword literal, so a value's identity flows through
@@ -434,7 +433,7 @@ the checker to dispatch sites (`(let (c (circle 2)) (area c))` is checkable). Wh
 field is typed, per-accessor signatures are emitted too.
 
 A trailing `:derives [Ability …]` clause auto-generates an impl of each named ability
-(Elixir `@derive` / Rust `#[derive]`, ADR-185): each ability's `:derive-record` recipe is
+(like Rust's `#[derive]`, ADR-185): each ability's `:derive-record` recipe is
 called with the field names at expansion, and the methods it returns are spliced into an
 `(impl Ability rec …)`. The ability must declare a recipe (else a clean expansion error),
 and it must be loaded before this `defrecord`.

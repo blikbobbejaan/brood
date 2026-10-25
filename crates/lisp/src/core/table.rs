@@ -1,4 +1,4 @@
-//! In-memory shared table — Brood's ETS (ADR-107).
+//! In-memory shared mutable table (ADR-107).
 //!
 //! A [`Value::Table`](crate::core::value::Value::Table) is a scalar `u64` handle
 //! into a global registry of shared stores. Unlike a `Rope` (a per-process heap
@@ -13,8 +13,8 @@
 //! representation) or immediate scalars packed into atomic words (dense
 //! representation) — nothing in a store is ever a live GC handle, so the moving
 //! collector never traces or moves into it. `get` reconstructs a **fresh** value in
-//! the *caller's* heap, so two processes never alias a stored value (Erlang's ETS
-//! copy-in/copy-out). Key equality is **borrowed from the heap** (`hash_value` to
+//! the *caller's* heap, so two processes never alias a stored value
+//! (copy-in/copy-out). Key equality is **borrowed from the heap** (`hash_value` to
 //! bucket, `equal` on a reconstructed key to resolve collisions), so table keys
 //! behave identically to immutable-map keys — no parallel equality code.
 //!
@@ -32,13 +32,13 @@
 //! ## Lifetime
 //!
 //! A table belongs to the process that created it and is dropped when that process
-//! exits — Erlang's ETS ownership, minus `heir`/`give_away` (deferred). The exception is
+//! exits (an heir or ownership hand-off is deferred). The exception is
 //! a table that becomes reachable from a **global**: `def` (and every other write to the
 //! shared table of globals) promotes its value, and a table that promotion meets is
 //! *pinned* — it now lives as long as the runtime, because any process may read that
 //! global. So `(def- cache (table/new))` in a module body is app-lifetime whichever
 //! process happened to load the module, and a table a short-lived worker built and sent
-//! away dies with the worker, as an ETS table does. `table-drop` still ends a table early.
+//! away dies with the worker. `table-drop` still ends a table early.
 //! Operating on a dropped/unknown handle is a clean error, never UB.
 //!
 //! A table created on a thread with no process context (an embedder's `Interp`, the boot
@@ -1180,7 +1180,7 @@ fn incr_hashed(
 
 /// `(%table-snapshot t)` — a point-in-time copy of the whole table as an immutable
 /// Brood map. Because the entries are immutable clones, the returned map is
-/// unaffected by later mutation — the MVCC win over ETS's dirty reads. O(n) copy.
+/// unaffected by later mutation — an MVCC snapshot, not a dirty read. O(n) copy.
 /// Atomic per entry; on a **dense** table concurrent lock-free writes to *other*
 /// keys may land before or after the copy independently (the hashed path snapshots
 /// under the store lock, as before).

@@ -56,8 +56,8 @@ running `nest mcp` image:
   put handler logic in top-level `defn`s the clauses call if you want it reloadable,
   or use the Stage 6 `[:code-change]` hand-off. Verified empirically: the same
   worker written as an inner `letrec` loop stays on `:A` after its global is
-  redefined. This is precisely Erlang's local-vs-remote rule (`loop()` keeps
-  running old code; `?MODULE:loop()` switches).
+  redefined. This is the local-vs-global rule: a local loop keeps running old
+  code; a call through the global switches.
 - **In-flight calls are safe** — append-only code means a call already running
   the old closure finishes on it; the next call gets the new one.
 - **Process-threaded state already survives reload.** This Lisp is strictly
@@ -90,17 +90,16 @@ Five things, roughly in order of how soon they bite:
    have no equivalent yet. **This blocks editing anything that owns a global
    resource.**
 2. **Memory grows without bound.** The RUNTIME region is append-only and never
-   purged — every redefinition leaks the previous version forever. Erlang keeps
-   exactly two versions and purges precisely *because* of the edit-all-day
-   workload.
+   purged — every redefinition leaks the previous version forever. A runtime built
+   for the edit-all-day workload keeps exactly two versions and purges the rest.
 3. **Polling, not editor-driven.** The primary path is a 250 ms mtime poll
    (one green process per watched file). Emacs is `C-M-x` — eval *this form,
    now*, zero latency. We have the better primitive already (MCP `eval`/`load`);
    it just isn't wired to the editor as the headline path.
 4. **No state migration across a shape change.** A running loop picks up new
    *code* but keeps its old-shaped *state*. Change the shape of the map a loop
-   threads and the running loop feeds old data to new code. Erlang has
-   `code_change/3`; we have nothing.
+   threads and the running loop feeds old data to new code. There is no
+   code-change hook to migrate it.
 5. **Stale macro expansions.** Redefining a macro doesn't re-expand callers
    already compiled with the old expansion — and nothing warns you.
 
@@ -307,7 +306,7 @@ shipped 2026-05-29 under ADR-042; the collector remains deferred.**
 **Problem.** A running loop keeps old-shaped state across a code change (gap #4).
 
 **Design — keep it in userland (matches the supervision call, ADR-039).** Don't
-add a kernel `code_change`. Instead document the pattern and provide the one
+add a kernel `code-change`. Instead document the pattern and provide the one
 small primitive that makes it ergonomic:
 - A loop that wants upgrade-safety threads a **versioned** state (`{:v 1 …}`)
   and, in its `receive`, matches a `[:code-change]` message by migrating its
@@ -335,9 +334,9 @@ as a safe no-op. The pull counterpart shipped too: `reload/*code-version*` (a pl
 global, bumped on each successful `system/reload-defs`) with a `(reload/code-version)`
 reader, so a loop can stash its start version and self-migrate when it differs.
 Covered by `tests/gen_test.blsp` "gen: code-change state migration" (inline +
-cross-process). Full `release_handler`/appup orchestration remains deferred (see the
-ROADMAP OTP-deferred item) — unneeded here because immutable-map data removes OTP's
-hardest upgrade case, nominal schema migration.
+cross-process). Full release-upgrade orchestration remains deferred (see the ROADMAP
+deferred item) — unneeded here because immutable-map data removes the hardest upgrade
+case, nominal schema migration.
 
 ---
 
@@ -388,12 +387,12 @@ the editor is Brood, not Rust).
 - **`notify`-based watching** (Stage 4) — deferred; polling + editor-driven eval
   covers it.
 - **Macro dependency graph** (Stage 7) — warn instead.
-- **Kernel-level upgrade/`code_change`** (Stage 6) — userland pattern instead,
+- **Kernel-level upgrade/`code-change`** (Stage 6) — userland pattern instead,
   consistent with let-it-crash supervision (ADR-039).
 - **Snapshot/rollback in `system/reload-defs`** (Stage 2) — read+expand-first covers the
   common breakage; full transactional rebind deferred.
 - **Schema/record-redefinition migration** — *not applicable today and a
-  data-model win worth naming.* The classic hard reload case (Erlang records,
+  data-model win worth naming.* The classic hard reload case (nominal records,
   CL `update-instance-for-redefined-class`) doesn't exist here because data is
   structurally-typed immutable maps — there is no nominal type whose field set
   can drift out of sync with live instances. A map simply has the keys it has.

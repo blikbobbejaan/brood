@@ -34,7 +34,7 @@ running folds (`scan` `reduce-while`), pairwise combination (`zip-with`
   ;; group-by builds its result with map/update-vals
   (:use map))
 
-;; reduce-while — the early-terminating fold (≈ Enum.reduce_while).
+;; reduce-while — the early-terminating fold.
 (defn- reduce-while-loop (f acc coll)
   (if (empty? coll)
     acc

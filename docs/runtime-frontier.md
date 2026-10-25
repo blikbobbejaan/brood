@@ -1,16 +1,16 @@
 # Runtime frontier — the process/concurrency option book
 
-The full option list for closing the remaining runtime gaps to the BEAM, written after
+The full option list for closing the remaining runtime gaps to the reference VM, written after
 ADR-175 (shared compiled code) landed. Companion to the benchmark repo's `FRONTIER.md`
 (which states the current *position*); this file is the **analysis and the menu** — what
-we have, how Erlang/Go/Pony solve the same problems, and every option with its expected
+we have, how the reference VM, Go and Pony solve the same problems, and every option with its expected
 win, cost, and risk, ordered for execution. Tick items off here as they land; move
 anything measured-and-rejected to the dead-ends list at the bottom.
 
 > ⚠ **The standing table below is 2026-07-30 and is SUPERSEDED. The live position is the
 > benchmark repo's `FRONTIER.md` (refreshed 2026-08-18) — consult it first; this file is the
 > *menu*, not the position.** Reconciled 2026-08-20, and they disagree in ways that change the
-> ordering: `spawn-live` is **1.76 s / 2.5× BEAM** (not 2.42 s / 3.4×), a live process **~5.5 KB**
+> ordering: `spawn-live` is **1.76 s / 2.5× the reference VM** (not 2.42 s / 3.4×), a live process **~5.5 KB**
 > (not 5.9), and the **IC tables 896 B** — which `FRONTIER.md` records as *"low by ~3×"* in the
 > older attribution, making them the **largest single attributed item, bigger than the whole
 > `Box<Process>`**. Ordering this menu off the stale table is how three separate wrong targets got
@@ -19,23 +19,23 @@ anything measured-and-rejected to the dead-ends list at the bottom.
 Current standing (**refreshed 2026-07-30** from the published run; the rest measured that
 week):
 
-| metric | Brood | BEAM/Elixir |
+| metric | Brood | reference VM |
 |---|---|---|
 | `spawn-live` wall | **2.42 s** | **0.71 s** (3.4×) |
 | live process (spawn-live, RSS/proc) | **~5.9 KB** (1.67 GB) | **~3.1 KB** (0.89 GB) |
 | parked-process allocation floor | ~4.5 KB | ~2.7 KB (338 words) |
 | spawn+park | ~7.6 µs, 15.8 allocs | ~1–2 µs |
-| message round-trip (`pingpong`) | ~2.8× Elixir | — |
-| ring hop | ~3.5× Elixir | — |
-| parallel scaling (2→12 workers) | 2.5× of a 3.0× ceiling | BEAM 2.4× same box |
+| message round-trip (`pingpong`) | ~2.8× the reference | — |
+| ring hop | ~3.5× the reference | — |
+| parallel scaling (2→12 workers) | 2.5× of a 3.0× ceiling | 2.4× same box |
 
 **Note on the 2026-07-30 benchmark refresh.** The `spawn-live` ports were corrected that day
 and the numbers above are from the corrected row, so they are not comparable to earlier
 figures cell-for-cell: .NET's `TaskCompletionSource` was resuming continuations *inline on the
 setter's thread* (measured 1000/1000, none on the pool), so its "300k concurrent units" were
 300k synchronous closure calls; and Node/Python/.NET collected results by returning values
-into a pre-allocated array while Brood and Elixir pay for a second copied message per unit.
-Both fixed. Also: Brood and Elixir now send a **contiguous** payload (vector / tuple) rather
+into a pre-allocated array while Brood and the reference VM pay for a second copied message per unit.
+Both fixed. Also: Brood and the reference VM now send a **contiguous** payload (vector / tuple) rather
 than a cons list, matching the array ports — worth 11% of wall and ~0% of memory, which is
 itself the useful datum: **the 1.67 GB is the process floor, not the messages.**
 
@@ -75,7 +75,7 @@ meaningfully uses, paid in struct size by every spawned worker.
 
 ## Part 2 — how the others do it
 
-**BEAM** (the reference; everything below is standard ERTS design):
+**The reference VM** (the mature actor runtime; everything below is its standard design):
 - A process starts at **338 words ≈ 2.7 KB total**: PCB + one memory block in which the
   **heap grows up and the stack grows down** — one allocation for both, no separate
   operand stack, no per-type slabs.
@@ -87,10 +87,10 @@ meaningfully uses, paid in struct size by every spawned worker.
 - **Messages are copied once**, sender → receiver heap (or a heap fragment attached to
   the receiver when its main lock is contended). No intermediate form locally; the
   external term format is only for the wire.
-- **Hibernation is opt-in** (`erlang:hibernate/3`): discards the stack, shrinks the heap
-  to minimum. Erlang hit exactly the tradeoff our reverted IC-drop hit, and resolved it
-  by making it the *programmer's* call. `spawn_opt` exposes `min_heap_size` etc.
-- ERTS keeps free-lists and pre-sized allocators tuned for process churn.
+- **Hibernation is opt-in**: it discards the stack and shrinks the heap to minimum. That
+  runtime hit exactly the tradeoff our reverted IC-drop hit, and resolved it by making it
+  the *programmer's* call. Spawn options expose the minimum heap size etc.
+- The runtime keeps free-lists and pre-sized allocators tuned for process churn.
 
 **Go**: goroutines start at a 2 KB contiguous stack, grown by copy; the `g` struct is a
 few hundred bytes; all code/caches global. **Pony**: an actor is ~250 B plus lazily
@@ -121,7 +121,7 @@ between payloads hold, the absolute per-message figure at scale is ~1.3 µs.)
 
 So **copy cost is proportional to payload, and the latency rows carry none** — `pingpong`
 sends a bare keyword (`Message::Keyword` is an enum variant, no allocation) and `ring` a
-small token. The 2.8–3.5× gap to Elixir on those rows is the **2 µs of park/wake/match**,
+small token. The 2.8–3.5× gap to the reference VM on those rows is the **2 µs of park/wake/match**,
 not serialization. Both problems are real; they need different fixes.
 
 **Decomposed further 2026-07-29 — and it corrects the split above.** Self-send (mailbox
@@ -192,7 +192,7 @@ re-enqueue, worker pickup, and one matcher activation per candidate.
      patterns are tag-led (`[:want _]`), so comparing the first element's keyword against
      the clause tags is enough. Needs the compiler to expose each `receive` clause's
      leading tag, which the `match` lowering already knows.
-  2. **BEAM's OTP-24 receive markers** for the ref-addressed case: a `gen`-style call
+  2. **Receive markers** for the ref-addressed case: a `gen`-style call
      stamps a unique ref, so the scan can start at the marker instead of the queue head.
      Narrower (only helps ref-carrying protocols) but removes the rescan entirely there.
 
@@ -246,7 +246,7 @@ benchmark row before believing it.
   mirror `to_message`'s value coverage by hand; both now drive the one walker in
   `process/message.rs`, `copy_value<T: CopyTarget>`, so they cannot drift.)
 
-- [ ] **L2 — heap fragments for running receivers** (BEAM's other half): copy into a
+- [ ] **L2 — heap fragments for running receivers** (the reference VM's other half): copy into a
   fragment the receiver adopts at its next safepoint, removing the `Message` hop when the
   receiver isn't parked. Only after L1 proves the copier.
 
@@ -298,7 +298,7 @@ costs**, and the reason we sit ~13× off `DynamicSupervisor` after the O(N²) fi
   collector reclaims promptly (ADR-091 stage 4); the blocker is reclamation, not the
   handoff.
 
-**A4 — the `latency` row: our tail was 13× the BEAM's, and our median 15× (measured
+**A4 — the `latency` row: our tail was 13× the reference VM's, and our median 15× (measured
 2026-07-30; the placement half is now fixed — see A5).** The benchmark suite gained an open-loop row that holds a fixed 20,000 req/s
 arrival schedule and makes every 20th request occupy ~500 µs of CPU, reporting percentiles
 over the *other* 95% — i.e. what a busy handler does to everyone else. Offered load is 0.5
@@ -306,7 +306,7 @@ cores of twelve, so nothing is capacity-limited and the tail is scheduling, not 
 
 | | p50 | p99 | p99.9 | max | cores | CPU·s |
 |---|---|---|---|---|---|---|
-| Elixir | 8 µs | 59 µs | 98 µs | 601 µs | 1.9× | 5.28 |
+| reference VM | 8 µs | 59 µs | 98 µs | 601 µs | 1.9× | 5.28 |
 | **Brood** | **121 µs** | **439 µs** | **1300 µs** | 2134 µs | 1.3× | 3.32 |
 | Node | <1 µs | 451 µs | 561 µs | 1047 µs | 1.0× | 2.55 |
 | .NET | 4 µs | 714 µs | 12627 µs | 15082 µs | 2.4× | 6.04 |
@@ -314,14 +314,14 @@ cores of twelve, so nothing is capacity-limited and the tail is scheduling, not 
 Two separate Brood problems, and they want different fixes:
 
 - **The 121 µs median is per-message cost**, not scheduling — it is A1/A3 showing up again
-  (a request here is spawn + send + a collector receive). Elixir's is 8 µs. Same family as
+  (a request here is spawn + send + a collector receive). The reference VM's is 8 µs. Same family as
   `pingpong`/`ring`.
 - **The 1300 µs p99.9 is scheduling.** A fat handler should cost its neighbours nothing on a
   12-core box at 0.5 cores of load, and it costs them milliseconds. The first hypothesis to
   test is **spawn placement**: processes are placed at spawn and not migrated
   (`docs/scheduler.md`), so a dispatcher spawning every handler can pile them onto its own
   worker, where one 500 µs handler then blocks the queue behind it. Note we also use only
-  1.3× cores against Elixir's 1.9× on the same offered load — consistent with work landing on
+  1.3× cores against the reference VM's 1.9× on the same offered load — consistent with work landing on
   too few workers. Not yet investigated.
 
 Worth stating plainly: Node, single-threaded, had a better p99.9 than Brood on this row.
@@ -355,7 +355,7 @@ are demonstrably dispatching. Unpinned A/B against `af25b7b3`: `spawn` −10%, `
 floor at **20.6%**, so it cannot resolve anything smaller here).
 
 What is left of A4 is the **median**, which is per-message cost, not scheduling: 27 µs against
-Elixir's 8 µs. That is A1/A3 territory — a request here is spawn + send + a collector receive.
+the reference VM's 8 µs. That is A1/A3 territory — a request here is spawn + send + a collector receive.
 
 **A6 — the selective-receive scan took the mailbox mutex per candidate (shipped 2026-07-30).**
 The tag pre-filter needs nothing but the envelope's tag, but the scan released and re-acquired
@@ -390,7 +390,7 @@ against a tag-rejected backlog:
 
 Flat — O(backlog) → O(1), 163× at 32k. **What is left**: a receive that pins *nothing* (a
 server's main loop matching several tags) still walks its backlog; the tag filter and A6 make
-that walk cheap, not free. BEAM solves it with a saved scan position per receive *site*, which
+that walk cheap, not free. The reference VM solves it with a saved scan position per receive *site*, which
 is a different mechanism from the per-ref mark and is the remaining piece.
 
 **A8 — there is no reload leak; RSS growth under churn is allocator retention (measured
@@ -530,7 +530,7 @@ is the `Box<Process>` itself (1352 — 168 B of fields grew since July; shave 1:
 first-touch slabs, and the closure template/promote pair — each 100–250 B and each a
 design question rather than a fix.
 
-**2026-10-18: 3 195 → 2 747 B per parked process, measured as a slope** (the BEAM: 2 704) (devlog that day).
+**2026-10-18: 3 195 → 2 747 B per parked process, measured as a slope** (the reference VM: 2 704) (devlog that day).
 The closure-template, const-closure and ability-dispatch memos are `SmallMap`s, `SmallMap`'s
 spill is boxed, two rare memos left the inline `Heap`, the mailbox's dead-alias set and
 pending exit reason are boxed, the five rare-kind slabs are one pointer until used, and the
@@ -732,7 +732,7 @@ What this changes:
   which is why `hibernate` made the same workload *faster* (0.68 → 0.45 s), and why M1/M3
   now outrank this. Original entry: Per-worker free-list of retired
   `(Box<Process>, Arc<Mailbox>)` shells; re-init the cheap fields on spawn. Precedent:
-  ERTS allocator free-lists, every thread pool. Expected: spawn 15.8 allocs → ~2, a large
+  the reference VM's allocator free-lists, every thread pool. Expected: spawn 15.8 allocs → ~2, a large
   cut to the 7.6 µs spawn path; floor unchanged. Risk: staleness bugs (epoch stamps
   already guard heap handles; the mailbox needs a generation bump for pid reuse safety).
 - [x] **M5 — `(hibernate)` builtin — DONE 2026-07-29.** Measured: a process that works
@@ -743,15 +743,14 @@ What this changes:
   — shared arms re-install from the runtime). Tests in `tests/hibernate_test.blsp`.
   Original entry:
   Opt-in: drop IC tables, shrink slabs, trim roots (we *measured* this at 3.89 KB/proc);
-  the process pays cache rebuild on wake **by its own choice**, exactly `erlang:hibernate/3`.
+  the process pays cache rebuild on wake **by its own choice**, exactly as in the reference VM.
   Small, safe, and gives real long-idle apps (connection-per-process servers) the win the
-  automatic policy couldn't take. Also consider `spawn` options for initial sizing
-  (`spawn_opt` parity).
-- [ ] **M6 — scheduler-owned execution scratch** (the BEAM X-register model). Fields
+  automatic policy couldn't take. Also consider `spawn` options for initial sizing.
+- [ ] **M6 — scheduler-owned execution scratch** (the reference VM's X-register model). Fields
   used only *while running* (`gen_cache`, JIT scratch state) move to the worker; suspend
   saves the little that persists. Shrinks `Process`; touches the run loop. Do after M1
   (which may take the cheap half of the win).
-- [ ] **M7 — one memory block per process** (BEAM's heap-up/stack-down). Collapse the 11
+- [ ] **M7 — one memory block per process** (the reference VM's heap-up/stack-down). Collapse the 11
   slab `Vec`s + `roots` + `env_roots` into one growable region. The largest structural
   win (allocation count, locality, and the floor) and the deepest refactor — handle
   encoding indexes typed slabs today. **Cost it seriously before starting; only worth it

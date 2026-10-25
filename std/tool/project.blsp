@@ -68,8 +68,8 @@ identity and may override those paths. The rest of the tool is its siblings:
 (defdyn *project-repository* nil)
 ;; `:brood` — the runtime-version constraint this project needs (a `std/version` string,
 ;; e.g. `">= 0.2"`, `"^0.1"`). Checked at `setup` against `(system/brood-version)`; an
-;; unmet constraint is a hard, clear error (ADR-209), the way `mix.exs`'s `elixir:`
-;; requirement refuses an incompatible Elixir. Absent = runs on any runtime.
+;; unmet constraint is a hard, clear error (ADR-209) that refuses an incompatible
+;; runtime. Absent = runs on any runtime.
 (defdyn *project-brood* nil)
 ;; `:enhances` — which APPLICATIONS this package adds functionality to, as a map of
 ;; name → version constraint (`{bedit ">= 0.3"}`). Debian's `Enhances:` field: a
@@ -1042,7 +1042,7 @@ rules merged in declaration order, then this project's own `:format-headers` on 
   (project-check-brood-version)
   (reflect/set-load-path (append (abs-paths root *project-source-paths*) *load-path*))
   (project-ensure-deps-on-path root)
-  ;; Root-project rooting (ADR-070, Elixir-uniform model): the project's OWN modules
+  ;; Root-project rooting (ADR-070, uniform model): the project's OWN modules
   ;; root under its `:name` — `(defmodule buffer)` in project `myeditor` becomes the
   ;; global `myeditor/buffer`, with the prefix *implied* (intra-project refs stay short:
   ;; `(:use buffer)` roots to `myeditor/buffer`). This is the dep mechanism (above)

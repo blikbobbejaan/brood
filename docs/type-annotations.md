@@ -16,8 +16,8 @@ and [ADR-110](decisions.md).
 
 This is Brood's answer to "can we be *more sound* given our parameters?"
 (advisory, never-gate, zero-false-positive, hot-reload, policy-in-Brood). The
-mechanism is the Elixir paper's **strong arrow**, done Brood's way: a function
-that **checks its arguments at run time** can be *trusted* by the static checker.
+mechanism is the **strong arrow** of semantic subtyping (Castagna, Duboc, Valim),
+done Brood's way: a function that **checks its arguments at run time** can be *trusted* by the static checker.
 We get soundness by leaning on a runtime check — not by inserting casts and not
 by gating compilation. See [`research/set-theoretic-types-in-brood.md`](research/set-theoretic-types-in-brood.md)
 and [`types.md`](types.md).

@@ -1,7 +1,7 @@
 //! The `nest` command — Brood project tooling.
 //!
 //! `nest` is the project/workspace tool sitting above the `brood` language
-//! binary — the `cargo`/`rustc`, `mix`/`elixir` split (ADR-028). For everyday
+//! binary — the `cargo`/`rustc` split (ADR-028). For everyday
 //! work this is the daily driver: `nest` covers scaffolding, running, testing,
 //! type-checking, formatting, REPL, docs, and the MCP server. `brood` is the
 //! low-level "just run the language" tool.

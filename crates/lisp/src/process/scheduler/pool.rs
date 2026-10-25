@@ -957,8 +957,7 @@ fn fault_quantum_tail() {
 /// Shared post-quantum bookkeeping: drop the live-process gauge + worker-busy flag and
 /// tally the reductions this quantum consumed (budget minus the remainder — a preempted
 /// process left 0) into `process-info`'s `:reductions`. The quantum's eval shares this
-/// worker's `REDUCTIONS` TLS, so its post-yield value is the remainder (Erlang counts
-/// reductions the same way).
+/// worker's `REDUCTIONS` TLS, so its post-yield value is the remainder.
 fn finish_quantum(mailbox: &Arc<Mailbox>, wid: usize) {
     RUNNING.fetch_sub(1, Ordering::Relaxed); // pure diagnostic — see `run_one`
     WORKER_BUSY[wid].store(false, Ordering::Relaxed);
@@ -1085,10 +1084,10 @@ fn handle_capture_outcome(
                 proc.retire(reason);
                 return;
             }
-            // An uncaught throw/error killed the process (Erlang let-it-crash).
+            // An uncaught throw/error killed the process (let-it-crash).
             // The death reason carries the STRUCTURED error — `[:error {:kind
             // :message … :trace}]`, see `message::error_reason_in` — so a monitor /
-            // trapping link / supervisor gets BEAM's `{Reason, Stacktrace}`
+            // trapping link / supervisor gets the reason and stack trace
             // rather than a flattened string.
             // …and durably, not only to stderr (KI-72): libtest discards a
             // never-completing test's stderr, and a TUI or `nest run --watch` loses it

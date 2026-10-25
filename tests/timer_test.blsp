@@ -1,5 +1,5 @@
-;; Timers — `timer/send-after` / `timer/send-interval` / `timer/cancel` (Erlang parity,
-;; ROADMAP "OTP near-term"). Pure Brood policy: each timer is a green process
+;; Timers — `timer/send-after` / `timer/send-interval` / `timer/cancel` (ROADMAP,
+;; near-term process work). Pure Brood policy: each timer is a green process
 ;; parked on the scheduler's timer wheel; the handle is its pid.
 ;;
 ;; Timing assertions here are deliberately loose (string/lower bounds + generous

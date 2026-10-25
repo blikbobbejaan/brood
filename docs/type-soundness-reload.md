@@ -18,10 +18,10 @@ behavior this section was describing as future work.
 `ROADMAP.md`'s type-system section previously framed whole-program static
 soundness — gating on global `def`/`defn` types, not just local bindings — as
 something Brood **won't** pursue, because it looked like it must conflict with
-Erlang-style hot reload (ADR-013: a `def` rebinds a global at runtime,
+live code reload across running processes (ADR-013: a `def` rebinds a global at runtime,
 unconditionally, and every process sharing that runtime's code region sees it
 on its next lookup). That framing is being revised: the goal is now full
-Elixir-parity soundness. This doc works out how that's actually compatible with
+soundness for a sound gradual system. This doc works out how that's actually compatible with
 reload, rather than declaring the two incompatible by assumption.
 
 ## The load-bearing fact that makes this tractable
@@ -50,7 +50,7 @@ runtime machinery — the runtime was never the unsound part.
 Even granting we want whole-program soundness, blocking a `def` when it breaks
 some caller's prior proof would fight the project's actual reason to exist: a
 self-editing, live-reloadable image where you routinely have inconsistent
-intermediate states while fixing something. Erlang and Common Lisp images
+intermediate states while fixing something. Live images such as Common Lisp's
 don't gate redefinition on whether every existing caller remains statically
 valid, and for the same reason — the redefinition often *is* the fix for a
 caller that was wrong.
@@ -132,7 +132,7 @@ surprise: almost none of the mechanism needs to be *built* — it needs to be
   shipped (ADR-124):** a declared `(sig x T)` value type is now visible
   cross-module (not just within its own file), matching what arrow sigs
   already had. Still missing: an inferred type for a global with *no*
-  declared sig at all (a separate, harder problem — see the Elixir-parity
+  declared sig at all (a separate, harder problem — see the type-system
   gap list's "full type inference" item; not blocking this design).
 - ~~The reverse-dependency index~~ — **not needed.** ADR-119 Phase 2 already
   ships the equivalent capability (`check-file-deps`/`check-deps-fp`) via a

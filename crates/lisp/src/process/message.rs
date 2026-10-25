@@ -121,14 +121,14 @@ pub enum Message {
     /// meaningless on another node. The subprocess reader thread emits this in its
     /// `[:proc handle …]` mailbox messages.
     Subprocess(u64),
-    /// An in-memory table id (Brood's ETS, ADR-107). Valid only *within one runtime*
+    /// An in-memory table id (the shared mutable table, ADR-107). Valid only *within one runtime*
     /// (the table registry is global to the OS process) — it may cross in a message or
     /// be captured by a `spawn`ed closure, so many processes share one store. NOT
     /// node-portable: the cross-node wire codec rejects it (the id means nothing in
     /// another runtime). Only the handle rides the message; the store's contents are
     /// deep clones already.
     Table(u64),
-    /// A serialised closure (Erlang's "send a fun"). Because a closure's body and
+    /// A serialised closure (a function sent as a message). Because a closure's body and
     /// its optionals' defaults are S-expression *forms* (plain data), and its free
     /// globals resolve on the receiver, a function can travel as data. Only its free
     /// *local* variables are copied (see [`ClosureMsg::captured`]). This is what
@@ -511,7 +511,7 @@ pub fn to_message_image(heap: &Heap, v: Value) -> Result<Message, LispError> {
 /// where the map mirrors [`LispError::to_value_map`] — `{:kind :message [:code
 /// :file :line :col :hint :trace]}`, `:trace` a list of `{:fn [:file :line
 /// :col]}` frames — so a monitor's `[:down …]` / a trapping link's `[:EXIT …]`
-/// carries the **structured** error (BEAM's `{Reason, Stacktrace}` parity), not
+/// carries the **structured** error (reason and stack trace), not
 /// a flattened string. Built as a heap-independent [`Message`] directly (the
 /// dying process's heap is about to drop), so it deep-copies into any
 /// receiver's heap and crosses the dist wire intact. A supervisor can log
@@ -1169,8 +1169,7 @@ fn arms_are_shared(arms: &[value::ClosureArm]) -> bool {
 /// closure and env per spawn to the region every process shares, which the multi-process
 /// collector then had to age and reclaim: under a stream of spawns it ran periodically, and
 /// a spawn landing in its window waited on its write lock (`promote_lock`) for 100–300 µs —
-/// the request dispatcher's latency spikes. BEAM copies a fun's free variables into the new
-/// process the same way.
+/// the request dispatcher's latency spikes.
 ///
 /// `None` when the copy does not apply and `promote` should be used: a closure that
 /// captures nothing (already shared — `promote` is a handle copy), code that is not shared
@@ -1845,8 +1844,8 @@ pub(crate) fn chunk_flush(carry: &mut Vec<u8>) -> Option<Message> {
 // heap-independent `Message` and the receiver rebuilds it — two full copies of the
 // graph, with both intermediates becoming garbage. That shape is right for the *dist*
 // wire (a peer node has its own heap and its own interner), but a local send to a
-// **parked** receiver can copy straight from one heap into the other, which is what the
-// BEAM does — removing one of the two copies, a large share of send+receive.
+// **parked** receiver can copy straight from one heap into the other — removing one of
+// the two copies, a large share of send+receive.
 //
 // Two invariants make this sound, both verified in the code rather than assumed:
 //

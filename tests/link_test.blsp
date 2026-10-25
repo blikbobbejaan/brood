@@ -1,4 +1,4 @@
-;; `link` / `unlink` / `proc/trap-exit` — Erlang-style process links (ADR-067), the
+;; `link` / `unlink` / `proc/trap-exit` — process links (ADR-067), the
 ;; symmetric, bidirectional cousin of `monitor`. A linked peer's death either
 ;; arrives as a trappable `[:EXIT pid reason]` (if you `(proc/trap-exit true)`) or — for
 ;; an abnormal reason — takes you down too (propagation, cascading through links).
@@ -60,7 +60,7 @@
       (is (not (= :SURVIVED (receive ([:down ^wm ^watcher _] :died)))))))
 
   (test "propagation carries the ORIGINATING reason, not a blanket :kill"
-    ;; BEAM semantics: when a linked partner crashes with reason R, a
+    ;; When a linked partner crashes with reason R, a
     ;; non-trapping peer dies with R — so the peer's own monitors learn why
     ;; the tree fell. The crash reason is the structured [:error {…}] map.
     (let (watcher (spawn (do (proc/trap-exit false) (lk-park)))

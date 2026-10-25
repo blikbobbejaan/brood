@@ -401,7 +401,7 @@
     (assert= (match {:status 200} ({:status 200} :ok) (_ :other)) :ok)
     (assert= (match {:status 404} ({:status 200} :ok) (_ :other)) :other))
   (test "an explicit key must be PRESENT — unlike lenient :keys"
-    ;; {:k pat} is an Erlang/Elixir map pattern (fails if absent); {:keys [k]} is
+    ;; {:k pat} is a strict map pattern (fails if absent); {:keys [k]} is
     ;; Clojure destructuring (binds nil if absent). Both, on purpose.
     (assert= (match {:b 1} ({:a v} v) (_ :absent)) :absent)
     (assert= (match {:b 1} ({:keys [a]} (list :bound a))) (list :bound nil)))

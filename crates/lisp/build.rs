@@ -65,6 +65,10 @@ fn main() {
         }
         println!("cargo:rerun-if-changed={}", f.display());
     }
+    // The directory too: the per-file lines above only see files that existed at the last
+    // run, so a NEW module left the hash stale and `nest check` refused the fresh binary.
+    // Cargo scans a watched directory recursively.
+    println!("cargo:rerun-if-changed={}", root.join("std").display());
     println!("cargo:rustc-env=BROOD_STDLIB_HASH={hash:x}");
     // Re-run when the git head moves, or when a source of THIS crate changes (so the dirty
     // marker above is re-evaluated — the crate is recompiling in that case anyway, and

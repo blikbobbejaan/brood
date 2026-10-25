@@ -151,7 +151,7 @@ fn intra_package_use_roots_to_the_dependency() {
 
 #[test]
 fn the_root_project_roots_its_own_modules_under_its_name() {
-    // The Elixir-uniform model (ADR-070): the ROOT project's own modules root under its
+    // The uniform package-rooted model (ADR-070): the ROOT project's own modules root under its
     // `:name`, with the prefix implied — `(defmodule greeter)` in project `myapp` is the
     // global `myapp/greeter`, and an intra-project `(:use greeter)` stays short in source
     // but roots at load. Verified through `nest test` end to end, and that `nest check`

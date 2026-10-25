@@ -2,7 +2,7 @@
 //!
 //! `brood` only runs the language; project tooling (scaffolding, test
 //! discovery, hot-reload, MCP, etc.) lives in the separate `nest` binary —
-//! the `rustc`/`cargo`, `elixir`/`mix` split (ADR-028). For everyday work
+//! the `rustc`/`cargo` split (ADR-028). For everyday work
 //! reach for `nest`; `brood` is for the language-only path (REPL, run a
 //! single file, one-shot test/check) outside of any project.
 //!

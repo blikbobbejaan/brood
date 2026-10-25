@@ -24,7 +24,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "Parse source (a string) with the tree-sitter grammar named by keyword lang into a positioned CST — the SAME node-map shape as parse-source-positioned (`{:kind :start :end :named}`; leaves add :text, nodes with children add :kids), :kind a keyword of the tree-sitter node type and :named false for anonymous tokens (keywords/punctuation). Char offsets, so std/sexp + the editor's fontify navigate it unchanged. The generic mechanism is in the default build, but the kernel ships NO language grammar — a grammar is opt-in (e.g. --features treesit-ruby, or treesit-grammars for all). Errors if the named language's grammar isn't built in, or if the runtime was built without --features treesit.",
         tree_sitter_parse);
     // The positional queries. `%tree-sitter-parse` projects the WHOLE tree into Brood
-    // maps — 9,561 of them for a 22 KB Elixir file — and every consumer that only wants
+    // maps — 9,561 of them for a 22 KB source file — and every consumer that only wants
     // to know what encloses a point then walks that to read about ten. These answer in
     // O(depth) without building the rest.
     primitives.def(

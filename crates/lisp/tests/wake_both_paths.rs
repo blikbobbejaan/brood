@@ -22,7 +22,7 @@
 
 use brood::Interp;
 
-/// The load-completion protocol (`%require-await`, the OTP `code_server` model): many
+/// The load-completion protocol (`%require-await`, a single code-server model): many
 /// processes racing the first call into an autoloaded module must ALL get the right answer,
 /// and the waiters must be released by the loader's completion rather than by a poll's
 /// timeout. A dropped notification shows up here as a hang, not a wrong answer.
@@ -58,7 +58,7 @@ fn racing_requirers_are_all_released_by_the_loader() {
 /// That interleaving is not reproducible on demand (racing an autoload 16 ways does not hit
 /// it), so this stages it directly through the protocol's own helpers instead: enqueue a
 /// waiter, give up the way `%require-unwatch!` does, and only then let the loader drain and
-/// send. The guarantee is the one OTP 24 reply aliases provide — the completion is addressed
+/// send. The guarantee is the one-shot reply alias's — the completion is addressed
 /// to the waiter's ref, and a deactivated ref's message is dropped at DELIVERY.
 #[test]
 fn a_completion_for_a_waiter_that_gave_up_is_dropped_at_delivery() {

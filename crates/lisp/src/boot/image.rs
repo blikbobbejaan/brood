@@ -9,7 +9,7 @@
 //! **The image is sectioned by module, and a section is loaded on demand.** A whole-image
 //! restore of a 16 300-file project costs seconds and hundreds of MB of resident code that
 //! an entry point touching twenty modules will never call. Sections make `require` the unit
-//! of materialisation — the same granularity BEAM loads `.beam` files at — so a program
+//! of materialisation — one compiled module at a time — so a program
 //! pays only for the modules it actually reaches. The section directory lives at the END of
 //! the file with absolute offsets, so opening an image reads the header and directory only,
 //! and loading one module seeks straight to its bytes instead of reading the whole file.

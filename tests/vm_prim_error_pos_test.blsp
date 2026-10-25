@@ -47,7 +47,7 @@
   ;; takes the innermost call site that HAS one (`attach_vm_trace`), which for a non-tail
   ;; call is the caller's own form. Before 2026-09-21 it took the CATCH site: the `try` below,
   ;; two frames away. (A TAIL call into the shim reuses the caller's frame, so there the
-  ;; nearest positioned site is the caller's caller — the BEAM's answer too.)
+  ;; nearest positioned site is the caller's caller.)
   (test "an error escaping a contract shim reports the innermost positioned call site, not the catch site"
     (let (line (try (pep-through-shim (fn (x) x)) (catch e (get e :line))))
       (assert= 33 line))))

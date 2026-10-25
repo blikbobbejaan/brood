@@ -2,7 +2,7 @@
 ;;
 ;; An agent is a single green process that holds one immutable value as state.
 ;; Callers send it messages to read or transform that value; the agent serialises
-;; all updates. Modelled after Elixir's Agent, built on Brood's spawn/send/receive.
+;; all updates. Built on Brood's spawn/send/receive.
 
 (defmodule agent
   "A process-backed state cell: read or transform a value via message-passing.
@@ -55,7 +55,7 @@ read+write primitive for compare-and-swap-style patterns.")
     ([:$call from r :stop] (send from [:reply r :ok]))
     ([:$cast f] (agent-loop (f state)))
     ([:$stop] nil)
-    ;; Catch-all, last (OTP's default handle_info, and what `gen` already does):
+    ;; Catch-all, last (what `gen` already does):
     ;; drop an unrecognised message and keep the state. Without it a stray send —
     ;; a `[:down …]`, a misrouted reply, a timer tick — was matched by no clause and
     ;; sat in the mailbox forever, growing it and being re-scanned by every later
@@ -79,7 +79,7 @@ if its owner crashes and vice versa.
 
 ;; Every synchronous op below is `gen/call`: it monitors the agent
 ;; for the duration, so a **dead** agent raises `call: server … died: …` at once and a
-;; wedged one raises `call: timed out …` after 5 s (Elixir's Agent default). The
+;; wedged one raises `call: timed out …` after 5 s. The
 ;; hand-rolled `(receive ([:reply ^r v] v))` these replaced had neither, so any of
 ;; them parked the caller FOREVER — no error, no timeout, nothing to wake it.
 

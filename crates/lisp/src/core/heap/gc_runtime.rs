@@ -116,7 +116,7 @@ impl Heap {
     /// **RUNTIME collector — Step 2 (aging).** Start a fresh code generation: flip
     /// `current_gen` so subsequent `def`/`promote` land in the *other* slot, while
     /// the previous generation's code stays fully readable via its own handle
-    /// `code_gen` bit (no rewrite — the essence of the Erlang-style 2-generation
+    /// `code_gen` bit (no rewrite — the essence of the 2-generation code
     /// model, ADR-091). Returns whether it aged.
     ///
     /// Only ages when the target slot is **empty** — its previous generation fully
@@ -205,13 +205,13 @@ impl Heap {
     ///
     /// **Why it's needed.** [`age_runtime`](Self::age_runtime) only flips which slot new
     /// code lands in; it moves no existing binding. Because Brood's `def` is per-global
-    /// (unlike an Erlang module reload, which re-exports *all* of a module's functions
-    /// as a unit), a global defined once and never redefined would stay in `old_gen`
+    /// (not a whole-module reload that replaces *all* of a module's functions as a
+    /// unit), a global defined once and never redefined would stay in `old_gen`
     /// forever and pin it — so the generation never drains and can never be freed. This
     /// copies each live global's RUNTIME sub-graph into the current generation and
     /// repoints the shared globals table at the copy, so `old_gen` is left holding only
     /// superseded versions plus whatever in-flight process state still references it —
-    /// which drains as those calls finish (exactly Erlang's old-vs-current code).
+    /// which drains as those calls finish (old code vs current code).
     ///
     /// **How it stays safe under concurrency** (this runs on `&self` — the runtime is
     /// shared, no unique ownership):
@@ -573,8 +573,8 @@ impl Heap {
     /// when *every* live process (and the shared globals) reports `false`. For a
     /// single-process runtime this heap sees the whole picture, so its answer is
     /// exact. A process holding an old-generation closure in a local variable,
-    /// mid-call, or captured in data keeps that generation pinned — exactly
-    /// Erlang's "old code lives until no process still runs it".
+    /// mid-call, or captured in data keeps that generation pinned — old code lives
+    /// until no process still runs it.
     ///
     /// The per-process **caches** (`vm_cache`/`global_ic`/…) are deliberately *not*
     /// scanned: they hold RUNTIME handles too, but rebuild lazily, so Stage 4 clears
@@ -1524,7 +1524,7 @@ impl Heap {
             // pinning it to `count`. Pinning made `rt_gc_due` true every frame, so every
             // safepoint re-entered this branch and paid the `cur_code()` `ArcSwap` loads —
             // for the whole run, whenever a drain lingers because a long-lived process
-            // pins the generation (which it does across a churny workload; Erlang's
+            // pins the generation (which it does across a churny workload: the
             // local-call code-pinning limitation). With the exponential back-off the
             // collector is re-entered only at region-growth doublings; the O(1) drain
             // self-report still runs every frame (so acks stay current) and the free is

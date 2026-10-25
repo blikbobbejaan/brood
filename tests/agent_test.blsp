@@ -75,7 +75,7 @@
 (describe "agent: an unmatched message is dropped, not left in the mailbox"
   ;; `agent-loop` had no catch-all, so a stray send matched no clause and sat in the
   ;; agent's mailbox forever — growing it and being re-scanned by every later
-  ;; selective receive. `gen` has always dropped one (OTP's default handle_info).
+  ;; selective receive. `gen` has always dropped one.
   (test "strays are consumed, and the agent keeps working"
     (let (a (agent/start (fn () 0)))
       (dotimes (i 20) (send a :stray))

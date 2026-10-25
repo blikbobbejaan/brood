@@ -1,0 +1,175 @@
+;; std/proc/names.blsp — a process registry: names that are any value, held by one
+;; process or by many.
+;;
+;; The kernel's `proc/register` binds a KEYWORD to one pid, and the name goes when the
+;; process does. A registry adds what that cannot say: a key that is any value
+;; (`[:session 42]`), a key held by several processes at once (a topic, a pool), and a value
+;; stored beside each holder. Design notes:
+;;  - The registry is a `defserver` that OWNS a table (ADR-418), so the table — every entry
+;;    in it — dies with the registry: a crashed registry takes its names with it, as a
+;;    dead process takes its kernel name, and its supervisor's restart starts empty.
+;;  - Writes are calls, serialised by the one process; reads are not. `gen`'s via directory
+;;    (`gen/%via-publish`) maps each registry's name to [its pid, its table], so `lookup`
+;;    and `whereis` read the table directly, in the caller, without a message. It lives in
+;;    `gen` because `gen` resolves `{:via …}` addresses and `names` is built on `gen`: the
+;;    dependency runs one way.
+;;  - The registry monitors each holder once and drops all of its keys on the `[:down …]`.
+;;    Until that down is handled a read can still see a dead holder, so every read keeps
+;;    the live ones only.
+;;  - `{:via registry :key key}` is an address `gen` resolves (`gen/call`, `cast`, `stop`,
+;;    `code-change`, and `gen/start`'s `:name`), the way it resolves a kernel name.
+
+(defmodule names
+  "A process registry: a key that is any value, held by one process (`:unique`, the
+default) or by many (`:duplicate`), with a value stored beside each holder. Writes go
+through the registry process; reads go straight to its table. A holder's entries go when
+it dies, and every entry goes when the registry does.
+
+    (names/start :sessions)
+    (names/register :sessions [:user 7] (self) {:since 0})
+    (names/whereis :sessions [:user 7])          ;; => the pid
+    (gen/call {:via :sessions :key [:user 7]} :ping)
+
+A `{:via registry :key key}` address works wherever `gen` takes a pid, including
+`gen/start`'s `:name`."
+  (:use gen :only [defserver]))
+
+(def- *start-options* #{:keys :link})
+
+;; ---- the registry process -----------------------------------------------------
+
+;; A unique key's entry is `[pid value]`; a duplicate key's is a map pid → value.
+(defn- names-remove (entries mode key pid)
+  (let (entry (table/get entries key))
+    (cond
+      (nil? entry) nil
+      (= mode :unique) (when (= (first entry) pid) (table/delete entries key))
+      else
+        (let (others (dissoc entry pid))
+          (if (empty? others) (table/delete entries key) (table/put entries key others))))))
+
+(defn- names-watch (state key pid)
+  (let (held (get state :held)
+        watch (get held pid))
+    (assoc state
+      :held
+        (assoc held
+          pid
+            (if watch
+              (assoc watch :keys (conj (get watch :keys) key))
+              {:ref (monitor pid) :keys #{key}})))))
+
+(defn- names-register (state key pid value)
+  (let (entries (get state :entries)
+        entry (table/get entries key)
+        holder (when (and entry (= (get state :keys) :unique)) (first entry)))
+    (if (and holder (not (= holder pid)) (proc/alive? holder))
+      [(failure "names/register: " (pr-str key) " is held by " (pr-str holder)) state]
+      (do
+        (table/put entries
+          key
+          (if (= (get state :keys) :unique) [pid value] (assoc (or entry {}) pid value)))
+        [pid (names-watch state key pid)]))))
+
+(defn- names-unregister (state key pid)
+  (let (watch (get (get state :held) pid))
+    (names-remove (get state :entries) (get state :keys) key pid)
+    (cond
+      (nil? watch) state
+      (= (get watch :keys) #{key})
+        (do (demonitor (get watch :ref)) (assoc state :held (dissoc (get state :held) pid)))
+      else
+        (assoc state
+          :held (assoc (get state :held) pid (assoc watch :keys (disj (get watch :keys) key)))))))
+
+(defn- names-forget (state pid)
+  (let (watch (get (get state :held) pid))
+    (if (nil? watch)
+      state
+      (do
+        (each (get watch :keys)
+          (fn (key) (names-remove (get state :entries) (get state :keys) key pid)))
+        (assoc state :held (dissoc (get state :held) pid))))))
+
+(defserver server
+  (state)
+  "The registry process: owns the entries table and serialises every write to it.
+State is `{:name :keys :entries :held}`, `:held` mapping each holder's pid to its monitor
+ref and the keys it holds.
+
+    (gen/start names/server {:name :sessions :keys :unique})   ;=> the registry's pid (use names/start)"
+  (init (let (entries (table/new))
+          (gen/%via-publish (get state :name) (self) entries)
+          (assoc state :entries entries :held {})))
+  (call [:register key pid value] (names-register state key pid value))
+  (call [:unregister key pid] [nil (names-unregister state key pid)])
+  (query :ready :ready)
+  (info [:down _ pid _] (names-forget state pid)))
+
+;; ---- client side ----------------------------------------------------------------
+
+(defn start (name:keyword & opts)
+  "Start a registry registered as `name` and return its pid. `opts` is an optional map:
+  - `:keys` — `:unique` (the default: one holder per key) or `:duplicate` (any number)
+  - `:link` — link the registry to the caller
+
+Returns once the registry is ready, so a read straight after `start` finds it. A second
+registry under the same name replaces the first's name and its directory entry.
+
+    (names/start :sessions)                      ;=> the registry's pid
+    (names/start :topics {:keys :duplicate})     ;=> a registry whose keys hold many processes"
+  (let (options (or (first opts) {})
+        unknown (seq/reject (keys options) (fn (k) (contains? *start-options* k)))
+        mode (or (get options :keys) :unique))
+    (when (not (empty? unknown))
+      (error "names/start: unknown option " (pr-str (first unknown)) " (expected :keys or :link)"))
+    (when (not (contains? #{:unique :duplicate} mode))
+      (error "names/start: :keys must be :unique or :duplicate, got " (pr-str mode)))
+    (let (pid (gen/start server {:name name :keys mode} {:link (get options :link) :name name}))
+      (gen/call pid :ready)
+      pid)))
+
+(defn register (registry:keyword key:any pid:pid & value)
+  "Register `pid` under `key` in `registry`, with an optional `value` stored beside it;
+return `pid`. In a `:unique` registry a key another live process holds is not taken: the
+answer is a failure naming the holder. Registering the holder again replaces its value.
+The entry goes when `pid` exits.
+
+    (names/register :sessions [:user 7] (self) {:since 0})   ;=> (self)"
+  (gen/call registry [:register key pid (first value)]))
+
+(defn unregister (registry:keyword key:any pid:pid)
+  "Drop `pid`'s entry under `key` in `registry`; nil. A key `pid` does not hold is left alone.
+
+    (names/unregister :sessions [:user 7] (self))   ;=> nil"
+  (gen/call registry [:unregister key pid]))
+
+(defn lookup (registry:keyword key:any -> vector)
+  "Every live holder of `key` in `registry`, as a vector of `[pid value]` — at most one in
+a `:unique` registry, empty when nobody holds it. Reads the registry's table directly.
+
+    (names/lookup :sessions [:user 7])   ;=> [[pid {:since 0}]]"
+  (let (entry (gen/%via-entry registry key)
+        pairs (cond
+                (nil? entry) []
+                (vector? entry) [entry]
+                else (into [] (map (seq entry) (fn (pair) [(first pair) (second pair)])))))
+    (into [] (seq/filter pairs (fn (pair) (proc/alive? (first pair)))))))
+
+(defn count (registry:keyword -> int)
+  "The number of keys `registry` holds, read from its table directly; 0 for a registry
+that is not running. A key goes when its last holder unregisters or its death is handled.
+
+    (names/count :sessions)   ;=> 1"
+  (let (entries (gen/%via-table registry))
+    (if entries
+      (check-allow :discarded-catch
+        (try (table/count entries) (catch _ 0)))
+      0)))
+
+(defn whereis (registry:keyword key:any)
+  "The live process holding `key` in `registry`, or nil — any one of them in a `:duplicate`
+registry. Reads the registry's table directly.
+
+    (names/whereis :sessions [:user 7])   ;=> the pid, or nil"
+  (first (first (lookup registry key))))

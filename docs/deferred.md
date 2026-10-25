@@ -338,8 +338,8 @@ style that is Brood's whole idiom. Rejected.
 5. Minor: scope-tracking expansion adds cold-start cost (expansion is already the
    bulk of the ~31ms boot).
 
-**Relation to full hygiene.** Brood is now hygienic **both ways automatically**, like
-Elixir: free-reference auto-qualification (the part C needs) *and* introduced-binding
+**Relation to full hygiene.** Brood is now hygienic **both ways automatically**:
+free-reference auto-qualification (the part C needs) *and* introduced-binding
 capture protection (automatic alpha-rename of template `let`/`fn` binders, `~'name` to
 opt out — ADR-066 amendment, 2026-07-30) are both default. C's scope-aware *operator*
 resolution is a further step in the same direction (it reuses the same binder-scope
@@ -356,7 +356,7 @@ scope-aware expander. Until then, A stands.
 form, conventionally below the `defn`, with an ordering constraint that only bites
 under `BROOD_CONTRACTS=1` (the sig must be in scope when the contract shim wraps).
 The frequently-proposed "modern" alternative is to fold the types into `defn`'s
-parameter list — `(defn f ((x int) -> int) …)` — the ML/Rust/TypeScript/Elixir-`@spec`
+parameter list — `(defn f ((x int) -> int) …)` — the ML/Rust/TypeScript
 shape. Tracked in ROADMAP.md (and the archived roadmap-for-v1.md) as an ADR-082 revision.
 
 **Why it's deferred (and the specific doubt).** It's purely additive, so it costs a

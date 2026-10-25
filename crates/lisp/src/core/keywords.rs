@@ -52,7 +52,7 @@ pub const CATCH: &str = "catch";
 pub const THROW: &str = "throw";
 pub const TRY_PRIM: &str = "%try";
 pub const EQ_PRIM: &str = "%eq";
-// Table (ETS) primitive names. Shared across five sites — the `def` registration
+// Shared mutable table primitive names. Shared across five sites — the `def` registration
 // (builtins.rs), the IR PrimOp fast-path (compile/ir.rs), the linmap rewrite's
 // emitted call heads (compile/inline.rs, eval/macros/linmap.rs), and the checker's effect
 // list (types/check/guard_effects.rs) — so renaming one is a single edit the compiler
@@ -141,7 +141,7 @@ pub const UNQUOTE_SPLICING: &str = "unquote-splicing";
 // finalised — but a pin *is* `(unquote expr)`, so inside a macro's `` ` `` template
 // the quasiquote walker consumed it first and a pinned pattern could not be
 // emitted by a macro at all (the request/reply `receive ([:reply ^tag v] …)` idiom
-// is exactly what you want to wrap). `^` (Elixir's spelling) frees `~` for
+// is exactly what you want to wrap). `^` frees `~` for
 // quasiquote alone. `%`-prefixed so a user's own `pin` function can't collide with
 // the marker the pattern compiler looks for.
 pub const PIN: &str = "%pin";

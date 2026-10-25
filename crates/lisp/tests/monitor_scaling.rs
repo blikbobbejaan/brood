@@ -5,8 +5,8 @@
 //! `demonitor` walked the whole of it. A supervisor holding 200 000 monitored children then
 //! paid 1.2 ms per child death — 200 000 entries walked per kill — against 0.7 µs for an
 //! unmonitored child: 1 500×, O(n²) for the fleet, and every one of `exit :kill`'s cost on
-//! the process-lifecycle probe. `process/monitor.rs` now keeps the watcher-side index Erlang
-//! keeps, so both paths touch only their own entries.
+//! the process-lifecycle probe. `process/monitor.rs` now keeps a watcher-side index too,
+//! so both paths touch only their own entries.
 //!
 //! Pinned as a RATIO, not a wall time: `n` parked children killed with the parent holding
 //! one monitor on each of them, against the same `n` killed unmonitored. Indexed, the two

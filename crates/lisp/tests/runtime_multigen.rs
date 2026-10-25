@@ -14,8 +14,8 @@
 //!
 //! Note on *freeing*: whether a whole generation is fully drained and freed is inherently
 //! timing-dependent — it requires every live process to become quiescent w.r.t. the
-//! draining generation (a process actively looping in old code pins it, exactly Erlang's
-//! purge condition). The deterministic proof that draining + freeing works lives in the
+//! draining generation (a process actively looping in old code pins it — the purge
+//! condition). The deterministic proof that draining + freeing works lives in the
 //! two-heap cycle tests in `runtime_collector.rs`; here we assert the reliably-reproducible
 //! properties: the auto-collector *fires* (ages + migrates) under real concurrency, and it
 //! never miscompiles.

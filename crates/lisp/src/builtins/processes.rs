@@ -97,7 +97,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "A fresh, globally-unique reference token (tags a request to its reply).\n\n    (= (ref) (ref))           → false\n    (let (r (ref)) (= r r))   → true",
         make_ref,
     );
-    // `(exit pid reason)` — send an exit signal (Erlang `exit/2`). `:kill` is the
+    // `(exit pid reason)` — send an exit signal. `:kill` is the
     // untrappable hard kill; any other reason is the soft (next-`receive`) signal.
     primitives.def(
         "exit",
@@ -123,7 +123,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "Drop the monitor identified by mref (best-effort).\n\n    (let (p (spawn (receive (_ nil))) r (monitor p)) (demonitor r) (exit p :kill) (receive ([:down ^r _ _] :fired) (after 50 :quiet)))   → :quiet",
         demonitor,
     );
-    // One-shot reply aliases (OTP 24's `{alias, demonitor}`): the kernel drops a
+    // One-shot reply aliases: the kernel drops a
     // message addressed to a ref its owner has deactivated, at DELIVERY — so a reply
     // that misses its caller's deadline never enters the mailbox at all.
     primitives.def(
@@ -264,7 +264,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["pid"],
         "How many messages are queued in pid's mailbox (its receive backlog), or nil if pid is not a live local process. The one process-introspection accessor not reachable from Brood; see std/tool/observer.blsp.",
         mailbox_size);
-    // `(process-info pid)` — an Erlang-`process_info`-style snapshot map for a
+    // `(process-info pid)` — a snapshot map for a
     // live local process (nil for remote/dead), the introspection surface a
     // process observer/debugger reads. Assembled in Rust because every field is
     // kernel-internal (registry / scheduler / monitor tables). ADR-051.
@@ -344,8 +344,8 @@ pub(super) fn send(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     Ok(Value::nil())
 }
 
-/// `(exit pid reason)` — send an exit signal to a local green process (Erlang
-/// `exit/2`). `reason = :kill` is the untrappable hard kill (dies at its next
+/// `(exit pid reason)` — send an exit signal to a local green process.
+/// `reason = :kill` is the untrappable hard kill (dies at its next
 /// reduction tick, or now if parked); any other reason is the soft signal (dies at
 /// its next `receive`). Returns nil. A no-op for a dead/unknown pid.
 pub(super) fn exit_proc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
@@ -399,10 +399,10 @@ pub(super) fn unlink_proc(args: &[Value], _: EnvId, _: &mut Heap) -> LispResult 
 }
 
 /// `(process-flag flag [value])` — read or set a per-process runtime flag on the
-/// **current** process (the Erlang `process_flag/2` shape), returning the
+/// **current** process, returning the
 /// previous (read: current) value. Flags:
 ///
-/// - `:max-heap` — this process's heap limit in bytes (BEAM `max_heap_size`).
+/// - `:max-heap` — this process's heap limit in bytes.
 ///   With a positive int: set it; with `nil`: clear it; with no value: read it.
 ///   Checked after each collection against the *live* (post-GC) footprint; when
 ///   exceeded, the next safepoint raises a catchable `E0045` error in this
@@ -412,9 +412,9 @@ pub(super) fn unlink_proc(args: &[Value], _: EnvId, _: &mut Heap) -> LispResult 
 ///   :max-heap n) (work)))`.
 /// `(hibernate)` — tell the runtime this process is going idle for a long time, so it
 /// should give back everything it can: collect, shrink its heap slabs and root vectors,
-/// and drop its inline caches and compiled-body cache. Erlang's `erlang:hibernate/3`,
-/// minus the continuation argument (Brood processes park in `receive`, so there is no
-/// need to re-enter via an explicit MFA).
+/// and drop its inline caches and compiled-body cache. It takes no continuation
+/// argument: Brood processes park in `receive`, so there is no need to re-enter via an
+/// explicit function.
 ///
 /// Returns the bytes of slab capacity released.
 pub(super) fn hibernate_proc(_args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
@@ -611,7 +611,7 @@ pub(super) fn make_ref(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 /// message addressed to it (`[:tag r …]`) is dropped at delivery into this process's
 /// mailbox instead of queueing there forever.
 ///
-/// The kernel half of OTP 24's process aliases. `gen/call-timeout` calls it on the
+/// The kernel half of process reply aliases. `gen/call-timeout` calls it on the
 /// deadline path, so a reply the server posts *after* the caller gave up is discarded
 /// by the runtime rather than accumulating in a mailbox nothing can ever match it out
 /// of (unbounded growth, plus a re-scan on every later selective receive). Only the
@@ -784,8 +784,7 @@ fn sysmon_caller() -> Result<u64, LispError> {
 /// `(proc/system-monitor [pid opts])` — read, arm, or clear a subscription to the
 /// kernel **system monitor**: runtime events (`:gc`/`:spawn`/`:exit`/
 /// `:exit-abnormal`/`:deopt`) delivered to a subscriber process as
-/// `[:system kind subject-pid detail]` messages (BEAM `system_monitor` shape; see
-/// `process/sysmon.rs`). One subscription per subscriber pid (ADR-305). No args
+/// `[:system kind subject-pid detail]` messages (see `process/sysmon.rs`). One subscription per subscriber pid (ADR-305). No args
 /// reads the **caller's** subscription; `:all` lists every subscription; `nil`
 /// clears the caller's and `(nil pid)` clears `pid`'s; a local pid arms it — with
 /// no opts map every event is selected, with one exactly the truthy keys are.
@@ -973,7 +972,7 @@ pub(super) fn process_info(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
             // its last `receive` (0 for one that has never received). The signal
             // for "is this process churning memory?" in the observer.
             let collections = Value::int(crate::process::process_gc_runs(id).unwrap_or(0) as i64);
-            // `:reductions` — the process's cumulative reduction count (Erlang's
+            // `:reductions` — the process's cumulative reduction count (the
             // scheduling unit), updated every scheduling quantum. The observer's
             // "is this process doing work / busy?" signal. Exact for spawned
             // processes; coarse (whole-budget increments) for the root.

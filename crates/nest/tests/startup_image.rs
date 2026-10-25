@@ -456,7 +456,7 @@ fn an_imaged_start_terminates_on_a_require_cycle() {
 
 /// KI-275: a file a module splices in with `include-str` is part of what the image holds,
 /// so editing it must make the image stale. The staleness key covered the project's
-/// SOURCES only, and an imaged run went on serving the old text: bedit's Elixir agent
+/// SOURCES only, and an imaged run went on serving the old text: bedit's eval agent
 /// (`(include-str "elixir/bedit_agent.exs")`) kept running a fix's previous version until
 /// some `.blsp` happened to change.
 #[test]

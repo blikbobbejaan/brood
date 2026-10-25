@@ -133,7 +133,7 @@ pub(super) fn emit_call(
     for &op in &ops {
         worded.push(read_words(b, op, frame));
     }
-    // ---- Batch staging (BEAM X-register style) ----
+    // ---- Batch staging (argument-register style) ----
     // Operands are written **straight into `roots`**: one `brood_rt_push_room` reserves the
     // block and hands back its address, and the stores land in place. Layout:
     // [callee?][arg0..arg_{argc-1}], 24 bytes each, all three words written (a whole-`Value`
@@ -826,7 +826,7 @@ pub(super) fn emit_self_call(
         let zero = b.ins().iconst(types::I64, 0);
         store_int(b, ckpt_slot as i64, zero, frame);
     }
-    // Back-edge bookkeeping, BATCHED (BEAM-style): decrement the in-register countdown;
+    // Back-edge bookkeeping, BATCHED: decrement the in-register countdown;
     // while nonzero the loop resumes with ONE sub + branch — no FFI, no TLS, no guard
     // load. Every `TICK_BATCH` iterations the poll block settles the reduction account
     // (`brood_rt_tick_n`, preempting exactly like the old per-iteration tick, at the same

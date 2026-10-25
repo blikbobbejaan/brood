@@ -153,7 +153,7 @@ fn clean_peer_exit_fires_nodedown_promptly() {
 /// one client, or a node leaving a cluster). The dialer disconnects; it sees
 /// `[:nodedown]` + a pruned `(node/list)` synchronously, and the *acceptor* — still
 /// running, blocked in `receive` — sees its own `[:nodedown]` via socket EOF.
-/// Erlang's `disconnect_node/1`. (connect-test had to hand-roll an app-level
+/// (connect-test had to hand-roll an app-level
 /// `[:bye]` for want of this.)
 #[test]
 fn disconnect_drops_a_peer_link_while_both_nodes_stay_up() {
@@ -391,7 +391,7 @@ fn cookie_file_autogen_and_reuse() {
 ///     (S-expressions = data),
 ///   - the captured local `n` rides along in `captured`,
 ///   - the closure's free globals (`*`) re-resolve on the receiver against
-///     *its* prelude — Erlang's "module must be loaded on both nodes",
+///     *its* prelude — the module must be loaded on both nodes,
 ///   - the receiver `f` is called via apply, the result `(* 14 3) = 42`
 ///     comes back to the client via the pid carried in the request.
 #[test]
@@ -1122,7 +1122,7 @@ fn non_brood_peer_is_rejected_at_magic_prefix() {
 }
 
 /// A bad cookie must be rejected: B cannot reach A's `:echo`, so the by-name
-/// send is silently dropped and B times out (Erlang semantics — no delivery, no
+/// send is silently dropped and B times out (no delivery, no
 /// error at the sender).
 #[test]
 fn mismatched_cookie_is_rejected() {
@@ -1395,7 +1395,7 @@ fn connect_to_self_refused() {
 }
 
 /// `(node/monitor :ghost)` for a node we've never linked to fires `[:nodedown]`
-/// immediately (Erlang `monitor_node` semantics).
+/// immediately.
 #[test]
 fn monitor_unconnected_node_fires_immediately() {
     let _g = port_lock();
@@ -2078,7 +2078,7 @@ fn demonitor_node_stops_future_deliveries() {
     );
 }
 
-/// The user's scenario, Erlang-style: a hub B with TWO peers (C and D). A late
+/// The user's scenario: a hub B with TWO peers (C and D). A late
 /// joiner that `connect`s to B *only* must transitively dial BOTH C and D — not
 /// just one. Guards against gossip that propagates a single peer but not the full
 /// peer set.
@@ -2455,7 +2455,7 @@ fn allocated_ports_are_outside_the_kernel_ephemeral_range() {
 }
 
 /// KI-36's structural fix: a message addressed to a **registered name no process holds** is
-/// still dropped — Erlang semantics, deliberately unchanged — but the node that drops it now
+/// still dropped — deliberately unchanged — but the node that drops it now
 /// *says so*, once per name.
 ///
 /// Why this test exists at all. `send` is fire-and-forget, so the sender has already moved on

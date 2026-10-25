@@ -196,7 +196,7 @@ everything (the \"no release yet\" placeholder a registry starts from).
 ;; the *written* version has its first significant digit. `^` (Cargo/npm "compatible")
 ;; keeps the left-most non-zero component fixed: `^1.2.3` = `>=1.2.3, <2.0.0`, but
 ;; `^0.2.3` = `>=0.2.3, <0.3.0` (a 0.x major means minor is the breaking axis). `~>`
-;; (Elixir/Ruby "pessimistic") pins one level shallower than what was written:
+;; (Ruby "pessimistic") pins one level shallower than what was written:
 ;; `~> 1.2.3` = `>=1.2.3, <1.3.0` (patch may move), `~> 1.2` = `>=1.2.0, <2.0.0`
 ;; (minor may move). Both bounds compare on part-lists, so no string is built.
 

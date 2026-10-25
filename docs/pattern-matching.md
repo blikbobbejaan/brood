@@ -1,7 +1,6 @@
 # Pattern matching
 
-> Status: **implemented** (ADR-021). Erlang/Elixir-style pattern matching, built
-> to fit the project's rules: the compiler is written in Brood (`std/prelude/match.blsp`),
+> Status: **implemented** (ADR-021). Pattern matching, built to fit the project's rules: the compiler is written in Brood (`std/prelude/match.blsp`),
 > there is no new special form, and one mechanism is reused at every binding site.
 > Subsumes two roadmap items — "Destructuring in `let`/`fn`" and "`case`" (see
 > [`../ROADMAP.md`](../ROADMAP.md) Tier 2). The `let`/`fn` pattern surfaces are
@@ -15,17 +14,17 @@
 
 ## The idea: binding *is* matching
 
-Elixir has no assignment — only matching. `=` is the *match operator*:
-`{:ok, v} = fetch()` evaluates the right side, then matches the pattern on the
-left, binding `v`. The same patterns appear in `case`, function heads, `receive`,
-and `with`. One concept, used everywhere a name gets bound.
+In a language with no assignment — only matching — `=` can be the *match
+operator*: `{:ok, v} = fetch()` evaluates the right side, then matches the pattern
+on the left, binding `v`. The same patterns appear in `case`, function heads,
+`receive`, and `with`. One concept, used everywhere a name gets bound.
 
 We want that feel, not the literal mechanism — because the literal mechanism
-**cannot** be copied into a Lisp, and the reason is exactly what makes Brood a
+**cannot** be carried into a Lisp, and the reason is exactly what makes Brood a
 Lisp:
 
-- Elixir distinguishes a *pattern* from a *constructor* **by position** — `{:ok, v}`
-  left of `=` is a pattern (binding `v`); the same text on the right is a
+- A match operator distinguishes a *pattern* from a *constructor* **by position** —
+  `{:ok, v}` left of `=` is a pattern (binding `v`); the same text on the right is a
   constructor (using `v`). Different brackets (`{}` `[]` `%{}`) vs calls `f()`
   carry the distinction.
 - In Brood, code is data: `(:ok x)` is *just a list*, identical in syntax to a
@@ -50,7 +49,7 @@ compile(pattern, target, on-success, on-fail) -> code
 | Surface | `on-fail` is… |
 |---|---|
 | `match` | fall through to the next clause; last clause raises |
-| refutable `let` | raise (this is Elixir's `=`) |
+| refutable `let` | raise (the match-operator `=` above) |
 | `fn` / `defn` clauses | try the next clause; no clause raises |
 | `receive` clauses | leave the message queued and try the next; if none match, suspend (or run the `after` timeout) — see below |
 
@@ -68,7 +67,7 @@ One vocabulary, shared by every site:
 | `'sym` | the literal symbol `sym` (bare symbols bind, so quote to match) |
 | `(p1 p2 …)` | a list of exactly that length, element-wise |
 | `(p1 & rest)` | head(s) + tail bound — reuses the `&` rest marker |
-| `[p1 p2 …]` | a vector of exactly that length — the Erlang *tuple* |
+| `[p1 p2 …]` | a vector of exactly that length — the *tuple* |
 | `{:keys [a b] :or {a 0}}` | a **map** — binds each `:keys` symbol to the same-named keyword's value (nil if absent, or the `:or` default); fails if the target isn't a map |
 | `{:k p}` | a map with key `:k` **present**, value matches `p` |
 | `(record name {…})` | a **`defrecord` value** of nominal id `name` (bare → current ns, or `mod/name`), then the map pattern `{…}` (optional; `{:k p}`/`:keys`/`:or` compose) against its fields. A record is a map carrying `:__id__`, so this is an id assertion + a map pattern; a plain map or non-record fails |
@@ -105,12 +104,12 @@ must be last — any clause after it is dead code and is a compile-time error.
 
 ### Tagged data: lists vs vectors
 
-Erlang messages are tuples (`{:ok, X}`); Brood's fixed-arity datatype is the
-vector, so a vector pattern `[:ok v]` is the natural tuple analog. Lists stay the
-sequence analog (`(h & t)` is `[H|T]`). Both are valid patterns, but **vectors are
+Tagged messages want a fixed-arity datatype; Brood's is the vector, so a vector
+pattern `[:ok v]` is the natural tuple. Lists stay the sequence (`(h & t)` is
+head and tail). Both are valid patterns, but **vectors are
 the idiom for tagged data** — the decisive reason is *constructor/pattern
 symmetry*: a vector literal `[:ok v]` both **builds** and **matches** (the same
-text, both directions), exactly the Elixir property. A list can't: unquoted,
+text, both directions). A list can't: unquoted,
 `(:ok v)` is a call, so you'd build with `(list :ok v)` but match with `(:ok v)` —
 the two diverge. Lists remain the sequence pattern; vectors are tuples/records.
 
@@ -162,7 +161,7 @@ code is unchanged:
 
 This is Brood's `=`: a refutable bind that raises on mismatch. When you want to
 *handle* a non-match instead of raising, reach for `match` (a future `with` could
-add Elixir-style chained refutable binds with an `else`).
+add chained refutable binds with an `else`).
 
 ### `fn` / `defn` clauses (no `defmatch`)
 
@@ -184,8 +183,7 @@ may be a pattern** instead of a bare symbol, so vectors (tuples) and lists
 ;         can't yet be patterns; see the note above)
 ```
 
-Multi-clause dispatches by pattern (and guard), in order — the canonical Erlang
-shape:
+Multi-clause dispatches by pattern (and guard), in order:
 
 ```clojure
 (defn fac
@@ -209,7 +207,7 @@ This resolves the cases by intent:
 
 The only thing it can't express is a single-clause fn with a compound first
 parameter *and* an empty body — useless, so the cost is nil. Clauses are
-same-arity **pattern + guard** dispatch (Erlang), *not* Clojure-style multi-arity
+same-arity **pattern + guard** dispatch, *not* Clojure-style multi-arity
 dispatch, which ADR-011 deferred — we are not reopening that.
 
 **Footgun:** the form right after the name is always the parameter *list*, so a
@@ -251,20 +249,19 @@ These are layers on the same compiler.
   suspend/resume, so a guard over a mailbox of *k* messages runs O(k) times per
   `receive`, and O(k) *again* on the next wake-up. An effect in a guard therefore
   fires on paths you never select and, in a `receive`, fires repeatedly against
-  messages it never consumes. This is why LFE/Erlang restrict guards to a pure,
-  total sublanguage. Brood doesn't *enforce* a subset (immutability already bans
+  messages it never consumes. This is why some languages restrict guards to a
+  pure, total sublanguage. Brood doesn't *enforce* a subset (immutability already bans
   data-effects), but **`nest check` warns** on a message-passing / `Table`-mutation
   / I/O / global-rebinding call inside a `:when` guard — put the effect in the
   clause body instead. Guard-safe: comparisons, type/shape predicates, total
   arithmetic, and pure data reads.
 
 - **Non-linear patterns** — a repeated variable is an equality constraint:
-  `[x x]` matches only a 2-vector of equal elements. (Erlang does this
-  implicitly; the compiler tracks already-bound names and emits an `=` check on
+  `[x x]` matches only a 2-vector of equal elements. (The compiler tracks already-bound names and emits an `=` check on
   re-occurrence.)
 
 - **Pin** — match against the *current value* of a name already bound outside the
-  pattern. Spelled `^x` (or `^(expr)`), as in Elixir:
+  pattern. Spelled `^x` (or `^(expr)`):
 
   ```clojure
   (let (expected :ok)
@@ -309,7 +306,7 @@ Neither has source locations yet — the reader tracks positions but doesn't att
 them to values (a separate roadmap item) — so messages are made self-describing.
 
 **Runtime — nothing matched.** A `match`, a refutable `let`, or a `fn` call that
-matches nothing **crashes** (raises), Erlang-style: a process handed a message it
+matches nothing **crashes** (raises): a process handed a message it
 can't match should die loudly, not limp on with `nil`. Add an explicit `_` clause
 to make a match total. The error is **structured and catchable**, and carries the
 value that didn't match, the patterns that were tried (the macro has them as data
@@ -408,7 +405,7 @@ continuation set to `nil` (instead of the structured throw), wrapping each claus
 body in a thunk. The result is a *matcher* function — given a message it returns
 the body-as-a-thunk on a match, or `nil` otherwise — which the `%receive`
 primitive runs over the mailbox: scan in order, **remove + run the first match,
-leave non-matching messages queued**. That is true Erlang **selective receive**
+leave non-matching messages queued**. That is true **selective receive**
 (no head-of-line blocking), not the simpler "match the next message or fall
 through" form first sketched here.
 
@@ -431,13 +428,13 @@ runtime side (the green-process suspend + the receive timer) and ADR-027.
    symmetry — the same literal builds *and* matches (a list `(:ok v)` can't:
    unquoted it's a call). Lists remain the sequence pattern. Both still work as
    patterns; vectors are the documented idiom.
-2. **Pin → `^x`** (its own reader macro — Elixir's spelling. Originally `~x`,
+2. **Pin → `^x`** (its own reader macro. Originally `~x`,
    changed because a pin that *is* an `(unquote …)` cannot survive a macro
    template; ADR-150).
 3. **Failure → crash, with a structured value.** A non-matching `match`,
    refutable `let`, or `fn` call raises (catchable via `try`/`catch`); add a `_`
    clause to make it total. The value is structured (e.g. `[:no-match v]`) so a
-   handler can match on it. Erlang "let it crash"; fits the supervision model.
+   handler can match on it. "Let it crash" fits the supervision model.
 4. **Phasing → not a design question** (build order). Likely one PR; the shared
    compiler + `match` is the foundation, so it lands first regardless.
 5. **`let`/`fn` factoring → Option A (delegate).** Touch the special forms, but

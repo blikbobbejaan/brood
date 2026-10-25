@@ -53,7 +53,7 @@ applications on top.
 ### Processes & message passing
 
 Under the Lisp is a runtime of cheap, share-nothing **green processes** that talk
-only by message passing — the actor model Erlang popularised.
+only by message passing — the actor model.
 `spawn`/`send`/`receive`/`self` are the whole API, and `receive` selects on
 **patterns**.
 
@@ -228,7 +228,7 @@ Clojure-style `` ` ``/`~`/`~@` quasiquote, `macroexpand`, `gensym`), integers &
 floats with overflow-checked arithmetic, strings, symbols, keywords, cons-cell
 lists, `[ ]` vectors, immutable `{ }` maps (`get`/`assoc`/`dissoc`/`keys`/`vals`/
 `contains?`), `#b"…"` **byte strings**, **pattern matching** (`match` +
-destructuring in `let`/`fn`, including Erlang-style **bit syntax** — `(bytes
+destructuring in `let`/`fn`, including **bit syntax** — `(bytes
 (len :u16) (body len) & rest)`), higher-order functions
 (`map`/`filter`/`reduce`/`apply`), and the self-hosting trio
 `reflect/eval`/`reflect/read-string`/`reflect/load`. Parameter lists are written as lists (`(x y)` —
@@ -245,7 +245,7 @@ threading macro are all defined in Brood itself (`std/prelude.blsp`) on top of a
 small Rust kernel.
 
 Beyond that: first-class **sets** (`#{…}`), exact **decimals** (`1.50M`) for money,
-**`bytes`** with Erlang-style bit syntax, `defrecord` for named map shapes, and
+**`bytes`** with bit syntax, `defrecord` for named map shapes, and
 **abilities** (`(require 'ability)`) for open generic functions when a `cond` on
 `type-of` can't be extended from outside — each op dispatches on its first
 argument's identity (a built-in kind, or a `defrecord*` record's own nominal id, so
@@ -260,8 +260,8 @@ stages so you can write your own.
 
 The names the language ships are **reserved** — `(def get …)` is an error. Your own
 code and your packages stay fully redefinable, which is what live redefinition was
-always about; this is the Erlang model, where OTP's modules are sticky and you cannot
-patch `Enum.map/2` either.
+always about; the standard library is sticky, and only what you wrote is yours to
+patch.
 
 Code runs on a closure-compiling **bytecode VM** (the default engine), and a
 tier-1 **JIT** compiles hot compute loops to native code via Cranelift. The one
@@ -274,8 +274,8 @@ See [`docs/language.md`](docs/language.md) for the full reference.
 ### The type system
 
 **Dynamically typed at runtime, strongly typed in what it refuses, and
-set-theoretic + gradual in what it checks statically.** The static layer follows the
-**Elixir model** (Castagna, Duboc, Valim — semantic subtyping), not TypeScript's
+set-theoretic + gradual in what it checks statically.** The static layer follows
+**semantic subtyping** (Castagna, Duboc, Valim), not TypeScript's
 pragmatic-but-unsound one.
 
 *Dynamic.* Every value carries a runtime tag that `type-of` observes
@@ -339,10 +339,10 @@ loops, a **generational** per-process GC, and fusing lazy pipelines. Speed is tr
 as a measured property, not a claim:
 
 - [**broodlang/brood-benchmarks**](https://github.com/broodlang/brood-benchmarks) — the
-  **cross-language suite**: 31 programs across Brood, Elixir, Clojure, Node, .NET, Python
-  and Ruby (28 implemented in every language; `spawn-live` runs in five, though only Brood
-  and Elixir provide the same guarantees there — the others are coroutines on a shared heap,
-  included so the difference is legible; `supervisor` runs only in Brood and Elixir; and
+  **cross-language suite**: 31 programs across Brood and six other language runtimes (28
+  implemented in every language; `spawn-live` runs in five, though only Brood and one other
+  process-based runtime provide the same guarantees there — the others are coroutines on a
+  shared heap, included so the difference is legible; `supervisor` runs only in those two; and
   `latency` reports **percentiles under a fixed arrival rate**, which is the row that shows
   what a runtime does to ordinary requests while one handler is busy), run under one harness, with the published numbers and the methodology
   behind them — including which rows are like-for-like comparisons and which are not.
@@ -356,8 +356,6 @@ as a measured property, not a claim:
 - [**docs/benchmarks/**](docs/benchmarks/) — the archive of past runs.
 - [**docs/compute-frontier.md**](docs/compute-frontier.md) — where the remaining
   time actually goes, and which levers are open.
-- [**docs/elixir-parity.md**](docs/elixir-parity.md) — the concurrency rows measured
-  against the BEAM, which is the yardstick that matters for a process-based runtime.
 
 Engine selection is explicit, which makes A/B honest: one knob, `BROOD_TIER`, caps
 the execution tier — `0` is the tree-walker, `1` the bytecode VM, and `2` (the
@@ -419,7 +417,7 @@ thin client for a daemon).
 
 What remains is incremental, each item gated on a concrete need (ADR-011): the
 Tier-2 runtime-parity gaps (a cluster **registry**, mailbox **backpressure**,
-the **observability** stream, `gen_statem`/`Application` behaviours), Tier-3
+the **observability** stream, state machines and applications), Tier-3
 ergonomics (grapheme-correct strings, `&key` args), full **server/daemon** socket
 serving, and the sandboxed **WASM component** extension host (ADR-145). The editor
 application itself is a separate downstream project, out of scope for this repo.

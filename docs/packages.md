@@ -358,8 +358,8 @@ and the group prefixes `net` (which owns `tcp`, `http`, …) and `proc`
 project — **may not take one of these names**. Its name becomes a load-time package
 prefix, so a package called `net` would provide `tcp` — exactly the baked-in
 module — and even a non-colliding stdlib name (`json` providing `json/parser`)
-squats the stdlib's prefix. This is the Elixir "you can't name your app `Enum`"
-rule, but enforced mechanically rather than by convention.
+squats the stdlib's prefix. The rule is "you can't name your package after a stdlib
+module", enforced mechanically rather than by convention.
 
 The reserved set is derived from `(builtin-modules)` (so it tracks whatever is baked
 into your `brood`), and three layers enforce it:

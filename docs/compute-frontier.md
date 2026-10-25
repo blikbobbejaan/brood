@@ -55,7 +55,7 @@
 >
 > Picking up the "allocation / GC frontier" item (`bintree` + `nqueens`, the two worst compute
 > rows). **The stale framing was wrong and is now fixed:** the ROADMAP said these "run
-> interpreted (~39×/187× behind Elixir)". They do **not** — both are cleanly JIT'd (`jit_deopt=0`),
+> interpreted (~39×/187× behind the fastest)". They do **not** — both are cleanly JIT'd (`jit_deopt=0`),
 > and the real gap is ~9.5×. `Cons` and small `MakeVector` are admitted to the JIT subset
 > (`chunk_in_jit_subset`, `jit_plan.rs` — it moved out of `jit_lower.rs` in ADR-221), so
 > structure-building arms lower and win.
@@ -64,8 +64,8 @@
 >
 > | bench | tree-walker | VM (no JIT) | VM+JIT | vs fastest (last archived run) |
 > |---|---|---|---|---|
-> | `bintree` N=200 | 8508 ms | 422 ms | **~119 ms** | 9.8× behind Elixir (10.4 ms), 6/7 |
-> | `nqueens` N=10 | 3866 ms | 286 ms | **~100 ms** | 9.5× behind Node/Elixir (8.7/9.0 ms), 5/7 |
+> | `bintree` N=200 | 8508 ms | 422 ms | **~119 ms** | 9.8× behind the fastest (10.4 ms), 6/7 |
+> | `nqueens` N=10 | 3866 ms | 286 ms | **~100 ms** | 9.5× behind the two fastest (8.7/9.0 ms), 5/7 |
 >
 > JIT gives ~3.5× / ~2.9× over the plain VM. **`BROOD_GC_FLOOR` sweep: raising the nursery floor
 > makes both *slightly slower* (bintree 118→138 ms), never faster** — so this is NOT
@@ -123,12 +123,12 @@
 > native-depth cap deopts deep recursion to the boxed path. Default-on (`BROOD_NO_I64` opts out).
 > Fuzz-hardened: ~1600 chaotic int+float differential programs + boundary torture + concurrency/
 > GC_STRESS, **0 bugs**; regression guard `tests/unbox_torture_test.blsp`.
-> - **`fib` 227→~52 ms (5th→2nd, beats Elixir & Node); `pfib` N=31 847→~152 ms (5th→2nd, 1.3× off .NET).**
+> - **`fib` 227→~52 ms (5th→2nd, beats Node and the actor runtime); `pfib` N=31 847→~152 ms (5th→2nd, 1.3× off .NET).**
 > Also shipped: a **HOF closure-call fast path** (`range_reduce` caches the step closure's arm once →
 > `nqueens` ~9%; `BROOD_NO_HOF`), and **`let*` removed** (Brood's `let` is already sequential).
 >
 > - **Standings** (single-thread aggregate compute vs fastest): .NET 1.0× · Node 2.6× ·
->   **Brood 3.0× (3rd of 7, ahead of Elixir 3.7×)** · Clojure ~8× · Ruby 11.7× · Python 26.9×.
+>   **Brood 3.0× (3rd of 7)** · actor runtime 3.7× · Clojure ~8× · Ruby 11.7× · Python 26.9×.
 >   Up from **6.0× / 4th** at 2026-06-20. Also fixed the `pfib` parallel-scaling cascade (per-process
 >   fast-link invalidation + shared inlined native) — green scheduling now ~93% of the machine ceiling.
 >
@@ -177,7 +177,7 @@
 >   compiles the frame work better than hand-emitted Cranelift IR. Reverted. The dispatch lever is
 >   mined out at increment 1.
 > - **Standings (full 7-language `brood-benchmarks` run, single-thread aggregate compute vs the
->   fastest):** .NET 1.0× · Node 2.7× · Elixir 3.5× · **Brood 6.0× (4th of 7)** · Ruby 11.9× ·
+>   fastest):** .NET 1.0× · Node 2.7× · actor runtime 3.5× · **Brood 6.0× (4th of 7)** · Ruby 11.9× ·
 >   Clojure 18.2× · Python 27.3×. Brood wins `strings` + `http`; ~18 MB base RSS; ~26 ms startup.
 > - **SHIPPED 2026-06-19 — `%map-int-add` + JIT GC safepoint:** `wordcount` 810→**470 ms** (~42%).
 >   `(%map-int-add m k delta)` fuses `(assoc m k (+ (get m k 0) delta))` into one CHAMP trie walk.
@@ -593,7 +593,7 @@ because the value can't be mutated out from under a sharer. Entry: `process/mess
 
 **SHIPPED 2026-06-19:** `%map-int-add` (single-pass CHAMP fused get+add+assoc) + JIT GC
 safepoint in `jit_dispatch_call`. wordcount 810 → **422 ms** compute; gap vs fastest
-(Node ~33ms) **~31× → ~13×**; gap vs Elixir **4.5× → 2.5×**.
+(Node ~33ms) **~31× → ~13×**; gap vs the actor runtime **4.5× → 2.5×**.
 
 Residual gap is algorithmic: CHAMP path-copy allocates O(log₁₆ N) nodes per update vs a
 mutable `Dictionary`. A transient-map build path exists (`5a7b8bb`); wiring
@@ -1927,7 +1927,7 @@ fires or that its premise moved.
 `lowering-returned-none` as the #1 bail reason: **42 arms on `json`, 25 on `regex`, 13 on
 `base64`**. That label is the printer's *fallback* — it means the lowering answered `None` and
 nothing said why. You cannot unblock what is not named, and these rows are the ones furthest
-behind every other runtime (`json` 33× Elixir), so the "unexplained" bucket sat exactly where
+behind every other runtime (`json` 33× the actor runtime), so the "unexplained" bucket sat exactly where
 the work was.
 
 **Three sources, none of them a missing trace.** (1) The `Option`-returning lowering has ~80

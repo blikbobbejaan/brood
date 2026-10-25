@@ -63,7 +63,7 @@ the `nest mcp` tools of the same names.")
             :fix "Rewrite as a tail-recursive loop with an accumulator (proper tail calls are O(1) stack), or use `reduce`/`fold`."
             :example "(defn sum (n acc) (if (= n 0) acc (sum (- n 1) (+ acc n))))"}
    "E0045" {:summary "Per-process heap limit — this process stayed over its `(proc/flag :max-heap n)` after GC."
-            :causes "One process accumulating too much live data under its own declared cap (the BEAM `max_heap_size` analogue)."
+            :causes "One process accumulating too much live data under its own declared cap."
             :fix "Reduce the process's live set, or raise/clear its `:max-heap` flag. Uncaught, it kills only the offending process — others are untouched."
             :example "(proc/flag :max-heap 10000000)   ; per-process, in bytes"}
    "E0050" {:summary "File I/O failed — a path couldn't be read or written."
@@ -127,7 +127,7 @@ from `what`. Pure — reads the curated `*error-explanations*` table.
     {:intent "mutable state / a variable I can change"
      :keywords ["mutable"
                  "mutate" "set!" "var" "state" "counter" "assign" "change" "update variable"]
-     :idiom "No `set!`/mutable variables. Carry state in a recursive function's argument, in a process loop's state, or (when genuinely shared+mutable) a `Table` (Brood's ETS)."
+     :idiom "No `set!`/mutable variables. Carry state in a recursive function's argument, in a process loop's state, or (when genuinely shared+mutable) a `Table` (the shared mutable table)."
      :example "(defn account (bal) (receive ([:dep amt] (account (+ bal amt))) ([:bal from] (send from bal) (account bal))))"
      :see "docs/language.md §Immutability"}
     {:intent "build a string / concatenate in a loop"

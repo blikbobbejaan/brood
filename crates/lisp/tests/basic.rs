@@ -785,7 +785,7 @@ fn destructuring_let() {
 
 #[test]
 fn fn_clauses_and_pattern_params() {
-    // multi-clause dispatch — the canonical Erlang shape
+    // multi-clause dispatch
     assert_eq!(
         run("(defn fac ((0) 1) ((n) (* n (fac (- n 1))))) (fac 5)"),
         "120"
@@ -1071,8 +1071,8 @@ fn errors_are_reported() {
 /// The cross-process extension of `live_redefinition`, and the whole point of
 /// the shared-runtime model: a long-running *spawned* process shares the
 /// runtime's live code, so redefining a function it calls changes its behaviour
-/// on the next request — without restarting it (the web-server / Erlang
-/// hot-code-swap scenario; see docs/shared-code.md).
+/// on the next request — without restarting it (the web-server live code
+/// reload scenario; see docs/shared-code.md).
 #[test]
 fn spawned_process_picks_up_redefinition() {
     let src = r#"
@@ -1085,7 +1085,7 @@ fn spawned_process_picks_up_redefinition() {
               (server))))
         (def srv  (spawn (server)))
         ;; NB: named `ask`, not `call` — `call` became a *reserved* name when the
-        ;; gen_server framework moved into the prelude bare (7cb796f0), so `(def call …)`
+        ;; `gen` server framework moved into the prelude bare (7cb796f0), so `(def call …)`
         ;; is refused outright. The name is incidental to what this test proves.
         (def ask (fn (x) (send srv (list (self) x)) (receive)))
         (def before (ask 5))              ; 5 * 10 = 50

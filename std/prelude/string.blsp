@@ -110,7 +110,6 @@
 ;; The third bound, and in practice the one that saves a display: a TEXT leaf's
 ;; length. Neither bound above touches a leaf, so a single 10 MB string sails past
 ;; both — `*print-length*` counts a collection's items and a string is one item.
-;; 4096 matches Elixir's `Inspect` `:printable_limit`, which exists for exactly this.
 (defdyn *print-string-length* 4096)
 
 (defn- %pr-elide (parts over)

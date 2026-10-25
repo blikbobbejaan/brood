@@ -116,8 +116,7 @@ gates by severity; `:filter` (default nil — accept all) is a `(fn (record) -> 
 predicate; `:format` (default the `[LEVEL ts] msg` line) is a `(fn (record) -> string)`.
 A backend writes a record only when it passes *both* `:min-level` and `:filter` — so
 several backends on one logger can route by category/source (read off the record's
-`:meta`) to different sinks (e.g. an editor's `*LSP*` vs `*Messages*` buffer), the
-OTP-handler-filter / Elixir-metadata-filter idea.
+`:meta`) to different sinks (e.g. an editor's `*LSP*` vs `*Messages*` buffer).
 
 For a backend that does something other than write one line, `defrecord` your own and
 `impl LogBackend` for it — the logger accepts any value with an impl.

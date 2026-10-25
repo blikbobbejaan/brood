@@ -391,7 +391,7 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // A DNS client over TCP: resolve a name to its A/AAAA records. Enumerating the
     // addresses behind a name is how a cluster finds its own members — Fly gives one
     // AAAA per machine at `<app>.internal`, a headless Kubernetes service one A per
-    // pod — and Erlang has `:inet_res` for exactly this. TCP because the kernel has
+    // pod. TCP because the kernel has
     // no UDP and DNS over TCP is a required transport (RFC 7766), so it needs no new
     // Rust. Pure Brood over tcp. Opt-in.
     embedded_module!("dns", "std/net/dns.blsp"),
@@ -405,7 +405,7 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // (single-segment) namespaces, so a qualified call is `gen/call`, `supervisor/start`,
     // `agent/get`.
     //
-    // `gen` — the gen_server-style actor framework (ADR-243: `defserver` / `spawn-server` /
+    // `gen` — the server framework (ADR-243: `defserver` / `spawn-server` /
     // `call` / `cast` / `stop`). It was briefly prelude-bundled and *bare* (`7cb796f0`),
     // which seized ten very generic global names — `call`, `cast`, `stop`, … — into the
     // un-redefinable reserved set (ADR-166), so `(def call …)` was refused outright. A
@@ -417,6 +417,9 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // Process-backed state cell: start/get/update/get-and-update/cast/stop.
     // A thin Brood layer over spawn/send/receive for the common "stateful process" case.
     embedded_module!("agent", "std/proc/agent.blsp"),
+    // A process registry (ADR-445): any value as a key, one holder or many, reads straight
+    // from the registry's table; `gen` resolves `{:via registry :key key}` through it.
+    embedded_module!("names", "std/proc/names.blsp"),
     // An application (ADR-436): a root process with dependencies, started in order and
     // stopped in reverse on SIGTERM. CORE: `nest run` and a released bundle run one.
     embedded_module!("application", "std/proc/application.blsp"),
@@ -439,7 +442,7 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // (fire-and-forget = async); the one process serialises writes (no interleaving)
     // and isolates a backend crash. Opt-in, never in the prelude.
     embedded_module!("log", "std/log.blsp"),
-    // Erlang :telemetry-style instrumentation (ADR-106). Handlers run in a dedicated
+    // Telemetry instrumentation (ADR-106). Handlers run in a dedicated
     // LISTENER process (emit is a fire-and-forget send), so a buggy handler can never
     // crash/hang the emitting process — only the listener, which a throwing handler
     // doesn't even do (caught + detached). The handler table is a `def`-rebound global
@@ -656,7 +659,7 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     embedded_module!("os", "std/os.blsp"),
     // Sound output → `audio/*`.
     embedded_module!("audio", "std/audio.blsp"),
-    // Shared mutable ETS-style store → `table/*` (`table?` stays a bare core predicate).
+    // The shared mutable table → `table/*` (`table?` stays a bare core predicate).
     embedded_module!("table", "std/table.blsp"),
     // Non-mainstream process surface (introspection/control + OS subprocesses) → `proc/*`.
     embedded_module!("proc", "std/proc.blsp"),
@@ -708,14 +711,14 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // queue-until-ready, id-matched replies, a watchdog, generations, respawn. The
     // supervision is language-agnostic — a backend supplies how to spawn its child
     // and how to encode/decode a request — so an editor that evaluates a buffer of
-    // Brood, Elixir or Python differs only in the backend. CORE, like the rest of
+    // Brood, Ruby or Python differs only in the backend. CORE, like the rest of
     // the editor framework; opt-in, never prelude.
     embedded_module!("editor/evalsession", "std/editor/evalsession.blsp"),
     embedded_module!("editor/lineedit", "std/editor/lineedit.blsp"),
     embedded_module!("format", "std/format.blsp"),
     // The process-native tracing debugger — `break` (park without timeout),
     // `span`/`span-spawn` (cross-process causal tree), `spy` routed to a debugger
-    // process. The actor-model answer to Elixir's `dbg`.
+    // process. Debugging in the actor model's own terms.
     //
     // CORE, not DEV, and this is the line the split turns on: a dev module is one that
     // serves *developing* an app (the test framework, `nest doc`, the hot-reload
@@ -1472,7 +1475,7 @@ pub(super) fn mark_private(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
 }
 
 /// Add one `(:use …)` import (bare → qualified) to the current file's table,
-/// enforcing the two Elixir-style import rules:
+/// enforcing the two import rules:
 ///
 /// - **Clash (lazy, ADR-235).** If `bare` is already imported from a *different* module,
 ///   the two do NOT error here — importing both modules is fine as long as the caller
@@ -1483,8 +1486,7 @@ pub(super) fn mark_private(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
 ///   module) is a no-op, so idempotent reloads are fine.
 /// - **Shadow (warning).** If `bare` already names a live root/prelude/builtin global,
 ///   the import shadows it — allowed (the resolver gives an import precedence over
-///   root), but warned, exactly as Elixir warns when an import shadows an
-///   auto-imported `Kernel` name. Reach the original with the `/name` root escape, or
+///   root), but warned. Reach the original with the `/name` root escape, or
 ///   silence per-name with `:exclude`. `BROOD_NO_SHADOW_WARN` mutes the class.
 fn refer_add(
     heap: &mut Heap,
@@ -1633,7 +1635,7 @@ fn module_is_loading(heap: &mut Heap, mod_name: &str) -> bool {
 /// emits a `(require 'mod)` first). `subset` nil → refer every *public* `mod/name`
 /// (not recorded private, not itself nested); else a seq of bare symbols → refer
 /// just those as `mod/name`. `exclude` (a seq of bare names, or nil) drops those from
-/// a refer-all — Elixir's `except:`. Each import becomes a bare → qualified entry the
+/// a refer-all. Each import becomes a bare → qualified entry the
 /// resolver consults after the current namespace and before root; clashes and
 /// prelude shadows are policed by [`refer_add`].
 pub(super) fn refer(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
@@ -1770,7 +1772,7 @@ pub(super) fn grant_internals(args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
     Ok(Value::nil())
 }
 
-/// `(%alias module short)` — register a module alias (Elixir-style): a later
+/// `(%alias module short)` — register a module alias: a later
 /// qualified reference `short/name` resolves to `module/name`. Stored in the import
 /// table under the slash-suffixed key `short/`, so it rides the same per-file
 /// lifecycle as `%refer`. The `(:alias …)` header emits it. A second `short` for a

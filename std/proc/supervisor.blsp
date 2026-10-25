@@ -1,4 +1,4 @@
-;; std/proc/supervisor.blsp — Erlang/OTP-style process supervision.
+;; std/proc/supervisor.blsp — process supervision.
 ;;
 ;; Design notes (the *why*; the *what* is in the docstrings below):
 ;;  - A supervisor is an ordinary green process running a receive loop. It
@@ -12,10 +12,10 @@
 ;;    exit to every linked child and tears the subtree down — no orphans. A monitor
 ;;    couldn't do that (one-directional). Children are identified by `:pid` (stable
 ;;    and unique — pids are never reused).
-;;  - All three OTP strategies ship: `:one-for-one`, `:one-for-all`, `:rest-for-one`.
+;;  - All three strategies ship: `:one-for-one`, `:one-for-all`, `:rest-for-one`.
 ;;    The group strategies `(exit … :kill)` the healthy siblings they must restart
 ;;    and selectively drain each one's `[:EXIT]` so a deliberate kill is never
-;;    mistaken for a fresh crash (Erlang `receive` keeps non-matching msgs queued).
+;;    mistaken for a fresh crash (`receive` keeps non-matching msgs queued).
 ;;  - Teardown cascades into nested supervisors two ways: (1) a *crash* propagates
 ;;    down links automatically (a child supervisor traps, recognises its parent's
 ;;    `[:EXIT]`, and shuts its own subtree down); (2) a *graceful* `gen/stop`
@@ -23,7 +23,7 @@
 ;;    children down first. Mark every supervisor child `:shutdown :infinity`.
 
 (defmodule supervisor
-  "OTP-style supervision written in Brood over the kernel's spawn / link / trap-exit
+  "Process supervision written in Brood over the kernel's spawn / link / trap-exit
 / receive / exit (ADR-006, ADR-067). A supervisor process starts a set of children,
 links + traps them, and restarts them per a strategy and restart type when they
 exit — bounded by a restart-intensity limit so a crash loop eventually gives up.
@@ -39,7 +39,7 @@ A *child spec* is a map:
 Restart types: `:permanent` is always restarted; `:transient` only after an
 *abnormal* exit (reason ≠ `:normal`); `:temporary` is never restarted.
 
-**Use `spawn-link` (not `spawn`) in `:start`** — the Erlang convention. It links the
+**Use `spawn-link` (not `spawn`) in `:start`**. It links the
 child to the supervisor *atomically*, so a child that exits very fast (e.g. a
 `:transient` worker that returns `:normal` almost immediately) is reported with its
 true reason. With a bare `spawn`, the supervisor's own follow-up `link` can land after
@@ -52,7 +52,7 @@ across a restart is a dead reference.
 
 **Prefer a `:start` thunk that captures no locals** — `(fn () (spawn-link (worker)))`,
 or a named top-level `(defn start-worker () (spawn-link (worker)))` passed as
-`:start start-worker` (OTP's MFA shape). The supervisor keeps every child's `:start`
+`:start start-worker`. The supervisor keeps every child's `:start`
 so it can restart it, and a thunk that refers only to globals is already shared code:
 handing it to the supervisor costs a handle. One that captures a local
 (`(fn () (spawn-link (worker n)))`) is copied into the supervisor instead — correct,
@@ -75,8 +75,8 @@ link propagation — but a deliberate hard kill is untrappable, hence `:infinity
     (which-children sup)   ; => list of {:id :pid :restart}
     (gen/stop sup)  ; stop supervising AND terminate the children
 
-Children can also be managed at runtime (Elixir's DynamicSupervisor / OTP's
-start_child·terminate_child·restart_child·count_children) — a supervisor started
+Children can also be managed at runtime (start, terminate, restart, count) — a
+supervisor started
 with `[]` children and grown this way *is* a dynamic supervisor:
 
     (start-child sup spec)    ; start + supervise a new child; returns its pid
@@ -134,8 +134,8 @@ address the child by a stable name even though its pid changes across restarts."
 ;; and the ordered views sort by it — they are O(n) operations anyway, so the sort
 ;; costs them nothing they weren't already paying. `:ids` indexes `:id` → pid so
 ;; the by-`:id` client API (`terminate-child`/`restart-child`) stays O(1) too —
-;; which assumes `:id`s are distinct (they are a diagnostic label, and OTP requires
-;; uniqueness). If two children share one, a by-`:id` lookup finds the
+;; which assumes `:id`s are distinct (they are a diagnostic label, expected to be
+;; unique). If two children share one, a by-`:id` lookup finds the
 ;; later-started of them; both are still supervised, restarted and torn down.
 
 (defn- supervisor-ordered (children)
@@ -183,7 +183,7 @@ For the group restarts, which recompute a whole affected set at once."
 
 (defn- supervisor-await-exit (pid timeout-ms)
   "Selectively drain `pid`'s `[:EXIT]` (we link + trap, so a child's death is an
-`[:EXIT pid reason]` message; Erlang `receive` keeps non-matching messages queued).
+`[:EXIT pid reason]` message; `receive` keeps non-matching messages queued).
 `nil` `timeout-ms` waits forever and returns `:ok`; an integer returns `:timeout`
 if the `[:EXIT]` doesn't arrive in the window."
   (if (nil? timeout-ms)
@@ -196,7 +196,7 @@ fires (so the supervisor's loop never treats a deliberate termination as a fresh
 crash). Only call on a child believed alive; if it had already crashed, the kill is
 a harmless no-op and the selective drain consumes the `[:EXIT]` already queued.
 
-`:shutdown` policies (Erlang's, default `:brutal-kill`):
+`:shutdown` policies (default `:brutal-kill`):
   - `:brutal-kill` — `(exit pid :kill)`, untrappable: stops the child even parked
     in `receive` or in a tight loop. The right default for an ordinary worker.
   - `:infinity` — send `[:$stop]` and wait *indefinitely*. How a graceful teardown
@@ -221,8 +221,7 @@ a harmless no-op and the selective drain consumes the `[:EXIT]` already queued.
   "Terminate every child in `children` (each assumed alive / not-yet-drained) per
 its `:shutdown` policy, draining each one's `[:EXIT]`. **Reverse start order**
 (`children` is an ordered *sequence* of records — callers pass
-`supervisor-ordered` — so we tear down last-started-first) — matching
-OTP, so a child that depends on an earlier-started sibling is stopped first.
+`supervisor-ordered` — so we tear down last-started-first), so a child that depends on an earlier-started sibling is stopped first.
 Sequential: a child marked `:infinity` (a sub-supervisor) is fully torn down —
 recursively — before the next, so a whole tree shuts down depth-first."
   (dolist (c (reverse children)) (supervisor-terminate-child c)))
@@ -282,7 +281,7 @@ copies cheaply across `send`)."
   "Restart intensity exceeded: terminate the still-running `survivors`, then throw
 so the failure propagates — anyone monitoring the supervisor sees `[:down …
 [:error …]]`, and a *parent* supervisor (linked + trapping) gets `[:EXIT …]` and
-restarts this whole sub-tree (escalation). Erlang terminates children on shutdown."
+restarts this whole sub-tree (escalation). Children are terminated on shutdown."
   (supervisor-terminate-many survivors)
   (error "supervisor: restart intensity exceeded ("
     (get state :max-restarts)
@@ -294,8 +293,8 @@ restarts this whole sub-tree (escalation). Erlang terminates children on shutdow
 ;; hot reload, a `connect` to a peer that is down. Left uncaught inside the receive
 ;; loop that throw kills the *supervisor*, taking every healthy sibling with it and
 ;; bypassing the intensity budget entirely: the one failure mode supervision exists to
-;; contain becomes the loudest way to lose the whole tree. OTP counts a failed restart
-;; against the budget and tries again, so a child that can never start trips
+;; contain becomes the loudest way to lose the whole tree. So a failed restart counts
+;; against the budget and is tried again, and a child that can never start trips
 ;; `max-restarts` (and escalates to the parent supervisor) instead.
 (defn- supervisor-try-start (child)
   "Start `child`, returning the fresh child record — or `nil` if its `:start` thunk
@@ -385,7 +384,7 @@ abnormal (`:killed`) — leaving unaffected children running. Bounded by intensi
     own subtree down and exit — the cascade that makes a crash propagate through a
     nested tree.
   - `pid` is a **child**: restart it per the strategy, or drop it if its
-    type/reason says not to (siblings untouched — Erlang only disturbs siblings
+    type/reason says not to (siblings untouched — they are only disturbed
     when the trigger actually restarts).
   - otherwise: ignore (a stale `[:EXIT]` for a child already removed)."
   (cond
@@ -401,8 +400,7 @@ abnormal (`:killed`) — leaving unaffected children running. Bounded by intensi
           (= (get state :strategy) :one-for-one) (supervisor-restart state child)
           else (supervisor-group-restart state child reason)))))
 
-;; ---- runtime child management (Elixir's DynamicSupervisor / OTP's
-;; start_child / terminate_child / restart_child / count_children) -------------
+;; ---- runtime child management (start / terminate / restart / count) ---------
 ;; A supervisor started with `[]` children and grown at runtime *is* a dynamic
 ;; supervisor. A dynamically-added child is a full member: it's linked, restarted
 ;; per its `:restart` type, and torn down on shutdown like any other.
@@ -437,7 +435,7 @@ its `:shutdown` and drop it from supervision (no restart). Reply `:ok`, or
 (defn- supervisor-do-restart-child (state key from r)
   "Handle `[:restart-child key]`: terminate the child and start a fresh incarnation
 from the same spec (not counted against the intensity window — it's an explicit
-request, like OTP's `restart_child`). Reply the new pid, or `:not-found`."
+request). Reply the new pid, or `:not-found`."
   (let (child (supervisor-find-by-key (get state :children) (get state :ids) key))
     (if (nil? child)
       (do (send from [:reply r :not-found]) (supervisor-loop state))

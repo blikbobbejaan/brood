@@ -1,7 +1,6 @@
 //! System monitor — kernel runtime events delivered as ordinary mailbox
 //! messages to subscriber processes (the observability event stream's
-//! kernel sources: BEAM `erlang:system_monitor/2` in shape, the .NET
-//! EventPipe analogue at Brood's grain).
+//! kernel sources: the .NET EventPipe analogue at Brood's grain).
 //!
 //! Mechanism only: the kernel *pushes* each selected event as a plain message
 //! (`process::deliver`) the moment it happens — no ring buffer, no polling, no
@@ -22,7 +21,7 @@
 //!
 //! - `[:system :gc pid {:pause-us n :collections n :live n}]` — a collection
 //!   of `pid`'s LOCAL heap finished (only pauses ≥ the configured
-//!   `:gc-min-pause-us` are reported — BEAM's `long_gc` threshold).
+//!   `:gc-min-pause-us` are reported).
 //! - `[:system :spawn child parent]` — a green process was spawned.
 //! - `[:system :exit pid reason]` — a green process exited; `reason` is the
 //!   same structured value monitors see (`[:error {… :trace}]` and friends).
@@ -46,8 +45,7 @@
 //! Cost when off (the default): one relaxed `AtomicU8` load at each emit
 //! site. When armed: a per-kind relaxed load, then a lock + `Message` build +
 //! a mailbox push per selected event per interested subscriber — the
-//! subscriber opts into that traffic knowingly (as with BEAM
-//! trace/system_monitor).
+//! subscriber opts into that traffic knowingly.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -75,7 +73,7 @@ pub struct SysMon {
     /// Report JIT deopts (native arm fell back to the VM).
     pub deopt: bool,
     /// Report a scheduling quantum that held its worker at least this many µs (0 = not
-    /// selected) — BEAM's `long_schedule` (ADR-404). A quantum is bounded by the reduction
+    /// selected) — the long-schedule report (ADR-404). A quantum is bounded by the reduction
     /// budget, so one this long is code that could not be preempted: a long native
     /// builtin, an unboxed native recursion, a blocking call.
     pub long_schedule_us: u64,

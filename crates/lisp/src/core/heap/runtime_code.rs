@@ -204,7 +204,7 @@ pub struct NameMeta {
 /// (via `Arc::clone`), which is what makes a `def` propagate to them — and what
 /// keeps separate runtimes (nodes) independent (each has its own).
 pub struct RuntimeCode {
-    /// The **two** code generations (ADR-091 Erlang-style 2-generation collector).
+    /// The **two** code generations (ADR-091 2-generation code collector).
     /// New code (`def`/`promote`) lands in `gens[current_gen]`; the *other* slot
     /// holds the previous generation's still-referenced code during a migration
     /// (freed once no live process references it). A RUNTIME handle self-describes
@@ -447,7 +447,7 @@ pub struct RuntimeCode {
     /// because a raw code pointer isn't `Send`/`Sync`; reconstituted on read. Empty
     /// unless the JIT runs.
     pub(super) jit_code_cache: RwLock<HashMap<(u64, u16), (usize, u64)>>,
-    /// **Shared compiled-closure cache** (ADR-175 Phase B — the BEAM module-area move):
+    /// **Shared compiled-closure cache** (ADR-175 Phase B — the shared module-area move):
     /// PRELUDE closure handle bits → the compiled closure, shared by every process of
     /// this runtime. Before this, each green process compiled its own copy of every
     /// prelude function it called (~18 KB per distinct callee per process — the

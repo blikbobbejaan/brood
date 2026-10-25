@@ -2,7 +2,7 @@
 ;; nothing. Regression for the bare-function-name footgun: `(spawn worker)` used to
 ;; expand to `(%spawn (fn () worker))`, whose body merely *evaluates* the symbol to
 ;; the closure and exits — so the worker never ran. It now wraps a bare symbol as a
-;; CALL, `(fn () (worker))` (Erlang's `spawn(fun name/0)`), so it runs like every
+;; CALL, `(fn () (worker))`, so it runs like every
 ;; other shape.
 ;;
 ;; Register-only — discovered and run by `nest test` (and cargo test).

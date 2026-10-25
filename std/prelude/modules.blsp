@@ -173,8 +173,8 @@ The primary source is consulted first, then `*image-sources*` in install order."
   (%registry-update! '*package-modules-of* :assoc [prefix] short-modules)
   prefix)
 (def- *features-waiting* {})
-; feature key → the list of pids WAITING for that key's in-flight load. The waiter
-; queue of the OTP `code_server` model — see `%require-await` for the protocol and
+; feature key → the list of pids WAITING for that key's in-flight load. The per-module
+; waiter queue — see `%require-await` for the protocol and
 ; why its two orderings (register-then-recheck, provide-then-drain) are load-bearing.
 (def- *features-loading* {})
 ; feature key → loader pid for loads IN FLIGHT. Set before a load begins so (a) a
@@ -322,7 +322,7 @@ one call site is inside `defmodule`'s template — see the note there."
 
 ;; The `(require …)`+`(%refer …)` forms for one `(:use mod [:only|:exclude [a b]])`
 ;; clause: load the module, then import its names. `:only [a b]` imports just those;
-;; `:exclude [a b]` imports all public names *except* those (Elixir's `except:` — the
+;; `:exclude [a b]` imports all public names *except* those (the
 ;; escape for a name that would clash with another `:use` or shadow the prelude); with
 ;; no marker, all of `mod`'s public (non-`--`) names. `:only`/`:exclude` are the sole
 ;; import filters — any other marker is a clean error (ADR-152: name the fix, don't
@@ -383,7 +383,7 @@ one call site is inside `defmodule`'s template — see the note there."
 
 ;; The `(require …)`+`(%alias …)` forms for one `(:alias mod [:as short])` clause:
 ;; load the module, then register a prefix alias so a later `short/name` resolves to
-;; `mod/name` (Elixir-style `alias`). `short` defaults to `mod`'s last path segment;
+;; `mod/name`. `short` defaults to `mod`'s last path segment;
 ;; `:as` overrides it (needed when two modules share a last segment).
 (defn- %defmodule-alias-clause (clause)
   (let (mod (second clause)
@@ -472,7 +472,7 @@ one call site is inside `defmodule`'s template — see the note there."
   "Declare module/namespace `mod` and compile the rest of the file into it —
 definitions become `mod/name`; bare references resolve there, then through
 `(:use …)` imports, then root. Records an optional docstring and `provide`s the
-feature. Put it first. e.g. (defmodule gen \"A gen_server …\")."
+feature. Put it first. e.g. (defmodule gen \"A server framework …\")."
   (let (doc (if (string? (first more)) (first more) nil)
         clauses (if (string? (first more)) (rest more) more)
         _checked (map clauses (fn (clause) (%defmodule-check-clause mod clause))))
@@ -1189,19 +1189,18 @@ load-time (`require`) guards.
       (%set-package-context (first prev) (second prev))
       key)))
 
-;; ---- waiting for someone else's in-flight load (the OTP `code_server` model) ----
+;; ---- waiting for someone else's in-flight load (a per-module requester queue) ----
 ;;
-;; A waiter BLOCKS on the loader rather than polling `*features*`. `code_server` keeps a per-module queue of requesters (`schedule_or_run_loader/4`): a
-;; request for a module already in `loading` is appended to that module's waiting list and
-;; deliberately left unanswered — the caller just stays blocked in its `gen_server:call` —
-;; and `run_loader_next/2` replies to it when the in-flight load finishes. So:
+;; A waiter BLOCKS on the loader rather than polling `*features*`. A request for a module
+;; already being loaded is appended to that module's waiting list and deliberately left
+;; unanswered — the caller just stays blocked — and the loader replies to it when the
+;; in-flight load finishes. So:
 ;;
 ;;   1. a waiter costs the load's REAL DURATION, not a poll quantum times its rounds;
 ;;   2. there is NO force-load fallback. The claim is authoritative and only the claimant
 ;;      releases a waiter. Loading the module ourselves after a timeout is a *second*
 ;;      loader for a module already being loaded;
-;;   3. a loader that DIES is handled by monitoring it, not by timing out. OTP monitors the
-;;      client for exactly this (`{'LOADER_DOWN', Mod}`).
+;;   3. a loader that DIES is handled by monitoring it, not by timing out.
 ;;
 ;; Two orderings make the handoff airtight, and both are load-bearing:
 ;;
@@ -1217,7 +1216,7 @@ load-time (`require`) guards.
 ;; nobody is gone, so the state has to be observable to a late arrival.
 (defn- %require-enqueue-waiter! (key me rref)
   "Add `[me rref]` to `key`'s waiter list, atomically against a concurrent drain. `rref` is
-this waiter's one-shot REPLY ALIAS (OTP 24's `{alias, demonitor}`): the loader addresses the
+this waiter's one-shot REPLY ALIAS: the loader addresses the
 completion to it, so a waiter that stops waiting can have a late reply dropped at delivery
 rather than left in its mailbox — see `%require-unwatch!`."
   (%swap-registry! *features-waiting*
@@ -1335,7 +1334,7 @@ of this process's never asks for this one."
         rref (ref))
     ;; Register FIRST, then look at the world — see the ordering note above.
     (%require-enqueue-waiter! key me rref)
-    ;; The claimant, for the death watch (OTP's `LOADER_DOWN`). Advisory only: every branch
+    ;; The claimant, for the death watch. Advisory only: every branch
     ;; below is correct without it, so a stale or missing pid costs a slower path, never a
     ;; wrong answer.
     (let (loader (get *features-loading* key)
@@ -1399,8 +1398,7 @@ of this process's never asks for this one."
               (error *require-cycle*
                 ": '" key "' is being loaded by a process that is waiting on a load this one holds"))
           (> checks 0) (%require-await-loop key me rref mref loader (- checks 1))
-          ;; Backstop. OTP needs none — its code server cannot silently forget a requester.
-          ;; Ours is ordinary Brood, so keep a last resort, but make it LOUD: reaching it
+          ;; Backstop. The protocol is ordinary Brood, so keep a last resort, but make it LOUD: reaching it
           ;; means the protocol above dropped a waiter, and KI-72's whole lesson is that a
           ;; silent stall is unattributable.
           else
@@ -1432,7 +1430,7 @@ best-effort — a `[:down …]` already queued is not recalled. Without this, an
 process that merely triggered a lazy autoload can be left holding a stray
 `[:load-done \"json\" …]` or `[:down …]`, which some later catch-all `receive` (a `gen`
 server's unknown-message clause, say) then picks up as if it were application traffic. This
-is exactly what OTP 24 reply aliases exist for."
+is exactly what reply aliases exist for."
   (when mref (demonitor mref))
   (when mref (%ref-deactivate mref))
   (%ref-deactivate rref)
@@ -1700,7 +1698,7 @@ as an ordinary frame too, and a `receive` in it parks."
 ; …)` for the ability's REQUIRED ops (provided ops come free). `defrecord`'s `:derives`
 ; clause calls it at EXPANSION and splices the result into an `(impl <ability> <record> …)`,
 ; so the derived methods are ordinary, statically-checkable impls. The per-ability recipe is
-; the Elixir `@derive` / Rust `#[derive]` model: each ability decides how it derives itself.
+; the Rust `#[derive]` model: each ability decides how it derives itself.
 (def- *ability-derives* {})
 
 (defn %register-ability-derive (aname recipe)

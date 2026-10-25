@@ -29,11 +29,11 @@ Legend: ✅ done · 🟡 in progress · ⬜ not started · ❌ tried and reverte
 
 - [**Active work**](#active-work--dated-findings--backlogs) — dated findings & backlogs (the
   large, time-ordered section; skim by the `###` sub-headers below)
-  - [Lisp survey + OTP-gap backlog](#lisp-survey--otp-gap-backlog-2026-08-30) ·
+  - [Lisp survey + process-library backlog](#lisp-survey--process-library-backlog-2026-08-30) ·
   - [Backend seams](#backend-seams--swappable-jit--engine--perf-legibility-2026-08-11) ·
-    [Runtime-feature parity](#runtime-feature-parity-program--beam--net--node-2026-07-22) ·
-    [Robustness gaps vs BEAM/.NET](#robustness-gaps-vs-beam--net-2026-07-18-runtime-survey) ·
-    [Elixir-parity perf gaps](#elixir-parity-performance-gaps-2026-07-12-refreshed-2026-07-18) ·
+    [Runtime-feature parity](#runtime-feature-parity-program-2026-07-22) ·
+    [Robustness gaps](#robustness-gaps-2026-07-18-runtime-survey) ·
+    [Concurrency perf gaps](#concurrency-runtime-performance-gaps-2026-07-12-refreshed-2026-07-18) ·
     [Stability backlog](#stability-backlog-2026-07-10) ·
     [External conformance corpora](#external-conformance-corpora-2026-07-25)
 - [**Done — the foundation**](#done--the-foundation) — shipped milestones (M1–M4)
@@ -130,25 +130,26 @@ scrutinees, so a forgotten `[:error …]` branch would not warn). Without that l
 convention is a naming rule rather than an enforced one.
 
 
-### Lisp survey + OTP-gap backlog (2026-08-30)
+### Lisp survey + process-library backlog (2026-08-30)
 
 A feature-by-feature comparison of Brood against Clojure, Common Lisp and Racket, and of
-its process model against OTP, produced two backlogs. Every item below was checked against
-the ADR-170 freeze list — nothing here reopens `loop/recur`, transients, `&key`, metadata,
-reader macros, continuations or a syntax-object expander. Ordered by value per hour within
-each list; the OTP list is first because it is what makes Brood's strongest axis credible.
+its process model against the mature actor runtimes, produced two backlogs. Every item
+below was checked against the ADR-170 freeze list — nothing here reopens `loop/recur`,
+transients, `&key`, metadata, reader macros, continuations or a syntax-object expander.
+Ordered by value per hour within each list; the process-library list is first because it
+is what makes Brood's strongest axis credible.
 
-**Where the process model stands vs OTP.** At BEAM level already: preemptive M:N scheduling,
+**Where the process model stands.** Already in place: preemptive M:N scheduling,
 per-process heaps + GC, links/monitors/`trap-exit`/`exit :kill`, selective receive with
 receive-marks, one-shot reply aliases, `gen` with `terminate`, supervisors with all three
 strategies + intensity window + shutdown policy + nested teardown, hot reload, encrypted
 full-mesh dist with remote spawn/monitor, and — since 2026-10-12 — preemption that reaches every
 shape of running code: `try`/`binding` bodies, native (JIT) code at any call depth and native
-recursion, the vector/range folds between elements (ADR-400..403), with BEAM's
-`long_schedule` in the system monitor (ADR-404) for what still cannot yield (a single long
-native builtin, the unboxed register worker). ADR-039's kernel supervisor was reverted for being
-the scheduler-race surface and that call stands — **none of the items below touch the
-scheduler.** What is behind OTP is *around* supervision, and nearly all of it is Brood.
+recursion, the vector/range folds between elements (ADR-400..403), with a `long_schedule`
+event in the system monitor (ADR-404) for what still cannot yield (a single long native builtin,
+the unboxed register worker). ADR-039's kernel supervisor was reverted for being the
+scheduler-race surface and that call stands — **none of the items below touch the
+scheduler.** What is still missing is *around* supervision, and nearly all of it is Brood.
 
 - ✅ **A. Crash reports by default** (ADR-305, shipped 2026-08-30). The premise was
   overstated — the kernel did print a `process N died: …` one-liner and dump it — but the
@@ -157,7 +158,7 @@ scheduler.** What is behind OTP is *around* supervision, and nearly all of it is
   `std/proc/crash-report.blsp` prints each crash site once, `brood file`/`nest run`/bundle/
   REPL arm it, the one-liner yields. Original note: The kernel already emits `:exit` with the
   structured reason through `proc/system-monitor`; nothing listens unless a supervisor is
-  linked. OTP's answer is the `logger` process, not
+  linked. The answer is a logger process, not
   kernel supervision. Build `std/proc/crash-report.blsp`: a listener spawned at boot (armed by
   `nest run` and the REPL; off under `nest test`, which has its own reporting), subscribed to
   non-`:normal` exits, printing one SASL-shaped report — pid, registered name, reason, the
@@ -174,7 +175,7 @@ scheduler.** What is behind OTP is *around* supervision, and nearly all of it is
   `std/proc/app.blsp`; `nest run`/`nest release` resolve `:main` to the app when one is
   declared, start `:requires` in dependency order, link the root supervisor to the top-level
   process, stop apps in reverse on `halt`/SIGTERM. Extend `--check-boot` to "start every app,
-  stop every app, run nothing". Supersedes the `Application` entry under "OTP deferred" below.
+  stop every app, run nothing". Supersedes the `Application` entry under "Process library deferred" below.
   *Sized 2026-10-24:* the reverse stop on SIGTERM needs a capability the runtime lacks:
   the process cannot trap its own signals (`os/signal` only signals a child). The first
   step is a mechanism-only primitive delivering SIGTERM/SIGINT to a registered Brood
@@ -185,23 +186,25 @@ scheduler.** What is behind OTP is *around* supervision, and nearly all of it is
   `unwind-protect` / `dynamic-wind`); Brood has none — a resource held inside a `gen` handler
   can only be released by process death. A `(finally …)` clause lowered by the existing `try`
   macro onto a `%try` variant; no new special form. Pair with a `with-open`-style macro over
-  `Port`, and teach the `:discarded-catch` lint about it. *Reassessment of the "`terminate/2`
-  on hard kill" item under Dist refinements:* OTP's `terminate/2` does not run on `kill`
-  either — it runs on a trapped `shutdown` exit, which is what the supervisor's
-  `:shutdown <ms>` path already sends before the hard kill. That item is by-design; document
-  the semantics and close it.
+  `Port`, and teach the `:discarded-catch` lint about it. *Reassessment of the "`terminate`
+  on hard kill" item under Dist refinements:* a `terminate` hook does not run on `kill`
+  in the mature actor runtimes either — it runs on a trapped `shutdown` exit, which is what
+  the supervisor's `:shutdown <ms>` path already sends before the hard kill. That item is
+  by-design; document the semantics and close it.
 - ✅ **D. `defstatem` over `gen`** (ADR-437, shipped 2026-10-25, ahead of a consumer on
   request: `gen/defstatem`, state blocks of `cast`/`call`/`info`/`timeout` clauses returning
   `[:next …]`/`[:keep …]`/`[:postpone]`/`[:stop …]`, state timeouts, postponed events, an
   `any` block; the gen envelopes, so `gen/start`/`call`/`cast`/`stop` drive it). Original
-  note: "OTP deferred, gated on a consumer" — a network protocol
+  note: "Process library deferred, gated on a consumer" — a network protocol
   handler or an editor mode is the consumer. A macro: states as clause heads
   (`(:connected (:msg …) → [:next :closing data])`), state timeouts via `timer/send-after`,
   postponed events kept in the state map, all lowered onto `defserver`. No kernel work.
-- ⬜ **E. Registry + process groups.** A local Elixir-style `Registry` is a `table` plus a
-  monitor per entry — a day's work — and gives via-tuples for `gen/call`. Cluster-wide `pg`
-  is a `node/monitor`-driven replicated set, eventually consistent like Erlang's own. `:global`
-  (locking, consensus) stays deferred; it is the part of OTP people replace.
+- 🟡 **E. Registry + process groups.** ✅ The local half shipped 2026-10-25 (ADR-445):
+  `names`, a registry server owning a table with a monitor per holder, unique or duplicate
+  keys, reads straight from the table, and `{:via registry :key key}` addresses for
+  `gen/call`/`cast`/`stop` and `gen/start`'s `:name`. ⬜ Cluster-wide process groups — a
+  `node/monitor`-driven replicated set, eventually consistent. A cluster-wide unique name
+  (locking, consensus) stays deferred; it is the part people replace in practice.
 - ✅ **F. Mailbox bounds** (ADR-308, shipped 2026-08-30): `(proc/flag :max-mailbox n)`,
   the `:max-heap` protocol on the queue axis — senders check at enqueue but are never
   blocked and drop nothing; the flooded process raises catchable `E0046` at its next
@@ -760,7 +763,7 @@ Shipped as ADRs:
   the ability system (`defability`/`impl`/`defrecord`, nominal dispatch), now **core
   in the prelude**. `defbehaviour` stays in `std/protocol.blsp`.
   - ✅ **The display protocol** (ADR-171, 2026-07-28) — the first ability for
-    open-extension rendering: `Display`/`->string` (Elixir's `String.Chars`), with a
+    open-extension rendering: `Display`/`->string`, with a
     zero-cost prelude `*show*` hook so the screen printers let a record define how it
     prints. **Now core and always on** (slice 6 below): a record customizes printing
     with just `(impl Display …)` — no `(require 'show)`, no activation step.
@@ -778,13 +781,13 @@ Shipped as ADRs:
   - ✅ **Provided ops (default method bodies)** ([ADR-185](docs/decisions.md), 2026-07-29)
     — an op spec may carry a body (`(op [args] :-> ret? body…)`), which `defability`
     registers as the op's `:default` impl. Implement the required ops, inherit the derived
-    ones (Rust/Haskell provided methods, Elixir's derived defaults); an id-keyed impl
+    ones (Rust/Haskell provided methods); an id-keyed impl
     overrides a default. A prelude-macro change over the existing `:default` mechanism — no
     new special form — plus a checker adjustment (provided ops excluded from per-impl
     completeness and `:sealed` exhaustiveness; required ops still demanded). **[prelude/checker]**
   - ✅ **Deriving — `:derives`** ([ADR-185](docs/decisions.md) part 2, 2026-07-29) — a
     `defability` declares a `:derive-record` recipe (each ability decides how it derives
-    itself, Elixir `@derive` / Rust `#[derive]`), and a `defrecord` opts in with
+    itself, as Rust's `#[derive]` does), and a `defrecord` opts in with
     `:derives [A …]`. Derivation runs at **load** (`derive-into`), not expansion — the
     checker macro-expands without evaluating, so an expand-time recipe call would break it;
     a checker pass reads the `derive-into` forms so a derived record still satisfies
@@ -927,7 +930,7 @@ What that review consciously left OPEN, with the reasoning:
   reserved set makes a shipped binding *immutable*, so the compiler can resolve
   `get`/`+`/`first` at compile time and the JIT can inline them **without a staleness
   guard** — the `PrimOp1` epoch guard is already unreachable for its original purpose
-  (every prim it covers is reserved). This is Erlang's local-vs-remote-call
+  (every prim it covers is reserved). This is the classic local-vs-remote-call
   optimisation arriving by the same insight, and it is the mechanism behind the item
   below rather than a separate idea. The checker can likewise stop typing reserved
   globals as `dynamic()` and give them precise types. **[kernel/JIT]**
@@ -1215,25 +1218,25 @@ was); added it to the `pub(crate) use self::gc::{…}` list.
   hot-reload) is only verifiable interactively — modest value, real regression risk.
   Removed as a cleanup item; revisit only if `nest` grows a broader Brood-driven CLI.
 
-### Runtime-feature parity program — BEAM / .NET / Node (2026-07-22)
+### Runtime-feature parity program (2026-07-22)
 
 The distilled, ranked program for closing the remaining runtime *feature* gaps
-against the peer runtimes, from the 2026-07-11 capability audit plus the
-2026-07-18 robustness survey below (most of that survey's ranked items are now
-closed). The architecture is at/above parity already — scheduling, isolation,
-per-process GC, distribution, hot reload; live continuation migration,
-encrypted-by-default dist, and OSR exceed BEAM — and cached-boot startup
-(~6.5 ms, ADR-138) beats Node (~17 ms). What remains, by leverage:
+against the peer runtimes (.NET, Node and the mature actor runtimes), from the
+2026-07-11 capability audit plus the 2026-07-18 robustness survey below (most of
+that survey's ranked items are now closed). The architecture is at/above parity
+already — scheduling, isolation, per-process GC, distribution, hot reload; live
+continuation migration, encrypted-by-default dist, and OSR exceed the actor
+runtimes — and cached-boot startup (~6.5 ms, ADR-138) beats Node (~17 ms). What remains, by leverage:
 
 **Tier 1 — scheduled, in order:**
 
-1. ✅ **Binary pattern matching / bit syntax + the parser port** — BEAM's
+1. ✅ **Binary pattern matching / bit syntax + the parser port** — the
    flagship remaining capability, both halves shipped 2026-07-22.
    **The pattern (ADR-140), pure Brood:** the byte-granular `(bytes seg…)`
    pattern gained typed integer segments — `(x :u16)`/`(x :i32-le)`/`(_ :u32)`,
    u/i × 8/16/32/64 × be/le, big-endian default — lowered onto new prelude
    reads `bytes-uint`/`-le`/`bytes-int`/`-le` + encoders `int->bytes`/`-le`;
-   `:u64` past `i64` auto-widens to a big integer (exact Erlang semantics).
+   `:u64` past `i64` auto-widens to a big integer (exact, never wrapped).
    Sub-byte widths / float / UTF-8 segments deferred (ADR-140).
    **The parser port (ADR-141):** binary mode is now inbound-only — send
    string leaves are ALWAYS UTF-8, the Latin-1 carrier send rule is deleted —
@@ -1262,7 +1265,7 @@ encrypted-by-default dist, and OSR exceed BEAM — and cached-boot startup
    small OS pool via the ADR-059 copy-out → message-back seam; the prelude
    `offload` wrapper parks the caller in a selective receive — a process
    waits, never a worker. The package manager's clones/ls-remotes ride it.
-   Opens the ADR-071 WASM-interop gate. Deferred: BEAM-style process
+   Opens the ADR-071 WASM-interop gate. Deferred: process
    *migration* to dirty schedulers (for heap-sharing natives) until a real
    consumer needs it. **[kernel mechanism, Brood policy]**
 
@@ -1271,14 +1274,16 @@ read-buffer non-build, the socket reactor with TLS everywhere, and the
 offload pool all landed the same day.
 
 **Tier 2 — real gaps, each gated on a first consumer (ADR-011):** the cluster
-**registry** (`Registry`/via-tuples, `:global`, `pg` — "OTP deferred" below);
+**registry** (via addresses, cluster-wide names, process groups — local half shipped as
+`names`, ADR-445; the rest in "Process library deferred" below);
 **mailbox bounds / backpressure** (survey item below); the **observability
 remainder** (aggregators + node up/down done 2026-07-24; still `defevent` schemas,
 the remote tier, `nest observe`/`nest mcp` consuming the stream — "Telemetry" below);
-**`gen_statem`** and an **`Application` behaviour**.
+**state machines** and **applications** (both shipped: `defstatem`, ADR-437; `defapp`,
+ADR-436).
 
 **Tier 3 — cheap ergonomic parity:** a **grapheme-correct string API**
-(codepoint-vs-grapheme indexing is a real divergence vs Elixir's `String`;
+(codepoint indexing is a real divergence from grapheme-indexed string APIs;
 `unicode-segmentation` is already a dep, wired only to display-width);
 ~~**protocols/multimethods**~~ (✅ shipped as **abilities**, ADR-168 — open generic
 functions with nominal dispatch replace hand-written `type-of` cascades);
@@ -1287,23 +1292,23 @@ functions with nominal dispatch replace hand-written `type-of` cascades);
 name like `for`/`when` stops being a reserved word; decision **deferred**, kept as
 reserved words for now, full spec + gotchas + hygiene notes in
 [deferred.md #7](docs/deferred.md)); the dist
-**`terminate/2` hook** + **FQDN long names** (dist refinements below). (The
+**terminate hook** + **FQDN long names** (dist refinements below). (The
 parked-`receive` mailbox-slot leak that used to sit here was fixed
 2026-07-23 — survey housekeeping above.)
 
 **Explicitly no work:** the JSON/base64 native-codec rows (by-design pure
-Brood vs C codecs); and the residual message-latency gap vs BEAM (~3–6×) is
+Brood vs C codecs); and the residual message-latency gap vs the actor runtimes (~3–6×) is
 *performance*, not features — its deep lever (inline receive compilation) is
-tracked under the Elixir-parity gaps below.
+tracked under the concurrency-runtime perf gaps below.
 
-### Robustness gaps vs BEAM / .NET (2026-07-18 runtime survey)
+### Robustness gaps (2026-07-18 runtime survey)
 
-A structured survey of the runtime against Erlang/BEAM and the .NET CLR
+A structured survey of the runtime against the mature actor runtimes and the .NET CLR
 (scheduler, fault isolation, GC/JIT, diagnostics — code-verified with file
-refs). The shape that emerged: Brood is **architecturally BEAM-class already**
+refs). The shape that emerged: Brood is **architecturally on a par already**
 (per-process generational GC, reduction preemption with JIT back-edge batching,
-links/monitors/`trap-exit`, selective receive, real OSR — which BeamAsm doesn't
-have). What remains are targeted gaps, ranked here by leverage. Each keeps the
+links/monitors/`trap-exit`, selective receive, real OSR — which the actor runtimes'
+JITs don't have). What remains are targeted gaps, ranked here by leverage. Each keeps the
 mechanism/policy split: kernel primitive, Brood policy.
 
 - ✅ **Stack traces in error values — the biggest debuggability gap.** Shipped
@@ -1323,12 +1328,11 @@ mechanism/policy split: kernel primitive, Brood policy.
   also shipped same day: **process death reasons carry the structured error**
   — an uncaught error retires the process with `[:error {:kind :message …
   :trace}]` (`message::error_reason`, heap-independent so it deep-copies to
-  monitors/links and crosses the dist wire), BEAM's `{Reason, Stacktrace}`
-  parity for supervisors.
-- 🟡 **Per-process resource limits (BEAM `max_heap_size` / mailbox bounds).**
-  Lever (1) shipped 2026-07-18: **`(process-flag :max-heap n)`** (Erlang
-  `process_flag/2` shape; positive int sets, nil clears, absent reads, returns
-  previous). Mechanism: `Heap::proc_mem_limit` checked at the end of both
+  monitors/links and crosses the dist wire), so supervisors see reason and
+  stack trace together.
+- 🟡 **Per-process resource limits (max heap size / mailbox bounds).**
+  Lever (1) shipped 2026-07-18: **`(process-flag :max-heap n)`** (positive int
+  sets, nil clears, absent reads, returns previous). Mechanism: `Heap::proc_mem_limit` checked at the end of both
   collection paths against the *live* (post-GC nursery+old) footprint — a
   sticky flag the eval/VM safepoints raise as a catchable `E0045` **in that
   process only** (uncaught → kills just the offender; the ADR-043 hard cap
@@ -1340,7 +1344,7 @@ mechanism/policy split: kernel primitive, Brood policy.
   consumer picks the policy (drop vs error vs park has real design surface,
   incl. remote delivery which can't error the sender). **[kernel mechanism,
   Brood policy]**
-- ✅ **Startup image snapshot (ReadyToRun / `.beam` analogue).** Shipped
+- ✅ **Startup image snapshot (a ReadyToRun analogue).** Shipped
   2026-07-19 as the **expanded-prelude boot cache** (ADR-138). Cold start
   re-parsed + re-expanded the prelude every run (~31 ms, of which
   macro-expansion was ~27 ms — 744 expander invocations of genuine Brood work,
@@ -1386,8 +1390,8 @@ mechanism/policy split: kernel primitive, Brood policy.
   sampled. `tests/observability_test.blsp`. Slice 2 shipped 2026-07-19 — the
   **kernel event stream** (ADR-137): `(system-monitor pid opts)` pushes
   `:gc`/`:spawn`/`:exit`/`:deopt` events to one subscriber as
-  `[:system kind subject-pid detail]` messages (BEAM `system_monitor` shape,
-  `:gc-min-pause-us` = `long_gc`); `telemetry/watch-runtime` re-emits them as
+  `[:system kind subject-pid detail]` messages (`:gc-min-pause-us` reports
+  long GC pauses); `telemetry/watch-runtime` re-emits them as
   `[:runtime kind]` telemetry events, so runtime + app events share the
   ADR-106 attach seam. `tests/sysmon_test.blsp`. Slice 3 (2026-07-24): the
   **aggregators** landed — counter/sum/gauge/summary/`sample-every`, then the
@@ -1404,15 +1408,15 @@ mechanism/policy split: kernel primitive, Brood policy.
   Kernel seam: `route` reports link-missing and `send` raises a catchable
   **E0060 noconnection** when the sender opted in via
   `(process-flag :send-errors true)` (queue-and-retry instead of silent drop;
-  process liveness stays Erlang-silent). End-to-end test
+  a send to a dead process stays silent). End-to-end test
   `reconnect_watcher_heals_a_fallen_link` (down → raise → heal → message
-  flows). The cluster **global registry / `pg`** stays in "OTP deferred"
+  flows). The cluster-wide **registry / process groups** stay in "Process library deferred"
   below (gated on a real consumer). **[Brood + kernel seam]**
 - ✅ **Dirty-CPU accounting for long native builtins.** Shipped 2026-07-18 as
   a **`BROOD_STALL_MS`-armed diagnostic** (revised same day by measurement):
   when the stall tracer is armed, `call_native` times each builtin in a green
   process, `scheduler::charge_native` charges the elapsed time against the
-  reduction budget (~2 reductions/µs, the BEAM NIF model; ≥~1 ms drains the
+  reduction budget (~2 reductions/µs; ≥~1 ms drains the
   quantum), and a trip **names the builtin** (`[stall] native %range-reduce
   took 766ms`). Always-on per-call charging was tried first and **rolled
   back**: the A/B measured **8–22% on the message-heavy rows**
@@ -1434,8 +1438,8 @@ mechanism/policy split: kernel primitive, Brood policy.
   kill **hardness** is now a request property separate from the reason
   (`MailboxState.kill_hard`), so link propagation stays hard (dies at the next
   reduction tick) but carries the **originating reason** — a cascading death
-  reports why the tree fell (`[:error {… :trace}]` end to end), BEAM
-  semantics; the sticky-latch guarantee keys on hardness. **[kernel]**
+  reports why the tree fell (`[:error {… :trace}]` end to end); the
+  sticky-latch guarantee keys on hardness. **[kernel]**
 
 ### Findings from hatch (2026-08-13)
 
@@ -1485,7 +1489,7 @@ would retire the bug class at the language level. See hatch's
   `tcp-send`/`proc-send`/`spit`/`spit-append`/`spit-bytes`/`append-bytes`/
   `bytes-concat` accept arbitrarily nested string/bytes/byte-int trees
   (`[status-line headers "\r\n\r\n" body]`), flattened exactly once at the
-  write by one shared iterative walker — the Erlang model; immutability means
+  write by one shared iterative walker; immutability means
   no cycles, so termination is structural. Additive (all previously rejected
   lists). The ADR-139 Latin-1-per-string-leaf clause for binary-mode sockets
   was superseded 2026-07-22 (ADR-141: string leaves are always UTF-8).
@@ -1525,12 +1529,12 @@ would retire the bug class at the language level. See hatch's
   stays unrestricted, and a module's macros may expand to its own privates.
   14 genuinely-shared helpers were promoted to public API en route.
 
-### Elixir-parity performance gaps (2026-07-12, refreshed 2026-07-18)
+### Concurrency-runtime performance gaps (2026-07-12, refreshed 2026-07-18)
 
-Benchmarked brood ÷ **Elixir** per row (`../brood-benchmarks`). Elixir is *also*
-immutable + GC'd + boxed-float + actor-based, so **every gap here is an
+Benchmarked brood ÷ **the actor-runtime peer** per row (`../brood-benchmarks`). That
+peer is *also* immutable + GC'd + boxed-float + actor-based, so **every gap here is an
 implementation deficiency, not an "immutability tax"** — the bar is "match an
-immutable peer," and BEAM proves each is reachable. Ranked by ratio; `[kernel]`
+immutable peer," and the peer proves each is reachable. Ranked by ratio; `[kernel]`
 unless noted.
 
 **The 2026-07-13 priority set — the four rows where Brood was *last of 7
@@ -1543,19 +1547,19 @@ open rows were `nqueens`, `ring`/`pingpong`, `bintree`, and `loop`; the
 lever) and re-measured the other three, which are **at their floors for now** —
 `loop` at ~4 cycles/iteration, `nqueens` and `bintree` allocation-bound with the
 plausible-looking JIT lever measured and refuted (see each row).
-`json`/`base64` stay excluded as gaps (Elixir/Node win them with native C codecs
+`json`/`base64` stay excluded as gaps (the peer and Node win them with native C codecs
 against our by-design pure-Brood code — a separate, lower-priority pure-Brood-codec
 track); `base64` is the residual coin-flip last place.
 
-- 🔶 **`nbody` — was 7/7 (~40× Elixir, 5.9s); now ~0.82s (~8× total), ~5× Elixir
+- 🔶 **`nbody` — was 7/7 (~40× the peer, 5.9s); now ~0.82s (~8× total), ~5× the peer
   (2026-07-14).** The gap was **not** float-across-calls (the `docs/jit-float.md` premise) —
   it was two things, both fixed:
   1. **Data structure (benchmark).** Bodies were a `(list …)`, so `(f b i k)` =
      `(nth (nth b i) k)` did an **O(i) list walk**, re-walked per field, where every other
-     port indexes an O(1) array/tuple (Node `x[i]`, Elixir `elem(b,i)`). Two
+     port indexes an O(1) array/tuple (Node `x[i]`, a tuple `elem`). Two
      faithful-transcription fixes in `brood-benchmarks/bench/brood/nbody.blsp`: bodies
      `(list …)` → **vector** (~3.3× on the VM) and **bind `bi`/`bj` once** (drop the
-     re-walking `f` helper, matching Elixir; +~23%). → 6.65 → 1.25s.
+     re-walking `f` helper, matching the peer's port; +~23%). → 6.65 → 1.25s.
   2. **JIT deopts (kernel — committed, branch `perf/jit-nbody-float`).** At 1.25s the JIT was
      *net-neutral* (jit ≈ no-jit): `BROOD_DEOPT_TRACE` showed `newvel`/`advance-body`
      deopting on ~every call (~498k). Two root causes: **(a)** `inline_vec_ref` deopted on
@@ -1577,7 +1581,7 @@ track); `base64` is the residual coin-flip last place.
   **OFF 7/7 (2026-07-15):** lever (2) shipped — `sqrt` inlines as Cranelift `fsqrt`
   (0.74 → 0.54 s, "kills the last coin-flip 7/7"), and the closure-arm
   call-profitability gate + deopt feedback took another −28% (2026-07-16). Still
-  ~a few × Elixir; the remaining levers: **(1)** the residual `advance-body`
+  ~a few × the peer; the remaining levers: **(1)** the residual `advance-body`
   deopts — no float *param*, so the `has_float_slot` gate misses it; catching it
   needs a float-context signal that survives `(nth …)`/call-return type erasure
   (cross-arm return typing, or a compile-time float-global check for `dt`)
@@ -1587,7 +1591,7 @@ track); `base64` is the residual coin-flip last place.
   win is **full float type-specialization** (profile-drive an arm's float
   slots/stack so vector-read floats stay unboxed everywhere, covering
   advance-body too). **[kernel/JIT + benchmark]**
-- ✅ **`regex` — was ~62× vs Elixir (981ms), 7/7 (interpreted CPS backtracker);
+- ✅ **`regex` — was ~62× vs the peer (981ms), 7/7 (interpreted CPS backtracker);
   OFF 7/7 (2026-07-17): ~92 ms compute, past Clojure (103 ms) — and it stayed
   pure-Brood.** Lever (a) shipped first: the AST compiles to a **lazy DFA**
   (closure-free state table + flat step loop; catastrophic patterns now linear;
@@ -1603,7 +1607,7 @@ track); `base64` is the residual coin-flip last place.
   A native regex primitive stayed out — the dogfood-correct fix won. **[std/Brood]**
 - ✅ **`errors-deep` — was 26× (mis-filed as "throw/unwind cost"), FIXED (`3cefcad`,
   branch `perf/errors`, 2026-07-15): 0.28 → 0.07 s (~4×, 5/7 → ~2/7 by compute — past
-  Ruby/Node/Python, behind only Elixir).** The diagnosis inverted the premise: throw +
+  Ruby/Node/Python, behind only the actor-runtime peer).** The diagnosis inverted the premise: throw +
   catch with zero frames between is ~free and the unwind was always cheap — the linear
   ~96 ns/frame cost was the `throw` call **knocking `descend` out of the unboxed-i64
   register worker's subset**, so all 2.5 M frames were *built* on the interpreted VM
@@ -1613,7 +1617,7 @@ track); `base64` is the residual coin-flip last place.
   deopts → the VM runs the redefinition — late binding exact). Verified: 3 engines
   bit-identical; payload identity (int + float workers); non-final-`do` throws; 40 k
   depth-bail; suite 777/777. **[kernel]**
-- ✅ **`sieve` — was ~19× vs Elixir (1.0s), 7/7 (Table op overhead); now 3/7
+- ✅ **`sieve` — was ~19× vs the peer (1.0s), 7/7 (Table op overhead); now 3/7
   (2026-07-16, ~0.06 s — at Clojure's heels).** The levers landed as a
   Table-general series (every Table user benefits, `Table` stays the one
   sanctioned mutable): **dense int-keyed Table storage + fused table-op prims**
@@ -1673,7 +1677,7 @@ track); `base64` is the residual coin-flip last place.
   receive (615 ns): mailbox lock, `from_message`, and the `hof_resolve` redone per
   receive. **[kernel]**
 - ⬜ **`bintree` — GC / allocation pressure; 118 ms, unchanged (re-measured
-  2026-07-26).** Build+walk trees; per-node alloc + minor-GC throughput vs BEAM.
+  2026-07-26).** Build+walk trees; per-node alloc + minor-GC throughput vs the peer.
   Inline small-vector storage (2026-07-01) and the checkpoint purity exemption +
   nursery capacity seeding (2026-07-18) trimmed it; the 2026-07-18 profile says
   what's LEFT is the deferred big-ticket JIT items (~17% `jit_run_fast_link` +
@@ -1687,16 +1691,16 @@ track); `base64` is the residual coin-flip last place.
   for 30M iterations = **~1.33 ns/iter**, about four cycles for an
   overflow-checked add, a compare, a branch and the safepoint tick. Measured and
   rejected: threading the bound as a parameter instead of reading the global
-  (which is how the Elixir/Node ports are written, so *more* faithful) is
+  (which is how the peer and Node ports are written, so *more* faithful) is
   **70 ms vs 50 ms — slower**; the global read is already hoisted and the third
-  argument costs more than it saves. Incremental JIT-tuning grind (BEAM has a
+  argument costs more than it saves. Incremental JIT-tuning grind (the peer has a
   25-yr lead) — expect small wins. **[kernel/JIT]**
-- ✅ **`persistent-map` — was 5.2× vs Elixir (612ms v 118ms), 7/7; FIXED by lever (1)
+- ✅ **`persistent-map` — was 5.2× vs the peer (612ms v 118ms), 7/7; FIXED by lever (1)
   (2026-07-15, benchmark transcription in `brood-benchmarks`, no kernel change):
   0.71 → 0.16 s locally (~4.4×), harness-scaled ≈ 138 ms → past Clojure's 285 ms
-  (7/7 → 6/7), within ~1.2× of Elixir.** The port's hand-written `get`+`assoc` (two
+  (7/7 → 6/7), within ~1.2× of the peer.** The port's hand-written `get`+`assoc` (two
   descents) became `map-int-add` — the same fused single-descent RMW idiom `wordcount`
-  already uses, and the faithful counterpart of Elixir's one-call `Map.update/4`.
+  already uses, and the faithful counterpart of the peer's one-call map update.
   Diagnosis notes (measured, 2026-07-15): with `map-int-add` the loop is *already
   optimal* on the kernel side — the LINMAP rewrite turns the accumulator into a private
   Table (`map-int-add` → `table-incr`) and the loop **already runs JIT-native** (the
@@ -1984,8 +1988,8 @@ Compressed; per-item history is in [`docs/devlog.md`](docs/devlog.md) and
   (`std/telemetry.blsp`, ADR-106); resilient `ui-run`.
 - **M4 — server / daemon mode.** TCP sockets (ADR-062); TLS *client*/HTTPS;
   distributed nodes (`name@host`, cookies, encryption ADR-089, dual-listen, mesh
-  join); userland supervision + a real `gen_server`; an ETS-style in-memory table
-  store; `std/task`. `std/editor/serve` (ADR-090): the daemon/emacsclient seam —
+  join); userland supervision + a real `gen` server; the shared mutable table
+  (`table`); `std/task`. `std/editor/serve` (ADR-090): the daemon/emacsclient seam —
   per-client and shared sessions, attach identity, async event pass-through,
   `serve-stop` — plus the exit-signal hardening it forced (ADR-132; pid identity
   across `node-start`).
@@ -2025,12 +2029,12 @@ Runtime housekeeping (both items landed):
   `nest check --strict` — CI runs the two gates back to back, so the strict gate had
   stopped being able to fail (`crates/nest/tests/check_cache_mode.rs`).
 
-- 🟡 **Elixir-loved ergonomics — borrow the beloved features that fit a small,
-  immutable Lisp** (2026-07-28). Survey of what Brood still lacks vs. Elixir's
-  most-liked features (pipe / `with` / pattern-matching / OTP / specs / `mix` /
-  observer / streams / `get-in` are already covered; `#(…)` capture was
-  consciously declined). Ordered by value-to-effort:
-  - ✅ **`with`** — Elixir-style sequential match-binding with `:else`, as a
+- 🟡 **Well-loved ergonomics — borrow the beloved features that fit a small,
+  immutable Lisp** (2026-07-28). Survey of what Brood still lacks vs. the most-liked
+  features of the functional actor languages (pipe / `with` / pattern-matching /
+  supervision / specs / a project tool / observer / streams / `get-in` are already
+  covered; `#(…)` capture was consciously declined). Ordered by value-to-effort:
+  - ✅ **`with`** — sequential match-binding with `:else`, as a
     prelude macro over `match` (2026-07-28; see devlog). No new special form.
   - ✅ **`spy`** (chose this name over `dbg`) — a *homoiconic tree-tracing* debug
     macro (2026-07-28, ADR-173). Went beyond `dbg`'s fixed special-cases: fully
@@ -2052,7 +2056,7 @@ Runtime housekeeping (both items landed):
     Uses the repo's established `    (form)   → result` convention rather than `>>>`.
     Scoped to the project's package, skipped for a nameless project, and run only once the
     suite is green.
-  - ✅ **`reduce-while`** (≈ `Enum.reduce_while`) — early-terminating fold via
+  - ✅ **`reduce-while`** — early-terminating fold via
     `[:cont acc]` / `[:halt acc]` (2026-08-13). Pure prelude fn over `seq`/`match`
     (`std/prelude.blsp`, `reduce-while-loop` accumulator); tests incl. cross-process
     in `tests/prelude_enum_test.blsp`.
@@ -2065,7 +2069,7 @@ Runtime housekeeping (both items landed):
     loud error (one mechanism per fn). `eval/macros.rs` `clause_has_when_guard`.
   - ✅ **`tap` / `then`** (Kernel) — single-fn pipe helpers (2026-08-13). Plain
     prelude functions beside the `->`/`doto` family: `(tap x f)` runs `(f x)` for
-    effect and returns `x`; `(then x f)` returns `(f x)`. Elixir-parity spelling
+    effect and returns `x`; `(then x f)` returns `(f x)`. The familiar spelling
     for the "apply a function value in a pipeline" case (`doto`/`->` splice forms).
 - ✅ **Stdlib namespacing (ADR-227)** — split the flat prelude so *core* stays bare
   and *derived helpers* move into namespace modules (`enum/`, `map/`-extras, `math/`,
@@ -2352,7 +2356,8 @@ Runtime housekeeping (both items landed):
   are heavily JIT'd, NOT interpreted (JIT ~3.5×/~2.9× over the plain VM: bintree
   ~422→~119 ms, nqueens ~286→~100 ms local); bintree runs 100% native, nqueens' hot
   paths (the `reduce` step lambda + `safe?`/`solve`) run native too. The ~9.5× gap
-  (bintree 102 vs Elixir 10.4 ms N=200; nqueens 83 vs Node/Elixir 8.7/9.0 ms N=10)
+  (bintree 102 vs the actor-runtime peer 10.4 ms N=200; nqueens 83 vs Node/the peer
+  8.7/9.0 ms N=10)
   is the **boxed 24-byte `Value` allocation floor + GC churn**, not dispatch:
   bintree churns ~819K escaping 48-byte tree-node vectors/run. Measured dead ends:
   `BROOD_GC_FLOOR` sweep *regresses* (not GC-frequency-bound); the cells **escape**
@@ -2449,12 +2454,12 @@ pool untouched; add a single-threaded path behind cfg:
 everything behind `cfg(target_arch = "wasm32")`, so the native scheduler stays
 byte-for-byte unchanged.
 
-### Documentation generator — an ExDoc-equivalent for Brood
+### Documentation generator for Brood
 
 > **Goal.** Pull documentation *from the language* — docstrings, arglists, type
 > signatures, source locations — and generate a browsable HTML doc site (API reference
-> + narrative guides + search + runnable examples), the way ExDoc does for Elixir. Host
-> it on hive per-package (the hexdocs.pm equivalent) and for the language itself (std +
+> + narrative guides + search + runnable examples). Host
+> it on hive per-package and for the language itself (std +
 > prelude — the canonical reference).
 
 **What already exists (reuse, don't rebuild):**
@@ -2466,7 +2471,7 @@ byte-for-byte unchanged.
   must never run what it's handed), storing rendered module JSON in the `docs` table; the
   web UI renders `/packages/:name/:version/docs`.
 - hive's `/docs` reference page already embeds the playground WASM so examples *run in the
-  browser* — a Brood upgrade over ExDoc the generator should inherit.
+  browser* — something the generator should inherit.
 
 **Design.**
 1. **A structured doc model** (`nest doc --json`), not just Markdown. Per module: the
@@ -2475,7 +2480,7 @@ byte-for-byte unchanged.
    (rich: macros expanded, types resolved; for trusted local/std docs) and
    **parse-don't-eval** (hive's `docbuild` path; for untrusted registry uploads). The
    HTML generator consumes the schema, indifferent to which backend produced it.
-2. **Guides (ExDoc "extras").** A `project.blsp` `:docs` key declaring narrative markdown
+2. **Guides ("extras").** A `project.blsp` `:docs` key declaring narrative markdown
    pages + ordering/groups, e.g.
    `:docs {:guides ["guides/intro.md" "guides/processes.md"] :main "guides/intro.md"}`,
    rendered as first-class pages alongside the API reference.
@@ -2486,12 +2491,11 @@ byte-for-byte unchanged.
    the WASM interpreter so **code examples are runnable inline** (the `/docs` mechanism,
    generalized).
 4. **Doctests.** Examples in docstrings written as `expr ;=> result` are extracted and run
-   by `nest test`, so docs can't drift from behaviour (Elixir doctest parity). One shared
+   by `nest test`, so docs can't drift from behaviour. One shared
    example parser feeds both the runnable HTML blocks and the test runner.
 5. **Hosting on hive.** Extend `docbuild` from "module JSON → web UI" to rendering the full
-   ExDoc-like site per package/version, and publish the **language** reference (std +
-   prelude via `nest doc --all --json`) as the canonical site — the hexdocs.pm +
-   language-docs equivalent. The hand-written `/docs` guide becomes the first "extras"
+   doc site per package/version, and publish the **language** reference (std +
+   prelude via `nest doc --all --json`) as the canonical site. The hand-written `/docs` guide becomes the first "extras"
    guide of that site.
 
 **Milestones.**
@@ -2510,7 +2514,7 @@ new language features required — this is tooling over data the runtime already
 **Open questions.** Parse-don't-eval limits for untrusted packages (no macro-generated
 docs, no computed docstrings) vs. the rich loaded-image mode for std — the schema tolerates
 both, but the untrusted path is necessarily thinner; document the gap. Versioned URLs +
-"latest" redirects (the hexdocs shape) on hive.
+"latest" redirects on hive.
 
 ### Tooling & errors
 
@@ -2588,7 +2592,7 @@ both, but the untrusted path is necessarily thinner; document the gap. Versioned
   type needs bidirectional checking the checker doesn't do.
   (The sibling `impl` op-body **snippet** completion shipped earlier — a fillable
   `(op [self] …)` skeleton, snippet-gated on the client's `snippetSupport`.)
-- ✅ **`nest test` selection — `mix test` parity** — shipped 2026-07-24. The suite
+- ✅ **`nest test` selection** — shipped 2026-07-24. The suite
   had **no way to run a subset by name**: 2965 tests, and the only narrowing was a
   file path. Now `--only`/`--exclude`/`--include SELECTOR` (a tag, `test:substr`,
   or `describe:substr`), `FILE:LINE` (the covering test), `--failed` (last run's
@@ -2806,15 +2810,15 @@ both, but the untrusted path is necessarily thinner; document the gap. Versioned
   2026-07-19 (ADR-137: `system-monitor` → `telemetry/watch-runtime`, GC/spawn/exit/
   deopt as `[:runtime kind]` events). ✅ **Metric aggregators + sampling** shipped
   2026-07-24: `counter`/`sum`/`last-value` (gauge)/`summary` (running
-  count/mean/stddev/min/max) + `sample-every` (1-in-N), the Elixir
-  `Telemetry.Metrics` set folded entirely in Brood over the `attach` seam — zero
+  count/mean/stddev/min/max) + `sample-every` (1-in-N), the standard
+  metrics set folded entirely in Brood over the `attach` seam — zero
   new kernel surface. State is a shared `table` (ADR-107); folds run serially in the
   one listener so a read-modify-write is race-free and stays bounded (no sample
   retention). `metric`/`metrics-snapshot` readers poll it atomically.
   `tests/telemetry_metrics_test.blsp`. ✅ **Distribution/histogram aggregator +
   node up/down shipped 2026-07-24** (both pure Brood, zero new kernel surface):
   `distribution` buckets a measurement into explicit ascending upper bounds
-  (Prometheus / Elixir-`distribution` shape) with bounded per-bucket counts (no
+  (Prometheus histogram shape) with bounded per-bucket counts (no
   samples retained, like `summary`), and `metric-percentile` estimates a quantile by
   in-bucket linear interpolation (`histogram_quantile` — bounded memory for approximate
   percentiles); `watch-nodes` polls `(nodes)`, diffs the peer set, and re-emits
@@ -2858,7 +2862,7 @@ both, but the untrusted path is necessarily thinner; document the gap. Versioned
     off by default so a legitimately long-idle stream — SSE, long-poll, the editor
     daemon — is never reaped). The defence-in-depth complement to the client-side
     `tcp-close` fixes (2026-07-24 validation round 3).
-- ✅ **OTP near-term** — all three closed as of 2026-07-18:
+- ✅ **Process library near-term** — all three closed as of 2026-07-18:
   **`send-after`/`send-interval`/`cancel-timer`** shipped (pure Brood in the
   prelude — a timer is a green process on the scheduler's timer wheel; the
   interval variant monitors its target and self-cleans; `tests/timer_test.blsp`).
@@ -2866,16 +2870,16 @@ both, but the untrusted path is necessarily thinner; document the gap. Versioned
   **`remote-spawn-sync` returning the child pid** and the **`[:$stop]`
   graceful-teardown convention** (supervisor `:shutdown` policies + `defprocess`
   `terminate`) had both already shipped.
-- ⬜ **OTP deferred** (ADR-011, gated on a real consumer; **`gen_statem`, `Registry`/`pg` and
-  `Application` now have concrete shapes as items D, E and B of the 2026-08-30 backlog above**): **`gen_statem`** state
-  machines; an Elixir-style **`Registry`**/via-tuples + **process groups (`pg`)**; an
-  **`Application`** behaviour; **synchronous, ordered, rollback-on-failure** supervisor
+- ⬜ **Process library deferred** (ADR-011, gated on a real consumer; **state machines, a
+  registry with process groups, and applications are items D, E and B of the 2026-08-30
+  backlog above** — D and B shipped, E's local half shipped as `names`): cluster-wide
+  **process groups**; **synchronous, ordered, rollback-on-failure** supervisor
   startup + per-child intensity counting + child `type`/`significant`/`auto_shutdown`
   metadata.
-- ✅ **Hot-upgrade state migration — a userland `code_change`** (ADR-013/039;
+- ✅ **Hot-upgrade state migration — a userland `code-change`** (ADR-013/039;
   [`live-editing.md`](docs/live-editing.md) **Stage 6**, shipped 2026-08-06). A long-lived
   `gen`/loop kept threading its **old-shaped state** after a reload (gap #4). Fixed in Brood
-  (no kernel `code_change`, matching the ADR-039 supervision call): `defprocess` gained a
+  (no kernel `code-change`, matching the ADR-039 supervision call): `defprocess` gained a
   `(code-change old-state body…)` clause that migrates the loop's state on a `[:$code-change]`
   envelope, `(gen/code-change pid)` is the push trigger (a supervisor / `on-reload` hook calls
   it per affected child; no clause → safe no-op), and `reload/*code-version*` (bumped on each
@@ -2884,15 +2888,15 @@ both, but the untrusted path is necessarily thinner; document the gap. Versioned
   server needs for a **dispatch-logic** upgrade: since 2026-07-30 a top-level `defn` self-loop
   picks up its own redefinition (commit `4bbef7d9`), but an inner `letrec` loop — the shape
   `defprocess` expands to — still runs old code until it re-enters through a global. ⬜ Full
-  OTP `release_handler`/appup orchestration (coordinated suspend/upgrade/resume/rollback across
-  a supervision tree) stays deferred: Brood's immutable-map data removes OTP's hardest upgrade
+  release-upgrade orchestration (coordinated suspend/upgrade/resume/rollback across
+  a supervision tree) stays deferred: Brood's immutable-map data removes the hardest upgrade
   case (nominal schema migration — "a map has the keys it has"), leaving only loop-state drift,
   which this covers.
 - 🟡 **Dist refinements** (ADR-011): ✅ exact propagated exit reason for a
   *non-trapping* linked peer (fixed 2026-07-18 — hardness split from the reason,
   see the survey housekeeping item above; the shared `deliver_exit_to` covers
-  remote links too). Still ⬜: a `terminate/2` hook on hard kill (**reassessed 2026-08-30 as by-design — OTP's
-  does not run on `kill` either; see item C of the Lisp-survey backlog**); **long-name
+  remote links too). Still ⬜: a `terminate` hook on hard kill (**reassessed 2026-08-30 as by-design — such a
+  hook does not run on `kill` in the mature actor runtimes either; see item C of the Lisp-survey backlog**); **long-name
   FQDN resolution** (a long name is passed explicitly today, no resolver);
   Windows Unix-socket transport.
 
@@ -2972,21 +2976,21 @@ both, but the untrusted path is necessarily thinner; document the gap. Versioned
 
 ### Types — goal & the hot-reload constraint
 
-The target is Elixir's sound, gating, whole-program checker for the *interior* of
-code, kept compatible with Erlang-style hot reload for *globals and module
+The target is a sound, gating, whole-program checker for the *interior* of
+code, kept compatible with live code reload for *globals and module
 boundaries*. Globals stay `dynamic()` because hot reload rebinds them via `def`, so a
 type proven at check time can be falsified by a later reload; what *can* be gated is
 everything local — `let`/`fn`-param bindings, call arity and argument types, `match`
 coverage, `sig!` contracts — while global `def`/`defn` types, inter-module flow, and
-global-fn return types stay advisory. Slogan: *Elixir's checker for the interior,
-Erlang's late binding for globals and module boundaries.* The full-soundness-vs-reload
+global-fn return types stay advisory. Slogan: *a sound checker for the interior,
+late binding for globals and module boundaries.* The full-soundness-vs-reload
 mechanism has shipped (re-check per reload rather than prove once — ADR-123/124/125),
 and the old "checking never rejects a runnable program" invariant has been revised
 throughout (`CLAUDE.md`, [`docs/types.md`](docs/types.md) contract #5): the checker
 never gates the live image; the one hard reject is batch/CI (`nest check` exits
 nonzero on any warning).
 
-### Telemetry — what we improve over Erlang's `:telemetry`
+### Telemetry — what the design adds
 
 Async-by-default delivery (handlers run off the emitting process); events as data
 with a declared schema (`defevent`, checker-validated) rather than bare atoms; an
@@ -3021,8 +3025,8 @@ The bar a candidate has to clear, in order:
    as the scarce resource and clawed back 203 words; anything taking more owes an
    argument. A module namespace (ADR-251) is the cheap way to add without spending.
 3. **It does not grow the evaluator.** Measured 2026-08-28: Brood has **nine** true
-   evaluator forms — `catch def do fn if let letrec quasiquote quote` — against Elixir's
-   ~25 `Kernel.SpecialForms`. The other 31 entries `(special-forms)` reports are prelude
+   evaluator forms — `catch def do fn if let letrec quasiquote quote` — where comparable
+   languages carry ~25. The other 31 entries `(special-forms)` reports are prelude
    macros. That ratio is an asset and the thing to protect: prefer a primitive plus a
    macro over a special form, every time.
 

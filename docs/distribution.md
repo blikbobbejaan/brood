@@ -2,7 +2,7 @@
 
 > Status: **slices 1 + 2 implemented; connect ergonomics per ADR-068.** Two Brood
 > runtimes connect and message each other — on one machine over a Unix-domain
-> socket addressed by name, across machines over TCP. Erlang-style distribution
+> socket addressed by name, across machines over TCP. Distribution
 > falls out of share-nothing + copy-on-send — *the network is just a longer copy*
 > (ADR-013, ADR-034). The design intent lives in
 > [`concurrency.md` §Distribution](concurrency.md); the ergonomics rationale in
@@ -42,7 +42,7 @@ local node up before running `app.blsp` (the Emacs `--daemon` model).
 
 ## Node names are `name@host` (ADR-073)
 
-A node's identity is `name@host`, Erlang-style — globally unique, carried in every
+A node's identity is `name@host` — globally unique, carried in every
 pid (`#<pid a@whkbus/3>`). `node/start` qualifies a bare name: a **local** node
 takes this machine's short `(hostname)` (`:a@whkbus`); a **TCP** node takes its
 listen address's host (`:a@127.0.0.1`), so peers and `reconnect` derive the same
@@ -68,7 +68,7 @@ binding, or `(node/list)`), not a bare literal.
 | `(node/name)` | This runtime's node name (`:nonode` until `node/start`). |
 | `(node/list)` | A list of currently connected peer node names. |
 | `(node/monitor name)` | Deliver `[:nodedown name]` to the caller when the link to `name` goes down (clean close or heartbeat timeout). Persistent. |
-| `(node/disconnect name)` | Tear the link to `name` down now, without exiting this process (Erlang's `disconnect_node`). Fires `[:nodedown name]` on both sides, prunes `(node/list)`. Returns `true` if a link existed, else `false`. |
+| `(node/disconnect name)` | Tear the link to `name` down now, without exiting this process. Fires `[:nodedown name]` on both sides, prunes `(node/list)`. Returns `true` if a link existed, else `false`. |
 | `(send target msg)` | `target` is a **pid** (local or remote) or a `{:name :node}` address. |
 | `(pid? x)` | True if `x` is a process id. |
 
@@ -86,7 +86,7 @@ dispatches on the node part:
 - node is a connected peer → encode a `Send` frame and forward over its link.
 
 Sending to an unknown name, a disconnected node, or a dead pid is a **silent
-no-op** (Erlang semantics) — with one opt-in exception: a process that set
+no-op** — with one opt-in exception: a process that set
 `(proc/flag :send-errors true)` gets a catchable `E0060` noconnection error
 when the target **node** is unknown/disconnected (the message would otherwise
 drop until a reconnect), so it can queue-and-retry. Process liveness stays
@@ -108,8 +108,8 @@ two ways:
 moment this node becomes reachable, and a peer can connect and send within milliseconds of it —
 so any name registered *after* it has a window in which the name does not yet exist. A message
 that arrives in that window is **dropped**, not queued: `send` is fire-and-forget, and a
-registered name that no process holds is a silent no-op by design (Erlang semantics, and the
-right ones — the name may legitimately be gone).
+registered name that no process holds is a silent no-op by design (the right semantics — the
+name may legitimately be gone).
 
 ```brood
 ;; wrong — the listener is open before :echo exists
@@ -121,7 +121,7 @@ right ones — the name may legitimately be gone).
 (node/start :b "127.0.0.1:9001" cookie)
 ```
 
-This is OTP's own rule (the dist listener comes up after the supervision tree), and it is not
+The rule is: the dist listener comes up after the supervision tree. It is not
 theoretical: violating it is exactly **KI-36**, which cost twelve days and three sightings
 because the dropped message left no trace anywhere. It usually hides, because a peer normally
 has to *boot* (~150 ms–4 s) before it can send, which is far longer than the register gap. It
@@ -174,7 +174,7 @@ post-handshake `Send`-carrying-a-closure injection (→ RCE) is impossible witho
 cookie. Handshake metadata (names, nonces, pubkeys) stays plaintext (none secret);
 only the steady-state frames — including shipped closure source — are encrypted.
 Uniform over TCP **and** Unix. **A TCP node is now safe on an untrusted network**
-(closure-shipping between *trusting* nodes is still RCE-by-design — the Erlang model;
+(closure-shipping between *trusting* nodes is still RCE-by-design;
 a mutually-distrusting/multi-tenant boundary is a separate future ADR).
 
 ### Wire codec
@@ -331,7 +331,7 @@ reader EOF; heartbeat covers the hard-down (no FIN) case.
 
 **Deliberate teardown — `(node/disconnect name)`.** The three triggers above are all
 *involuntary* (a peer left, or the link died). `node/disconnect` is the *voluntary*
-one — Erlang's `disconnect_node/1`. It `shutdown`s the peer's socket (so the
+one. It `shutdown`s the peer's socket (so the
 peer's reader hits EOF and fires its own node-down) and runs the same §4
 `drop_link` on our side, firing `[:nodedown name]` to our monitors and pruning
 `(node/list)` — all without exiting the process. It is the clean way to **leave a
@@ -390,7 +390,7 @@ omission are documented as not-yet-security.
 
 ## Cluster mesh — connecting transitively (ADR-088)
 
-Nodes form a **full mesh** by default, Erlang-style: connecting to *one* member
+Nodes form a **full mesh** by default: connecting to *one* member
 of a cluster transitively connects you to **every** node it knows. So with nodes
 A, B, C where A connects to hub B and C connects to hub B, A and C end up linked
 to each other too — you don't have to dial every peer by hand.
@@ -419,7 +419,7 @@ to exactly the nodes you dial, with no transitive discovery.
 
 **Limitations (v1, ADR-011 — additive when a consumer needs more).**
 - *No auto-reconnect / re-heal.* The mesh forms on join; a transient link drop
-  isn't re-dialed on its own (consistent with Erlang). Use
+  isn't re-dialed on its own. Use
   `reconnect/watch` for a persistently-maintained link.
 - *Address must be routable from the discoverer.* A node advertises its own
   listen address; meshing assumes peers can route to it (the same assumption

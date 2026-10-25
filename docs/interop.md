@@ -51,9 +51,9 @@ rebuilds, forever, for any number of native extensions.**
 **"Built when we pull the package" ≠ kernel rebuild.** A native extension *is*
 compiled from source — but at **`nest fetch` time, for that package only**, and
 the output is a `.wasm` cached under `_deps/`. The `brood` kernel binary is never
-touched. This is exactly Elixir's split: `mix deps.compile` builds a dependency's
-Rustler NIF from source when you fetch it; the BEAM itself is not recompiled. We
-take the same shape — build the *package's* artifact on fetch, never the runtime.
+touched. This is the usual native-extension split: the package manager builds a
+dependency's native code from source when you fetch it; the runtime itself is not
+recompiled. We take the same shape — build the *package's* artifact on fetch, never the runtime.
 
 ## The problem ADR-037 left open
 
@@ -180,7 +180,7 @@ model); a prebuilt artifact is an optional optimization.
 | Kind | Shape | Notes |
 |---|---|---|
 | `:wasm-build` (**primary**) | `[:wasm-build :crate SUBDIR :target wasm32-wasip2 :toolchain cargo]` | Build **from source** at fetch time with a *declared* toolchain + target. The consumer needs the wasm toolchain installed (as a Rustler consumer needs Rust). This is what "built entirely when we pull the package" means. |
-| `:wasm-artifact` (optimization) | `[:wasm-artifact PATH-or-URL :sha256 HASH]` | A **prebuilt** `.wasm` — committed in the repo or fetched by URL — so a consumer without the toolchain (or who wants fast/offline installs) skips the build. The Elixir ecosystem's `rustler_precompiled` is exactly this escape hatch over build-on-fetch; we anticipate the same need. |
+| `:wasm-artifact` (optimization) | `[:wasm-artifact PATH-or-URL :sha256 HASH]` | A **prebuilt** `.wasm` — committed in the repo or fetched by URL — so a consumer without the toolchain (or who wants fast/offline installs) skips the build. Precompiled-artifact packages are the standard escape hatch over build-on-fetch elsewhere; we anticipate the same need. |
 
 Plus a capability grant list (deny-by-default):
 
@@ -248,7 +248,7 @@ source it came from.
 ## Wrapping: the Rustler analog
 
 Rustler's ergonomics come from two halves: a Rust crate with `#[rustler::nif]`
-functions + `rustler::init!`, and an Elixir module that `use Rustler` — declaring
+functions + `rustler::init!`, and a host-language module that `use Rustler` — declaring
 each NIF as a stub the loader replaces. Brood mirrors this:
 
 - **Guest side (any WASM language).** The extension exports functions over a

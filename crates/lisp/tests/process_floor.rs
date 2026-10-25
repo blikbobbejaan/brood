@@ -46,7 +46,7 @@
 //! Lowered 2 940 → 2 800 (2026-10-18, later still): the GC statistics, the `proc/flag`
 //! settings, the debugger's trace context and a test's shared-code floor moved into
 //! `HeapExtras`, boxed at first write; the retired code-generation list is a `LazyVec`; the
-//! checker slot is one pointer. 2 747–2 748 B, against the BEAM's 2 704 (338 words). The tree
+//! checker slot is one pointer. 2 747–2 748 B. The tree
 //! before it (2 875–2 876) reds this bound.
 
 use brood::Interp;

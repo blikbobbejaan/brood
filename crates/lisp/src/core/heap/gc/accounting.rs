@@ -202,7 +202,7 @@ impl Heap {
     }
 
     /// `(process-flag :send-errors on)` — should a `send` to a disconnected node
-    /// raise `:noconnection` (vs Erlang's silent drop)? Setter returns the
+    /// raise `:noconnection` (vs the default silent drop)? Setter returns the
     /// previous value.
     pub fn proc_send_errors(&self) -> bool {
         self.extras().is_some_and(|e| e.proc_send_errors)

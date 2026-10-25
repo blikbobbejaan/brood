@@ -6,10 +6,10 @@ it embodies gets an ADR in `docs/decisions.md` and this file records what was me
 
 ## 1. Why this, now
 
-Three of the four widest gaps to the BEAM are one mechanism. Per-row compute vs Elixir,
-0.29.0 column (`brood-benchmarks` `2b6116d`):
+Three of the four widest gaps to the reference VM are one mechanism. Per-row compute vs
+the reference VM, 0.29.0 column (`brood-benchmarks` `2b6116d`):
 
-| row | × Elixir | what the profile says |
+| row | × reference | what the profile says |
 |---|---|---|
 | `nqueens` | 8.0 | 108k activations of gate-refused arms interpreted (`solve`, `range`, `reduce`); dispatch is 33% of the row |
 | `errors-deep` | 7.5 | fifty native frames unwound one status return at a time; two closures + three driver entries per `try` |
@@ -22,7 +22,7 @@ The per-call costs, counted (`docs/compute-frontier.md` §7.12, re-measured here
 |---|---|---|
 | native → native, inline blob (§7.5 rung 3) | **~218** | was 640 on 2026-09-12; the blob, the callee's stack-limit check + tick init, `read_out` |
 | VM → VM (`BROOD_TIER=1`) | **~1 400** (2 938 per loop iteration incl. the body, this tree) | `exec_chunk` 61%, `vm_run_bc` 15%, `push_frame` 7%, `push_root` 4%, thread-local scheduler lookups ~6%, call-IC probe 3% |
-| BEAM (BeamAsm), for scale | ~10–20 | a `call` plus the reduction count; unwinding to a catch is O(1) |
+| the reference VM's JIT, for scale | ~10–20 | a `call` plus the reduction count; unwinding to a catch is O(1) |
 
 Two conclusions the record already supports and this design accepts as premises:
 
@@ -61,7 +61,7 @@ the scheduler resume). The native→native path can carry that context in regist
 two native frames and hand it back to the heap only at a Rust boundary (gateway entry/exit
 and the cold outcomes). The target, counted from the table: **argc stores + a call +
 prologue (limit compare, tick, nil-fill) + epilogue + 2-register return ≈ 30–50
-instructions**, i.e. 4–7× under today's 218 and within 3× of the BEAM.
+instructions**, i.e. 4–7× under today's 218 and within 3× of the reference VM.
 
 ## 3. Part A — the native→native convention
 

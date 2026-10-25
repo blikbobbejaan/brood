@@ -68,7 +68,7 @@ fn every_prelude_file_is_included_in_the_concat() {
 /// `%register-protocol`, `ops`, `*protocols*`) are core, so the prelude carries them.
 ///
 /// `std/proc/gen.blsp` was briefly listed here (`7cb796f0`, 2026-08-21) and is **not**
-/// any more: the gen_server framework is an ordinary `embedded_module!` again, so its
+/// any more: the `gen` server framework is an ordinary `embedded_module!` again, so its
 /// names live behind `gen/` instead of seizing `call`/`cast`/`stop` as bare prelude
 /// globals. Keep it out — a prelude entry is a decision that a name belongs to the
 /// language, and a framework's client API does not.

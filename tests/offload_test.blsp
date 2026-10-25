@@ -1,6 +1,6 @@
 ;; The dirty-native offload pool (ADR-144): long/blocking natives run on a
 ;; small OS pool via `(offload f & args)`, parking only the calling process —
-;; the BEAM dirty-scheduler shape. Mechanism `%offload` (kernel), policy the
+;; a dirty-scheduler shape. Mechanism `%offload` (kernel), policy the
 ;; prelude wrapper (selective receive on the job token, errors rethrow).
 ;;
 ;; Register-only — discovered and run by `nest test` (and cargo test).
