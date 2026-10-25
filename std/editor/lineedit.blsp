@@ -513,16 +513,6 @@ globals by default; a project can rebind it to complete its own vocabulary)."
 before it, or 0."
   (let (before (string/last-index-of (string/substring text 0 (dec p)) "/"))
     (if (< before 0) 0 (inc before))))
-(defn- lineedit-path-del-back (state: (record &open :text string :point int) -> map)
-  (let (text (get state :text)
-        p (get state :point))
-    (if (and (= (get state :word-mode) :path)
-          (> p 0)
-          (= p (string/length text))
-          (string/ends-with? text "/"))
-      (let (start (lineedit-component-start text p))
-        (assoc state :text (string/substring text 0 start) :point start :hist-idx -1))
-      (lineedit-del-back state))))
 
 (defn lineedit-delete-backward (state _)
   "Delete the character before point (Backspace / C-h). In `:path` mode, at the end of the
@@ -532,7 +522,15 @@ vertico-directory has it: a directory is one step back, and `~` alone names noth
     (get (editor/lineedit/lineedit-delete-backward (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :text)   → \"foo ba\"
     (get (editor/lineedit/lineedit-delete-backward (assoc (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"~/src/foo/\") :word-mode :path) nil) :text)   → \"~/src/\"
     (get (editor/lineedit/lineedit-delete-backward (assoc (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"~/\") :word-mode :path) nil) :text)   → \"\""
-  (lineedit-path-del-back state))
+  (let (text (get state :text)
+        p (get state :point))
+    (if (and (= (get state :word-mode) :path)
+          (> p 0)
+          (= p (string/length text))
+          (string/ends-with? text "/"))
+      (let (start (lineedit-component-start text p))
+        (assoc state :text (string/substring text 0 start) :point start :hist-idx -1))
+      (lineedit-del-back state))))
 (defn lineedit-delete-forward (state _)
   "Delete the character at point (Delete).
 

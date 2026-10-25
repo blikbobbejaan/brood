@@ -3748,5 +3748,4 @@ in the file now pins its pid or ref, and P15 waits for its child's death. KI-300
 interpreter redirects a thin wrapper to its inner head, so `jit_computed_call_test`'s wrapper is
 counted only once its caller `fold-with` is native, and `settle` never waited on `fold-with`'s
 compile; each thin-wrapper test settles `fold-with` first and the redefining tests run
-`:isolated`. Also: `std/editor/lineedit.blsp`'s path Backspace reads its
-state through a typed helper, clearing the strict gate. Not run on this machine.
+`:isolated`. Not run on this machine.
