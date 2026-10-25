@@ -420,6 +420,9 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // A process registry (ADR-445): any value as a key, one holder or many, reads straight
     // from the registry's table; `gen` resolves `{:via registry :key key}` through it.
     embedded_module!("names", "std/proc/names.blsp"),
+    // Process groups across a cluster (ADR-446): one server per node keeps its node's
+    // members and tells its peers; every node reads its own copy directly.
+    embedded_module!("groups", "std/proc/groups.blsp"),
     // An application (ADR-436): a root process with dependencies, started in order and
     // stopped in reverse on SIGTERM. CORE: `nest run` and a released bundle run one.
     embedded_module!("application", "std/proc/application.blsp"),

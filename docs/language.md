@@ -2425,6 +2425,23 @@ holds raises; a cast to one is dropped.
 (gen/call {:via :sessions :key [:counter 1]} :value)
 ```
 
+**Process groups** (`std/proc/groups.blsp`, ADR-446) span the cluster. Each node runs one
+group server (`groups/start`, registered as `:groups`); a process `join`s a group by any
+name, and `members` lists the group's processes on every connected node:
+
+```clojure
+(groups/start)
+(groups/join :workers)                         ; the caller; or (groups/join :workers pid)
+(groups/members :workers)                      ; every member, on any node
+(groups/local-members :workers)                ; this node's only
+```
+
+Each server is the authority for its own node's members — it monitors them and tells its
+peers of every join, leave and death — and a new peer gets a full sync, so every node holds
+its own copy and reads it without a message. Membership is eventually consistent: a join is
+seen elsewhere once its message arrives, and a node's members go when its link is seen to
+drop. There is no cluster-wide lock or unique name.
+
 ### Monitors
 
 `(monitor pid)` starts watching another process and returns a monitor `ref`.
@@ -3883,6 +3900,7 @@ its names bare. Run `nest doc <module>` for the full API of any module.
 | `std/crypto.blsp` | `'crypto` | Cryptography: ChaCha20-Poly1305 AEAD (`encrypt`/`decrypt`/`encrypt-str`/`decrypt-str`), `pbkdf2` (accepts a string or byte-vector password/salt — a binary salt is used as raw bytes), `random-bytes`, `random-key`, `random-nonce`, `secure=?` |
 | `std/proc/agent.blsp` | `'agent` | Process-backed state cell (an agent): `start`, `get`, `update`, `get-and-update`, `cast`, `stop` |
 | `std/proc/names.blsp` | `'names` | A process registry (ADR-445): `start` (`:unique` or `:duplicate` keys), `register`, `unregister`, `lookup`, `whereis`, `count`; a `{:via registry :key key}` address works wherever `gen` takes a pid |
+| `std/proc/groups.blsp` | `'groups` | Process groups across a cluster (ADR-446): `start` (one server per node), `join`, `leave`, `members`, `local-members` |
 | `std/proc/application.blsp` | `'application` | Applications (ADR-436): `defapp`, `start` (requirements first), `stop` (reverse), `run` (until SIGTERM/Ctrl-C or `shutdown`), `check`, `app?`, `new` |
 | `std/protocol.blsp` | `'protocol` | Behaviour contracts — the *module*-satisfies-a-contract seam: `defbehaviour` declares the ops a module must define (no value dispatch), claimed with `(:implements Name)` in a module header; `protocol-ops` is the introspection hook the checker and LSP read. Value dispatch is `ability` — `defprotocol`/`defimpl` were retired (ADR-168) |
 | `std/telemetry.blsp` | `'telemetry` | Event instrumentation; handlers run in an isolated listener process: `start-telemetry`, `stop-telemetry`, `emit`, `attach`, `detach`, `detach-all`, `forward`, `handlers`, `telemetry-sync`, the `span` macro |

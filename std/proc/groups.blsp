@@ -1,0 +1,213 @@
+;; std/proc/groups.blsp — process groups across a cluster.
+;;
+;; A group is a name with a set of member processes, on any node. Each node runs one group
+;; server, registered as `:groups`; `groups/start` starts it. Design notes:
+;;  - Each server is the authority for its OWN node's members: it monitors them, and a join,
+;;    a leave or a member's death is cast to every peer's server. A server therefore holds
+;;    every member in the cluster, each tagged with the node it came from (`:local` for its
+;;    own), and needs no way to ask a pid for its node.
+;;  - Peers are found by polling `(node/list)` — the kernel has no `[:nodeup]` event — and
+;;    each new peer gets a full sync of this node's members, which replaces whatever this
+;;    peer's server held from us; a server that learns of a peer from its sync answers with
+;;    its own, once, so two servers converge whichever one polls first. A peer that goes
+;;    (`[:nodedown …]`, or gone from the poll) takes all its members with it.
+;;  - Eventually consistent: a member a peer has not heard about yet is missing there, and a
+;;    member on a cut-off node stays listed until the link is seen to drop. No locking, no
+;;    consensus — a cluster-wide unique name is not this.
+;;  - The members table belongs to the server (ADR-418), so it dies with it; reads go straight
+;;    to it, in the caller, without a message.
+
+(defmodule groups
+  "Process groups across a cluster: `join` a process to a named group, and `members` lists
+the group's processes on every connected node. One group server per node (`groups/start`)
+keeps its node's members, monitors them, and tells its peers; every node then reads its own
+copy directly. Eventually consistent: a join is seen elsewhere once its message arrives, and
+a member on a node whose link drops is removed when the drop is noticed.
+
+    (groups/start)
+    (groups/join :workers)              ;; the calling process
+    (groups/members :workers)           ;; => every member, on every node
+    (each (groups/members :workers) (fn (p) (send p :ping)))"
+  (:use gen :only [defserver]))
+
+;; This node's server → [its pid, its members table]. Pinned by the `def`; the table it
+;; points to stays the server's, so a stopped server's handle reads as dropped.
+(def- published (table/new))
+
+(def- *start-options* #{:interval})
+
+;; ---- the members table: group → {pid origin} -----------------------------------
+
+(defn- groups-add (members group pid origin)
+  (table/put members group (assoc (or (table/get members group) {}) pid origin)))
+
+(defn- groups-remove (members group pid)
+  (let (held (dissoc (or (table/get members group) {}) pid))
+    (if (empty? held) (table/delete members group) (table/put members group held))))
+
+;; Drop every member that came from `origin`.
+(defn- groups-drop-origin (members origin)
+  (each (seq (table/snapshot members))
+    (fn (entry)
+      (let (group (first entry)
+            kept (into {} (seq/reject (seq (second entry)) (fn (pair) (= (second pair) origin)))))
+        (if (empty? kept) (table/delete members group) (table/put members group kept))))))
+
+;; ---- talking to peers -----------------------------------------------------------
+
+(defn- groups-peer (node) {:name :groups :node node})
+
+(defn- groups-broadcast (state payload)
+  (each (get state :peers) (fn (node) (gen/cast (groups-peer node) payload))))
+
+;; This node's members, as `[group pid]` pairs.
+(defn- groups-local-pairs (state)
+  (fold (seq (get state :held))
+    (list)
+    (fn (pairs entry)
+      (fold (seq (get (second entry) :groups))
+        pairs
+        (fn (acc group) (cons [group (first entry)] acc))))))
+
+(defn- groups-sync-to (state node)
+  (gen/cast (groups-peer node) [:sync (node/name) (groups-local-pairs state)]))
+
+(defn- groups-meet (state node)
+  (node/monitor node)
+  (groups-sync-to state node)
+  (assoc state :peers (conj (get state :peers) node)))
+
+(defn- groups-part (state node)
+  (groups-drop-origin (get state :members) node)
+  (assoc state :peers (disj (get state :peers) node)))
+
+;; ---- this node's members ------------------------------------------------------
+
+(defn- groups-join (state group pid)
+  (let (held (get state :held)
+        watch (get held pid))
+    (groups-add (get state :members) group pid :local)
+    (groups-broadcast state [:joined group pid (node/name)])
+    (assoc state
+      :held
+        (assoc held
+          pid
+            (if watch
+              (assoc watch :groups (conj (get watch :groups) group))
+              {:ref (monitor pid) :groups #{group}})))))
+
+(defn- groups-leave (state group pid)
+  (let (watch (get (get state :held) pid))
+    (if (or (nil? watch) (not (contains? (get watch :groups) group)))
+      state
+      (do
+        (groups-remove (get state :members) group pid)
+        (groups-broadcast state [:left group pid])
+        (if (= (get watch :groups) #{group})
+          (do (demonitor (get watch :ref)) (assoc state :held (dissoc (get state :held) pid)))
+          (assoc state
+            :held
+              (assoc (get state :held)
+                pid (assoc watch :groups (disj (get watch :groups) group)))))))))
+
+(defn- groups-member-down (state pid)
+  (let (watch (get (get state :held) pid))
+    (if (nil? watch)
+      state
+      (do
+        (each (get watch :groups)
+          (fn (group)
+            (groups-remove (get state :members) group pid)
+            (groups-broadcast state [:left group pid])))
+        (assoc state :held (dissoc (get state :held) pid))))))
+
+;; ---- peers' members -----------------------------------------------------------
+
+(defn- groups-synced (state origin pairs)
+  (let (members (get state :members))
+    (groups-drop-origin members origin)
+    (each pairs (fn (pair) (groups-add members (first pair) (second pair) origin)))
+    ;; a peer this server had not met yet: meet it, which answers with this node's members
+    (if (contains? (get state :peers) origin) state (groups-meet state origin))))
+
+(defn- groups-poll (state)
+  (let (current (into #{} (or (node/list) (list)))
+        known (get state :peers)
+        met (fold (seq/reject (seq current) (fn (node) (contains? known node))) state groups-meet)
+        parted (fold (seq/reject (seq known) (fn (node) (contains? current node))) met groups-part))
+    (timer/send-after (get state :interval) (self) :groups-tick)
+    parted))
+
+(defserver server
+  (state)
+  "This node's group server: owns the members table, monitors this node's members, and
+keeps its peers told. State is `{:interval :members :held :peers}`.
+
+    (gen/start groups/server {:interval 1000} {:name :groups})   ;=> its pid (use groups/start)"
+  (init (let (members (table/new))
+          (table/put published :groups [(self) members])
+          (timer/send-after (get state :interval) (self) :groups-tick)
+          (assoc state :members members :held {} :peers #{})))
+  (call [:join group pid] [:ok (groups-join state group pid)])
+  (call [:leave group pid] [:ok (groups-leave state group pid)])
+  (query :ready :ready)
+  (cast [:joined group pid origin] (do (groups-add (get state :members) group pid origin) state))
+  (cast [:left group pid] (do (groups-remove (get state :members) group pid) state))
+  (cast [:sync origin pairs] (groups-synced state origin pairs))
+  (info :groups-tick (groups-poll state))
+  (info [:nodedown node] (groups-part state node))
+  (info [:down _ pid _] (groups-member-down state pid)))
+
+;; ---- client side ----------------------------------------------------------------
+
+(defn start (& opts)
+  "Start this node's group server, registered as `:groups`, and return its pid. `opts` is
+an optional map; `:interval` is how often, in ms, it looks for new and lost peers (default
+1000). Run it on every node whose processes join groups or read them: a node without one
+neither tells nor hears.
+
+    (groups/start)                   ;=> the server's pid
+    (groups/start {:interval 200})   ;=> a server that notices peers within 200 ms"
+  (let (options (or (first opts) {})
+        unknown (seq/reject (keys options) (fn (k) (contains? *start-options* k))))
+    (when (not (empty? unknown))
+      (error "groups/start: unknown option " (pr-str (first unknown)) " (expected :interval)"))
+    (let (pid (gen/start server {:interval (or (get options :interval) 1000)} {:name :groups}))
+      (gen/call pid :ready)
+      pid)))
+
+(defn join (group:any & pid)
+  "Add a process on THIS node — `pid`, or the caller — to `group`; `:ok`. Joining twice is
+one membership. The process leaves every group when it exits.
+
+    (groups/join :workers)          ;=> :ok
+    (groups/join :workers worker)   ;=> :ok"
+  (gen/call :groups [:join group (or (first pid) (self))]))
+
+(defn leave (group:any & pid)
+  "Take `pid`, or the caller, out of `group`; `:ok`, whether or not it was a member.
+
+    (groups/leave :workers)   ;=> :ok"
+  (gen/call :groups [:leave group (or (first pid) (self))]))
+
+;; The group's `{pid origin}` map as this node's server holds it, or nil. The catch covers a
+;; server that stops between the liveness check and the read, whose table is then dropped.
+(defn- groups-read (group)
+  (let (entry (table/get published :groups))
+    (when (and entry (proc/alive? (first entry)))
+      (check-allow :discarded-catch
+        (try (table/get (second entry) group) (catch _ nil))))))
+
+(defn members (group:any -> list)
+  "Every member of `group` this node knows of, on any node, as a list of pids; empty for a
+group nobody is in. Read from this node's copy, without a message.
+
+    (groups/members :workers)   ;=> (pid …)"
+  (map (seq (or (groups-read group) {})) first))
+
+(defn local-members (group:any -> list)
+  "The members of `group` on this node.
+
+    (groups/local-members :workers)   ;=> (pid …)"
+  (map (seq/filter (seq (or (groups-read group) {})) (fn (pair) (= (second pair) :local)))
+    first))

@@ -3774,6 +3774,16 @@ arguments, resolves on every call as a cold site does. The size is a compile-tim
 spawn, spawn-live, pingpong, ring, json) and `make ab-vm`: noise. Not run on this machine: the new
 `call_ic_entry_tests`, in CI.
 
+2026-10-25 (`groups`, process groups across a cluster; ADR-446; ROADMAP gap E done): one
+group server per node, registered as `:groups`, owning a table of group → pid → origin node.
+Each server monitors its own node's members and casts every join, leave and death to its
+peers, so a member's origin is whoever reported it and no pid has to be asked for its node.
+New peers come from polling `(node/list)` (the kernel has no node-up event), get
+`node/monitor`ed and a full sync, and answer with theirs once; a node's members go with its
+link. Reads go straight to the table. Eventually consistent, no unique names. Not run on this
+machine: `tests/groups_test.blsp` and `crates/cli/tests/process_groups.rs` (two real nodes)
+are new and run in CI.
+
 2026-10-25 (native code reads a `def`'d vector inline): a `def` promotes its vector into the
 shared RUNTIME region, and the JIT's vector reads (`vector_ref`, `inline_vec_ref`) indexed only
 LOCAL vectors, so every element of a `def`'d one went through `brood_rt_vector_ref`: 31% of

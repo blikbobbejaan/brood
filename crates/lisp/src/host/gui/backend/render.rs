@@ -703,6 +703,10 @@ impl Renderer {
     /// Build (and cache) a cluster's rasterised RGBA glyph and hand back a reference —
     /// the GPU backend uploads it to a texture atlas. Same key/build/cache path as
     /// `draw_cluster`, minus the CPU blit.
+    ///
+    /// `subpixel` asks for per-channel coverage (LCD text) — only when the GPU can blend it per
+    /// channel ([`Renderer::lcd_order`]); a glyph with no outline still comes back grey,
+    /// which `CachedGlyph::subpixel` says.
     // The `gui-gpu` glyph-atlas upload path calls this (`gui/gpu.rs`); it's unused in a
     // CPU-only `gui` build, so suppress dead-code only when `gui-gpu` is off.
     #[cfg_attr(not(feature = "gui-gpu"), allow(dead_code))]
@@ -713,20 +717,20 @@ impl Renderer {
         bold: bool,
         italic: bool,
         scale: u16,
+        subpixel: bool,
     ) -> &CachedGlyph {
         let fid = family.unwrap_or(self.default_family);
-        // Always an alpha mask: the GPU shader recolours one coverage per pixel.
         let key = (
             ClusterKey::of(g),
             fid,
             bold,
             italic,
             scale.max(1),
-            false,
+            subpixel,
             self.px.to_bits(),
         );
         if !self.cache.contains_key(&key) {
-            let baked = self.build_cluster(g, fid, bold, italic, scale, false);
+            let baked = self.build_cluster(g, fid, bold, italic, scale, subpixel);
             self.cache.insert(key.clone(), baked);
         }
         &self.cache[&key]
@@ -989,6 +993,17 @@ impl Renderer {
     /// Whether a `:text` op is cut into ligature units (`text_units`).
     pub(crate) fn ligatures(&self) -> bool {
         self.ligatures
+    }
+
+    /// The subpixel order text is rasterised in right now: 0 none (grey), 1 R-G-B, 2 B-G-R —
+    /// part of the GPU atlas key, since `gui-text-aa!` changes how the same cluster is baked.
+    #[cfg_attr(not(feature = "gui-gpu"), allow(dead_code))]
+    pub(crate) fn lcd_order(&self) -> u8 {
+        match (self.subpixel_text(), self.text_aa) {
+            (false, _) => 0,
+            (true, TextAa::Bgr) => 2,
+            (true, _) => 1,
+        }
     }
 
     /// Whether text is rasterised per colour channel right now: the explicit mode, or
@@ -2183,13 +2198,13 @@ mod font_tests {
         let mut r = Renderer::new(1.0, default_families(), 15.0);
         r.set_ligatures(true);
         let cell_w = r.cell_w;
-        let glyph = r.cluster_glyph("->", None, false, false, 1);
+        let glyph = r.cluster_glyph("->", None, false, false, 1, false);
         assert_eq!(glyph.width, 2 * cell_w);
         assert!(
             glyph.rgba.chunks(4).any(|px| px[3] > 0),
             "the run drew nothing"
         );
-        let glyph = r.cluster_glyph("===", None, false, false, 1);
+        let glyph = r.cluster_glyph("===", None, false, false, 1, false);
         assert_eq!(glyph.width, 3 * cell_w);
     }
 

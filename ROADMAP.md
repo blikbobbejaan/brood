@@ -199,12 +199,13 @@ scheduler.** What is still missing is *around* supervision, and nearly all of it
   handler or an editor mode is the consumer. A macro: states as clause heads
   (`(:connected (:msg …) → [:next :closing data])`), state timeouts via `timer/send-after`,
   postponed events kept in the state map, all lowered onto `defserver`. No kernel work.
-- 🟡 **E. Registry + process groups.** ✅ The local half shipped 2026-10-25 (ADR-445):
-  `names`, a registry server owning a table with a monitor per holder, unique or duplicate
-  keys, reads straight from the table, and `{:via registry :key key}` addresses for
-  `gen/call`/`cast`/`stop` and `gen/start`'s `:name`. ⬜ Cluster-wide process groups — a
-  `node/monitor`-driven replicated set, eventually consistent. A cluster-wide unique name
-  (locking, consensus) stays deferred; it is the part people replace in practice.
+- ✅ **E. Registry + process groups** (2026-10-25). Local: `names` (ADR-445), a registry
+  server owning a table with a monitor per holder, unique or duplicate keys, reads straight
+  from the table, and `{:via registry :key key}` addresses for `gen/call`/`cast`/`stop` and
+  `gen/start`'s `:name`. Cluster: `groups` (ADR-446), one server per node that owns its
+  node's members and tells its peers, a full sync for each new peer, a node's members
+  dropped with its link; eventually consistent. A cluster-wide unique name (locking,
+  consensus) stays deferred; it is the part people replace in practice.
 - ✅ **F. Mailbox bounds** (ADR-308, shipped 2026-08-30): `(proc/flag :max-mailbox n)`,
   the `:max-heap` protocol on the queue axis — senders check at enqueue but are never
   blocked and drop nothing; the flooded process raises catchable `E0046` at its next

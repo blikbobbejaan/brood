@@ -18,10 +18,11 @@
 //! cursor geometry — so a frame lands on the same pixels whichever target paints it. A
 //! rounded or sub-cell rect is a signed-distance field in the fragment shader, the same
 //! 1 px coverage ramp `fill_rrect` computes per pixel; a clip band is a per-instance rect
-//! the fragment shader discards outside of. The one visible difference is text
-//! anti-aliasing: the GPU samples one coverage per pixel (grey AA) where the CPU path
-//! can render subpixel (LCD) text at 1× — a per-channel blend wants dual-source blending
-//! and a subpixel order the compositor may scale away (ADR-440). The blending otherwise
+//! the fragment shader discards outside of. Text is subpixel (LCD) where the CPU path's
+//! would be — `gui-text-aa!`, `:auto` meaning at a 1× scale — when the adapter offers
+//! dual-source blending, which a per-channel blend needs (the second fragment output is
+//! each channel's coverage, `fs_tex_lcd`); an adapter without it draws grey AA, the one
+//! visible difference left (ADR-440). The blending otherwise
 //! matches: text lerps in the encoded space with the contrast lift in the shader, and
 //! translucent geometry blends in linear light through an sRGB view of the frame.
 //!
@@ -185,7 +186,8 @@ struct TexInst {
     @location(1) uv: vec4<f32>,     // u0, v0, du, dv in texture space (a negative extent mirrors)
     @location(2) tint: vec4<f32>,   // straight rgba, 0..1
     @location(3) mode: u32,         // 0 = colour, 1 = coverage mask recoloured with tint,
-                                    // 2 = a mask whose coverage takes the contrast lift
+                                    // 2 = a mask whose coverage takes the contrast lift,
+                                    // 3 / 4 = the same per colour channel (LCD, `fs_tex_lcd`)
     @location(4) rot: f32,          // radians about the centre
     @location(5) clip: vec4<f32>,   // x0, y0, x1, y1 in pixels
 };
@@ -220,17 +222,72 @@ fn fs_tex(in: TexOut) -> @location(0) vec4<f32> {
     let t = textureSample(tex, samp, in.uv);
     // Text lerps in the ENCODED space (ADR-358): the target is non-sRGB, so the blend
     // unit composites the bytes as given — `blend_text`, exactly.
-    if (in.mode == 1u) {
+    // An LCD mask (3 / 4) reaches this pipeline only if no LCD one was made; its alpha is
+    // the greatest of its channels' coverage, so it draws as grey text.
+    if (in.mode == 1u || in.mode == 3u) {
         return vec4<f32>(in.tint.rgb, t.a * in.tint.a);
     }
     // The lift (ADR-337): `cov^(1/γ)`, decided per glyph where the CPU decides per
     // pixel (`mode` 2 is set only for text lighter than the ground it is drawn on).
-    if (in.mode == 2u) {
+    if (in.mode == 2u || in.mode == 4u) {
         return vec4<f32>(in.tint.rgb, pow(t.a, viewport.text.x) * in.tint.a);
     }
     return t * in.tint;
 }
 "#;
+
+/// Subpixel (LCD) text: [`SHADER_SRC`] plus a fragment entry with two outputs, blended as
+/// `colour·coverage + dst·(1 − coverage)` PER CHANNEL (`BlendFactor::Src1`) — which a single
+/// output cannot say, since its one alpha weighs all three channels alike. Compiled only on
+/// an adapter with `DUAL_SOURCE_BLENDING` ([`lcd_shader_source`] puts the `enable` first).
+/// The atlas texel's R, G and B are each channel's coverage, already in the subpixel order
+/// the rasteriser was asked for; the lift (mode 4) is taken per channel, as the CPU's
+/// `blend_text_rgb` does.
+const LCD_SRC: &str = r#"
+struct LcdOut {
+    @location(0) @blend_src(0) colour: vec4<f32>,
+    @location(0) @blend_src(1) coverage: vec4<f32>,
+};
+
+@fragment
+fn fs_tex_lcd(in: TexOut) -> LcdOut {
+    if (clipped(in.pos.xy, in.clip)) {
+        discard;
+    }
+    let t = textureSample(tex, samp, in.uv);
+    var cov = t.rgb;
+    if (in.mode == 4u) {
+        cov = pow(cov, vec3<f32>(viewport.text.x));
+    }
+    var out: LcdOut;
+    let alpha = max(cov.r, max(cov.g, cov.b)) * in.tint.a;
+    out.colour = vec4<f32>(in.tint.rgb, alpha);
+    out.coverage = vec4<f32>(cov * in.tint.a, alpha);
+    return out;
+}
+"#;
+
+/// The WGSL of the LCD text pipeline: the `enable` directive has to come before any
+/// declaration, so it heads the shared source rather than living in [`LCD_SRC`].
+fn lcd_shader_source() -> String {
+    format!("enable dual_source_blending;\n{SHADER_SRC}{LCD_SRC}")
+}
+
+/// The blend the LCD pipeline draws with: each colour channel weighed by its own coverage
+/// (`Src1`); alpha `a + dst·(1 − a)` with `a` the greatest coverage, as grey text's is under
+/// `ALPHA_BLENDING`.
+const LCD_BLEND: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Src1,
+        dst_factor: wgpu::BlendFactor::OneMinusSrc1,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::OneMinusSrc1Alpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
 
 /// The effects' shaders (`effects.rs` holds the CPU painter's copy of every formula in
 /// them): lights drawn additively into a light map, here; the passes over a whole
@@ -541,7 +598,8 @@ struct AtlasPage {
 }
 
 /// Where a rasterised cluster sits in the atlas: page + pixel rect + whether it is a
-/// coverage mask (`mode` 1 in the shader) rather than a colour bitmap.
+/// coverage mask (`mode` 1 in the shader) rather than a colour bitmap, and whether that
+/// mask is per colour channel (`lcd`, `mode` 3).
 #[derive(Clone, Copy)]
 struct AtlasGlyph {
     page: usize,
@@ -550,6 +608,7 @@ struct AtlasGlyph {
     w: u32,
     h: u32,
     mono: bool,
+    lcd: bool,
 }
 
 /// A growable instance buffer: re-created (never mapped) when a frame outgrows it.
@@ -684,15 +743,16 @@ enum Batch {
         count: u32,
         linear: bool,
     },
+    /// `lcd`: the quads are per-channel text masks (`mode` 3 / 4), drawn with the LCD
+    /// pipeline; a run never mixes them with grey or colour quads.
     Tex {
         key: TexKey,
         first: u32,
         count: u32,
+        lcd: bool,
     },
     /// Emitter `id`'s particles, straight out of its buffer.
-    Particles {
-        id: u32,
-    },
+    Particles { id: u32 },
 }
 
 /// A solid quad's edge treatment: a plain fill, or the SDF ramp (with a corner radius in
@@ -818,7 +878,8 @@ impl FrameBuilder {
     }
 
     /// A textured quad sampling `uv` (`[u0 v0 du dv]`, texture space) of `key`; `mode`
-    /// is the shader's: 0 a colour texel, 1 a coverage mask tinted, 2 a mask lifted.
+    /// is the shader's: 0 a colour texel, 1 a coverage mask tinted, 2 a mask lifted, 3 / 4
+    /// the same per colour channel (`glyph_mode`).
     #[allow(clippy::too_many_arguments)]
     fn textured(
         &mut self,
@@ -857,12 +918,19 @@ impl FrameBuilder {
             self.clip[3].to_bits(),
         ]);
         let merge = self.can_merge();
+        let lcd = mode >= 3;
         match self.batches.last_mut() {
-            Some(Batch::Tex { key: k, count, .. }) if *k == key && merge => *count += 1,
+            Some(Batch::Tex {
+                key: k,
+                count,
+                lcd: l,
+                ..
+            }) if *k == key && *l == lcd && merge => *count += 1,
             _ => self.batches.push(Batch::Tex {
                 key,
                 first: index,
                 count: 1,
+                lcd,
             }),
         }
     }
@@ -928,9 +996,10 @@ struct RunContext {
     metrics: [u32; 4],
     /// the window background: the ground a run without `:bg` is lifted against
     ground: [u8; 3],
-    /// the font registration the glyphs were baked under, and whether ligature units
-    /// were shaped (ADR-442): either changes the quads a run produces
-    fonts: (u64, bool),
+    /// the font registration the glyphs were baked under, whether ligature units were
+    /// shaped (ADR-442), and the subpixel order (`GpuWindow::lcd_order`): each changes
+    /// the quads a run produces
+    fonts: (u64, bool, u8),
 }
 
 /// A cached run: its key (checked on a hash hit, so a collision is a miss, never a
@@ -1678,6 +1747,9 @@ pub struct GpuWindow {
     linear_format: Option<wgpu::TextureFormat>,
     solid_instances: InstanceBuffer,
     tex_pipeline: wgpu::RenderPipeline,
+    /// The subpixel text pipeline (`LCD_SRC`), when the device has dual-source blending and
+    /// the shader built; `None` draws every glyph grey.
+    lcd_pipeline: Option<wgpu::RenderPipeline>,
     tex_layout: wgpu::BindGroupLayout,
     tex_instances: InstanceBuffer,
     sampler: wgpu::Sampler,
@@ -1842,7 +1914,9 @@ impl GpuWindow {
         }
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("brood gui"),
-            required_features: wgpu::Features::empty(),
+            // Dual-source blending where the adapter has it: what subpixel text needs
+            // (`LCD_SRC`). Without it the window draws grey text, as before.
+            required_features: adapter.features() & wgpu::Features::DUAL_SOURCE_BLENDING,
             required_limits: wgpu::Limits::default(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::default(),
@@ -1956,11 +2030,6 @@ impl GpuWindow {
         });
 
         let blend = Some(wgpu::BlendState::ALPHA_BLENDING);
-        let target = [Some(wgpu::ColorTargetState {
-            format,
-            blend,
-            write_mask: wgpu::ColorWrites::ALL,
-        })];
         let primitive = wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleStrip,
             ..Default::default()
@@ -2018,34 +2087,70 @@ impl GpuWindow {
             bind_group_layouts: &[Some(&viewport_layout), Some(&tex_layout)],
             immediate_size: 0,
         });
-        let tex_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("textured quads"),
-            layout: Some(&tex_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_tex"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: (TEX_WORDS * 4) as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Uint32,
-                        4 => Float32, 5 => Float32x4
-                    ],
-                })],
-            },
-            primitive,
-            depth_stencil: None,
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_tex"),
-                compilation_options: Default::default(),
-                targets: &target,
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        // The textured quads: one vertex layout, drawn either way — `fs_tex` (colour, grey
+        // text) under alpha blending, or `fs_tex_lcd` (subpixel text) under `LCD_BLEND`.
+        let textured_quads =
+            |label: &str, module: &wgpu::ShaderModule, fragment: &str, blend: wgpu::BlendState| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&tex_pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module,
+                        entry_point: Some("vs_tex"),
+                        compilation_options: Default::default(),
+                        buffers: &[Some(wgpu::VertexBufferLayout {
+                            array_stride: (TEX_WORDS * 4) as u64,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &wgpu::vertex_attr_array![
+                                0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Uint32,
+                                4 => Float32, 5 => Float32x4
+                            ],
+                        })],
+                    },
+                    primitive,
+                    depth_stencil: None,
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module,
+                        entry_point: Some(fragment),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(blend),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
+        let tex_pipeline = textured_quads(
+            "textured quads",
+            &shader,
+            "fs_tex",
+            wgpu::BlendState::ALPHA_BLENDING,
+        );
+        // Built inside a validation scope: a driver that offers the feature and still
+        // rejects the shader or the blend costs subpixel text, not the window.
+        let lcd_pipeline = device
+            .features()
+            .contains(wgpu::Features::DUAL_SOURCE_BLENDING)
+            .then(|| {
+                let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+                let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("lcd text"),
+                    source: wgpu::ShaderSource::Wgsl(lcd_shader_source().into()),
+                });
+                let pipeline = textured_quads("lcd text", &module, "fs_tex_lcd", LCD_BLEND);
+                match pollster::block_on(scope.pop()) {
+                    None => Some(pipeline),
+                    Some(error) => {
+                        eprintln!("brood gui: subpixel text unavailable, drawing grey: {error}");
+                        None
+                    }
+                }
+            })
+            .flatten();
 
         let solid_instances = InstanceBuffer::new(&device, "solid instances", 64 * 1024);
         let tex_instances = InstanceBuffer::new(&device, "textured instances", 64 * 1024);
@@ -2064,6 +2169,7 @@ impl GpuWindow {
             linear_format,
             solid_instances,
             tex_pipeline,
+            lcd_pipeline,
             tex_layout,
             tex_instances,
             sampler,
@@ -2165,7 +2271,14 @@ impl GpuWindow {
 
     /// Pack a rasterised `w`×`h` cluster into the atlas, opening a new shelf or page as
     /// needed, and return where it landed. `None` for a glyph larger than a page.
-    fn pack_glyph(&mut self, rgba: &[u8], w: u32, h: u32, mono: bool) -> Option<AtlasGlyph> {
+    fn pack_glyph(
+        &mut self,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+        mono: bool,
+        lcd: bool,
+    ) -> Option<AtlasGlyph> {
         if w == 0 || h == 0 || w > ATLAS_SIZE || h > ATLAS_SIZE {
             return None;
         }
@@ -2203,7 +2316,18 @@ impl GpuWindow {
                 w,
                 h,
                 mono,
+                lcd,
             });
+        }
+    }
+
+    /// The subpixel order glyphs are baked in for this window: the renderer's
+    /// (`Renderer::lcd_order`) when this device could make the LCD pipeline, else 0 (grey).
+    fn lcd_order(&self, renderer: &Renderer) -> u8 {
+        if self.lcd_pipeline.is_some() {
+            renderer.lcd_order()
+        } else {
+            0
         }
     }
 
@@ -2219,6 +2343,7 @@ impl GpuWindow {
         scale: u16,
     ) -> Option<AtlasGlyph> {
         let metrics = renderer.metrics();
+        let lcd_order = self.lcd_order(renderer);
         let key = glyph_key(
             g,
             family.unwrap_or(renderer.default_family()),
@@ -2227,14 +2352,20 @@ impl GpuWindow {
             scale,
             metrics.px,
             (metrics.cell_w, metrics.cell_h),
-            renderer.font_generation(),
+            (renderer.font_generation(), lcd_order),
         );
         if let Some(slot) = self.glyphs.get(&key) {
             return *slot;
         }
-        let cg = renderer.cluster_glyph(g, family, bold, italic, scale);
-        let (rgba, w, h, color) = (cg.rgba.clone(), cg.width as u32, cg.height as u32, cg.color);
-        let packed = self.pack_glyph(&rgba, w, h, !color);
+        let cg = renderer.cluster_glyph(g, family, bold, italic, scale, lcd_order != 0);
+        let (rgba, w, h, color, lcd) = (
+            cg.rgba.clone(),
+            cg.width as u32,
+            cg.height as u32,
+            cg.color,
+            cg.subpixel,
+        );
+        let packed = self.pack_glyph(&rgba, w, h, !color, lcd);
         self.glyphs.insert(key, packed);
         packed
     }
@@ -2265,7 +2396,11 @@ impl GpuWindow {
                 renderer.default_family(),
             ],
             ground: renderer.bg(),
-            fonts: (renderer.font_generation(), renderer.ligatures()),
+            fonts: (
+                renderer.font_generation(),
+                renderer.ligatures(),
+                self.lcd_order(renderer),
+            ),
         };
         let reuse = reuse_enabled();
         let hash = run_hash(s, face, &context);
@@ -2421,11 +2556,7 @@ impl GpuWindow {
                     glyph.h as f32 / atlas_size,
                 ],
                 tint: [fg[0], fg[1], fg[2], 255],
-                mode: match (glyph.mono, lift) {
-                    (false, _) => 0,
-                    (true, false) => 1,
-                    (true, true) => 2,
-                },
+                mode: glyph_mode(glyph.mono, glyph.lcd, lift),
             });
         }
         if face.underline {
@@ -3062,7 +3193,12 @@ impl GpuWindow {
                         pass.set_vertex_buffer(0, self.solid_instances.buffer.slice(..));
                         pass.draw(0..4, *first..first + count);
                     }
-                    Batch::Tex { key, first, count } => {
+                    Batch::Tex {
+                        key,
+                        first,
+                        count,
+                        lcd,
+                    } => {
                         let bind_group = match key {
                             TexKey::Atlas(page) => self.atlas.get(*page).map(|p| &p.bind_group),
                             TexKey::User(tex) => self.textures.get(tex).map(|t| &t.bind_group),
@@ -3070,7 +3206,10 @@ impl GpuWindow {
                         let Some(bind_group) = bind_group else {
                             continue;
                         };
-                        pass.set_pipeline(&self.tex_pipeline);
+                        pass.set_pipeline(match &self.lcd_pipeline {
+                            Some(lcd_pipeline) if *lcd => lcd_pipeline,
+                            _ => &self.tex_pipeline,
+                        });
                         pass.set_vertex_buffer(0, self.tex_instances.buffer.slice(..));
                         pass.set_bind_group(1, bind_group, &[]);
                         pass.draw(0..4, *first..first + count);
@@ -3185,12 +3324,24 @@ fn render_pass<'e>(
     })
 }
 
+/// The textured shader's `mode` for a glyph: 0 a colour bitmap (an emoji), else a coverage
+/// mask — 1 grey, 3 per channel (LCD) — plus one when the text takes the contrast lift
+/// (`lift`: lighter than its ground).
+fn glyph_mode(mono: bool, lcd: bool, lift: bool) -> u32 {
+    match (mono, lcd) {
+        (false, _) => 0,
+        (true, false) => 1 + lift as u32,
+        (true, true) => 3 + lift as u32,
+    }
+}
+
 /// The atlas key of a cluster under a face at a font size: what it is drawn from depends
 /// on the cluster, the RESOLVED family (a face without one is drawn in the window's
 /// default, which `gui-font!` changes), the weight/slant, the scale, the pixel size (a
 /// cell region rasterises at its own px), the cell box the cluster is baked into (a
-/// line-height change resizes it at the same px) and the font registration it was baked
-/// under (a re-registered family keyword names other faces) — not the colour, a
+/// line-height change resizes it at the same px) and how it was baked: the font registration
+/// (a re-registered family keyword names other faces) and the subpixel order (0 grey, 1
+/// R-G-B, 2 B-G-R — `gui-text-aa!` bakes the same cluster three ways) — not the colour, a
 /// per-instance tint.
 fn glyph_key(
     g: &str,
@@ -3200,7 +3351,7 @@ fn glyph_key(
     scale: u16,
     px: f32,
     cell: (usize, usize),
-    generation: u64,
+    baked: (u64, u8),
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -3211,7 +3362,7 @@ fn glyph_key(
     scale.hash(&mut h);
     px.to_bits().hash(&mut h);
     cell.hash(&mut h);
-    generation.hash(&mut h);
+    baked.hash(&mut h);
     h.finish()
 }
 
@@ -3395,6 +3546,65 @@ mod tests {
         assert!(fb.visible(100.0, FH + 10.0, 400.0, 4.0, std::f32::consts::FRAC_PI_2));
         // … while a small quad far away stays culled whatever its angle.
         assert!(!fb.visible(FW + 500.0, 100.0, 4.0, 4.0, 1.0));
+    }
+
+    /// Parse and validate WGSL as wgpu would on a device with `capabilities` — the only
+    /// check a shader gets without a GPU, which CI has none of.
+    fn validate_wgsl(source: &str, capabilities: wgpu::naga::valid::Capabilities) {
+        let module = wgpu::naga::front::wgsl::parse_str(source)
+            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(source)));
+        wgpu::naga::valid::Validator::new(wgpu::naga::valid::ValidationFlags::all(), capabilities)
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+    }
+
+    #[test]
+    fn the_text_shaders_validate_the_lcd_one_only_with_dual_source_blending() {
+        use wgpu::naga::valid::Capabilities;
+        validate_wgsl(SHADER_SRC, Capabilities::default());
+        validate_wgsl(&lcd_shader_source(), Capabilities::DUAL_SOURCE_BLENDING);
+        // the LCD source asks for the feature: a device without it must not be handed it
+        let without = wgpu::naga::front::wgsl::parse_str(&lcd_shader_source()).map(|module| {
+            wgpu::naga::valid::Validator::new(
+                wgpu::naga::valid::ValidationFlags::all(),
+                Capabilities::default(),
+            )
+            .validate(&module)
+            .is_ok()
+        });
+        assert!(!matches!(without, Ok(true)));
+    }
+
+    #[test]
+    fn a_glyph_mode_says_colour_grey_or_lcd_and_whether_it_is_lifted() {
+        assert_eq!(glyph_mode(false, false, true), 0); // an emoji draws in its own colours
+        assert_eq!(glyph_mode(false, true, true), 0);
+        assert_eq!(glyph_mode(true, false, false), 1);
+        assert_eq!(glyph_mode(true, false, true), 2);
+        assert_eq!(glyph_mode(true, true, false), 3);
+        assert_eq!(glyph_mode(true, true, true), 4);
+    }
+
+    #[test]
+    fn lcd_glyphs_batch_apart_from_grey_ones_on_the_same_atlas_page() {
+        // they draw with different pipelines, so one batch cannot hold both
+        let mut fb = FrameBuilder::new(FW, FH);
+        let uv = [0.0, 0.0, 0.1, 0.1];
+        fb.textured(TexKey::Atlas(0), 0.0, 0.0, 8.0, 8.0, uv, [255; 4], 3, 0.0);
+        fb.textured(TexKey::Atlas(0), 8.0, 0.0, 8.0, 8.0, uv, [255; 4], 4, 0.0);
+        fb.textured(TexKey::Atlas(0), 16.0, 0.0, 8.0, 8.0, uv, [255; 4], 1, 0.0);
+        fb.textured(TexKey::Atlas(0), 24.0, 0.0, 8.0, 8.0, uv, [255; 4], 3, 0.0);
+        let shape: Vec<(u32, u32, bool)> = fb
+            .batches
+            .iter()
+            .map(|b| match b {
+                Batch::Tex {
+                    first, count, lcd, ..
+                } => (*first, *count, *lcd),
+                _ => unreachable!("only glyphs in this frame"),
+            })
+            .collect();
+        assert_eq!(shape, vec![(0, 2, true), (2, 1, false), (3, 1, true)]);
     }
 
     #[test]
@@ -3608,7 +3818,7 @@ mod reuse_tests {
             place: RunPlace::Cell { col },
             metrics: [8.0f32.to_bits(), 16.0f32.to_bits(), 13.0f32.to_bits(), 1],
             ground: [0, 0, 0],
-            fonts: (0, false),
+            fonts: (0, false, 0),
         }
     }
 
