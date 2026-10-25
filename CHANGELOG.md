@@ -8,8 +8,9 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 **Added.**
 - The GPU painter draws subpixel (LCD) text, as the CPU painter does: `gui/text-aa`'s `:subpixel`,
-  `:bgr`, and `:auto` at a 1× scale, on an adapter with dual-source blending (grey text on one
-  without). Measured byte-identical to the CPU painter's frame (an NVIDIA adapter on Wayland).
+  `:bgr`, and `:auto` at a 1× scale — in one pass with dual-source blending, in three (one per
+  colour channel) on an adapter without it. Both measured byte-identical to the CPU painter's
+  frame (an NVIDIA adapter on Wayland; `BROOD_GUI_NO_DUAL_SOURCE=1` forces the three-pass path).
 - `nest check` warns when a module, while it loads, re-binds a global another module already
   defined (`:cross-module-def`) — `(def theme/rows (conj theme/rows row))`, typically from the
   owner's macro. Under the parallel cold load two modules doing it at once lose one write, and

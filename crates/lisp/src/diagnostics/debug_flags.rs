@@ -557,6 +557,11 @@ pub const FLAGS: &[DebugFlag] = &[
         "`=1`: print every `ui-run` turn's Brood-side breakdown (view, draw, update in ms) — the other half of BROOD_GUI_TRACE",
     ),
     f(
+        "BROOD_GUI_NO_DUAL_SOURCE",
+        HOST,
+        "`=1`: the GPU painter declines dual-source blending and draws subpixel text in three passes, one per colour channel — the path an adapter without the feature takes (`lcd=` in BROOD_GUI_TRACE says which)",
+    ),
+    f(
         "BROOD_GUI_DUMP",
         HOST,
         "`=<path.ppm>`: write the painted frame as a PPM after every paint (the CPU canvas, or a readback of the GPU frame under BROOD_GUI_GPU) — look at the raster (text AA, hairlines, sprites) from a script",

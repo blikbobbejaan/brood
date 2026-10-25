@@ -19,12 +19,11 @@
 //! rounded or sub-cell rect is a signed-distance field in the fragment shader, the same
 //! 1 px coverage ramp `fill_rrect` computes per pixel; a clip band is a per-instance rect
 //! the fragment shader discards outside of. Text is subpixel (LCD) where the CPU path's
-//! would be — `gui-text-aa!`, `:auto` meaning at a 1× scale — when the adapter offers
-//! dual-source blending, which a per-channel blend needs (the second fragment output is
-//! each channel's coverage, `fs_tex_lcd`); an adapter without it draws grey AA, the one
-//! visible difference left (ADR-440). The blending otherwise
-//! matches: text lerps in the encoded space with the contrast lift in the shader, and
-//! translucent geometry blends in linear light through an sRGB view of the frame.
+//! would be — `gui-text-aa!`, `:auto` meaning at a 1× scale — in one pass with dual-source
+//! blending where the adapter has it (the second fragment output is each channel's
+//! coverage, `fs_tex_lcd`), else in three, one colour channel each (`LcdText`). The
+//! blending otherwise matches: text lerps in the encoded space with the contrast lift in the
+//! shader, and translucent geometry blends in linear light through an sRGB view of the frame.
 //!
 //! A frame is re-walked, but not re-shaped: a text run's quads are kept and replayed
 //! while it repeats (`RunCache`), and the instance buffers are written only where they
@@ -233,6 +232,42 @@ fn fs_tex(in: TexOut) -> @location(0) vec4<f32> {
         return vec4<f32>(in.tint.rgb, pow(t.a, viewport.text.x) * in.tint.a);
     }
     return t * in.tint;
+}
+
+// Subpixel (LCD) text on an adapter WITHOUT dual-source blending: the same quads drawn three
+// times, each pass writing one colour channel (`ColorWrites::RED` / `GREEN` / `BLUE`) with that
+// channel's coverage as its alpha — so plain alpha blending gives `fg·cov + dst·(1 − cov)` per
+// channel, over whatever is underneath. Mode 4 takes the lift per channel, as `fs_tex_lcd`.
+fn lcd_coverage(in: TexOut) -> vec3<f32> {
+    let cov = textureSample(tex, samp, in.uv).rgb;
+    if (in.mode == 4u) {
+        return pow(cov, vec3<f32>(viewport.text.x));
+    }
+    return cov;
+}
+
+@fragment
+fn fs_tex_lcd_red(in: TexOut) -> @location(0) vec4<f32> {
+    if (clipped(in.pos.xy, in.clip)) {
+        discard;
+    }
+    return vec4<f32>(in.tint.rgb, lcd_coverage(in).r * in.tint.a);
+}
+
+@fragment
+fn fs_tex_lcd_green(in: TexOut) -> @location(0) vec4<f32> {
+    if (clipped(in.pos.xy, in.clip)) {
+        discard;
+    }
+    return vec4<f32>(in.tint.rgb, lcd_coverage(in).g * in.tint.a);
+}
+
+@fragment
+fn fs_tex_lcd_blue(in: TexOut) -> @location(0) vec4<f32> {
+    if (clipped(in.pos.xy, in.clip)) {
+        discard;
+    }
+    return vec4<f32>(in.tint.rgb, lcd_coverage(in).b * in.tint.a);
 }
 "#;
 
@@ -1725,6 +1760,15 @@ struct Grid {
     scroll_dy: f32,
 }
 
+/// How a device draws subpixel (LCD) text: in ONE pass with dual-source blending (each
+/// channel weighed by its own coverage, `LCD_BLEND`), or in three, one per colour channel
+/// under a write mask (`fs_tex_lcd_red` / `_green` / `_blue`) — the same result over any
+/// destination, two more draws per run of LCD glyphs, and no adapter feature needed.
+enum LcdText {
+    DualSource(wgpu::RenderPipeline),
+    PerChannel([wgpu::RenderPipeline; 3]),
+}
+
 /// One open window's GPU state: the wgpu surface + device, the two instanced-quad
 /// pipelines, the glyph atlas and the app's textures. Lives on the GUI thread. Field
 /// order matters: the surface was created from the window's raw handles, so it must
@@ -1747,9 +1791,9 @@ pub struct GpuWindow {
     linear_format: Option<wgpu::TextureFormat>,
     solid_instances: InstanceBuffer,
     tex_pipeline: wgpu::RenderPipeline,
-    /// The subpixel text pipeline (`LCD_SRC`), when the device has dual-source blending and
-    /// the shader built; `None` draws every glyph grey.
-    lcd_pipeline: Option<wgpu::RenderPipeline>,
+    /// How subpixel text is drawn on this device (`LcdText`); `None`, should the driver reject
+    /// both ways, draws every glyph grey.
+    lcd: Option<LcdText>,
     tex_layout: wgpu::BindGroupLayout,
     tex_instances: InstanceBuffer,
     sampler: wgpu::Sampler,
@@ -1914,9 +1958,14 @@ impl GpuWindow {
         }
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("brood gui"),
-            // Dual-source blending where the adapter has it: what subpixel text needs
-            // (`LCD_SRC`). Without it the window draws grey text, as before.
-            required_features: adapter.features() & wgpu::Features::DUAL_SOURCE_BLENDING,
+            // Dual-source blending where the adapter has it: subpixel text in one pass
+            // (`LCD_SRC`) rather than three (`LcdText`). `BROOD_GUI_NO_DUAL_SOURCE=1` declines
+            // it, to see the three-pass path on an adapter that has the feature.
+            required_features: if std::env::var("BROOD_GUI_NO_DUAL_SOURCE").as_deref() == Ok("1") {
+                wgpu::Features::empty()
+            } else {
+                adapter.features() & wgpu::Features::DUAL_SOURCE_BLENDING
+            },
             required_limits: wgpu::Limits::default(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::default(),
@@ -2087,70 +2136,96 @@ impl GpuWindow {
             bind_group_layouts: &[Some(&viewport_layout), Some(&tex_layout)],
             immediate_size: 0,
         });
-        // The textured quads: one vertex layout, drawn either way — `fs_tex` (colour, grey
-        // text) under alpha blending, or `fs_tex_lcd` (subpixel text) under `LCD_BLEND`.
-        let textured_quads =
-            |label: &str, module: &wgpu::ShaderModule, fragment: &str, blend: wgpu::BlendState| {
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some(label),
-                    layout: Some(&tex_pipeline_layout),
-                    vertex: wgpu::VertexState {
-                        module,
-                        entry_point: Some("vs_tex"),
-                        compilation_options: Default::default(),
-                        buffers: &[Some(wgpu::VertexBufferLayout {
-                            array_stride: (TEX_WORDS * 4) as u64,
-                            step_mode: wgpu::VertexStepMode::Instance,
-                            attributes: &wgpu::vertex_attr_array![
-                                0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Uint32,
-                                4 => Float32, 5 => Float32x4
-                            ],
-                        })],
-                    },
-                    primitive,
-                    depth_stencil: None,
-                    multisample: Default::default(),
-                    fragment: Some(wgpu::FragmentState {
-                        module,
-                        entry_point: Some(fragment),
-                        compilation_options: Default::default(),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format,
-                            blend: Some(blend),
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                    }),
-                    multiview_mask: None,
-                    cache: None,
-                })
-            };
+        // The textured quads: one vertex layout, drawn three ways — `fs_tex` (colour, grey
+        // text) under alpha blending, `fs_tex_lcd` (subpixel text) under `LCD_BLEND`, or
+        // subpixel text one channel per pass (`fs_tex_lcd_red` …, writing only that channel).
+        let textured_quads = |label: &str,
+                              module: &wgpu::ShaderModule,
+                              fragment: &str,
+                              blend: wgpu::BlendState,
+                              write_mask: wgpu::ColorWrites| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&tex_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some("vs_tex"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: (TEX_WORDS * 4) as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![
+                            0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Uint32,
+                            4 => Float32, 5 => Float32x4
+                        ],
+                    })],
+                },
+                primitive,
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some(fragment),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(blend),
+                        write_mask,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
         let tex_pipeline = textured_quads(
             "textured quads",
             &shader,
             "fs_tex",
             wgpu::BlendState::ALPHA_BLENDING,
+            wgpu::ColorWrites::ALL,
         );
-        // Built inside a validation scope: a driver that offers the feature and still
-        // rejects the shader or the blend costs subpixel text, not the window.
-        let lcd_pipeline = device
+        // Subpixel text: one dual-source pass where the device has it, else three passes,
+        // one per colour channel. Built inside a validation scope: a driver that rejects
+        // either costs subpixel text, not the window.
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let lcd = if device
             .features()
             .contains(wgpu::Features::DUAL_SOURCE_BLENDING)
-            .then(|| {
-                let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-                let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("lcd text"),
-                    source: wgpu::ShaderSource::Wgsl(lcd_shader_source().into()),
-                });
-                let pipeline = textured_quads("lcd text", &module, "fs_tex_lcd", LCD_BLEND);
-                match pollster::block_on(scope.pop()) {
-                    None => Some(pipeline),
-                    Some(error) => {
-                        eprintln!("brood gui: subpixel text unavailable, drawing grey: {error}");
-                        None
-                    }
-                }
-            })
-            .flatten();
+        {
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("lcd text"),
+                source: wgpu::ShaderSource::Wgsl(lcd_shader_source().into()),
+            });
+            LcdText::DualSource(textured_quads(
+                "lcd text",
+                &module,
+                "fs_tex_lcd",
+                LCD_BLEND,
+                wgpu::ColorWrites::ALL,
+            ))
+        } else {
+            let channel = |fragment: &str, mask: wgpu::ColorWrites| {
+                textured_quads(
+                    "lcd text, one channel",
+                    &shader,
+                    fragment,
+                    wgpu::BlendState::ALPHA_BLENDING,
+                    mask,
+                )
+            };
+            LcdText::PerChannel([
+                channel("fs_tex_lcd_red", wgpu::ColorWrites::RED),
+                channel("fs_tex_lcd_green", wgpu::ColorWrites::GREEN),
+                channel("fs_tex_lcd_blue", wgpu::ColorWrites::BLUE),
+            ])
+        };
+        let lcd = match pollster::block_on(scope.pop()) {
+            None => Some(lcd),
+            Some(error) => {
+                eprintln!("brood gui: subpixel text unavailable, drawing grey: {error}");
+                None
+            }
+        };
 
         let solid_instances = InstanceBuffer::new(&device, "solid instances", 64 * 1024);
         let tex_instances = InstanceBuffer::new(&device, "textured instances", 64 * 1024);
@@ -2169,7 +2244,7 @@ impl GpuWindow {
             linear_format,
             solid_instances,
             tex_pipeline,
-            lcd_pipeline,
+            lcd,
             tex_layout,
             tex_instances,
             sampler,
@@ -2324,7 +2399,7 @@ impl GpuWindow {
     /// The subpixel order glyphs are baked in for this window: the renderer's
     /// (`Renderer::lcd_order`) when this device could make the LCD pipeline, else 0 (grey).
     fn lcd_order(&self, renderer: &Renderer) -> u8 {
-        if self.lcd_pipeline.is_some() {
+        if self.lcd.is_some() {
             renderer.lcd_order()
         } else {
             0
@@ -3105,10 +3180,16 @@ impl GpuWindow {
         {
             // runs: text runs replayed / shaped; up: instance bytes written (a frame that
             // changed one line writes that line's tail, not the page); passes: render
-            // passes (more than one only where translucent geometry and text interleave).
+            // passes (more than one only where translucent geometry and text interleave); lcd:
+            // how this device draws subpixel text (`LcdText`).
+            let lcd = match &self.lcd {
+                Some(LcdText::DualSource(_)) => "dual-source",
+                Some(LcdText::PerChannel(_)) => "per-channel",
+                None => "none",
+            };
             eprintln!(
                 "[gui-paint-gpu] {}us: fb={fw}x{fh} ops={} batches={} passes={passes} \
-                 runs={run_hits}/{} up={uploaded}B | encode={}us upload={}us acquire={}us \
+                 runs={run_hits}/{} up={uploaded}B lcd={lcd} | encode={}us upload={}us acquire={}us \
                  submit={}us present={}us",
                 micros(t0, t_present),
                 frame.len(),
@@ -3206,13 +3287,19 @@ impl GpuWindow {
                         let Some(bind_group) = bind_group else {
                             continue;
                         };
-                        pass.set_pipeline(match &self.lcd_pipeline {
-                            Some(lcd_pipeline) if *lcd => lcd_pipeline,
-                            _ => &self.tex_pipeline,
-                        });
                         pass.set_vertex_buffer(0, self.tex_instances.buffer.slice(..));
                         pass.set_bind_group(1, bind_group, &[]);
-                        pass.draw(0..4, *first..first + count);
+                        let pipelines: &[wgpu::RenderPipeline] = match &self.lcd {
+                            Some(LcdText::DualSource(pipeline)) if *lcd => {
+                                std::slice::from_ref(pipeline)
+                            }
+                            Some(LcdText::PerChannel(channels)) if *lcd => channels,
+                            _ => std::slice::from_ref(&self.tex_pipeline),
+                        };
+                        for pipeline in pipelines {
+                            pass.set_pipeline(pipeline);
+                            pass.draw(0..4, *first..first + count);
+                        }
                     }
                     Batch::Particles { id } => {
                         let Some(particles) = &self.particles else {
