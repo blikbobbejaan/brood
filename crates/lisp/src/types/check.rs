@@ -119,6 +119,7 @@
 //! can't drift.
 
 pub mod annot;
+mod cross_module_def;
 mod ctx;
 pub(super) mod deps;
 mod discarded_catch;
@@ -2843,7 +2844,8 @@ fn check_conformance(
 
 /// The lints that read a form's shape rather than its types, after the body walk: non-tail
 /// self-recursion, sealed-`match` exhaustiveness (ADR-187), effects in a `:when` guard, a
-/// `catch` that discards its error, and declared `:pure`/`:total` properties (ADR-351).
+/// `catch` that discards its error, a load-time `def` of another module's global, and
+/// declared `:pure`/`:total` properties (ADR-351).
 /// The `match`, guard and `catch` lints read the UN-expanded forms — those shapes survive
 /// only before expansion — and position each warning at the form the reader positioned.
 fn run_shape_lints(
@@ -2859,6 +2861,11 @@ fn run_shape_lints(
     exhaustive::check_matches(heap, forms, ctx, out);
     guard_effects::check_guards(heap, forms, out);
     discarded_catch::check_discarded_catches(heap, forms, out);
+    let own: Vec<String> = crate::eval::macros::file_modules(heap, forms)
+        .into_iter()
+        .map(value::symbol_name)
+        .collect();
+    cross_module_def::check_cross_module_defs(heap, expanded, &own, out);
     properties::check_properties(heap, expanded, ctx, out);
 }
 /// Unused `(:use …)` imports: a clause whose module contributed importable names, none of

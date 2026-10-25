@@ -335,12 +335,15 @@ docs/testing.md for the full guide."
           tags (second parts)
           body (test-lift-prefix-mods (third parts) nil)
           skip (nth parts 3))
+      ;; These writes are this module's globals, made from the module the describe is in.
+      ;; One writer at a time: the runner loads test files one by one in its own process
+      ;; (`run-tests-scoped`), which is also what makes the collect-then-emit protocol sound
+      ;; at all. The user's body stays outside the allow, so its own writes are still linted.
       `(do
-         (def *collecting* true)
-         (def *collected* nil)
+         (check-allow :cross-module-def (def *collecting* true) (def *collected* nil))
          (do ~@body)
          ; the (test ...) forms collect themselves
-         (def *collecting* false)
+         (check-allow :cross-module-def (def *collecting* false))
          (emit-describe ~mode ~group (reverse *collected*) ~tags ~skip)
          ;; Advisory: a describe with no tests is a heading over nothing (ADR-225).
          ~(unless (describe-body-has-tests? body)
