@@ -1,0 +1,39 @@
+;;; `dev/why-not-native` and `dev/jit-state`'s `:reason`: an arm the JIT refuses keeps the
+;;; refusal, so a slow loop can be asked why it is interpreted without re-running it under
+;;; `BROOD_JIT_BAIL_TRACE`. Before the reason was recorded on the arm, a bailed arm said only
+;;; `:bailed`; with the recording removed (`CompiledArm::latch_bailed` not setting
+;;; `bail_reason`) the `hosts-receive` case reads "unrecorded" and goes red.
+
+(defmodule why-not-native-test (:use test) (:use suite-helpers))
+
+;; A named callee that can block in `receive`, called in NON-tail position from a loop: the
+;; loop would host a parking receive under native code, so its tier-up is refused by name.
+(defn- poll-once () (receive (:never :hit) (after 0 :none)))
+(defn- polls (n acc) (if (= n 0) acc (polls (dec n) (if (= (poll-once) :none) (inc acc) acc))))
+
+;; A plain int loop, which goes native.
+(defn- counts (n acc) (if (= n 0) acc (counts (dec n) (+ acc 1))))
+
+(describe "why an arm is not native"
+  (test "a refused arm says why, recorded without the trace"
+    (when (%native-tier?)
+      (assert= :bailed (settle polls 2 (fn () (polls 300 0)) 50))
+      (assert= "hosts-receive" (get (dev/jit-state polls 2) :reason))
+      (is (includes? (dev/why-not-native polls 2) "receive")))
+    (assert= 300 (polls 300 0)))
+
+  (test "a native arm has no reason and no answer"
+    (when (%native-tier?)
+      (assert= :native (settle counts 2 (fn () (counts 500 0)) 50))
+      (assert= nil (get (dev/jit-state counts 2) :reason))
+      (assert= nil (dev/why-not-native counts 2))))
+
+  (test "an arm never called at that arity says so"
+    (let (fresh (fn (a b c) (+ a b c)))
+      (is (string? (dev/why-not-native fresh 3)))
+      (when (%native-tier?)
+        (is (includes? (dev/why-not-native fresh 3) "never called with 3 arguments")))))
+
+  (test "without a native tier the answer says so"
+    (when (not (%native-tier?))
+      (is (includes? (dev/why-not-native counts 2) "no native tier")))))

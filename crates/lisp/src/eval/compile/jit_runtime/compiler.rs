@@ -329,8 +329,8 @@ pub(crate) fn jit_compile_now(heap: &Heap, arm: &Arc<CompiledArm>, base: usize) 
             arm.jit_code.store(ptr as *mut u8, Release);
         }
         Ok(None) | Err(_) => {
-            trace_lower_declined(arm, false);
-            arm.jit_code.store(crate::jit::BAILED, Release)
+            let reason = trace_lower_declined(arm, false);
+            arm.latch_bailed(&reason)
         }
     }
 }
@@ -353,7 +353,7 @@ pub(crate) fn jit_compile_now_with_args(heap: &mut Heap, arm: &Arc<CompiledArm>,
 /// `jit_lower_arm` that travels out through a `?` on a helper bypasses the reasoned
 /// traces, so without this the only visible evidence is the arm silently being BAILED.
 #[cfg(feature = "jit")]
-pub(super) fn trace_lower_declined(arm: &CompiledArm, inlined: bool) {
+pub(super) fn trace_lower_declined(arm: &CompiledArm, inlined: bool) -> String {
     // Take (and clear) any mid-emit reason regardless of the trace flag, so a reason
     // recorded under a flagless run cannot leak into a later flagged one.
     // `lowering-returned-none` is the FALLBACK — it means a give-up path that recorded
@@ -369,11 +369,23 @@ pub(super) fn trace_lower_declined(arm: &CompiledArm, inlined: bool) {
             arm.dbg_opcodes()
         );
     }
+    format!("{reason}{detail}")
+}
+
+/// Latch `slot` off the native tier: the arm's own `jit_code` through
+/// [`CompiledArm::latch_bailed`], keeping `reason`; an inline upgrade's `inline_code` plainly,
+/// since the small native it would have replaced keeps running and the arm is not bailed.
+fn latch_slot(arm: &CompiledArm, inlined: bool, reason: &str) {
+    if inlined {
+        arm.inline_code
+            .store(crate::jit::BAILED, std::sync::atomic::Ordering::Release);
+    } else {
+        arm.latch_bailed(reason);
+    }
 }
 
 #[cfg(feature = "jit")]
 pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::LazyLock::new(|| {
-    use std::sync::atomic::Ordering::Release;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     let (ptx, prx) = sync_channel::<Option<JitWorkItem>>(256);
     let (dtx, drx) = sync_channel::<JitWorkItem>(256);
@@ -493,7 +505,7 @@ pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::La
                         let name = arm.dbg_label();
                         eprintln!("[jit-bail] arm={name} reason=codegen-poisoned-earlier");
                     }
-                    slot.store(crate::jit::BAILED, Release);
+                    latch_slot(arm, inlined, "codegen-poisoned-earlier");
                     return;
                 }
                 // Cross-process dedupe: a peer's identical arm (same shared
@@ -577,8 +589,8 @@ pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::La
                         }
                     }
                     Ok(None) => {
-                        trace_lower_declined(arm, inlined);
-                        slot.store(crate::jit::BAILED, Release);
+                        let reason = trace_lower_declined(arm, inlined);
+                        latch_slot(arm, inlined, &reason);
                     }
                     Err(_) => {
                         // The panic that poisons the compiler for the rest of the process.
@@ -599,7 +611,7 @@ pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::La
                             );
                         }
                         codegen_poisoned = true;
-                        slot.store(crate::jit::BAILED, Release);
+                        latch_slot(arm, inlined, "codegen-panicked");
                     }
                 }
             };

@@ -631,6 +631,10 @@ pub struct CompiledArm {
     /// trigger compilation past a threshold. Shared across `Arc<CompiledArm>` clones.
     pub jit_code: std::sync::atomic::AtomicPtr<u8>,
     pub jit_calls: std::sync::atomic::AtomicU32,
+    /// Why `jit_code` is `BAILED`, set by [`CompiledArm::latch_bailed`]: the reason its
+    /// `[jit-bail]` trace names (`hosts-receive`, `call-mediated-boxed`, …), readable after
+    /// the fact through `%jit-arm-state`'s `:reason`.
+    pub bail_reason: std::sync::OnceLock<Box<str>>,
     /// Deopt feedback (the dynamic replacement for the static "call-mediated boxed
     /// work" lowering gate). `deopt_watch` is true for a non-loop arm with ≥1
     /// non-tail call — the shape whose native profitability only runtime behaviour
@@ -906,6 +910,7 @@ impl Default for CompiledArm {
             has_runtime_handles: false,
             jit_code: AtomicPtr::new(std::ptr::null_mut()),
             jit_calls: AtomicU32::new(0),
+            bail_reason: OnceLock::new(),
             deopt_watch: false,
             jit_deopts: AtomicU32::new(0),
             jit_deopts_total: AtomicU32::new(0),
@@ -1051,6 +1056,16 @@ impl CompiledArm {
 
 #[cfg(feature = "jit")]
 impl CompiledArm {
+    /// Latch the arm off the native tier for good (`BAILED`), keeping `reason` — the name
+    /// its `[jit-bail]` trace line gives — so `%jit-arm-state` can say why an arm is not
+    /// native without `BROOD_JIT_BAIL_TRACE` having been armed beforehand. The first reason
+    /// is kept: a latched arm is not tried again.
+    pub(crate) fn latch_bailed(&self, reason: &str) {
+        let _ = self.bail_reason.set(reason.into());
+        self.jit_code
+            .store(crate::jit::BAILED, std::sync::atomic::Ordering::Release);
+    }
+
     /// The arm's bytecode as a space-separated opcode list, for the `[jit-bail]` traces.
     pub(crate) fn dbg_opcodes(&self) -> String {
         let code = self

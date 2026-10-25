@@ -566,8 +566,7 @@ pub fn run(heap: &mut Heap, form: Value, env: EnvId) -> LispResult {
             };
             // Runs once: nothing to tier, and no frame reserve laid out for native code.
             #[cfg(feature = "jit")]
-            arm.jit_code
-                .store(crate::jit::BAILED, std::sync::atomic::Ordering::Relaxed);
+            arm.latch_bailed("runs-once");
             vm_apply(heap, ArmHandle::new(Arc::new(arm)), &[], env)
         }
         None => crate::eval::eval(heap, form, env),

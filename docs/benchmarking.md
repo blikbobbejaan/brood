@@ -381,7 +381,8 @@ tasks are all answered). Each of these has cost a wrong verdict in this repo.
 
 **What a busy box CAN answer.** Deferring to a benchmark box is right for a *magnitude* claim and
 wrong for a *mechanism* one. In order: turn it into a structural question first (did the arm
-lower — `BROOD_JIT_DUMP_IR=1`; refused, and why — `BROOD_JIT_BAIL_TRACE=1`; lowered then fell
+lower — `BROOD_JIT_DUMP_IR=1`; refused, and why — `(dev/why-not-native f argc)` in the running
+program, which reads the refusal the arm recorded, or `BROOD_JIT_BAIL_TRACE=1`; lowered then fell
 back — `BROOD_DEOPT_TRACE=1`, needs `perf-stats`), which is binary and load-immune; trust large
 ratios only (spreads of 5–12% were measured on the dev box); use within-process adjacency
 (`crates/lisp/benches/eval.rs` runs both arms in one process) for anything smaller; count the

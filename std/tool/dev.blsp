@@ -118,6 +118,54 @@
     (dev/vm-stats-reset)   ;=> false on a binary without perf-stats"
   (%vm-stats-reset))
 
+(defn jit-state (f argc)
+  "The native tier of `f`'s `argc`-ary arm, as a map: `:state` (`:native`, `:queued`,
+`:bailed`, `:untried`, `:no-arm`, `:no-jit`), `:deopts`, `:deopts-total`, `:settled`, and
+`:reason` — for a `:bailed` arm, why it was refused, recorded whether or not
+`BROOD_JIT_BAIL_TRACE` was set. `why-not-native` says the same in words.
+
+    (map? (dev/jit-state inc 1))   → true"
+  (%jit-arm-state f argc))
+
+;; What each recorded refusal means, for `why-not-native`. A reason not listed here is shown
+;; as its code, which is still the name `BROOD_JIT_BAIL_TRACE` and the source use.
+(def- *bail-explanations*
+  {"call-mediated-boxed" "its values flow through calls and heap reads, where native code would box and unbox around every step and lose to the interpreter"
+   "chunk-ops-not-all-native" "an operator it inlines was redefined, so it stays where the new definition is called"
+   "hosts-receive" "a function it calls can block in `receive`, which a native frame cannot park under"
+   "suspend-latched" "it parked in a `receive` under native code once and is kept off the native tier since"
+   "runs-once" "it is a top-level form that runs once"
+   "codegen-poisoned-earlier" "an earlier compile panicked and the native tier is off for this process"
+   "codegen-panicked" "its own compile panicked; the native tier is off for this process"})
+
+(defn- dev-bail-explanation (reason)
+  (cond
+    (nil? reason) "no reason was recorded"
+    (string/starts-with? reason "deopt-thrash-latched")
+      (str "it went native and fell back to the interpreter 16 times in a row ("
+        (string/substring reason (inc (string/length "deopt-thrash-latched")))
+        ")")
+    else (or (get *bail-explanations* reason) reason)))
+
+(defn why-not-native (f argc)
+  "Why `f`'s `argc`-ary arm is not running native code, as a sentence — or nil when it is.
+The question to ask when a loop is slower than it should be: it names the refusal the JIT
+recorded, without re-running anything under `BROOD_JIT_BAIL_TRACE`.
+
+    (dev/why-not-native (fn (x) x) 1)   ;=> \"never called with 1 argument …\", or nil once it is native"
+  (let (info (%jit-arm-state f argc))
+    (match (get info :state)
+      (:native nil)
+      (:queued "it is hot and its compile is in flight; it runs native once that finishes")
+      (:untried "it has not been called often enough to be compiled yet")
+      (:no-arm (str "never called with "
+                 argc
+                 " argument"
+                 (if (= argc 1) "" "s")
+                 ", or not a compiled function"))
+      (:no-jit "this binary or tier ceiling (BROOD_TIER) has no native tier")
+      (:bailed (str "refused: " (dev-bail-explanation (get info :reason)))))))
+
 (defn ic-stats ()
   "A snapshot map of this process's four inline-cache tables — the largest single attributed item in the green-process floor. :calls, :links, :globals and :blocks each give [len capacity bytes], with bytes from live CAPACITY x the real element size, so a Vec grown past its contents reports the memory it actually holds. :call-entry-bytes is the size of one CallIcEntry slot — the figure a shrink of that struct would move — and :total-bytes their sum. Size these at the PARKED state, not at teardown, where the slot count overstates the steady state (docs/runtime-frontier.md).
 

@@ -396,7 +396,7 @@ fn jit_tier_in_frame_slow(
                 let name = arm.dbg_label();
                 eprintln!("[jit-bail] arm={name} reason=chunk-ops-not-all-native");
             }
-            arm.jit_code.store(crate::jit::BAILED, Release);
+            arm.latch_bailed("chunk-ops-not-all-native");
             return None;
         }
         // ADR-335: load what the arm names BEFORE it goes native (see `preload_arm_globals`) —
@@ -438,7 +438,7 @@ fn jit_tier_in_frame_slow(
                 let name = arm.dbg_label();
                 eprintln!("[jit-bail] arm={name} reason=hosts-receive");
             }
-            arm.jit_code.store(crate::jit::BAILED, Release);
+            arm.latch_bailed("hosts-receive");
             return None;
         }
         // A self-tail loop reached while its `dbg_name` no longer names it — an alias called

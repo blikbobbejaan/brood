@@ -258,12 +258,11 @@ pub(crate) fn vm_resume_deopt(
 /// it causes liveness failures under load.
 #[cfg(feature = "jit")]
 pub(crate) fn jit_latch_suspend_host(arm: &CompiledArm) {
-    use std::sync::atomic::Ordering::Release;
     if crate::diagnostics::debug_flags::jit_bail_trace() {
         let name = arm.dbg_label();
         eprintln!("[jit-bail] arm={name} reason=suspend-latched");
     }
-    arm.jit_code.store(crate::jit::BAILED, Release);
+    arm.latch_bailed("suspend-latched");
 }
 
 /// Post-invoke suspend check for a native gateway that has its arm in hand: latch if the
@@ -451,7 +450,7 @@ pub(crate) fn profile_slot_tags(heap: &Heap, arm: &CompiledArm, base: usize) -> 
 }
 
 pub(crate) fn jit_deopt_feedback(heap: &Heap, arm: &CompiledArm) {
-    use std::sync::atomic::Ordering::{Relaxed, Release};
+    use std::sync::atomic::Ordering::Relaxed;
     const DEOPT_BAIL_CONSECUTIVE: u32 = 16;
     let d = arm.jit_deopts.fetch_add(1, Relaxed) + 1;
     if d >= DEOPT_BAIL_CONSECUTIVE {
@@ -471,7 +470,10 @@ pub(crate) fn jit_deopt_feedback(heap: &Heap, arm: &CompiledArm) {
                 arm.dbg_opcodes()
             );
         }
-        arm.jit_code.store(crate::jit::BAILED, Release);
+        arm.latch_bailed(&format!(
+            "deopt-thrash-latched:{}",
+            DeoptReason::describe(heap.jit_deopt_reason())
+        ));
         // The callers' fast-link mirror never re-reads `jit_code` (see
         // `vm_fast_link_clear_site`), so a JIT'd caller holding a link would keep
         // entering the latched native — and deopting — on every call. Clear them, as the

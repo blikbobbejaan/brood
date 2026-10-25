@@ -3783,3 +3783,16 @@ New peers come from polling `(node/list)` (the kernel has no node-up event), get
 link. Reads go straight to the table. Eventually consistent, no unique names. Not run on this
 machine: `tests/groups_test.blsp` and `crates/cli/tests/process_groups.rs` (two real nodes)
 are new and run in CI.
+
+2026-10-25 (a refused arm keeps its reason; `dev/why-not-native`): the JIT's `BAILED` latch
+said only that an arm was refused. The reason went to stderr, and only under
+`BROOD_JIT_BAIL_TRACE` set before the run — which is how mandelbrot sat interpreted with
+nothing to say why. Every latch now goes through `CompiledArm::latch_bailed`, which keeps the
+reason its trace line names (the lowering's own recorded reason, `hosts-receive`,
+`suspend-latched`, `deopt-thrash-latched:<last deopt>`, …) in a `OnceLock` on the arm; an inline
+upgrade's slot is latched without one, since the small native keeps running.
+`%jit-arm-state` returns it as `:reason`, `dev/jit-state` wraps that, and `dev/why-not-native`
+answers in a sentence, with the explanations kept in Brood. The first piece of the
+predictability work. The latch itself is unchanged, and whether some latches should back off
+instead is next. Not run on this machine: `tests/why_not_native_test.blsp` is new and runs in
+CI.
