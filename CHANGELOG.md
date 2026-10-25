@@ -7,6 +7,8 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 ## Unreleased
 
 **Added.**
+- UDP sockets (ADR-449): `std/net/udp` — `open`, `send`, `recv`, `close`, `local-port`; each
+  datagram arrives as `[:udp sock host port data]` on the TCP reactor, flow-controlled.
 - `std/tz`: named time zones from the system's zoneinfo (TZif, RFC 8536) and POSIX TZ rules —
   `tz/zone`, `tz/local-zone`, `tz/->local`, `tz/->utc` (a skipped or repeated wall time
   resolved by `:earlier` / `:later`), `tz/->iso` with the offset, `tz/offset`. Pure Brood.

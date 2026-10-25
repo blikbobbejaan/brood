@@ -395,6 +395,8 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // no UDP and DNS over TCP is a required transport (RFC 7766), so it needs no new
     // Rust. Pure Brood over tcp. Opt-in.
     embedded_module!("dns", "std/net/dns.blsp"),
+    // UDP sockets (ADR-449): `[:udp sock host port data]` per datagram, on the TCP reactor.
+    embedded_module!("udp", "std/net/udp.blsp"),
     // Server-Sent Events (text/event-stream): a client reader process that streams
     // events to a subscriber's mailbox (pairs with ui's `with-events`) + server-side
     // framing. Pure frame parsing + a thin IO loop over tcp; reuses http's URL/header
