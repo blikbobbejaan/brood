@@ -90,6 +90,20 @@
       (assert= (count mm) 1)
       (is (not (includes? (into [] (keys mm)) :__id__)))
       (is (not (contains? (multimap/->map mm) :__id__)))))
+  ;; KI-298: with a non-nil default, `get` answered the default on the record's field miss
+  ;; without asking `Lookup`, so a key holding values read as absent.
+  (test "a default does not hide a key the multimap holds"
+    (let (mm (multimap/assoc (multimap/empty) :k 1))
+      (assert= [1] (into [] (get mm :k :none)))
+      (assert= [1] (into [] (get mm :k [])))
+      (assert= :none (get mm :missing :none))))
+  (test "get-in steps through a multimap's contents, as get does"
+    (let (mm (multimap/assoc (multimap/empty) :k 1))
+      (assert= [1] (into [] (get-in {:m mm} [:m :k])))
+      (assert= :none (get-in {:m mm} [:m :missing] :none))))
+  (test "a record still answers a field, or the default for a missing one"
+    (assert= 5 (get (assoc (multimap/empty) :extra 5) :extra :none))
+    (assert= :none (get {:__id__ :x/y :a 1} :b :none)))
   (test "an empty multimap is empty by its own count, not the wrapper's"
     (is (multimap/empty? (multimap/empty)))
     (is (not (multimap/empty? (multimap/assoc (multimap/empty) :k 1)))))

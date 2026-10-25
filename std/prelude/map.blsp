@@ -91,10 +91,17 @@ a wrong-typed one.
                   (%get-unanswerable coll k))
               (int? k) (nth coll k nil)
               else (%get-unanswerable coll k)))
+  ;; The map branch reads with a nil default, not `default`: a non-nil default on an absent
+  ;; key skipped `%lookup-miss`, so a record collection answered the default for a key it
+  ;; holds (KI-298). A `Lookup` that answers nil keeps the default. The VM and native code
+  ;; run `PrimOp3::MapGet3`, which answers a plain map without the call.
   ((coll k default) (cond
                       (map? coll)
-                        (let (v (%map-get coll k default))
-                          (if (nil? v) (%lookup-miss coll k v) v))
+                        (let (v (%map-get coll k nil))
+                          (if (nil? v)
+                            (let (r (%lookup-miss coll k nil))
+                              (if (nil? r) (%map-get coll k default) r))
+                            v))
                       (set? coll) (if (%set-has? coll k) k default)
                       (nil? coll) default
                       (string? coll)
@@ -105,18 +112,7 @@ a wrong-typed one.
                           (%get-unanswerable coll k))
                       (int? k) (nth coll k default)
                       else (%get-unanswerable coll k)))
-  ((coll k & default) (cond
-                        (map? coll) (%map-get coll k (first default))
-                        (set? coll) (if (%set-has? coll k) k (first default))
-                        (nil? coll) (first default)
-                        (string? coll)
-                          (if (int? k)
-                            (if (and (>= k 0) (< k (string/length coll)))
-                              (string/char-at coll k)
-                              (first default))
-                            (%get-unanswerable coll k))
-                        (int? k) (nth coll k (first default))
-                        else (%get-unanswerable coll k))))
+  ((coll k & default) (get coll k (first default))))
 
 ;; (assoc m k1 v1 k2 v2 …) -> a fresh map with each pair added/updated.
 ;; Multi-pair builders, split by collection kind so the kernel op (`%map-assoc` /
@@ -247,9 +243,11 @@ Works on maps (by key) and vectors (by integer index, which must be in range).
 ;; A step answers the way `get` does, so a vector along the path is indexed by
 ;; position — `(get-in {:a [1 2]} [:a 1])` is 2, as `(get (get m :a) 1)` is — and
 ;; `assoc-in` keeps a vector a vector rather than turning it into `{1 …}`.
+;; A map that lacks `k` may still answer it: a record's contents are its `Lookup`, as
+;; `get`'s are (KI-298).
 (defn- %get-in-has? (m k)
   (cond
-    (map? m) (contains? m k)
+    (map? m) (or (contains? m k) (not (nil? (%lookup-miss m k nil))))
     (set? m) (%set-has? m k)
     (int? k)
       (if (or (vector? m) (pair? m) (string? m) (bytes? m))
