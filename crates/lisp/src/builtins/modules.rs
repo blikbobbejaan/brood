@@ -456,6 +456,10 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // Date and time utilities (UTC): epoch↔datetime conversion, ISO 8601
     // format/parse, arithmetic, calendar predicates. Pure Brood over `now`.
     embedded_module!("datetime", "std/datetime.blsp"),
+    // Named time zones over the system's zoneinfo (TZif, RFC 8536) and POSIX TZ rules: the
+    // civil time in a zone, the instant a civil time there denotes, when a zone shifts. Pure
+    // Brood over `file/slurp-bytes` + `bytes`. Opt-in, never in the prelude.
+    embedded_module!("tz", "std/tz.blsp"),
     // Time as an interval, not an instant (adapted from Tempo, Apache-2.0): one
     // resolution-carrying value type whose span is half-open, Allen's thirteen
     // relations, and an interval-set algebra (union/intersection/difference/gaps).

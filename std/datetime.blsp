@@ -7,13 +7,11 @@ Datetimes, dates, and times are plain maps:
   date      {:year Y :month M :day D}
   time-of-day  {:hour H :minute Min :second S :ms Ms}
 
-**Timezones.** There is no zone *type* and no zone database: a value never carries a zone,
-so there is no way to represent \"09:00 in Berlin\" as such, and none of the questions that
-need a database — when does this zone shift, what is the local time there now — can be asked
-here. What IS supported is the boundary case that matters in practice: `parse-iso8601` reads
-a numeric offset (`+02:00`, `-05:30`, `+0200`, `+02`) and applies it, so a timestamp from an
-API becomes the UTC instant it denotes. Rendering is always UTC (`->iso` emits `Z`). If you
-need civil time in a named zone, keep the zone alongside the value and convert at the edges.
+**Timezones.** A value never carries a zone. Named zones are `std/tz`: the civil time in a
+place (`tz/->local`, `tz/->iso`), the instant a civil time there denotes (`tz/->utc`), and
+when a zone shifts, from the system's zoneinfo. Here, `parse-iso8601` reads a numeric offset
+(`+02:00`, `-05:30`, `+0200`, `+02`) and applies it, so a timestamp from an API becomes the
+UTC instant it denotes, and rendering is UTC.
 
 **Ordering** is the `compare-to` multimethod, so `<`, `<=`, `>`, `>=`, `sort` and `compare`
 work on these values directly — same type only, since a date and a datetime are not two

@@ -1,0 +1,361 @@
+(defmodule tz
+  "Named time zones: the civil time in a place, and the instant a civil time there denotes.
+
+`datetime` values are UTC and carry no zone; this module is the zone database beside them.
+A zone comes from the system's compiled zone files (TZif, RFC 8536 — `/usr/share/zoneinfo`,
+or `$TZDIR`), the files `date`, Go and glibc read, so a zone is as current as the system's
+tzdata. Past the last transition a file lists, its POSIX rule (`CET-1CEST,M3.5.0,M10.5.0/3`)
+says when daylight time starts and ends, so a date years ahead resolves too.
+
+    (tz/->local (tz/zone \"Europe/Berlin\") (datetime/parse-iso8601 \"2024-07-01T12:00:00Z\"))
+    ;=> the datetime 2024-07-01 14:00:00 — Berlin is UTC+2 in summer
+
+A zone is a plain map; load it once and keep it (`tz/zone` reads the file each call).
+Wall times that do not exist (the hour skipped in spring) or exist twice (the hour repeated
+in autumn) are resolved by `->utc`'s `prefer` (see there).")
+
+;; ---- reading a TZif file ------------------------------------------------------
+;; Header: "TZif", a version byte, 15 unused, then six big-endian u32 counts. Version 1 data
+;; holds 32-bit times; version 2+ repeats the whole block with 64-bit times after it, then a
+;; newline-framed POSIX TZ rule (the footer). Only the 64-bit block is read when present.
+
+(def- *zoneinfo-dirs* ["/usr/share/zoneinfo" "/usr/lib/zoneinfo" "/usr/share/lib/zoneinfo"])
+
+(defn- tzif-counts (b at)
+  ;; the six counts of the header starting at `at`
+  {:isut (bytes/uint b (+ at 20) 4)
+   :isstd (bytes/uint b (+ at 24) 4)
+   :leap (bytes/uint b (+ at 28) 4)
+   :time (bytes/uint b (+ at 32) 4)
+   :type (bytes/uint b (+ at 36) 4)
+   :char (bytes/uint b (+ at 40) 4)})
+
+(defn- tzif-block-size (c time-size)
+  ;; bytes of the data block after a header with counts `c`, times `time-size` wide
+  (+ (* (:time c) time-size)
+    (:time c)
+    (* (:type c) 6)
+    (:char c)
+    (* (:leap c) (+ time-size 4))
+    (:isstd c)
+    (:isut c)))
+
+(defn- abbreviation (b start end)
+  ;; the NUL-terminated designation starting at `start`, within `[start, end)`
+  (let (nul (bytes/index-of b (bytes/int-> 0 1) start))
+    (string/bytes-> (bytes/slice b start (if (and (>= nul 0) (< nul end)) nul end)) :lossy)))
+
+(defn- tzif-data (b at c time-size)
+  ;; the transitions and local time types of the data block at `at`
+  (let (times-at at
+        idx-at (+ times-at (* (:time c) time-size))
+        types-at (+ idx-at (:time c))
+        chars-at (+ types-at (* (:type c) 6))
+        chars-end (+ chars-at (:char c)))
+    {:times (into [] (map (range (:time c)) (fn (i) (bytes/int b (+ times-at (* i time-size)) time-size))))
+     :indices (into [] (map (range (:time c)) (fn (i) (bytes/at b (+ idx-at i)))))
+     :types (into []
+              (map (range (:type c))
+                (fn (i)
+                  (let (at6 (+ types-at (* i 6)))
+                    {:offset (bytes/int b at6 4)
+                     :dst? (= 1 (bytes/at b (+ at6 4)))
+                     :abbr (abbreviation b (+ chars-at (bytes/at b (+ at6 5))) chars-end)}))))}))
+
+(defn- tzif-footer (b at)
+  ;; the POSIX rule between the two newlines at `at`, or nil
+  (if (or (>= at (bytes/length b)) (not (= 10 (bytes/at b at))))
+    nil
+    (let (end (bytes/index-of b (bytes/int-> 10 1) (inc at)))
+      (if (< end 0) nil (string/bytes-> (bytes/slice b (inc at) end) :lossy)))))
+
+(defn parse-tzif (b name)
+  "A zone from the bytes `b` of a TZif file (RFC 8536), named `name` — or a failure when `b`
+is not one. What `zone` does after reading the file; public for a file read elsewhere (an
+embedded copy, a bundle).
+
+    (failure? (tz/parse-tzif (string/->bytes \"not a zone\") \"x\"))   → true"
+  (if (or (< (bytes/length b) 44) (not (= (bytes/slice b 0 4) (string/->bytes "TZif"))))
+    (failure (str "tz: not a TZif file: " name))
+    (let (version (bytes/at b 4)
+          c1 (tzif-counts b 0)
+          v1-end (+ 44 (tzif-block-size c1 4))
+          ;; '2' and later: a second header, 64-bit times, and the POSIX footer
+          modern? (>= version 50)
+          c (if modern? (tzif-counts b v1-end) c1)
+          data-at (if modern? (+ v1-end 44) 44)
+          time-size (if modern? 8 4)
+          data (tzif-data b data-at c time-size)
+          footer (when modern? (tzif-footer b (+ data-at (tzif-block-size c time-size))))
+          rule (when (and footer (not (= footer ""))) (posix-rule footer)))
+      (assoc data :name name :rule (if (failure? rule) nil rule)))))
+
+;; ---- POSIX TZ rules ----------------------------------------------------------------
+;; std offset [dst [offset] [,start[/time],end[/time]]] — offsets count hours WEST of UTC
+;; (EST5 is UTC-5), so an offset here is negated into seconds east. A rule's dates are
+;; `Mm.w.d` (day d of week w of month m, week 5 = the last), `Jn` (day n, 1–365, never
+;; counting 29 Feb) or `n` (day n, 0–365, counting it); a time defaults to 02:00.
+
+(defn- letter? (c) (includes? "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" c))
+(defn- digit? (c) (includes? "0123456789" c))
+
+(defn- scan-name (s i)
+  ;; [name next-index]: <quoted> or a run of letters
+  (if (= (string/substring s i (inc i)) "<")
+    (let (close (index-of s ">" i))
+      [(string/substring s (inc i) close) (inc close)])
+    (let (end (letrec (go (fn (j)
+                            (if (and (< j (string/length s))
+                                  (letter? (string/char-at s j)))
+                              (go (inc j))
+                              j)))
+                (go i)))
+      [(string/substring s i end) end])))
+
+(sig rule-int (string -> int))
+(defn- rule-int (text)
+  ;; one number of a rule (a clock field, a day, a week); anything but digits raises, which
+  ;; `posix-rule` turns into a failure
+  (let (n (string/->number text))
+    (if (int? n) n (error "tz: not a number in a clock: " text))))
+
+(defn- scan-clock (s i)
+  ;; [seconds next-index] for [+-]hh[:mm[:ss]]
+  (let (sign (case (string/substring s i (math/min (string/length s) (inc i))) "-" -1 1)
+        i (if (includes? ["-" "+"] (string/substring s i (math/min (string/length s) (inc i))))
+            (inc i)
+            i)
+        end (letrec (go (fn (j)
+                          (if (and (< j (string/length s))
+                                (or (digit? (string/char-at s j))
+                                  (= (string/substring s j (inc j)) ":")))
+                            (go (inc j))
+                            j)))
+              (go i))
+        parts (into [] (map (string/split (string/substring s i end) ":") rule-int))
+        seconds (+ (* 3600 (nth parts 0 0)) (* 60 (nth parts 1 0)) (nth parts 2 0)))
+    [(* sign seconds) end]))
+
+(defn- scan-date (s i)
+  ;; [date next-index]: {:kind :m :month :week :day}, {:kind :julian :day} or {:kind :zero :day}
+  (let (head (string/substring s i (inc i))
+        end (letrec (go (fn (j)
+                          (if (and (< j (string/length s))
+                                (not (includes? ["," "/"] (string/substring s j (inc j)))))
+                            (go (inc j))
+                            j)))
+              (go i))
+        body (string/substring s i end))
+    (cond
+      (= head "M")
+        (let ([m w d] (into []
+                        (map (string/split (string/substring body 1 (string/length body)) ".")
+                          rule-int)))
+          [{:kind :m :month m :week w :day d} end])
+      (= head "J") [{:kind :julian :day (rule-int (string/substring body 1 (string/length body)))} end]
+      :else [{:kind :zero :day (rule-int body)} end])))
+
+(defn- scan-change (s i)
+  ;; [{:date :time} next-index] for `date[/time]`
+  (let ([date j] (scan-date s i))
+    (if (and (< j (string/length s)) (= (string/substring s j (inc j)) "/"))
+      (let ([time k] (scan-clock s (inc j))) [{:date date :time time} k])
+      [{:date date :time 7200} j])))
+
+(defn posix-rule (s)
+  "The POSIX TZ rule `s` (a TZif footer, or `$TZ`) as a map: `:std` and `:dst` abbreviations,
+their offsets in seconds EAST of UTC (`:std-offset`, `:dst-offset`), and the `:start` /
+`:end` of daylight time — nil fields for a zone without it. A failure when `s` is not one.
+
+    (:std-offset (tz/posix-rule \"EST5EDT,M3.2.0,M11.1.0\"))   → -18000"
+  (let (at (fn (i) (if (< i (string/length s)) (string/substring s i (inc i)) "")))
+    (try
+      (let ([std i] (scan-name s 0)
+            [west j] (scan-clock s i)
+            std-offset (- west))
+        (if (or (= std "") (>= j (string/length s)))
+          {:std std :std-offset std-offset :dst nil :dst-offset nil :start nil :end nil}
+          (let ([dst k] (scan-name s j)
+                [dst-offset l] (if (includes? ["," ""] (at k))
+                                 [(+ std-offset 3600) k]
+                                 (let ([w l] (scan-clock s k)) [(- w) l]))
+                [start m] (if (= (at l) ",") (scan-change s (inc l)) [nil l])
+                [end _] (if (= (at m) ",") (scan-change s (inc m)) [nil m]))
+            {:std std
+             :std-offset std-offset
+             :dst dst
+             :dst-offset dst-offset
+             ;; no dates: POSIX's default is US rules; zoneinfo footers always state them
+             :start (or start {:date {:kind :m :month 3 :week 2 :day 0} :time 7200})
+             :end (or end {:date {:kind :m :month 11 :week 1 :day 0} :time 7200})})))
+      (catch e (failure (str "tz: not a POSIX TZ rule: " s " (" (error-message e) ")"))))))
+
+(defn- epoch-days (year month day)
+  (math/quot (datetime/->epoch-ms (datetime/date year month day)) 86400000))
+
+(sig change-day (keyword int int int int -> int))
+(defn- change-day (kind month week day year)
+  ;; days since the epoch of a rule date (`scan-date`'s fields) in `year`
+  (case kind
+    :julian
+      (+ (epoch-days year 1 1)
+        (dec day)
+        (if (and (datetime/leap-year? year) (>= day 60)) 1 0))
+    :zero (+ (epoch-days year 1 1) day)
+    (let (first (epoch-days year month 1)
+          ;; 1970-01-01 was a Thursday: day 4 with Sunday as 0
+          first-weekday (math/mod (+ first 4) 7)
+          first-match (+ first (math/mod (- day first-weekday) 7))
+          last-day (+ first (dec (datetime/days-in-month year month)))
+          wanted (+ first-match (* 7 (dec week))))
+      ;; week 5 is "the last": step back a week while past the month
+      (letrec (back (fn (d) (if (> d last-day) (back (- d 7)) d)))
+        (back wanted)))))
+
+(defn- change-instant (change year offset)
+  ;; epoch seconds of a rule change in `year`, its local time read at `offset`
+  (let (date (:date change)
+        day (change-day (:kind date) (or (:month date) 0) (or (:week date) 0) (:day date) year))
+    (- (+ (* 86400 day) (:time change)) offset)))
+
+(defn- rule-at (rule seconds)
+  ;; {:offset :dst? :abbr} of `rule` at epoch `seconds`
+  (if (nil? (:dst rule))
+    {:offset (:std-offset rule) :dst? false :abbr (:std rule)}
+    (let (year (:year (datetime/epoch-ms-> (* seconds 1000)))
+          start (change-instant (:start rule) year (:std-offset rule))
+          end (change-instant (:end rule) year (:dst-offset rule))
+          dst? (if (< start end)
+                 (and (>= seconds start) (< seconds end))
+                 ;; the south: daylight time spans the new year
+                 (not (and (>= seconds end) (< seconds start)))))
+      (if dst?
+        {:offset (:dst-offset rule) :dst? true :abbr (:dst rule)}
+        {:offset (:std-offset rule) :dst? false :abbr (:std rule)}))))
+
+;; ---- zones ----------------------------------------------------------------------
+
+(defn- zone-file (name)
+  (let (dirs (if (os/env "TZDIR") (cons (os/env "TZDIR") *zoneinfo-dirs*) *zoneinfo-dirs*))
+    (seq/find (map dirs (fn (dir) (path/join dir name))) file/exists?)))
+
+(defn zone (name)
+  "The zone `name` (`\"Europe/Berlin\"`, `\"America/New_York\"`, `\"UTC\"`) from the system's
+zone files, or a failure when there is no such zone. Reads the file each call — keep it.
+
+    (:name (tz/zone \"UTC\"))   ;=> \"UTC\" (where the system has zoneinfo)"
+  (if (or (string/blank? name) (includes? name ".."))
+    (failure (str "tz: no such zone: " name))
+    (let (file (zone-file name))
+      (if (nil? file)
+        (failure (str "tz: no such zone: " name " (no zoneinfo file; set $TZDIR)"))
+        (parse-tzif (file/slurp-bytes file) name)))))
+
+(defn rule-zone (rule-string)
+  "A zone from a POSIX TZ rule alone (`\"EST5EDT,M3.2.0,M11.1.0\"`, `\"UTC0\"`) — no history,
+the rule applied to every year. A failure when the rule does not parse.
+
+    (:offset (tz/offset (tz/rule-zone \"UTC0\") 0))   → 0"
+  (let (rule (posix-rule rule-string))
+    (if (failure? rule)
+      rule
+      {:name rule-string :times [] :indices [] :types [] :rule rule})))
+
+(defn local-zone ()
+  "This machine's zone: `$TZ` (a zone name, `:name`, or a POSIX rule), else the zone
+`/etc/localtime` names, else UTC.
+
+    (string? (:name (tz/local-zone)))   → true"
+  (let (env (os/env "TZ")
+        name (when env (if (string/starts-with? env ":") (string/substring env 1 (string/length env)) env)))
+    (cond
+      (and name (not (failure? (zone name)))) (zone name)
+      (and name (not (failure? (rule-zone name)))) (rule-zone name)
+      ;; named for where the link points (`…/zoneinfo/Africa/Johannesburg`), when it does
+      (file/exists? "/etc/localtime")
+        (let (real (or (os/canonicalize "/etc/localtime") "")
+              at (index-of real "/zoneinfo/"))
+          (parse-tzif (file/slurp-bytes "/etc/localtime")
+            (if (>= at 0) (string/substring real (+ at 10) (string/length real)) "localtime")))
+      :else (rule-zone "UTC0"))))
+
+(defn- last-at-or-before (times seconds)
+  ;; index of the last transition at or before `seconds`, or -1
+  (letrec (search (fn (lo hi)
+                    ;; invariant: times[lo] <= seconds < times[hi] (virtual ends)
+                    (if (<= (- hi lo) 1)
+                      lo
+                      (let (mid (math/quot (+ lo hi) 2))
+                        (if (<= (nth times mid) seconds) (search mid hi) (search lo mid))))))
+    (search -1 (count times))))
+
+(defn offset (zone epoch-ms)
+  "What `zone` says at the instant `epoch-ms`: `{:offset :dst? :abbr}`, the offset in seconds
+east of UTC.
+
+    (tz/offset (tz/rule-zone \"EST5EDT,M3.2.0,M11.1.0\") 0)   → {:offset -18000 :dst? false :abbr \"EST\"}"
+  (let (seconds (math/floor (/ epoch-ms 1000))
+        times (:times zone)
+        i (last-at-or-before times seconds)
+        type-of (fn (index) (map/select-keys (nth (:types zone) index) [:offset :dst? :abbr])))
+    (cond
+      ;; past the file's last transition: its rule, when it has one
+      (and (:rule zone) (or (empty? times) (= i (dec (count times))))) (rule-at (:rule zone) seconds)
+      (>= i 0) (type-of (nth (:indices zone) i))
+      ;; before the first transition: the first type (RFC 8536 §3.2)
+      (not (empty? (:types zone))) (type-of 0)
+      :else {:offset 0 :dst? false :abbr "UTC"})))
+
+;; check-allow: the offset alone, in seconds — an int from a TZif type (`bytes/int`) or a
+;; rule (`rule-int`), which the checker cannot follow through `map/select-keys`.
+(check-allow :trusted
+  (sig offset-seconds (map int -> int))
+  (defn- offset-seconds (zone epoch-ms) (:offset (offset zone epoch-ms))))
+
+(defn ->local (zone dt)
+  "The civil time in `zone` at the UTC datetime `dt`, as a datetime.
+
+    (datetime/format (tz/->local (tz/rule-zone \"EST5\") (datetime/epoch-ms-> 0)) \"%Y-%m-%d %H:%M\")   → \"1969-12-31 19:00\""
+  (let (ms (datetime/->epoch-ms dt))
+    (datetime/epoch-ms-> (+ ms (* 1000 (offset-seconds zone ms))))))
+
+(defn ->utc (zone local &optional (prefer :earlier))
+  "The UTC instant the civil time `local` (a datetime) denotes in `zone`. A wall time that
+exists twice (the hour repeated when clocks go back) is the `:earlier` (default) or
+`:later` of the two; one that does not exist (the hour skipped when they go forward) is
+read with the offset before the change, landing as far past it as it was into the gap —
+Java's and Temporal's default.
+
+    (datetime/->epoch-ms (tz/->utc (tz/rule-zone \"EST5\") (datetime/parse-iso8601 \"1970-01-01T00:00:00Z\")))   → 18000000"
+  (let (wall (datetime/->epoch-ms local)
+        day 86400000
+        offsets (seq/distinct (map [(- wall day) wall (+ wall day)] (fn (t) (offset-seconds zone t))))
+        ;; an offset is a reading of `local` when the instant it gives has that offset
+        readings (sort (seq/keep offsets
+                         (fn (o)
+                           (let (utc (- wall (* 1000 o)))
+                             (when (= o (offset-seconds zone utc)) utc)))))
+        before (offset-seconds zone (- wall day)))
+    (datetime/epoch-ms->
+      (cond
+        (empty? readings) (- wall (* 1000 before))
+        (= prefer :later) (last readings)
+        :else (first readings)))))
+
+(sig offset->string (int -> string))
+(defn offset->string (seconds)
+  "An offset in seconds east of UTC as ISO 8601 writes it: `+02:00`, `-05:30`, `+00:00`.
+
+    (tz/offset->string -19800)   → \"-05:30\""
+  (let (sign (if (< seconds 0) "-" "+")
+        s (math/abs seconds))
+    (string/format "%s%02d:%02d" sign (math/quot s 3600) (math/quot (math/rem s 3600) 60))))
+
+(defn ->iso (zone dt)
+  "The UTC datetime `dt` as an ISO 8601 civil time in `zone`, with its offset.
+
+    (tz/->iso (tz/rule-zone \"EST5\") (datetime/epoch-ms-> 0))   → \"1969-12-31T19:00:00-05:00\""
+  (let (ms (datetime/->epoch-ms dt)
+        o (offset-seconds zone ms))
+    (str (datetime/format (datetime/epoch-ms-> (+ ms (* 1000 o))) "%Y-%m-%dT%H:%M:%S")
+      (offset->string o))))
