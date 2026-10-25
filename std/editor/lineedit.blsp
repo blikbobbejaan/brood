@@ -508,11 +508,29 @@ globals by default; a project can rebind it to complete its own vocabulary)."
     (get (editor/lineedit/lineedit-backward-word (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :point)   → 4"
   (lineedit-move state
     (lineedit-bwd-word (get state :text) (get state :point) (lineedit-word-pred state))))
-(defn lineedit-delete-backward (state _)
-  "Delete the character before point (Backspace / C-h).
+(defn- lineedit-component-start (text:string p:int -> int)
+  "Where the path component ending at `p` (just after its `/`) starts: just after the `/`
+before it, or 0."
+  (let (before (string/last-index-of (string/substring text 0 (dec p)) "/"))
+    (if (< before 0) 0 (inc before))))
 
-    (get (editor/lineedit/lineedit-delete-backward (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :text)   → \"foo ba\""
-  (lineedit-del-back state))
+(defn lineedit-delete-backward (state _)
+  "Delete the character before point (Backspace / C-h). In `:path` mode, at the end of the
+line right after a `/`, the whole last component goes instead — `foo/`, `~/` — as Emacs's
+vertico-directory has it: a directory is one step back, and `~` alone names nothing.
+
+    (get (editor/lineedit/lineedit-delete-backward (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :text)   → \"foo ba\"
+    (get (editor/lineedit/lineedit-delete-backward (assoc (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"~/src/foo/\") :word-mode :path) nil) :text)   → \"~/src/\"
+    (get (editor/lineedit/lineedit-delete-backward (assoc (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"~/\") :word-mode :path) nil) :text)   → \"\""
+  (let (text (get state :text)
+        p (get state :point))
+    (if (and (= (get state :word-mode) :path)
+          (> p 0)
+          (= p (string/length text))
+          (= (string/char-at text (dec p)) "/"))
+      (let (start (lineedit-component-start text p))
+        (assoc state :text (string/substring text 0 start) :point start :hist-idx -1))
+      (lineedit-del-back state))))
 (defn lineedit-delete-forward (state _)
   "Delete the character at point (Delete).
 
