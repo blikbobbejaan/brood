@@ -80,6 +80,13 @@ the vector-read guard runs; the counting gap is what stays open. It is the predi
 problem in its plainest form — a hot inner loop that stays interpreted because of how it is
 called — and `dev/why-not-native` would answer `:untried` for it.
 
+**Not reproduced outside the test runner (2026-10-25, desktop, release build at `16648423`):** the
+same three definitions run as a script, at top level, inside a `defmodule`, in a spawned
+process, with `BROOD_CONTRACTS=1`, and at the test's call volume (400 bursts of
+`sv-rows-sum`), and `sv-row-sum` reached `:native` every time, as did `sv-rows-sum` once it was
+hot. `BROOD_INLINE_DBG=1` shows neither inlined into the other. So what differs is the suite
+runner itself (per-test processes, the `describe` wrapping, other tests' load), not the shape.
+
 **Next step, on the test machine:** call `sv-row-sum` from `sv-rows-sum` as the test did and
 read `(%jit-arm-state sv-row-sum 4)`'s `:state` and `jit_calls` after each batch, at tier 1
 and tier 2. If the count never moves, find the call path from an interpreted (or native)
