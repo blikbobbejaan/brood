@@ -57,34 +57,30 @@ An unknown option raises. [[defapp]] is the usual way to make one.
 
 ;; ---- start and stop ----------------------------------------------------------
 
-;; Depth-first, requirements before the application, each application once. `acc` is
-;; `[started-names order]`. No cycle check: `:requires` holds application VALUES, and an
-;; immutable value cannot require one made after it.
-(defn- start-order-into (acc application)
-  (if (contains? (first acc) (app-name application))
-    acc
-    (let ([seen order] (fold (app-requires application) acc start-order-into))
-      [(conj seen (app-name application)) (conj order application)])))
-
-(defn- start-each (order started)
-  (if (empty? order)
-    (reverse started)
-    (let (application (first order)
-          state (try
-                  ((app-start application))
-                  (catch e
-                    (stop (reverse started))
-                    (throw e))))
-      (start-each (rest order) (cons [application state] started)))))
+;; Depth-first, requirements before the application, each application (by name) once. No
+;; cycle check: `:requires` holds application VALUES, and an immutable value cannot
+;; require one made after it.
+(defn- start-order-into (order application)
+  (if (any? order (fn (listed) (= (app-name listed) (app-name application))))
+    order
+    (conj (fold (app-requires application) order start-order-into) application)))
 
 (defn start (application)
   "Start `application` after everything it `:requires`, each once, in dependency order,
-and return the started list `([application root] …)` to hand to [[stop]]. When a start
+and return the started `[[application root] …]` to hand to [[stop]]. When a start
 raises, the applications already started are stopped in reverse and the error re-raised.
 
-    (application/start web)   ;=> ([store <pid>] [web <pid>])"
-  (let ([_ order] (start-order-into [#{} []] application))
-    (start-each order ())))
+    (application/start web)   ;=> [[store <pid>] [web <pid>]]"
+  (fold (start-order-into [] application)
+    []
+    (fn (started to-start)
+      (conj started
+        [to-start
+          (try
+            ((app-start to-start))
+            (catch e
+              (stop started)
+              (throw e)))]))))
 
 (def- *stop-wait-ms* 5000)
 

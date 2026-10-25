@@ -3687,3 +3687,11 @@ it traps the test runner's own signals. `defstatem` refuses a machine with no da
 parameter, and a backwards `{3,1}` is literal text as the regex dialect's malformation rule
 says, rather than an engine error. Not run on this machine: every test, and the new ones
 run in CI.
+
+2026-10-25 (simplification, no behaviour change): a signal's subscriber and its saved
+disposition are one `Trap` behind one lock (`SIGNAL_TRAPS`), so the reader thread no longer
+needs a compare-and-retry against an atomic. `application/start` is a fold over the start
+order, which is a plain vector (the `[seen order]` pair and `start-each` are gone), and
+returns a vector. `defstatem`'s loop takes the next state straight from `receive`, without
+the `:stop`/`:stale` sentinels. `project-entry` resolves an entry point once for
+`project-entry-fn` and `check-boot`, replacing the near-copy `project-entry-application`.
