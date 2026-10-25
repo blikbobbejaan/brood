@@ -113,25 +113,102 @@ fn computed_call_slot(closure: u64, argc: u32) -> usize {
     ((closure ^ (closure >> 32) ^ u64::from(argc)) as usize) & (COMPUTED_CALL_SLOTS - 1)
 }
 
+/// What a call site's head resolved to, as far as the call IC caches it: a closure, a
+/// builtin or a keyword (the three callable kinds). Any other value is not cached, and
+/// the site resolves it again on its next call, as a cold site does.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum CalleeKind {
+    Fn,
+    Native,
+    Keyword,
+}
+
 /// One call-site inline-cache entry — see the [`Heap::vm_call_ics`] field doc.
-/// `callee` is always an immovable (PRELUDE/RUNTIME/atom) value: global bindings
-/// are promoted by `env_define`, so the LOCAL collector never relocates it; the
-/// runtime compactor would, but it bumps the epoch this entry is validated
-/// against, so a stale handle is never read.
+///
+/// **48 bytes, and the size is the point**: one entry per call site a process has run, so
+/// it is the largest single item in a parked green process (`(%ic-stats)`). The callee is
+/// held as `kind` + `callee_bits` rather than a `Value`, which is 24 bytes for the sake of
+/// `Pid`'s second word and would make this 64 (`call_ic_entry_is_48_bytes`).
+///
+/// The callee is always an immovable (PRELUDE/RUNTIME/atom) value: global bindings are
+/// promoted by `env_define`, so the LOCAL collector never relocates it; the runtime
+/// compactor would, but it bumps the epoch this entry is validated against, so a stale
+/// handle is never read.
 pub struct CallIcEntry {
-    pub sym: Symbol,
-    pub argc: u32,
-    pub epoch: u64,
-    pub callee: Value,
-    /// The VM fast path: the callee's compiled arm for `argc` + its captured env,
-    /// when the callee resolved to a non-passthrough VM-eligible closure. Held as a
-    /// process-local [`ArmHandle`](crate::eval::compile::ArmHandle) so the per-call
-    /// probe clone is never contended when the arm is runtime-shared (KI-40).
-    pub arm: Option<(Arc<crate::eval::compile::ArmHandle>, EnvId)>,
+    sym: Symbol,
+    /// The call's argument count. A site with more than `u16::MAX` literal arguments is
+    /// never cached.
+    argc: u16,
+    kind: CalleeKind,
+    epoch: u64,
+    /// The callee's handle: a `ClosureId`'s or `NativeId`'s word, or a keyword's symbol.
+    callee_bits: u64,
+    /// The VM fast path: the callee's compiled arm for `argc`, when the callee resolved
+    /// to a non-passthrough VM-eligible closure. Held as a process-local
+    /// [`ArmHandle`](crate::eval::compile::ArmHandle) so the per-call probe clone is never
+    /// contended when the arm is runtime-shared (KI-40).
+    arm: Option<Arc<crate::eval::compile::ArmHandle>>,
+    /// The arm's captured env. Meaningless when `arm` is `None`.
+    env: EnvId,
     /// The callee arm's IC block in **this process** (resolved once at install via
     /// [`Heap::vm_arm_block`]), so entering the callee on an IC hit sets the cursors
     /// without a registry lookup on the hot path. Meaningless when `arm` is `None`.
-    pub callee_bases: (u32, u32),
+    callee_bases: (u32, u32),
+}
+
+// Pinned at compile time as well as by `call_ic_entry_is_48_bytes`: a field added without
+// packing fails the build rather than growing every process.
+const _: () = assert!(std::mem::size_of::<Option<CallIcEntry>>() == 48);
+
+impl CallIcEntry {
+    /// The entry for `callee` at `sym`/`argc`/`epoch`, or `None` for one the IC does not
+    /// hold: a callee that is not a closure, builtin or keyword, or an `argc` past `u16`.
+    fn new(
+        sym: Symbol,
+        argc: u32,
+        epoch: u64,
+        callee: Value,
+        arm: Option<(Arc<crate::eval::compile::ArmHandle>, EnvId)>,
+    ) -> Option<CallIcEntry> {
+        let (kind, callee_bits) = match callee {
+            Value::Fn(id) => (CalleeKind::Fn, id.0),
+            Value::Native(id) => (CalleeKind::Native, id.0),
+            Value::Keyword(k) => (CalleeKind::Keyword, u64::from(k)),
+            _ => return None,
+        };
+        let (arm, env) = match arm {
+            Some((arm, env)) => (Some(arm), env),
+            None => (None, EnvId::GLOBAL),
+        };
+        Some(CallIcEntry {
+            sym,
+            argc: u16::try_from(argc).ok()?,
+            kind,
+            epoch,
+            callee_bits,
+            arm,
+            env,
+            // Overwritten inside `vm_call_ic_put`, which resolves the callee's block.
+            callee_bases: (0, 0),
+        })
+    }
+
+    fn callee(&self) -> Value {
+        match self.kind {
+            CalleeKind::Fn => Value::Fn(crate::core::value::ClosureId(self.callee_bits)),
+            CalleeKind::Native => Value::Native(crate::core::value::NativeId(self.callee_bits)),
+            CalleeKind::Keyword => Value::Keyword(self.callee_bits as Symbol),
+        }
+    }
+
+    fn arm(&self) -> Option<(&Arc<crate::eval::compile::ArmHandle>, EnvId)> {
+        self.arm.as_ref().map(|arm| (arm, self.env))
+    }
+
+    fn matches(&self, sym: Symbol, argc: u32, epoch: u64) -> bool {
+        self.sym == sym && u32::from(self.argc) == argc && self.epoch == epoch
+    }
 }
 
 /// IR-readable mirror of one call site's fast-link, indexed by site id in
@@ -889,13 +966,9 @@ impl Heap {
     ) -> Option<Value> {
         let t = self.vm_call_ics.borrow();
         let e = t.get((self.cur_ic_base.get() + site) as usize)?.as_ref()?;
-        let (a, cenv) = e.arm.as_ref()?;
-        (e.sym == sym
-            && e.argc == argc
-            && e.epoch == epoch
-            && *cenv == env
-            && std::ptr::eq(Arc::as_ptr(a.arc()), arm))
-        .then_some(e.callee)
+        let (a, cenv) = e.arm()?;
+        (e.matches(sym, argc, epoch) && cenv == env && std::ptr::eq(Arc::as_ptr(a.arc()), arm))
+            .then(|| e.callee())
     }
 
     pub fn vm_call_ic_probe(
@@ -910,12 +983,10 @@ impl Heap {
     )> {
         let t = self.vm_call_ics.borrow();
         let e = t.get((self.cur_ic_base.get() + site) as usize)?.as_ref()?;
-        if e.sym == sym && e.argc == argc && e.epoch == epoch {
+        if e.matches(sym, argc, epoch) {
             Some((
-                e.callee,
-                e.arm
-                    .as_ref()
-                    .map(|(a, env)| (a.clone(), *env, e.callee_bases)),
+                e.callee(),
+                e.arm().map(|(a, env)| (a.clone(), env, e.callee_bases)),
             ))
         } else {
             None
@@ -963,12 +1034,12 @@ impl Heap {
             .enumerate()
             .filter_map(|(abs, e)| e.as_ref().filter(|e| e.sym == sym).map(|e| (abs, e)))
             .map(|(abs, e)| {
-                let callee = match e.callee.unpack() {
+                let callee = match e.callee().unpack() {
                     crate::core::value::ValueRef::Fn(_) => "closure",
                     crate::core::value::ValueRef::Native(_) => "native",
                     _ => "other",
                 };
-                let arm = match e.arm.as_ref() {
+                let arm = match e.arm() {
                     None => "arm-less".to_string(),
                     Some((arm, _)) => {
                         let code = arm.jit_code.load(Relaxed);
@@ -1008,7 +1079,7 @@ impl Heap {
                 // no cell means the native caller stopped reaching the call (KI-281's
                 // second occurrence read that way: every gate passed, nothing published).
                 let linkable = self
-                    .fast_link_from_entry(abs, sym, e.argc, self.global_epoch())
+                    .fast_link_from_entry(abs, sym, u32::from(e.argc), self.global_epoch())
                     .is_some();
                 format!(
                     "site {abs} argc {} epoch {} callee {callee} {arm}; {cell}; linkable now {linkable}",
@@ -1051,7 +1122,7 @@ impl Heap {
         // Memoised hot path — read the [`FastLink`] mirror *alone*. It already carries
         // everything the guard needs (`sym`/`argc`/`epoch`) plus the validated result, so
         // a hit never touches the fat `CallIcEntry` at all: one 40-byte flat load instead
-        // of a 96-byte entry load. Valid because within an epoch an installed arm's code pointer is stable (a `def`
+        // of a 48-byte entry load. Valid because within an epoch an installed arm's code pointer is stable (a `def`
         // or a recompile bumps the epoch).
         //
         // A NATIVE flat cell (`vm_fast_link_publish_native`: `nslots == u32::MAX`, `code` a
@@ -1120,7 +1191,7 @@ impl Heap {
         use std::sync::atomic::Ordering::Acquire;
         let t = self.vm_call_ics.borrow();
         let e = t.get(abs)?.as_ref()?;
-        if e.sym != sym || e.argc != argc || e.epoch != epoch {
+        if !e.matches(sym, argc, epoch) {
             return None;
         }
         // The callee arm's IC block, resolved authoritatively when the entry was installed
@@ -1128,7 +1199,7 @@ impl Heap {
         // `vm_arm_block` call here (which would want `vm_call_ics` mutably while `t` holds it
         // immutably), and no lookup on the hot path since it rides into the slot below.
         let callee_bases = e.callee_bases;
-        let (arm, env) = e.arm.as_ref()?;
+        let (arm, env) = e.arm()?;
         let code = arm.jit_code.load(Acquire);
         if code.is_null() || code == crate::jit::BAILED || code == crate::jit::QUEUED {
             return None;
@@ -1175,7 +1246,7 @@ impl Heap {
         // at `base+nslots` and read back at `base+inline_nslots`. Same KI-48 family as the
         // `jit_tier` torn read, in the one place that was still spelled the old way.
         let active_ns = crate::eval::compile::frame_size_for_code(arm, code);
-        Some((code as *const u8, active_ns, *env, callee_bases))
+        Some((code as *const u8, active_ns, env, callee_bases))
     }
 
     /// The epoch the fat `CallIcEntry` at `site` is installed for — for the debug
@@ -1216,7 +1287,7 @@ impl Heap {
         let abs = (self.cur_ic_base.get() + site) as usize;
         let t = self.vm_call_ics.borrow();
         let e = t.get(abs)?.as_ref()?;
-        let (arm, _) = e.arm.as_ref()?;
+        let (arm, _) = e.arm()?;
         let code = arm.jit_code.load(Acquire);
         Some(!(code.is_null() || code == crate::jit::BAILED || code == crate::jit::QUEUED))
     }
@@ -1312,18 +1383,9 @@ impl Heap {
         if self.is_dynamic(sym) {
             return;
         }
-        self.vm_call_ic_put(
-            site,
-            CallIcEntry {
-                sym,
-                argc,
-                epoch,
-                callee,
-                arm,
-                // Overwritten inside `vm_call_ic_put`, which resolves the callee's block.
-                callee_bases: (0, 0),
-            },
-        );
+        if let Some(entry) = CallIcEntry::new(sym, argc, epoch, callee, arm) {
+            self.vm_call_ic_put(site, entry);
+        }
     }
 
     /// Install (or overwrite) call-site `site`'s inline cache entry. An
@@ -1336,18 +1398,18 @@ impl Heap {
     /// simply never caches, which is correct — its handles are re-tagged
     /// wholesale by `freeze_as_shared_code`.
     fn vm_call_ic_put(&self, site: u32, mut entry: CallIcEntry) {
-        if is_movable(entry.callee) {
+        if is_movable(entry.callee()) {
             return;
         }
-        if let Some((_, env)) = &entry.arm
-            && *env != EnvId::GLOBAL
+        if let Some((_, env)) = entry.arm()
+            && env != EnvId::GLOBAL
             && env.region() == LOCAL
         {
             return;
         }
         // Resolve the callee arm's IC block BEFORE borrowing the table below —
         // `vm_arm_block` may grow `vm_call_ics` (a nested mutable borrow otherwise).
-        entry.callee_bases = match &entry.arm {
+        entry.callee_bases = match entry.arm() {
             Some((arm, _)) => self.vm_arm_block(arm),
             None => (0, 0),
         };
@@ -1503,6 +1565,58 @@ impl Heap {
         if let Ok(mut cache) = self.runtime.jit_inline_cache.write() {
             cache.insert(key, (code as usize, epoch));
         }
+    }
+}
+
+#[cfg(test)]
+mod call_ic_entry_tests {
+    use super::*;
+
+    /// The entry is one per call site a process has run — the largest item in a parked
+    /// green process — so its size is pinned. Holding the callee as a `Value` (24 bytes)
+    /// made it 64; a field added without packing fails here rather than silently growing
+    /// every process.
+    #[test]
+    fn call_ic_entry_is_48_bytes() {
+        assert_eq!(std::mem::size_of::<Option<CallIcEntry>>(), 48);
+    }
+
+    /// The three callable kinds come back as the exact handle that was cached, and
+    /// anything else is not cached at all, so a probe can only ever hand back a callee it
+    /// was given.
+    #[test]
+    fn the_callee_round_trips_and_only_callables_are_cached() {
+        let sym = crate::core::value::intern("ic-entry-test");
+        for callee in [
+            Value::Fn(crate::core::value::ClosureId(0xDEAD_BEEF_0000_0042)),
+            Value::Native(crate::core::value::NativeId(7)),
+            Value::Keyword(crate::core::value::intern("k")),
+        ] {
+            let e = CallIcEntry::new(sym, 2, 9, callee, None).expect("a callable is cached");
+            let same = match (e.callee(), callee) {
+                (Value::Fn(a), Value::Fn(b)) => a.0 == b.0,
+                (Value::Native(a), Value::Native(b)) => a.0 == b.0,
+                (Value::Keyword(a), Value::Keyword(b)) => a == b,
+                _ => false,
+            };
+            assert!(
+                same,
+                "the cached callee must be the handle that was installed"
+            );
+            assert!(e.matches(sym, 2, 9));
+            assert!(!e.matches(sym, 3, 9));
+        }
+        assert!(CallIcEntry::new(sym, 2, 9, Value::int(1), None).is_none());
+        assert!(
+            CallIcEntry::new(
+                sym,
+                u32::from(u16::MAX) + 1,
+                9,
+                Value::Native(crate::core::value::NativeId(7)),
+                None
+            )
+            .is_none()
+        );
     }
 }
 

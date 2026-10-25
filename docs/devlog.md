@@ -3749,3 +3749,13 @@ interpreter redirects a thin wrapper to its inner head, so `jit_computed_call_te
 counted only once its caller `fold-with` is native, and `settle` never waited on `fold-with`'s
 compile; each thin-wrapper test settles `fold-with` first and the redefining tests run
 `:isolated`. Not run on this machine.
+
+2026-10-25 (the call IC entry is 48 bytes, was 64): `CallIcEntry` is one per call site a process has
+run, the largest item in a parked green process. A `spawn-live` unit holds 7. Its callee is now a
+one-byte kind plus a `u64` handle instead of a 24-byte `Value` (24 for `Pid`'s second word, which no
+callee needs), `argc` is a `u16`, and the arm's env sits beside the arm instead of in a tuple. Only
+closures, builtins and keywords are cached; anything else, or a site with more than 65 535 literal
+arguments, resolves on every call as a cold site does. The size is a compile-time assertion.
+`spawn-live` at 200 000 processes: 943 → 927 MB peak RSS. `make ab --floor` (fib, pfib, bintree,
+spawn, spawn-live, pingpong, ring, json) and `make ab-vm`: noise. Not run on this machine: the new
+`call_ic_entry_tests`, in CI.
