@@ -21,7 +21,18 @@ interface host {
   clock-moves: func() -> bool;
 }
 
+/// The named shapes, each echoed back, so lowering and lifting can be checked against each other.
+interface shapes {
+  variant cell { empty, number(s64), word(string) }
+  enum color { red, green, blue }
+  record point { x: s32, y: s32, label: option<string> }
+  echo-cell: func(c: cell) -> cell;
+  echo-color: func(c: color) -> color;
+  echo-point: func(p: point) -> point;
+}
+
 world guest {
   export counter;
   export host;
+  export shapes;
 }

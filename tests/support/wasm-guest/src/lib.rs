@@ -70,3 +70,19 @@ impl HostGuest for Fixture {
 }
 
 export!(Fixture);
+
+use exports::brood::fixture::shapes::{Cell as ShapeCell, Color, Guest as ShapesGuest, Point};
+
+impl ShapesGuest for Fixture {
+    fn echo_cell(cell: ShapeCell) -> ShapeCell {
+        cell
+    }
+
+    fn echo_color(color: Color) -> Color {
+        color
+    }
+
+    fn echo_point(point: Point) -> Point {
+        point
+    }
+}

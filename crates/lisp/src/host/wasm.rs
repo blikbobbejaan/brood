@@ -750,6 +750,84 @@ fn lower(
                 some => Val::Option(Some(Box::new(lower(heap, who, some, &o.ty(), boundary)?))),
             }
         }
+        // The three named shapes, each spelled the way `lift` hands it back, so a value a
+        // component returned can be passed back in: an enum is a keyword, a variant a
+        // tagged vector (`[:case payload]`, or `[:case]` / `:case` without a payload), a
+        // record a map keyed by keywords.
+        Type::Enum(e) => {
+            let name = keyword_arg(heap, who, "enum", v)?;
+            if !e.names().any(|n| n == name) {
+                return Err(LispError::runtime(format!(
+                    "{who}: :{name} is not a case of this enum ({})",
+                    e.names().collect::<Vec<_>>().join(", ")
+                )));
+            }
+            Val::Enum(name.to_string())
+        }
+        Type::Variant(variant) => {
+            let (tag, payload) = match v {
+                Value::Keyword(_) => (v, None),
+                _ => {
+                    let items = seq_items(heap, who, v)?;
+                    match items.as_slice() {
+                        [tag] => (*tag, None),
+                        [tag, payload] => (*tag, Some(*payload)),
+                        _ => {
+                            return Err(LispError::runtime(format!(
+                                "{who}: a variant is [:case payload], [:case] or :case"
+                            )));
+                        }
+                    }
+                }
+            };
+            let name = keyword_arg(heap, who, "variant case", tag)?;
+            let Some(case) = variant.cases().find(|c| c.name == name) else {
+                return Err(LispError::runtime(format!(
+                    "{who}: :{name} is not a case of this variant ({})",
+                    variant
+                        .cases()
+                        .map(|c| c.name)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            };
+            let lowered = match (&case.ty, payload) {
+                (Some(ty), Some(p)) => Some(Box::new(lower(heap, who, p, ty, boundary)?)),
+                (None, None) => None,
+                (Some(_), None) => {
+                    return Err(LispError::runtime(format!(
+                        "{who}: variant case :{name} takes a payload"
+                    )));
+                }
+                (None, Some(_)) => {
+                    return Err(LispError::runtime(format!(
+                        "{who}: variant case :{name} takes no payload"
+                    )));
+                }
+            };
+            Val::Variant(name.to_string(), lowered)
+        }
+        Type::Record(record) => {
+            let Value::Map(map) = v else {
+                return Err(LispError::wrong_type(heap, who, "map (a WIT record)", v));
+            };
+            let mut fields = Vec::new();
+            for field in record.fields() {
+                let key = Value::Keyword(value::intern(field.name));
+                let field_value = match (heap.map_get(map, key), &field.ty) {
+                    (Some(found), ty) => lower(heap, who, found, ty, boundary)?,
+                    (None, Type::Option(_)) => Val::Option(None),
+                    (None, _) => {
+                        return Err(LispError::runtime(format!(
+                            "{who}: the record is missing :{}",
+                            field.name
+                        )));
+                    }
+                };
+                fields.push((field.name.to_string(), field_value));
+            }
+            Val::Record(fields)
+        }
         // A resource is passed by its token. A borrow lends it for the call; an owned one
         // moves into the guest, so its token stops naming anything once the call is made.
         Type::Borrow(_) => Val::Resource(boundary.resource(heap, who, v)?),
@@ -761,10 +839,24 @@ fn lower(
         other => {
             return Err(LispError::runtime(format!(
                 "{who}: unsupported WIT parameter type {other:?} (this slice marshals \
-                 scalars, strings, lists, tuples, options and resources)"
+                 scalars, strings, lists, tuples, options, enums, variants, records and \
+                 resources)"
             )));
         }
     })
+}
+
+/// The name of a keyword argument, for an enum or variant case.
+fn keyword_arg(heap: &Heap, who: &str, what: &str, v: Value) -> Result<&'static str, LispError> {
+    match v {
+        Value::Keyword(k) => Ok(value::symbol_name_ref(k)),
+        other => Err(LispError::wrong_type(
+            heap,
+            who,
+            &format!("keyword ({what})"),
+            other,
+        )),
+    }
 }
 
 fn number_arg(heap: &Heap, who: &str, v: Value) -> Result<f64, LispError> {
