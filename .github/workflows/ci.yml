@@ -14,10 +14,14 @@ on:
   # run on demand against a branch before merging.
   workflow_dispatch:
 
-# One in-flight run per ref; a new push cancels the previous run for that ref.
+# One in-flight run per ref. On a branch a new push cancels the run in flight: only the newest
+# commit matters there. On main it does not: several sessions push to main minutes apart, and
+# cancelling meant runs rarely finished — of the last 40 runs on 2026-10-25, 35 were cancelled,
+# so whether main was green was mostly unknown. Now the run in flight finishes, and at most ONE waits,
+# newer pushes replacing it, so each finished run covers a commit no older than one run.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always
