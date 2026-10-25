@@ -92,3 +92,29 @@
       (is (contains? names "brood:fixture/counter#[constructor]counter"))
       (is (contains? names "brood:fixture/host#read-file"))
       (wasm/close inst))))
+
+(describe "wasm: enums, variants and records go in as they come out"
+  (test "a variant: [:case payload], [:case] or :case"
+    (let (inst (wasm/instantiate *guest* {}))
+      (assert= [:number 42] (wasm/call inst "echo-cell" [:number 42]))
+      (assert= [:word "hi"] (wasm/call inst "echo-cell" [:word "hi"]))
+      (assert= [:empty] (wasm/call inst "echo-cell" [:empty]))
+      (assert= [:empty] (wasm/call inst "echo-cell" :empty))
+      (wasm/close inst)))
+  (test "a variant case it does not have, or the wrong payload, is refused"
+    (let (inst (wasm/instantiate *guest* {}))
+      (assert-error (wasm/call inst "echo-cell" [:float 1.5]))
+      (assert-error (wasm/call inst "echo-cell" [:number]))
+      (assert-error (wasm/call inst "echo-cell" [:empty 1]))
+      (wasm/close inst)))
+  (test "an enum is a keyword"
+    (let (inst (wasm/instantiate *guest* {}))
+      (assert= :green (wasm/call inst "echo-color" :green))
+      (assert-error (wasm/call inst "echo-color" :purple))
+      (wasm/close inst)))
+  (test "a record is a map; an option field may be left out, any other may not"
+    (let (inst (wasm/instantiate *guest* {}))
+      (assert= {:x 1 :y 2 :label "a"} (wasm/call inst "echo-point" {:x 1 :y 2 :label "a"}))
+      (assert= {:x 1 :y 2 :label nil} (wasm/call inst "echo-point" {:x 1 :y 2}))
+      (assert-error (wasm/call inst "echo-point" {:x 1}))
+      (wasm/close inst))))
