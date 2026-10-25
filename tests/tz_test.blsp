@@ -23,7 +23,8 @@
 (describe "POSIX TZ rules"
   (test "offsets count hours west, and are kept as seconds east"
     (let (rule (tz/posix-rule "EST5EDT,M3.2.0,M11.1.0"))
-      (assert= ["EST" -18000 "EDT" -14400] [(:std rule) (:std-offset rule) (:dst rule) (:dst-offset rule)])))
+      (assert= ["EST" -18000 "EDT" -14400]
+        [(:std rule) (:std-offset rule) (:dst rule) (:dst-offset rule)])))
   (test "a quoted name and a minutes offset"
     (let (rule (tz/posix-rule "<+0330>-3:30"))
       (assert= ["+0330" 12600 nil] [(:std rule) (:std-offset rule) (:dst rule)])))
@@ -72,7 +73,8 @@
   (test "a half-hour offset"
     (if (not zoneinfo?)
       (is true)
-      (assert= "2024-01-01T05:30:00+05:30" (tz/->iso (zone "Asia/Kolkata") (iso "2024-01-01T00:00:00Z")))))
+      (assert= "2024-01-01T05:30:00+05:30"
+        (tz/->iso (zone "Asia/Kolkata") (iso "2024-01-01T00:00:00Z")))))
   (test "an unknown zone, or a name that climbs out of the directory, is a failure"
     (is (failure? (tz/zone "Nowhere/Land")))
     (is (failure? (tz/zone "../../etc/passwd")))

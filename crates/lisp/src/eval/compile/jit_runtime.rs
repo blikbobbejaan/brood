@@ -243,7 +243,10 @@ pub(crate) fn native_still_valid(heap: &Heap, arm: &CompiledArm, genv: EnvId) ->
     if heap.code_relocations() != arm.compile_relocations.load(Acquire)
         || arm.stale_bindings.load(Acquire)
         || !chunk_ops_all_native(heap, arm)
-        || arm.leaf.as_ref().is_some_and(|leaf| !leaf.still_valid(heap))
+        || arm
+            .leaf
+            .as_ref()
+            .is_some_and(|leaf| !leaf.still_valid(heap))
     {
         return false;
     }

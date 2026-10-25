@@ -19,8 +19,8 @@
 (def ur-step (fn (x) (+ x 1)))
 (defn- ur-calls (n acc) (if (= n 0) acc (ur-calls (dec n) (ur-step acc))))
 
-(describe "a rebind elsewhere" :isolated
-  (test "leaves a native arm native"
+(describe "a rebind elsewhere"
+  :isolated (test "leaves a native arm native"
     (when (%native-tier?)
       (assert= :native (settle ur-loop 2 (fn () (ur-loop 500 0)) 50))
       ;; a rebind: the global code epoch moves

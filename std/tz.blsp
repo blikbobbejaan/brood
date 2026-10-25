@@ -52,7 +52,8 @@ in autumn) are resolved by `->utc`'s `prefer` (see there).")
         types-at (+ idx-at (:time c))
         chars-at (+ types-at (* (:type c) 6))
         chars-end (+ chars-at (:char c)))
-    {:times (into [] (map (range (:time c)) (fn (i) (bytes/int b (+ times-at (* i time-size)) time-size))))
+    {:times (into []
+              (map (range (:time c)) (fn (i) (bytes/int b (+ times-at (* i time-size)) time-size))))
      :indices (into [] (map (range (:time c)) (fn (i) (bytes/at b (+ idx-at i)))))
      :types (into []
               (map (range (:type c))
@@ -105,8 +106,7 @@ embedded copy, a bundle).
     (let (close (index-of s ">" i))
       [(string/substring s (inc i) close) (inc close)])
     (let (end (letrec (go (fn (j)
-                            (if (and (< j (string/length s))
-                                  (letter? (string/char-at s j)))
+                            (if (and (< j (string/length s)) (letter? (string/char-at s j)))
                               (go (inc j))
                               j)))
                 (go i)))
@@ -152,7 +152,8 @@ embedded copy, a bundle).
                         (map (string/split (string/substring body 1 (string/length body)) ".")
                           rule-int)))
           [{:kind :m :month m :week w :day d} end])
-      (= head "J") [{:kind :julian :day (rule-int (string/substring body 1 (string/length body)))} end]
+      (= head "J")
+        [{:kind :julian :day (rule-int (string/substring body 1 (string/length body)))} end]
       :else [{:kind :zero :day (rule-int body)} end])))
 
 (defn- scan-change (s i)
@@ -267,7 +268,8 @@ the rule applied to every year. A failure when the rule does not parse.
 
     (string? (:name (tz/local-zone)))   → true"
   (let (env (os/env "TZ")
-        name (when env (if (string/starts-with? env ":") (string/substring env 1 (string/length env)) env)))
+        name (when env
+               (if (string/starts-with? env ":") (string/substring env 1 (string/length env)) env)))
     (cond
       (and name (not (failure? (zone name)))) (zone name)
       (and name (not (failure? (rule-zone name)))) (rule-zone name)
@@ -300,7 +302,8 @@ east of UTC.
         type-of (fn (index) (map/select-keys (nth (:types zone) index) [:offset :dst? :abbr])))
     (cond
       ;; past the file's last transition: its rule, when it has one
-      (and (:rule zone) (or (empty? times) (= i (dec (count times))))) (rule-at (:rule zone) seconds)
+      (and (:rule zone) (or (empty? times) (= i (dec (count times)))))
+        (rule-at (:rule zone) seconds)
       (>= i 0) (type-of (nth (:indices zone) i))
       ;; before the first transition: the first type (RFC 8536 §3.2)
       (not (empty? (:types zone))) (type-of 0)
@@ -329,18 +332,18 @@ Java's and Temporal's default.
     (datetime/->epoch-ms (tz/->utc (tz/rule-zone \"EST5\") (datetime/parse-iso8601 \"1970-01-01T00:00:00Z\")))   → 18000000"
   (let (wall (datetime/->epoch-ms local)
         day 86400000
-        offsets (seq/distinct (map [(- wall day) wall (+ wall day)] (fn (t) (offset-seconds zone t))))
+        offsets (seq/distinct (map [(- wall day) wall (+ wall day)]
+                                (fn (t) (offset-seconds zone t))))
         ;; an offset is a reading of `local` when the instant it gives has that offset
         readings (sort (seq/keep offsets
                          (fn (o)
                            (let (utc (- wall (* 1000 o)))
                              (when (= o (offset-seconds zone utc)) utc)))))
         before (offset-seconds zone (- wall day)))
-    (datetime/epoch-ms->
-      (cond
-        (empty? readings) (- wall (* 1000 before))
-        (= prefer :later) (last readings)
-        :else (first readings)))))
+    (datetime/epoch-ms-> (cond
+                           (empty? readings) (- wall (* 1000 before))
+                           (= prefer :later) (last readings)
+                           :else (first readings)))))
 
 (sig offset->string (int -> string))
 (defn offset->string (seconds)
