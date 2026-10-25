@@ -150,11 +150,14 @@ pub(super) struct FontShared {
     /// file)`, in the order they were first needed — the first place the next missing
     /// glyph is looked for, so a screen of CJK scans the system once, not per char.
     fallbacks: Vec<(String, String)>,
-    /// codepoint → the fallback family that draws it (`None`: nothing installed does).
-    fallback_for: HashMap<char, Option<String>>,
-    /// 128-codepoint blocks a full system scan already came up empty for, so a page of
-    /// glyphs nobody has (a Nerd-font icon range without a Nerd font) costs one scan.
-    empty_blocks: std::collections::HashSet<u32>,
+    /// cluster → the fallback family that draws it (`None`: nothing installed does).
+    /// Keyed by the WHOLE cluster: `क्ष` and `कि` share a first char but not their marks.
+    fallback_for: HashMap<String, Option<String>>,
+    /// 128-codepoint block → the system's regular faces with any glyph in it, in
+    /// `scan_system`'s preference order. Built once, with `system`, by reading each face's
+    /// character map: a lookup then opens only the faces that can draw the block, and a
+    /// block no face touches (a Nerd-font icon range without a Nerd font) costs nothing.
+    system_blocks: HashMap<u32, Vec<fontdb::ID>>,
     /// Font files already loaded into the shaping database.
     loaded_files: std::collections::HashSet<std::path::PathBuf>,
     /// Bumped by every registration: a family keyword can now name different faces, so
@@ -227,7 +230,7 @@ impl FontShared {
             system: None,
             fallbacks: Vec::new(),
             fallback_for: HashMap::new(),
-            empty_blocks: Default::default(),
+            system_blocks: HashMap::new(),
             loaded_files: Default::default(),
             generation: 0,
         }
@@ -351,6 +354,7 @@ impl FontShared {
         if self.system.is_none() {
             let mut system = fontdb::Database::new();
             system.load_system_fonts();
+            self.system_blocks = block_index(&system);
             self.system = Some(system);
         }
     }
@@ -407,12 +411,11 @@ impl FontShared {
         self.system_fallback(&chars)
     }
 
-    /// An installed family that draws `chars` (keyed by the first), loading it into the
-    /// shaping database on first use: the fallbacks already loaded first, then — unless a
-    /// scan already found this block empty — a scan of the system's regular faces,
-    /// monospaced ones first.
+    /// An installed family that draws `chars` (one cluster), loading it into the shaping
+    /// database on first use: the fallbacks already loaded first, then the system's
+    /// regular faces that touch the cluster's block, monospaced ones first.
     fn system_fallback(&mut self, chars: &[char]) -> Option<String> {
-        let key = chars[0];
+        let key: String = chars.iter().collect();
         if let Some(known) = self.fallback_for.get(&key) {
             return known.clone();
         }
@@ -429,18 +432,17 @@ impl FontShared {
                 return Some(name);
             }
         }
-        let block = key as u32 >> 7;
-        if self.empty_blocks.contains(&block) {
-            self.fallback_for.insert(key, None);
-            return None;
-        }
         self.ensure_system();
+        let candidates = self
+            .system_blocks
+            .get(&(chars[0] as u32 >> 7))
+            .map(Vec::as_slice)
+            .unwrap_or_default();
         let found = self
             .system
             .as_ref()
-            .and_then(|system| scan_system(system, chars));
+            .and_then(|system| scan_system(system, candidates, chars));
         let Some((family, path)) = found else {
-            self.empty_blocks.insert(block);
             self.fallback_for.insert(key, None);
             return None;
         };
@@ -480,12 +482,12 @@ fn query_face(
     })
 }
 
-/// The first installed family whose regular face draws every char of `chars`, with
-/// the file it was found in: monospaced faces first (a fallback glyph sits in a cell),
-/// then the Noto and DejaVu families a desktop usually has for coverage, then the rest.
-/// Each candidate's character map is read from its file (memory-mapped), so this is the
-/// slow path `FontShared::system_fallback` caches around.
-fn scan_system(system: &fontdb::Database, chars: &[char]) -> Option<(String, String)> {
+/// The installed regular faces by the 128-codepoint blocks they have glyphs in, each block's
+/// faces in fallback preference: monospaced first (a fallback glyph sits in a cell), then the
+/// Noto and DejaVu families a desktop usually has for coverage, then the rest. Reads every
+/// candidate's character map once (memory-mapped); `scan_system` then opens only the faces
+/// of one block.
+fn block_index(system: &fontdb::Database) -> HashMap<u32, Vec<fontdb::ID>> {
     let rank = |face: &fontdb::FaceInfo| {
         let name = face
             .families
@@ -505,9 +507,32 @@ fn scan_system(system: &fontdb::Database, chars: &[char]) -> Option<(String, Str
         .filter(|face| face.style == Style::Normal && (350..=500).contains(&face.weight.0))
         .collect();
     candidates.sort_by_key(|face| rank(face));
-    candidates.into_iter().find_map(|face| {
+    let mut index: HashMap<u32, Vec<fontdb::ID>> = HashMap::new();
+    for face in candidates {
+        let mut blocks = std::collections::BTreeSet::new();
+        system.with_face_data(face.id, |data, face_index| {
+            if let Some(font) = swash::FontRef::from_index(data, face_index as usize) {
+                font.charmap()
+                    .enumerate(|codepoint, _| _ = blocks.insert(codepoint >> 7));
+            }
+        });
+        for block in blocks {
+            index.entry(block).or_default().push(face.id);
+        }
+    }
+    index
+}
+
+/// The first of `candidates` (faces of `system`, in preference order) that draws every
+/// char of `chars`, as its family and the file it was found in.
+fn scan_system(
+    system: &fontdb::Database,
+    candidates: &[fontdb::ID],
+    chars: &[char],
+) -> Option<(String, String)> {
+    candidates.iter().find_map(|&id| {
         let covered = system
-            .with_face_data(face.id, |data, index| {
+            .with_face_data(id, |data, index| {
                 swash::FontRef::from_index(data, index as usize)
                     .map(|font| {
                         let charmap = font.charmap();
@@ -516,6 +541,7 @@ fn scan_system(system: &fontdb::Database, chars: &[char]) -> Option<(String, Str
                     .unwrap_or(false)
             })
             .unwrap_or(false);
+        let face = system.face(id)?;
         let family = face.families.first().map(|(name, _)| name.clone())?;
         covered.then(|| {
             let path = source_path(&face.source)
@@ -904,6 +930,10 @@ impl Renderer {
             return;
         }
         self.line_height = next;
+        // Unlike a size change, this one moves glyphs without changing the px the cluster
+        // cache is keyed by: a cluster is baked in its cell box at its baseline, so the
+        // old line height's would sit wrong in the new cell.
+        self.cache.clear();
         self.recompute();
     }
 

@@ -995,7 +995,8 @@ impl RunCache {
 
     /// The frame is drawn: what it used is the next frame's to reuse, and nothing else.
     fn end_frame(&mut self) {
-        self.previous = std::mem::take(&mut self.current);
+        std::mem::swap(&mut self.previous, &mut self.current);
+        self.current.clear();
         self.hits = 0;
         self.misses = 0;
     }
@@ -1019,6 +1020,24 @@ fn reuse_enabled() -> bool {
             .map(|v| v != "0")
             .unwrap_or(true)
     })
+}
+
+/// An encoded (sRGB) clear colour as linear light, for a pass drawn through the sRGB view —
+/// which encodes what it is given, so the encoded value would be encoded twice.
+fn decode_clear(colour: wgpu::Color) -> wgpu::Color {
+    let decode = |c: f64| {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    wgpu::Color {
+        r: decode(colour.r),
+        g: decode(colour.g),
+        b: decode(colour.b),
+        a: colour.a,
+    }
 }
 
 /// Rec. 601 luma, the CPU painter's "is this lighter than that" ordering (`render::luma`).
@@ -3018,7 +3037,16 @@ impl GpuWindow {
                 }
                 _ => (view, &self.solid_pipeline),
             };
-            let mut pass = render_pass(encoder, "frame", target, clear.take());
+            // A clear value is written through the view's format: the sRGB view encodes it,
+            // so the encoded background has to be decoded first or it lands twice as light.
+            let load = clear.take().map(|colour| {
+                if *in_linear {
+                    decode_clear(colour)
+                } else {
+                    colour
+                }
+            });
+            let mut pass = render_pass(encoder, "frame", target, load);
             pass.set_bind_group(0, &self.viewport_bind_group, &[]);
             for batch in &batches[range.clone()] {
                 match batch {
