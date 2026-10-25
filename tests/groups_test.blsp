@@ -1,0 +1,68 @@
+(defmodule groups-test (:use test))
+
+;; One runtime has one `:groups` server, so these run `:isolated`; each test uses its own
+;; group names. The cross-node half — a member seen on another node, and dropped with its
+;; node — is `crates/cli/tests/process_groups.rs`.
+
+(defn- holder () (spawn (receive (:stop :ok))))
+
+;; Poll `ready?` every 5 ms for up to 2 s: the server handles a member's death on the
+;; `[:down …]` it receives, after the death itself.
+(defn- eventually (ready?)
+  (letrec (step (fn (tries)
+                  (cond (ready?) true (= tries 0) false else (do (sleep 5) (step (dec tries))))))
+    (step 400)))
+
+(defn- ensure-server ()
+  (when (nil? (proc/whereis :groups)) (groups/start)))
+
+(describe "process groups on one node"
+  :isolated (test "a joined process is a member, local, until it leaves"
+    (ensure-server)
+    (let (p (holder))
+      (assert= :ok (groups/join :groups-test-a p))
+      (assert= (list p) (groups/members :groups-test-a))
+      (assert= (list p) (groups/local-members :groups-test-a))
+      (assert= :ok (groups/join :groups-test-a p))
+      (assert= 1 (count (groups/members :groups-test-a)))
+      (assert= :ok (groups/leave :groups-test-a p))
+      (assert= () (groups/members :groups-test-a))
+      (send p :stop)))
+
+  (test "the caller joins and leaves when no pid is given"
+    (ensure-server)
+    (groups/join :groups-test-self)
+    (assert= (list (self)) (groups/members :groups-test-self))
+    (groups/leave :groups-test-self)
+    (assert= () (groups/members :groups-test-self)))
+
+  (test "a member's death takes it out of every group it was in"
+    (ensure-server)
+    (let (p (holder) q (holder))
+      (groups/join :groups-test-b p)
+      (groups/join :groups-test-c p)
+      (groups/join :groups-test-b q)
+      (send p :stop)
+      (is (eventually (fn () (= (list q) (groups/members :groups-test-b)))))
+      (is (eventually (fn () (= () (groups/members :groups-test-c)))))
+      (send q :stop)))
+
+  (test "eight processes joining at once are all members, read from another process"
+    (ensure-server)
+    (let (me (self)
+          workers (into []
+                    (map (range 0 8)
+                      (fn (_)
+                        (spawn (do
+                                 (groups/join :groups-test-many)
+                                 (send me :joined)
+                                 (receive (:stop :ok))))))))
+      (each workers (fn (_) (receive (:joined :ok) (after 5000 :timeout))))
+      (spawn (send me [:read (groups/members :groups-test-many)]))
+      (let (read (receive ([:read found] found) (after 5000 :timeout)))
+        (assert= (into #{} workers) (into #{} read)))
+      (each workers (fn (w) (send w :stop)))
+      (is (eventually (fn () (= () (groups/members :groups-test-many)))))))
+
+  (test "start refuses an unknown option"
+    (assert-error "unknown option" (groups/start {:size 3}))))
