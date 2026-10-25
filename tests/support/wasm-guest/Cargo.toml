@@ -1,0 +1,25 @@
+# The guest component behind tests/wasm_wasi_test.blsp (ADR-453): a resource, and calls that
+# reach files, the environment and the clock through WASI preview 2. Built once and
+# committed as tests/support/wasm-guest.wasm, so the suite needs no wasm toolchain:
+#
+#   cargo build --release --target wasm32-wasip2 --manifest-path tests/support/wasm-guest/Cargo.toml
+#   cp tests/support/wasm-guest/target/wasm32-wasip2/release/wasm_guest.wasm tests/support/wasm-guest.wasm
+[package]
+name = "wasm-guest"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { version = "0.46", default-features = false, features = ["macros", "realloc"] }
+
+[profile.release]
+opt-level = "s"
+strip = true
+lto = true
+
+# Not a member of brood's workspace.
+[workspace]

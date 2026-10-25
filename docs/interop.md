@@ -10,10 +10,12 @@
 > parameter accepts a Brood `bytes` value directly and a non-empty `list<u8>`
 > result lifts back to `bytes` (copy-based; `wasm.rs` `lower`/`lift`) — so the
 > byte-oriented extensions (hash/compress/codec/parse) round-trip binary data.
+> **Slice 3 (ADR-453, 2026-10-26):** WASI preview 2 by grant (`:dirs`, `:env`, `:args`,
+> `:stdio`; clocks and randomness with any grants; never the network), interface exports,
+> and guest `resource`s as tokens with `%wasm-release`.
 > Still ahead (the rest of this note): the package-manager `:native`
 > manifest/lock/build-on-fetch integration (the delivery vehicle — recommended
-> next), WASI capability grants, guest `resource` handles, and the blob
-> **zero-copy** read-mapping optimization (over slice 2's copy).
+> next) and the blob **zero-copy** read-mapping optimization (over slice 2's copy).
 > **Reconsidered 2026-08-13 and kept deferred (ADR-011):** no in-tree package
 > ships `:native` code yet — the concrete consumer that would justify the
 > delivery vehicle — and the component build toolchain (`wasm32-wasip2` target,

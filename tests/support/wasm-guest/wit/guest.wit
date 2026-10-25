@@ -1,0 +1,27 @@
+package brood:fixture;
+
+/// A guest resource: state the guest owns, reached through a handle.
+interface counter {
+  resource counter {
+    constructor(start: s32);
+    bump: func() -> s32;
+    /// Takes ownership, so the handle is gone afterwards.
+    consume: static func(c: counter) -> s32;
+  }
+  /// How many counters the guest has destroyed.
+  dropped: func() -> u32;
+}
+
+/// What a granted guest can reach through WASI.
+interface host {
+  read-file: func(path: string) -> result<string, string>;
+  write-file: func(path: string, text: string) -> result<_, string>;
+  env-var: func(name: string) -> option<string>;
+  argument-count: func() -> u32;
+  clock-moves: func() -> bool;
+}
+
+world guest {
+  export counter;
+  export host;
+}

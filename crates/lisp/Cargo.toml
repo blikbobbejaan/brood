@@ -144,7 +144,7 @@ treesit-grammars = ["treesit-ruby", "treesit-elixir"]
 # builds (lean bundles, unsupported hosts) skip the engine entirely. The engine
 # is compiled in exactly once — adding/updating a native extension never
 # rebuilds the runtime (docs/interop.md).
-wasm = ["dep:wasmtime"]
+wasm = ["dep:wasmtime", "dep:wasmtime-wasi"]
 
 [dependencies]
 # Cross-platform time: std::time on native, the JS clock on wasm (Instant/SystemTime
@@ -367,6 +367,10 @@ cranelift-module = { version = "0.136", optional = true }
 cranelift-codegen = { version = "0.136", optional = true }
 cranelift-frontend = { version = "0.136", optional = true }
 wasmtime = { version = "49",default-features = false, features = ["runtime", "component-model", "cranelift", "wat"], optional = true }
+# WASI preview 2 for a component its loader GRANTS it to (ADR-453): files under declared
+# directories, env, args, stdio, clocks and randomness — never the network. Same major as
+# `wasmtime`, which it is built against.
+wasmtime-wasi = { version = "49", default-features = false, features = ["p2"], optional = true }
 
 # uid/gid → owner/group name resolution for `file-stat`'s `ls -l`-style listing
 # (getpwuid/getgrgid) and the rest of the Unix system calls; on Windows, the C runtime's
