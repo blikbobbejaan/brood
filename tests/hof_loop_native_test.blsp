@@ -1,0 +1,56 @@
+;;; A self-tail loop whose one non-tail call holds a list below it is native (2026-10-25).
+;;;
+;;; `(loop (rest coll) f (cons (f (first coll)) acc))` keeps `(rest coll)` on the operand
+;;; stack across the call to `f`. Native code spills such a handle to a reserved frame slot,
+;;; and `jit_spill_reserve` reserved none for an arm with fewer than two non-tail calls, so
+;;; the arm bailed with `call-spill-exhausted` and ran interpreted for good. That is the
+;;; shape of `map`'s own loop (`%defseq`) and of most hand-written HOF loops: `map` cost
+;;; ~3 850 instructions an element building `matmul`'s matrices. Checked against the
+;;; 6577bfaf binary under `BROOD_JIT_BAIL_TRACE=1`: `hl-map` bailed there, native here.
+
+(defmodule hof-loop-native-test (:use test) (:use suite-helpers))
+
+(defn hl-map (coll f acc) (if (empty? coll) acc (hl-map (rest coll) f (cons (f (first coll)) acc))))
+(defn hl-keep (coll pred acc)
+  (if (empty? coll)
+    acc
+    (hl-keep (rest coll) pred (if (pred (first coll)) (cons (first coll) acc) acc))))
+(defn- hl-run (k) (if (= k 0) nil (do (hl-map (range 50) (fn (x) (* x 3)) nil) (hl-run (- k 1)))))
+(defn- hl-run-keep (k)
+  (if (= k 0) nil (do (hl-keep (range 50) (fn (x) (= 0 (math/rem x 3))) nil) (hl-run-keep (- k 1)))))
+
+(describe "a HOF loop with a list held across its call"
+  (test "answers as written"
+    (assert= (list 12 9 6 3 0) (hl-map (range 5) (fn (x) (* x 3)) nil))
+    (assert= nil (hl-map nil (fn (x) x) nil))
+    (assert= (list 9 6 3 0) (hl-keep (range 10) (fn (x) (= 0 (math/rem x 3))) nil))
+    ;; an error from the callback reaches the caller, from native code as from the VM
+    (hl-run 200)
+    (assert-error "boom" (hl-map (range 5) (fn (x) (if (= x 3) (throw "boom") x)) nil)))
+
+  (test "is native (was: call-spill-exhausted, bailed)"
+    (when (%native-tier?)
+      (let (st (settle hl-map 3 (fn () (hl-run 400)) 40))
+        (assert= :native st)
+        (assert= 0 (get (%jit-arm-state hl-map 3) :deopts)))
+      (assert= :native (settle hl-keep 3 (fn () (hl-run-keep 400)) 40))))
+
+  (test "builds the same lists under collection pressure"
+    ;; each step allocates, so the spilled `(rest coll)` must survive a collection
+    (hl-run 400)
+    (let (xs (hl-map (range 2000) (fn (x) [x (str "v" x)]) nil))
+      (assert= 2000 (count xs))
+      (assert= [1999 "v1999"] (first xs))
+      (assert= [0 "v0"] (last xs)))))
+
+(defn- hl-worker (parent k)
+  (send parent [k (count (hl-map (range (* 10 k)) (fn (x) [x x]) nil))]))
+
+(describe "the loop across processes"
+  :isolated (test "workers running the native loop agree"
+    (let (me (self)
+          ks (range 1 9))
+      (doseq (k ks)
+        (spawn (hl-worker me k)))
+      (assert= (into #{} (map ks (fn (k) [k (* 10 k)])))
+        (into #{} (map ks (fn (_) (receive ([k n] [k n])))))))))

@@ -146,16 +146,16 @@ pub(crate) fn jit_spill_reserve(code: &[Inst]) -> usize {
     // This reserve is unavoidably profile-independent (it runs at arm construction, before
     // any type profile exists), so it lands on every lowerable arm — blanket-reserving
     // regresses `spawn` ~1.9x, which is why it stays behind the `chunk_in_jit_subset` gate.
-    // **Do not widen the `< 2 → 0` rule below without a profitability case — it buys
-    // nothing and costs.** A single-non-tail-call arm holding a handle below the call (the
-    // gate-exempt HOF-step closures, `(… (rest xs) … Call …)`) gets reserve 0 here and
-    // bails mid-emit at `call-spill-exhausted`. That looks like a bug but is not: those
-    // closures are call-mediated boxed shapes, exactly the class `plan_general_lowering`
-    // refuses for NAMED arms, so unlocking them wins nothing while the wider frames cost
-    // `spawn` (+5–9%). The accidental bail does the gate's job for free. If
-    // partial lowering (§7.1) ever admits these shapes deliberately, it must bring its
-    // own profitability judgement — and then widen this rule with it.
-    if non_tail_call_count(code) < 2 {
+    // **Change the `< 1 → 0` rule below only on a measured profitability case**, as it was
+    // changed from `< 2`. An arm with ONE non-tail call that holds a handle below it — the
+    // HOF loop `(loop (rest xs) f (cons (f (first xs)) acc))`, `map`'s own `%defseq` loop —
+    // used to get reserve 0 here and bail mid-emit at `call-spill-exhausted`. The note that
+    // stood here called that bail harmless (call-mediated, no win, wider frames cost `spawn`
+    // +5–9%). Measured 2026-10-25, it was neither: lowering them took `(into [] (map (range n)
+    // f))` from 570M to 406M instructions (−29%), with every `make ab --floor` row noise
+    // (`spawn` −4.7%), `make ab-vm` noise, and no change to the per-process RSS slope. So
+    // the rule is now "no non-tail call, no reserve": a call-free arm cannot spill.
+    if non_tail_call_count(code) < 1 {
         return 0;
     }
     producers.saturating_sub(1) + max_leader_depth(code)

@@ -1329,6 +1329,13 @@ widening was also independently measured: `spawn` +8.6% against a 1.2% floor on 
 (bigger frames on every lowerable arm — blanket-reserving's known cost), so it was
 reverted too; it belongs with partial lowering, which changes which arms want slots.
 
+> **Re-measured 2026-10-25, alone, and landed.** The spill-reserve half on its own (the
+> `< 2 → 0` rule to `< 1 → 0`; gate and `MakeClosure` untouched): `make ab --floor` on 20 rows
+> all noise, `spawn` −4.7% then +0.0% at 15 reps, `nqueens` flat, `pipeline` +1.0% and `nbody`
+> +0.2% instructions; `make ab-vm` noise; per-process RSS slope unchanged; `stdimage :live` on
+> both arms. The 2026-08-29 `spawn` +8.6% does not reproduce on today's tree. It unlocks
+> `map`'s own loop: `(into [] (map (range n) f))` 570M → 406M instructions.
+
 **What the experiment left behind (kept, measured flat vs HEAD across all seven rows):**
 the **suspend-host latch** (`jit_latch_suspend_host` + per-heap gateway tokens + the
 `dirty_receive_block_count` observable + `tests/jit_suspend_latch.rs`) — an arm hosting a

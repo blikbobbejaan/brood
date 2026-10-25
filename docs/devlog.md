@@ -3822,3 +3822,16 @@ list taken apart, which was `(first (first (first x)))` written inside out. Over
 `rest`, so over lists, vectors and nil. Asked for by the wos work, whose device compiler expands
 each into its `car`s and `cdr`s. Not run on this machine: the new
 `tests/list_compositions_test.blsp`, in CI.
+
+2026-10-25 (one-call HOF loops are native): `matmul`'s remaining 18% in `exec_chunk` was
+mostly its setup, `(into [] (map (range n) f))`, at ~3 850 instructions an element, because
+`map`'s own `%defseq` loop never tiered. It bailed mid-emit at `call-spill-exhausted`: the loop
+keeps `(rest coll)` on the stack across the call to `f`, native code spills such a handle to a
+reserved frame slot, and `jit_spill_reserve` reserved none for an arm with fewer than two
+non-tail calls. Its comment called that bail harmless, from a 2026-08-29 measurement where
+widening the reserve cost `spawn` +8.6%. Re-measured alone on today's tree it costs nothing:
+20 rows noise on `make ab --floor` (`spawn` −4.7%, then +0.0% at 15 reps), `make ab-vm` noise,
+per-process RSS slope unchanged. The rule is now `< 1 → 0`, and the map/into probe goes 570M → 406M
+instructions (−29%). Checked by a differential (tree-walker = JIT) and under
+`BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`. Guard: `hof_loop_native_test.blsp` (`hl-map` bailed on
+the 6577bfaf binary, native here). Not run on this machine: it runs in CI.
