@@ -3008,6 +3008,11 @@ today's ad-hoc `gc-stats`/`vm-stats`/`process-info` instrumentation behind one s
   real consumer needs it.
 - **Publishing the grammar** — the `github/linguist` PR isn't filable day-one; it's
   gated on `.blsp` adoption across hundreds of repos.
+- **Brood as a general-purpose language** — what someone coming from Go, Rust, Elixir or
+  Node would reach for and not find, ranked by how much it blocks adoption, with what "done"
+  looks like for each: [docs/general-purpose-gaps.md](docs/general-purpose-gaps.md)
+  (2026-10-25). The stability policy heads it. The list also notes that this ROADMAP's
+  "Out of scope" section is stale: namespaces and rationals shipped, and `&key` was refused.
 
 ---
 
