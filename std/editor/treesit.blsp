@@ -185,7 +185,8 @@ anonymous tokens, operators/punctuation as anonymous non-alphabetic ones.
 token (`anonymous-keyword?`) is a `:syntax/keyword`. Most language tables need
 only name the handful of *named* nodes they colour (string/comment/number/…) and
 get keywords for free. The face is resolved live, so a `(face-set :syntax/…)`
-restyles the editor on its next frame.
+restyles the next frame drawn (under `ui-run`, the next turn that changes the model).
+
 
     (fn? (editor/treesit/face-of-syntax {:string :syntax/string}))   → true"
   (fn (node)
@@ -240,7 +241,7 @@ the tree-sitter parse it walks."
   "A `:fontify` service: `[start end face]` colour spans for `text` parsed as the
 tree-sitter language keyword `lang` (`:ruby`/`:elixir`), from a `{:node-kind
 :syntax/face-name}` table. Faces are resolved live, so a `(face-set :syntax/…)`
-restyles the editor on its next frame. With `keywords?` (the default), an anonymous
+restyles the next frame drawn (under `ui-run`, the next turn that changes the model). With `keywords?` (the default), an anonymous
 alphabetic token is a `:syntax/keyword` — the cross-language rule that lets a table name
 only the handful of *named* nodes it colours.
 
