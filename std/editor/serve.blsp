@@ -70,7 +70,7 @@ those messages would strand in the session's mailbox (a selective receive never
 consumes them), leaving a served app deaf to everything but keys.
 
     (editor/serve/remote-display client 80 24)   ;=> {:enter … :leave … :size … :draw … :poll …} shipping frames to `client`"
-  (let (held (table))
+  (let (held (table/new))
     {:enter (fn () nil)
      ; the *client* owns the real terminal, not us
      :leave (fn () (send client [:bye]))
@@ -78,7 +78,7 @@ consumes them), leaving a served app deaf to everything but keys.
      ;; whether a key is down in the CLIENT's window, as its last key said: every change
      ;; to it comes with a key, so this is as current as the input the loop has taken.
      ;; The table dies with the session process, which made it
-     :key-held? (fn () (table-get held :held? false))
+     :key-held? (fn () (table/get held :held? false))
      :draw (fn (f) (send client [:frame f]))
      ;; The pixel-space seam (ADR-374) over the wire: a texture, its release, and the
      ;; window options an app asks for after attaching (`:input :pixels`, a title) each
@@ -91,7 +91,7 @@ consumes them), leaving a served app deaf to everything but keys.
      :configure (fn (o) (send client [:window o]))
      :poll (fn (ms)
              (receive
-               ([:key k held?] (do (table-put held :held? held?) k))
+               ([:key k held?] (do (table/put held :held? held?) k))
                ; a client that does not say
                ([:key k] k)
                ([:detach] :close)
