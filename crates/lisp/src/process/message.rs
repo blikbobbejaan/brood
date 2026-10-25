@@ -162,6 +162,24 @@ pub(crate) fn grow<R>(f: impl FnOnce() -> R) -> R {
     crate::stack::maybe_grow(64 * 1024, 1024 * 1024, f)
 }
 
+/// How many source positions rebuilding `message` re-stamps: its non-empty lists that carry
+/// one (`from_message` calls `set_form_pos` for exactly those; an empty list rebuilds as nil).
+/// A loader that knows the total sizes the position table once instead of growing it by
+/// doubling through the load. Walks with an explicit stack, as [`message_bytes`] does.
+pub(crate) fn positioned_lists(message: &Message) -> usize {
+    let mut total = 0usize;
+    let mut pending = vec![message];
+    while let Some(next) = pending.pop() {
+        if let Message::List(items, Some(_)) = next
+            && !items.is_empty()
+        {
+            total += 1;
+        }
+        next.for_each_child(|child| pending.push(child));
+    }
+    total
+}
+
 /// The bytes a queued message holds: every node, its text, and the blobs it shares. An
 /// estimate for choosing which process to stop under memory pressure
 /// ([`crate::process::pressure`]), so a shared blob counts in full for every holder. Walks
@@ -2157,6 +2175,40 @@ mod chunk_tests {
         assert_eq!(text(chunk_flush(&mut carry)).as_deref(), Some("\u{fffd}"));
         assert!(carry.is_empty());
         assert!(chunk_flush(&mut carry).is_none()); // nothing left
+    }
+}
+
+#[cfg(all(test, feature = "dev-tools"))]
+mod positioned_list_tests {
+    use super::{Message, from_message, positioned_lists};
+    use crate::core::heap::Heap;
+    use crate::error::Pos;
+
+    /// `positioned_lists` is a capacity hint for the prelude image's position table (KI-302),
+    /// so a miscount is silent: the load still works, it just rehashes again. Pin it to what
+    /// the rebuild actually stamps, over each shape that decides it — a positioned list, one
+    /// without a position, an EMPTY positioned list (it rebuilds as nil, so nothing is
+    /// stamped), and positioned lists reached through a vector and a map.
+    #[test]
+    fn the_count_is_what_the_rebuild_stamps() {
+        let at = Some(Pos { line: 1, col: 1 });
+        let leaf = || Message::List(vec![Message::Int(1)], at);
+        let message = Message::List(
+            vec![
+                leaf(),
+                Message::List(vec![Message::Int(2)], None),
+                Message::List(vec![], at),
+                Message::Vector(vec![leaf(), Message::Nil]),
+                Message::Map(vec![(Message::Int(3), leaf())]),
+            ],
+            at,
+        );
+        let mut heap = Heap::new();
+        let (before, ..) = heap.pos_table_stats();
+        from_message(&mut heap, &message);
+        let (after, ..) = heap.pos_table_stats();
+        assert_eq!(positioned_lists(&message), 4);
+        assert_eq!(after - before, positioned_lists(&message));
     }
 }
 

@@ -238,6 +238,7 @@ fn encode_section(
     ns_to_msg: &mut u64,
     ns_encode: &mut u64,
     tables_seen: &mut std::collections::HashMap<u64, String>,
+    positions: &mut usize,
 ) -> Result<(Vec<u8>, u32), LispError> {
     let mut out: Vec<u8> = Vec::new();
     let mut entries: Vec<u8> = Vec::new();
@@ -303,6 +304,7 @@ fn encode_section(
             ))
         })?;
         *ns_to_msg += t0.elapsed().as_nanos() as u64;
+        *positions += crate::process::message::positioned_lists(&msg);
         let t1 = web_time::Instant::now();
         entries.push(kind);
         put_str(&mut entries, &value::symbol_name(sym));
@@ -342,6 +344,7 @@ fn encode_section(
         let Ok(msg) = to_message(heap, tv) else {
             continue; // a type expression with no portable form: skip, never fail
         };
+        *positions += crate::process::message::positioned_lists(&msg);
         entries.push(KIND_SIG);
         put_str(&mut entries, &value::symbol_name(sym));
         encode_msg(&mut entries, &msg)
@@ -463,6 +466,7 @@ pub(crate) fn image_write(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
             &mut ns_to_msg,
             &mut ns_encode,
             &mut tables_seen,
+            &mut 0,
         )?;
         dir.push((name, body.len() as u64, bytes.len() as u32));
         body.extend_from_slice(&bytes);
@@ -1280,6 +1284,7 @@ pub(crate) fn prelude_image_bytes(
         .map(Value::Sym)
         .collect();
 
+    let mut positions = 0usize;
     let (mut body, _count) = encode_section(
         heap,
         "",
@@ -1288,6 +1293,7 @@ pub(crate) fn prelude_image_bytes(
         &mut 0u64,
         &mut 0u64,
         &mut std::collections::HashMap::new(),
+        &mut positions,
     )?;
 
     // The SIDE FACTS — everything the prelude's evaluation RECORDED about a name rather
@@ -1302,7 +1308,7 @@ pub(crate) fn prelude_image_bytes(
     }
 
     let mut out = Vec::with_capacity(body.len() + 64);
-    write_prelude_header(&mut out, fingerprint, gensym_floor);
+    write_prelude_header(&mut out, fingerprint, gensym_floor, positions as u64);
     out.extend_from_slice(&body);
     Ok(out)
 }
@@ -1318,21 +1324,27 @@ fn temp_suffix() -> String {
 
 /// v3: the header carries the gensym floor.
 /// v4 (ADR-383): the closure record carries its authoring module (the wire's v8 field).
-const PRELUDE_MAGIC: &[u8] = b"brood-prelude-image-v4\n";
+/// v5: the header carries the number of source positions the load re-stamps (KI-302).
+const PRELUDE_MAGIC: &[u8] = b"brood-prelude-image-v5\n";
 
-/// The image header: magic, the build fingerprint, and the gensym counter the writing boot
-/// reached. A reader must start its own `gensym` above that counter, or a fresh name could
-/// collide with one baked into the image's closures.
-fn write_prelude_header(out: &mut Vec<u8>, fingerprint: &str, gensym_floor: u64) {
+/// The image header: magic, the build fingerprint, the gensym counter the writing boot
+/// reached, and how many source positions the load re-stamps. A reader must start its own
+/// `gensym` above that counter, or a fresh name could collide with one baked into the
+/// image's closures. The position count sizes the position table before the load, which
+/// otherwise grows it by doubling: one more doubling, when the prelude crossed 7 168
+/// positioned forms, was +2.5M instructions on every start (KI-302).
+fn write_prelude_header(out: &mut Vec<u8>, fingerprint: &str, gensym_floor: u64, positions: u64) {
     out.extend_from_slice(PRELUDE_MAGIC);
     put_str(out, fingerprint);
     put_u64(out, gensym_floor);
+    put_u64(out, positions);
 }
 
-/// Parse [`write_prelude_header`]'s output, positioning `r` at the first entry. `None` on a
-/// wrong magic (another version's file) or a fingerprint that is not this binary's — either
-/// means "not our image", and the caller takes the source boot.
-fn read_prelude_header(r: &mut Cursor<Vec<u8>>, fingerprint: &str) -> Option<u64> {
+/// Parse [`write_prelude_header`]'s output into the gensym floor and the position count,
+/// positioning `r` at the first entry. `None` on a wrong magic (another version's file) or a
+/// fingerprint that is not this binary's — either means "not our image", and the caller
+/// takes the source boot.
+fn read_prelude_header(r: &mut Cursor<Vec<u8>>, fingerprint: &str) -> Option<(u64, u64)> {
     if !r.get_ref().starts_with(PRELUDE_MAGIC) {
         return None;
     }
@@ -1340,7 +1352,7 @@ fn read_prelude_header(r: &mut Cursor<Vec<u8>>, fingerprint: &str) -> Option<u64
     if get_str(r)? != fingerprint {
         return None;
     }
-    get_u64(r)
+    Some((get_u64(r)?, get_u64(r)?))
 }
 
 /// Restore a prelude image's bytes into `root` — read from the cache file, or handed over by
@@ -1354,7 +1366,8 @@ pub(crate) fn load_prelude_image_bytes(
     fingerprint: &str,
 ) -> Option<(usize, u64)> {
     let mut r = Cursor::new(bytes);
-    let gensym_floor = read_prelude_header(&mut r, fingerprint)?;
+    let (gensym_floor, positions) = read_prelude_header(&mut r, fingerprint)?;
+    heap.reserve_form_pos(positions as usize);
     let count = get_u32(&mut r)?;
     let mut done = 0usize;
     for _ in 0..count {
@@ -1398,11 +1411,11 @@ mod prelude_header_tests {
     #[test]
     fn the_gensym_floor_survives_the_header_round_trip() {
         let mut out = Vec::new();
-        write_prelude_header(&mut out, "build-abc", 0xDEAD_BEEF_0000_0042);
+        write_prelude_header(&mut out, "build-abc", 0xDEAD_BEEF_0000_0042, 7324);
         let mut r = Cursor::new(out);
         assert_eq!(
             read_prelude_header(&mut r, "build-abc"),
-            Some(0xDEAD_BEEF_0000_0042),
+            Some((0xDEAD_BEEF_0000_0042, 7324)),
             "the floor written must be the floor read — a boot that loses it can mint a \
              gensym that collides with a name baked into the image"
         );
@@ -1411,7 +1424,7 @@ mod prelude_header_tests {
     #[test]
     fn another_builds_image_is_not_ours() {
         let mut out = Vec::new();
-        write_prelude_header(&mut out, "build-abc", 7);
+        write_prelude_header(&mut out, "build-abc", 7, 0);
         let mut r = Cursor::new(out);
         assert_eq!(read_prelude_header(&mut r, "build-xyz"), None);
     }

@@ -84,26 +84,6 @@ means changing `get`'s 3-arity arm, `PrimOp3::MapGet3` (`Heap::map_get3_inline`)
 tally rewrite's record handling and that test together. Until then a record collection
 gives its own `get` with a default (`sorted/get`; `multimap/get-all`).
 
-## KI-302 — `startup` +3%: each `impl` registration now bumps the code epoch three times (open)
-
-**Seen:** the 2026-10-25 benchmark refresh read `startup` +5.4% against the e9e1af8b column, and
-`make ab --floor` confirmed +5.9%; instructions 83.3M → 88.3M, deterministic with the stdlib image.
-A curve over the 49 first-parent commits put it in two places: ~+1M across `08fbc30e..87987990`
-(settings/fuzzy, the reverted KI-298 `get` change, `std/sorted`), and **+2.56M in one commit,
-`7acef6e2` (ADR-432, `next-impl`)**.
-
-**Cause (diagnosed, not fixed).** `%register-impl` now writes three registries per registration
-(`*impls*`, `*impl-from*` and the new `*impl-tiers*`), and the image replays every registration of
-every module it materialises. Each `%registry-update!` inside a load bumps `code_epoch`, which
-invalidates every inline cache and guard, so the calls that follow re-resolve. Removing the
-`*impl-tiers*` write took startup to 81.3M, but that also empties the replay, so it is not a clean
-measurement of the write alone.
-
-**Options, for the user:** derive `*impl-from*` from `*impl-tiers*` so a registration writes two
-registries again (the checker's `types/check/deps.rs` and several tests read `*impl-from*`), or
-batch one registration's writes under one epoch bump (a kernel change, and it helps every
-registration). Not changed here.
-
 ## KI-300 — a thin-wrapper callback did not tier within the test's window (watch)
 
 **Seen once:** CI run 40133808011 (`bbb74f2b`), the `test` job.
@@ -144,7 +124,7 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
-| KI-302 | **`startup` +3% from `7acef6e2` (`next-impl`)** — a third registry write, and code-epoch bump, per `impl` registration on every image replay | 🔴 **OPEN** — diagnosed, fix is a design choice; section above |
+| KI-302 | **`startup` +3% from `7acef6e2` (`next-impl`)** — first blamed on a third registry write per `impl`; it was the prelude crossing a hash-table doubling in the image load's position table | ✅ **FIXED 2026-10-25** — the prelude image header carries the position count and the load reserves it once. Guard: `positioned_list_tests` (the count is what `from_message` stamps) |
 | KI-301 | **the JIT prepass counted a staged call (KI-19) as unstaged, so every arm with one before a branch join bailed** — `join-depth-mismatch`, e.g. `(if (and (< i n) (digit? (nth s i -1))) …)`; `json`'s number scanners and `object-acc` ran interpreted for good | ✅ **FIXED 2026-10-25** — the prepass and the checkpoint-depth model count the staged callee. Guard: `count_nth_inline_test` tier case (`:bailed` on the old binary under the bail trace) |
 | KI-300 | **a thin-wrapper callback did not tier within `settle`'s window** — `tests/jit_computed_call_test.blsp:77` got `:untried` for `(fn (a x) (+ a x))` in CI run 40133808011 (`bbb74f2b`); green in the run before | 👁 **WATCH** — section above |
 | KI-299 | **a self-exit with a soft reason reported `:normal`** — breakage P16, once in CI | 👁 **WATCH** — section above |

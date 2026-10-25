@@ -33,6 +33,13 @@ impl Heap {
         }
     }
 
+    /// Make room for `additional` more LOCAL form positions at once — for a loader that knows
+    /// how many it is about to stamp (the prelude image's header says), so the table is sized
+    /// once rather than rehashed at every doubling on the way there.
+    pub fn reserve_form_pos(&mut self, additional: usize) {
+        self.cold_mut().form_pos.reserve(additional);
+    }
+
     /// Set a LOCAL list form's position **with an explicit file**, bypassing
     /// `current_file_arc`. The expander's synthetic stamp needs this: it runs not only at
     /// load time but at LAZY expansion — an arm compiled at first call, a

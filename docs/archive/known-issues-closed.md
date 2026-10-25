@@ -14945,6 +14945,36 @@ looking for".
 Runs: [39950556262](https://github.com/broodlang/brood/actions/runs/39950556262) (`7ed008cf`),
 [39954644031](https://github.com/broodlang/brood/actions/runs/39954644031) (`e9e1af8b`).
 
+## KI-302 — `startup` +3%: the prelude crossed a doubling of the image load's position table ✅ FIXED 2026-10-25
+
+**Seen:** the 2026-10-25 benchmark refresh read `startup` +5.4% against the e9e1af8b column, and
+`make ab --floor` confirmed +5.9%; instructions 83.3M → 88.3M, deterministic with the stdlib image.
+A curve over the 49 first-parent commits put it in two places: ~+1M across `08fbc30e..87987990`,
+and **+2.56M in one commit, `7acef6e2` (ADR-432, `next-impl`)**.
+
+**The first diagnosis was wrong.** `%register-impl` gained a third registry write
+(`*impl-tiers*`), each a `code_epoch` bump, and that was the suspect. Measured, not inferred: a
+start replays 8 staged `impl` registrations, not hundreds; skipping the `*impl-tiers*` bump saved
+11k instructions and skipping EVERY staged registry bump 0.42M. Batching the writes under one bump
+would have bought nothing.
+
+**Cause.** An aggregated `perf` diff over 40 starts each side put ~1M of the delta in one symbol,
+`RawTable<(u64, FormPos)>::reserve_rehash`, under `load_prelude_image_bytes` → `from_message` →
+`set_form_pos`. Rebuilding the prelude image re-stamps every positioned list's source position into
+the builder heap's LOCAL `form_pos` table, which grew by doubling from empty. The prelude now
+re-stamps 7 324 positions, and `7acef6e2`'s four new prelude functions took it past 7 168 (an
+8 192-bucket table at 7/8 load), so every start paid one more full rehash. The rest of the delta
+is proportional to prelude size (`env_get`, the freeze).
+
+**Fix.** The prelude image header (magic v5) carries the number of positions the load re-stamps,
+counted at write time by `message::positioned_lists` over each encoded entry and sig, and
+`load_prelude_image_bytes` reserves it before the first entry. Measured: 7 324 hinted, 7 324
+stamped, one allocation; `startup` 87.43M → 85.26M instructions and −5.6% on `make ab --floor`
+(`errors`, `spawn` noise). Guard: `positioned_list_tests::the_count_is_what_the_rebuild_stamps`
+pins the count to `from_message`'s stamps over a positioned list, an unpositioned one, an empty
+one (rebuilt as nil, so not stamped), and lists inside a vector and a map. Counting the empty
+list, or not descending into a container, makes it fail.
+
 ## KI-301 — the JIT prepass miscounted a staged call, and every arm with one before a join bailed ✅ FIXED 2026-10-25
 
 **Symptom.** Found while profiling `json`: `BROOD_JIT_BAIL_TRACE=1` named

@@ -3723,3 +3723,12 @@ nothing past the gate. `pingpong`/`ring` read +3% at equal instructions. `make a
 same-source control build moves the µop-cache counters further than this change does, so it is code
 placement under SMT, not work. Also found: KI-302, `startup` +3% from `7acef6e2`, left open. Not run
 on this machine: `tests/count_nth_inline_test.blsp` is new and runs in CI.
+
+2026-10-25 (KI-302 fixed, and its first diagnosis retracted): the `startup` +2.56M from `7acef6e2`
+was not the third registry write per `impl`. Startup replays 8 staged registrations, and dropping
+every staged epoch bump saved 0.42M. It was a hash-table doubling. Rebuilding the prelude image
+re-stamps 7 324 source positions into a `form_pos` table grown from empty, and `next-impl`'s four
+prelude functions took it past 7 168, one more full rehash on every start. The prelude image header
+(v5) now carries the count (`message::positioned_lists`) and the load reserves it once: `startup`
+87.43M → 85.26M instructions, −5.6% on `make ab --floor`. Not run on this machine: the new
+`positioned_list_tests` and the suite run in CI.
