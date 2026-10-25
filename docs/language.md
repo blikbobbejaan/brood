@@ -2370,6 +2370,35 @@ answering after the deadline left an unmatchable `[:reply ^r v]` queued forever,
 growing the mailbox over a retry loop and re-scanned by every later selective
 receive. See "One-shot reply aliases" under Synchronous calls above.
 
+**State machines: `defstatem`** (ADR-437). A server whose behaviour depends on a
+named state lists one block per state; `gen/start`, `gen/cast`, `gen/call` and
+`gen/stop` drive it unchanged:
+
+```clojure
+(defstatem door (code)
+  (:locked
+    (cast [:digit d] :when (= d code) [:next :open code {:timeout 5000}])
+    (call :state (gen/reply reply :locked) [:keep code]))
+  (:open
+    (timeout [:next :locked code])
+    (cast [:digit _] [:postpone])
+    (call :state (gen/reply reply :open) [:keep code])))
+```
+
+A block's clauses are `(cast PATTERN body…)`, `(call PATTERN body…)` (binds
+`reply`, answered with `gen/reply`, so a call can be answered later or
+postponed), `(info PATTERN body…)` and `(timeout body…)`; a pattern may take a
+`:when` guard. Each body returns an **action**: `[:next state data]` moves (and
+`[:next state data {:timeout ms}]` runs the new state's `timeout` clause if the
+machine is still there after `ms`; every `:next` cancels the pending timeout);
+`[:keep data]` stays (a pending timeout stays armed); `[:postpone]` keeps the
+event until the state changes, then handles it again, oldest first; `[:stop
+data]` ends the machine. An `(any clause…)` block applies in every state after
+the state's own clauses, and an event nothing matches is dropped. The machine
+starts in the first state listed, or in what `(init body…)` returns (`[state
+data]`, optionally with opts); `(terminate reason body…)` runs on `gen/stop` and
+on `[:stop data]`.
+
 ### Monitors
 
 `(monitor pid)` starts watching another process and returns a monitor `ref`.

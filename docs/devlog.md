@@ -3659,3 +3659,11 @@ Brood's semantics). `tests/conformance_regex_test.blsp` reads their TOML subset 
 every first match and group span with `regex/find`. Cases that differ because of Brood's
 dialect (no case-insensitive mode, no POSIX classes, `\n`/`\xHH` are letters) are listed by
 name with the reason, and the test fails if one starts agreeing. Not run on this machine.
+
+2026-10-25 (ADR-437, `defstatem`): `gen/defstatem` defines a state machine over the gen
+envelopes. Each state is a block of `cast`/`call`/`info`/`timeout` clauses returning
+`[:next state data opts?]`, `[:keep data]`, `[:postpone]` or `[:stop data]`; an `any` block
+applies everywhere; `call` binds `reply` for `gen/reply`. A state timeout is cancelled by every
+transition and carries the transition count, so a late one is dropped. The macro writes the
+`match` dispatch, and the loop is `gen/run-statem`. Not run on this machine:
+`tests/statem_test.blsp` is new and runs in CI.

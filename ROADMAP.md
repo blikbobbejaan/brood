@@ -190,7 +190,11 @@ scheduler.** What is behind OTP is *around* supervision, and nearly all of it is
   either — it runs on a trapped `shutdown` exit, which is what the supervisor's
   `:shutdown <ms>` path already sends before the hard kill. That item is by-design; document
   the semantics and close it.
-- ⬜ **D. `defstatem` over `gen`.** "OTP deferred, gated on a consumer" — a network protocol
+- ✅ **D. `defstatem` over `gen`** (ADR-437, shipped 2026-10-25, ahead of a consumer on
+  request: `gen/defstatem`, state blocks of `cast`/`call`/`info`/`timeout` clauses returning
+  `[:next …]`/`[:keep …]`/`[:postpone]`/`[:stop …]`, state timeouts, postponed events, an
+  `any` block; the gen envelopes, so `gen/start`/`call`/`cast`/`stop` drive it). Original
+  note: "OTP deferred, gated on a consumer" — a network protocol
   handler or an editor mode is the consumer. A macro: states as clause heads
   (`(:connected (:msg …) → [:next :closing data])`), state timeouts via `timer/send-after`,
   postponed events kept in the state map, all lowered onto `defserver`. No kernel work.

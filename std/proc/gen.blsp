@@ -292,3 +292,155 @@ clause is dropped (so the mailbox can't leak)."
     (if (not (= (+ (count env-clauses) (count info-clauses)) (count msg-clauses)))
       (error "defserver: every clause must be cast/call/query/defer/info/init/terminate/code-change"))
     (if doc `(defn ~name ~params ~doc ~entry) `(defn ~name ~params ~entry))))
+
+;; ---- defstatem ---------------------------------------------------------------
+;; A state machine (ADR-437): the server's state is a NAME plus data, and what a message
+;; does depends on the name. The macro writes only the dispatch — one `match` over
+;; `[state event]` — and `run-statem` below is the loop: plain Brood, so postponing and
+;; state timeouts are code you can read rather than macro output. The envelopes are
+;; `defserver`'s, so `gen/start`, `gen/cast`, `gen/call` and `gen/stop` drive one unchanged.
+;;
+;; The loop's own state: `{:state :data :postponed :generation :timer :stopped}`.
+;; `:generation` counts transitions, and a state timeout carries the generation that armed
+;; it, so one that fires after its state was left is recognised and dropped.
+
+(defn- statem-arm (st opts)
+  ;; Every transition cancels the pending state timeout; `opts` may arm a new one.
+  (when (get st :timer) (timer/cancel (get st :timer)))
+  (let (generation (inc (get st :generation))
+        ms (get opts :timeout))
+    (assoc (assoc st :generation generation)
+      :timer (when ms (timer/send-after ms (self) [:$state-timeout generation])))))
+
+(defn- statem-handle (handler st event)
+  (let (action (handler (get st :state) event (get st :data)))
+    (match action
+      (:unhandled st)
+      ([:postpone] (assoc st :postponed (conj (get st :postponed) event)))
+      ([:keep data] (assoc st :data data))
+      ([:next state data] (statem-enter handler st state data {}))
+      ([:next state data opts] (statem-enter handler st state data opts))
+      ([:stop data] (assoc (assoc st :data data) :stopped true))
+      (_ (error "defstatem: a clause returned "
+           (pr-str action)
+           " (expected [:next state data], [:next state data opts], [:keep data], [:postpone] or [:stop data])")))))
+
+;; Postponed events run again, oldest first, once the state changes.
+(defn- statem-replay (handler st events)
+  (if (or (empty? events) (get st :stopped))
+    st
+    (statem-replay handler (statem-handle handler st (first events)) (rest events))))
+
+(defn- statem-enter (handler st state data opts)
+  (let (moved (statem-arm (assoc (assoc st :state state) :data data) opts))
+    (if (= state (get st :state))
+      moved
+      (statem-replay handler (assoc moved :postponed []) (get st :postponed)))))
+
+(defn- statem-loop (handler terminate st)
+  (if (get st :stopped)
+    (do
+      (when (get st :timer) (timer/cancel (get st :timer)))
+      (when terminate (terminate :normal (get st :data)))
+      nil)
+    (let (generation (get st :generation)
+          event (receive
+                  ([:$cast payload] [:cast payload])
+                  ([:$call from r payload] [:call payload [from r]])
+                  ([:$stop] :stop)
+                  ([:$state-timeout ^generation] [:timeout])
+                  ([:$state-timeout _] :stale)
+                  (message [:info message])))
+      (cond
+        (= event :stop) (statem-loop handler terminate (assoc st :stopped true))
+        (= event :stale) (statem-loop handler terminate st)
+        else (statem-loop handler terminate (statem-handle handler st event))))))
+
+(defn run-statem (handler terminate initial)
+  "The loop a `defstatem` expands to; call `gen/start` on the machine, not this.
+`handler` maps `[state event data]` to an action, `terminate` is nil or a function of
+`reason` and `data`, and `initial` is `[state data]` or `[state data opts]`.
+
+    (gen/run-statem handler nil [:idle {}])   ;=> nil, once the machine stops"
+  (let (opts (if (> (count initial) 2) (nth initial 2) {}))
+    (statem-loop handler
+      terminate
+      (statem-arm {:state (nth initial 0)
+                   :data (nth initial 1)
+                   :postponed []
+                   :generation 0
+                   :timer nil}
+        opts))))
+
+;; One state clause as a `match` clause over `[state event]`. `state-pattern` is the
+;; state's keyword, or `_` for an `any` clause. A `call` clause binds `reply`, the token
+;; `gen/reply` answers, so a call may be answered now, later, or postponed with it.
+(defn- statem-clause (state-pattern c)
+  (let (kind (first c))
+    (cond
+      (= kind 'cast) `([~state-pattern [:cast ~(second c)]] ~@(rest (rest c)))
+      (= kind 'call) `([~state-pattern [:call ~(second c) ~'reply]] ~@(rest (rest c)))
+      (= kind 'info) `([~state-pattern [:info ~(second c)]] ~@(rest (rest c)))
+      (= kind 'timeout) `([~state-pattern [:timeout]] ~@(rest c))
+      else
+        (error "defstatem: a state's clause must start with cast, call, info or timeout, got "
+          (pr-str kind)))))
+
+(defmacro defstatem (name params & clauses)
+  "Define a state machine `name` over one data parameter: a gen server whose behaviour
+depends on a named state. Each `(:state clause…)` block lists what that state accepts:
+`(cast PATTERN body…)`, `(call PATTERN body…)` (binds `reply`; answer with
+`(gen/reply reply value)`), `(info PATTERN body…)` (any other message) and
+`(timeout body…)` (the state timeout fired). A pattern may take a `:when` guard. Every
+body returns an action:
+  - `[:next state data]`, or `[:next state data {:timeout ms}]` — move to `state`; with
+    `:timeout`, its `timeout` clause runs if the machine is still there after `ms`.
+    Every `:next` cancels the pending timeout.
+  - `[:keep data]` — stay, with new data (a pending timeout stays armed)
+  - `[:postpone]` — keep this event until the state changes, then handle it again
+  - `[:stop data]` — end the machine
+An `(any clause…)` block applies in every state, after the state's own clauses; an event
+nothing matches is dropped. The machine starts in the first state, or in what an
+`(init body…)` clause returns (`[state data]` or `[state data opts]`; it sees the data
+parameter). `(terminate reason body…)` runs on `gen/stop` or `[:stop data]`. Start it
+with `gen/start`; drive it with `gen/cast`, `gen/call` and `gen/stop`.
+
+    (defstatem door (code)
+      (:locked
+        (cast [:digit d] :when (= d code) [:next :open code {:timeout 5000}])
+        (call :state (gen/reply reply :locked) [:keep code]))
+      (:open
+        (timeout [:next :locked code])
+        (call :state (gen/reply reply :open) [:keep code])))"
+  (let (doc (if (string? (first clauses)) (first clauses) nil)
+        clauses (if doc (rest clauses) clauses)
+        data-sym (first params)
+        init-clause (seq/find clauses (fn (c) (= (first c) 'init)))
+        term-clause (seq/find clauses (fn (c) (= (first c) 'terminate)))
+        any-block (seq/find clauses (fn (c) (= (first c) 'any)))
+        state-blocks (seq/filter clauses (fn (c) (keyword? (first c))))
+        known (+ (count state-blocks)
+                (if init-clause 1 0)
+                (if term-clause 1 0)
+                (if any-block 1 0))
+        state-sym (gensym "state")
+        event-sym (gensym "event")
+        match-clauses (append (mapcat state-blocks
+                                (fn (block)
+                                  (map (rest block) (fn (c) (statem-clause (first block) c)))))
+                        (if any-block (map (rest any-block) (fn (c) (statem-clause '_ c))) ())
+                        (list `(~'_ :unhandled)))
+        handler `(fn (~state-sym ~event-sym ~data-sym)
+                   (match [~state-sym ~event-sym] ~@match-clauses))
+        terminate (if term-clause
+                    `(fn (~(second term-clause) ~data-sym) ~@(rest (rest term-clause)))
+                    nil)
+        initial (if init-clause
+                  `(do ~@(rest init-clause))
+                  `[~(first (first state-blocks)) ~data-sym])
+        entry `(gen/run-statem ~handler ~terminate ~initial))
+    (when (empty? state-blocks) (error "defstatem " name ": no states"))
+    (when (not (= known (count clauses)))
+      (error "defstatem "
+        name ": every clause must be a state block (:name …), init, terminate or any"))
+    (if doc `(defn ~name ~params ~doc ~entry) `(defn ~name ~params ~entry))))

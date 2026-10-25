@@ -1,0 +1,150 @@
+;; `defstatem` (ADR-437): a gen server whose behaviour depends on a named state, with
+;; postponed events and state timeouts. Driven through `gen/start`/`cast`/`call`/`stop`.
+
+(defmodule statem-test (:use test) (:use gen))
+
+;; A combination lock: the right digit opens it, and it locks itself again.
+(defstatem door
+  (code)
+  (:locked (cast [:digit d] :when (= d code) [:next :open code {:timeout 60000}])
+    (cast [:digit _] [:keep code])
+    (call :state (gen/reply reply :locked) [:keep code]))
+  (:open (cast [:open-for ms] [:next :open code {:timeout ms}])
+    (cast :touch [:keep code])
+    (timeout [:next :locked code])
+    (call :state (gen/reply reply :open) [:keep code]))
+  (any (call :code (gen/reply reply code) [:keep code])))
+
+;; Jobs that arrive while busy wait for idle, then run in arrival order.
+(defstatem worker
+  (done)
+  (:idle (cast [:job x] [:keep (conj done x)])
+    (cast :busy [:next :busy done])
+    (call :done (gen/reply reply done) [:keep done]))
+  (:busy (cast [:job _] [:postpone]) (call :done [:postpone]) (cast :idle [:next :idle done])))
+
+;; `init` picks the starting state (not the first one listed); `terminate` reports to
+;; the pid in the data.
+(defstatem reporter
+  (owner)
+  (init [:waiting owner])
+  (terminate reason (send owner [:terminated reason]))
+  (:running (cast :finish [:stop owner]))
+  (:waiting (cast :go [:next :running owner])
+    (call :state (gen/reply reply :waiting) [:keep owner])))
+
+(describe "defstatem: transitions"
+  (test "an event's meaning depends on the state, and a guard picks the clause"
+    (let (pid (start door 7))
+      (assert= :locked (call pid :state))
+      (cast pid [:digit 3])
+      (assert= :locked (call pid :state))
+      (cast pid [:digit 7])
+      (assert= :open (call pid :state))
+      (stop pid)))
+  (test "an any clause answers in every state"
+    (let (pid (start door 7))
+      (assert= 7 (call pid :code))
+      (cast pid [:digit 7])
+      (assert= :open (call pid :state))
+      (assert= 7 (call pid :code))
+      (stop pid)))
+  (test "a :keep carries the data forward"
+    (let (pid (start worker []))
+      (cast pid [:job 1])
+      (cast pid [:job 2])
+      (assert= [1 2] (call pid :done))
+      (stop pid))))
+
+(describe "defstatem: postponing"
+  (test "events postponed while busy run in order once the state changes"
+    (let (pid (start worker []))
+      (cast pid :busy)
+      (cast pid [:job :a])
+      (cast pid [:job :b])
+      (cast pid :idle)
+      (assert= [:a :b] (call pid :done))
+      (stop pid)))
+  (test "a postponed call is answered after the state changes"
+    (let (me (self) pid (start worker [:x]))
+      (cast pid :busy)
+      (spawn (send me [:answer (call pid :done)]))
+      (sleep 20)
+      (assert= :none (receive ([:answer _] :early) (after 0 :none)))
+      (cast pid :idle)
+      (receive
+        ([:answer value] (assert= [:x] value))
+        (after *test-wait-ms* (assert= [:x] :timeout)))
+      (stop pid))))
+
+(describe "defstatem: state timeouts"
+  (test "a state timeout moves the machine on"
+    (let (pid (start door 7))
+      (cast pid [:digit 7])
+      (cast pid [:open-for 30])
+      (eventually "the door locked itself" (fn () (= :locked (call pid :state))))
+      (stop pid)))
+  (test "a :keep leaves the pending timeout armed"
+    (let (pid (start door 7))
+      (cast pid [:digit 7])
+      (cast pid [:open-for 30])
+      (cast pid :touch)
+      (eventually "the door locked itself" (fn () (= :locked (call pid :state))))
+      (stop pid)))
+  (test "re-entering a state replaces its timeout"
+    (let (pid (start door 7))
+      (cast pid [:digit 7])
+      (cast pid [:open-for 30])
+      (cast pid [:open-for 60000])
+      (sleep 150)
+      (assert= :open (call pid :state))
+      (stop pid))))
+
+(describe "defstatem: init and terminate"
+  (test "init picks the starting state, and [:stop data] runs terminate"
+    (let (pid (start reporter (self)))
+      (assert= :waiting (call pid :state))
+      (cast pid :go)
+      (cast pid :finish)
+      (receive
+        ([:terminated reason] (assert= :normal reason))
+        (after *test-wait-ms* (assert= :normal :timeout)))
+      (eventually "the machine exited" (fn () (not (proc/alive? pid))))))
+  (test "gen/stop runs terminate too"
+    (let (pid (start reporter (self)))
+      (stop pid)
+      (receive
+        ([:terminated reason] (assert= :normal reason))
+        (after *test-wait-ms* (assert= :normal :timeout))))))
+
+(describe "defstatem: malformed definitions"
+  (test "a clause that is no state, init, terminate or any is an error"
+    (assert-error "every clause must be"
+      (reflect/eval-string "(gen/defstatem bad (d) (:a (cast :x [:keep d])) (bogus 1))")))
+  (test "a state clause must be cast, call, info or timeout"
+    (assert-error "must start with cast"
+      (reflect/eval-string "(gen/defstatem bad (d) (:a (query :x d)))")))
+  (test "an action of the wrong shape raises in the machine"
+    (send (self) :poke)
+    (assert-error "a clause returned"
+      (gen/run-statem (fn (state event data) [:bogus]) nil [:a nil]))))
+
+(describe "defstatem across processes"
+  (test "workers each drive their own machine"
+    (let (me (self))
+      (doseq (i (range 0 6))
+        (spawn (let (pid (start worker []))
+                 (cast pid :busy)
+                 (cast pid [:job i])
+                 (cast pid :idle)
+                 (send me [:done (call pid :done)])
+                 (stop pid))))
+      (assert= (map (range 0 6) (fn (i) [i]))
+        (sort (map (range 0 6)
+                (fn (_) (receive ([:done value] value) (after *test-wait-ms* :timeout))))))))
+  (test "one machine answers many processes at once"
+    (let (me (self) pid (start door 7))
+      (doseq (_ (range 0 8)) (spawn (send me [:saw (call pid :state)])))
+      (assert= (repeat 8 :locked)
+        (map (range 0 8) (fn (_) (receive ([:saw state] state) (after *test-wait-ms* :timeout)))))
+      (stop pid))))
