@@ -16,13 +16,13 @@ use render::*;
 // The GPU render target (`gpu.rs`) paints with the same text metric and hairline snap.
 #[cfg(feature = "gui-gpu")]
 pub(crate) use {
-    paint::paint_stall_ms, paint::text_px_width, render::cursor_rim, render::snap_hairline,
-    render::text_units, render::unit_cells,
+    paint::paint_stall_ms, paint::text_px_width, render::cursor_rim, render::luma,
+    render::snap_hairline, render::text_units, render::unit_cells,
 };
 
 use super::{
-    CursorShape, Key, KeyRepeat, LatencySample, Mouse, MouseAction, MouseButton, Op, WheelMode,
-    WindowSpec,
+    CursorShape, Key, KeyRepeat, LatencySample, Mouse, MouseAction, MouseButton, Op, PAINT_PHASES,
+    WheelMode, WindowSpec,
 };
 
 use crate::core::sync::lock;
@@ -2446,37 +2446,30 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 }
                 let _sg = crate::core::heap::stall_guard("gui-paint");
                 let paint_start = Instant::now();
-                // `presented_frame` false: the GPU target skipped the frame (a stale
-                // swapchain mid-resize, an occluded window) — nothing reached the
-                // compositor, so the input stays unanswered for the frame that does.
-                let (split, presented_frame) = match &mut w.backend {
+                // The GPU paint's phases, or `None` from the CPU painter; nothing at all
+                // when the GPU target skipped the frame (an occluded window) — nothing
+                // reached the compositor, so the window stays hidden and the input
+                // unanswered for the frame that does.
+                let painted: Option<Option<[u64; 5]>> = match &mut w.backend {
                     Backend::Cpu { surface, .. } => {
                         paint(surface, &w.window, &mut w.renderer, &w.frame);
-                        (None, true)
+                        Some(None)
                     }
                     #[cfg(feature = "gui-gpu")]
-                    Backend::Gpu(gpu) => match gpu.paint(&w.frame, &mut w.renderer) {
-                        Some(times) => (
-                            Some([
-                                times.encode_us,
-                                times.upload_us,
-                                times.acquire_us,
-                                times.submit_us,
-                                times.present_us,
-                            ]),
-                            true,
-                        ),
-                        None => (None, false),
-                    },
+                    Backend::Gpu(gpu) => gpu
+                        .paint(&w.frame, &mut w.renderer)
+                        .map(|times| Some(times.phases())),
                 };
                 let presented = Instant::now();
-                // The frame is on its way to the compositor: now the window may appear.
-                if !w.shown {
-                    w.shown = true;
-                    w.window.set_visible(true);
-                }
-                if presented_frame && let Some(input_at) = w.draw_input.take() {
-                    record_latency(w, input_at, paint_start, presented, split);
+                if let Some(split) = painted {
+                    // The frame is on its way to the compositor: now the window may appear.
+                    if !w.shown {
+                        w.shown = true;
+                        w.window.set_visible(true);
+                    }
+                    if let Some(input_at) = w.draw_input.take() {
+                        record_latency(w, input_at, paint_start, presented, split);
+                    }
                 }
                 w.particles_next = w
                     .renderer
@@ -2690,17 +2683,17 @@ fn record_latency(
         && u128::from(sample.total_us) >= threshold_ms * 1000
     {
         let ms = |us: u64| us as f64 / 1000.0;
-        let phases = match sample.split {
-            Some([encode, upload, acquire, submit, present]) => format!(
-                " | encode={:.2}ms upload={:.2}ms acquire={:.2}ms submit={:.2}ms present={:.2}ms",
-                ms(encode),
-                ms(upload),
-                ms(acquire),
-                ms(submit),
-                ms(present)
-            ),
-            None => String::new(),
-        };
+        let phases: String = sample
+            .split
+            .map(|split| {
+                PAINT_PHASES
+                    .iter()
+                    .zip(split)
+                    .map(|(name, us)| format!(" {name}={:.2}ms", ms(us)))
+                    .collect::<String>()
+            })
+            .map(|named| format!(" |{named}"))
+            .unwrap_or_default();
         eprintln!(
             "[gui-latency] input->present {:.2}ms (to paint {:.2}ms, paint {:.2}ms){phases}",
             ms(sample.total_us),

@@ -1936,7 +1936,7 @@ pub(super) fn contrast_lut(gamma: f32) -> [u8; 256] {
 /// Rec. 601 luma of an sRGB triple, in 0..=255·1000 units — a cheap "is this lighter
 /// than that" ordering, not a colorimetric quantity.
 #[inline]
-pub(super) fn luma(rgb: [u8; 3]) -> u32 {
+pub(crate) fn luma(rgb: [u8; 3]) -> u32 {
     299 * rgb[0] as u32 + 587 * rgb[1] as u32 + 114 * rgb[2] as u32
 }
 

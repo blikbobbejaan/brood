@@ -47,8 +47,8 @@ use winit::window::Window;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::host::gui::backend::{
-    CURSOR_FG, Renderer, cursor_rim, paint_stall_ms, snap_hairline, text_px_width, text_units,
-    unit_cells,
+    CURSOR_FG, Renderer, cursor_rim, luma, paint_stall_ms, snap_hairline, text_px_width,
+    text_units, unit_cells,
 };
 use crate::host::gui::effects::{EmitterStep, FrameEffects};
 use crate::host::gui::{Align, CursorStyle, Face, MAX_PARTICLES, Op};
@@ -168,7 +168,7 @@ fn fs_solid(in: SolidOut) -> @location(0) vec4<f32> {
 
 // Into an sRGB view of the same frame: the colour is decoded here, the hardware blends
 // in linear light and encodes on write — the CPU painter's `blend`, which is right for
-// geometry (a translucent cursor wash, a rounded edge), as ADR-358 says text is not.
+// translucent geometry (a cursor wash), as ADR-358 says text is not.
 @fragment
 fn fs_solid_linear(in: SolidOut) -> @location(0) vec4<f32> {
     let coverage = solid_coverage(in);
@@ -576,9 +576,8 @@ impl InstanceBuffer {
         }
     }
 
-    /// Upload `data`, growing (doubling) the buffer first when it does not fit.
-    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, label: &str, data: &[u8]) {
-        let needed = data.len() as u64;
+    /// Re-create the buffer, doubling, until `needed` bytes fit; what it held is gone.
+    fn reserve(&mut self, device: &wgpu::Device, label: &str, needed: u64) {
         if needed > self.capacity_bytes {
             let mut capacity = self.capacity_bytes.max(1);
             while capacity < needed {
@@ -586,6 +585,11 @@ impl InstanceBuffer {
             }
             *self = InstanceBuffer::new(device, label, capacity);
         }
+    }
+
+    /// Upload `data`, growing (doubling) the buffer first when it does not fit.
+    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, label: &str, data: &[u8]) {
+        self.reserve(device, label, data.len() as u64);
         if !data.is_empty() {
             queue.write_buffer(&self.buffer, 0, data);
         }
@@ -602,14 +606,7 @@ impl InstanceBuffer {
         label: &str,
         words: &[u32],
     ) -> usize {
-        let needed = std::mem::size_of_val(words) as u64;
-        if needed > self.capacity_bytes {
-            let mut capacity = self.capacity_bytes.max(1);
-            while capacity < needed {
-                capacity *= 2;
-            }
-            *self = InstanceBuffer::new(device, label, capacity);
-        }
+        self.reserve(device, label, std::mem::size_of_val(words) as u64);
         let span = if reuse_enabled() {
             changed_span(&self.shadow, words)
         } else {
@@ -679,9 +676,9 @@ fn changed_span(old: &[u32], new: &[u32]) -> Option<std::ops::Range<usize>> {
 /// A run of consecutive quads drawn with one pipeline state: `count` instances starting
 /// at `first` in that pipeline's instance buffer.
 enum Batch {
-    /// `linear`: some quad in the run is translucent or anti-aliased, so the run is
-    /// drawn through the sRGB view and blends in linear light (`segments`). A run of
-    /// opaque plain fills looks the same either way and rides whichever pass is open.
+    /// `linear`: some quad in the run is translucent, so the run is drawn through the
+    /// sRGB view and blends in linear light (`segments`). A run of opaque fills — their
+    /// anti-aliased rims included — rides whichever pass is open.
     Solid {
         first: u32,
         count: u32,
@@ -792,8 +789,10 @@ impl FrameBuilder {
             self.clip[2],
             self.clip[3],
         ]);
-        // A translucent quad or an SDF edge blends; an opaque plain fill only covers.
-        let blends = rgba[3] < 255 || aa != 0.0;
+        // Only a translucent fill needs linear light. An opaque shape's anti-aliased rim
+        // blends in the encoded space, as text does, and rides whichever pass is open —
+        // a pane divider or a mode-line chip between two runs of text costs no pass switch.
+        let blends = rgba[3] < 255;
         let merge = self.can_merge();
         match self.batches.last_mut() {
             Some(Batch::Solid { count, linear, .. }) if merge => {
@@ -922,7 +921,7 @@ enum RunPlace {
 }
 
 /// Everything a run's quads depend on except where it is drawn.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Hash)]
 struct RunContext {
     place: RunPlace,
     /// cell width, cell height, font px (bits) and the resolved default family
@@ -959,12 +958,7 @@ struct RunCache {
 fn run_hash(text: &str, face: &Face, context: &RunContext) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut hasher);
-    (face.fg, face.bg, face.bold, face.italic).hash(&mut hasher);
-    (face.underline, face.reverse, face.family, face.scale).hash(&mut hasher);
-    context.place.hash(&mut hasher);
-    context.metrics.hash(&mut hasher);
-    context.ground.hash(&mut hasher);
+    (text, face, context).hash(&mut hasher);
     hasher.finish()
 }
 
@@ -1000,14 +994,6 @@ impl RunCache {
         self.hits = 0;
         self.misses = 0;
     }
-
-    /// Forget every run (a run names atlas pages; nothing else can stale it today, but a
-    /// caller that drops the atlas must drop these with it).
-    #[allow(dead_code)]
-    fn clear(&mut self) {
-        self.current.clear();
-        self.previous.clear();
-    }
 }
 
 /// `BROOD_GUI_DAMAGE=0` turns the GPU target's reuse off as it does the CPU painter's
@@ -1040,14 +1026,9 @@ fn decode_clear(colour: wgpu::Color) -> wgpu::Color {
     }
 }
 
-/// Rec. 601 luma, the CPU painter's "is this lighter than that" ordering (`render::luma`).
-fn luma(rgb: [u8; 3]) -> u32 {
-    299 * rgb[0] as u32 + 587 * rgb[1] as u32 + 114 * rgb[2] as u32
-}
-
 /// The draw order of `batches` as render passes: `(linear, range)` each, where a linear
-/// pass draws through the swapchain's sRGB view (translucent and anti-aliased solids,
-/// blended in linear light) and the rest through the encoded view (text, sprites,
+/// pass draws through the swapchain's sRGB view (translucent solids, blended in linear
+/// light) and the rest through the encoded view (text, sprites,
 /// particles — and an opaque fill, which looks the same in either, joins whichever pass
 /// is open). Consecutive batches of one kind share a pass, so a frame pays a pass switch
 /// only where its translucent geometry and its text interleave. Without an sRGB view
@@ -2762,8 +2743,6 @@ impl GpuWindow {
 
         let (fwf, fhf) = (fw as f32, fh as f32);
         let mut fb = FrameBuilder::new(fwf, fhf);
-        // The grid origin, the one the CPU painter and the mouse hit-test use, so a frame
-        // lands on the same pixels whichever target paints it.
         let (ox, oy) = renderer.grid_origin(fw as usize, fh as usize);
         let grid = Grid {
             ox: ox as f32,
@@ -2779,15 +2758,14 @@ impl GpuWindow {
         // no longer carries still draws its last particles, at the end of the scene.
         let steps = renderer.emitters.step(frame);
         let fx = FrameEffects::of(frame);
-        let mut split = fb.overlay_at.unwrap_or(fb.batches.len());
+        let at = fb.overlay_at.unwrap_or(fb.batches.len());
         let lingering: Vec<Batch> = steps
             .iter()
             .filter(|step| !step.present)
             .map(|step| Batch::Particles { id: step.id })
             .collect();
-        split += lingering.len();
-        fb.batches
-            .splice(split - lingering.len()..split - lingering.len(), lingering);
+        let split = at + lingering.len();
+        fb.batches.splice(at..at, lingering);
         let t_expand = std::time::Instant::now();
 
         self.queue.write_buffer(
@@ -2824,9 +2802,14 @@ impl GpuWindow {
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 // The swapchain went stale (a resize the OS has not told winit about yet,
-                // a display change): reconfigure and skip this frame; the next paint draws.
+                // a display change): reconfigure and try once more — nothing asks for
+                // another paint, so a frame skipped here would leave the old image up.
                 self.surface.configure(&self.device, &self.config);
-                return None;
+                match self.surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(t)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+                    _ => return None,
+                }
             }
             wgpu::CurrentSurfaceTexture::Timeout
             | wgpu::CurrentSurfaceTexture::Occluded
@@ -3012,6 +2995,19 @@ pub(crate) struct PaintTimes {
     pub(crate) acquire_us: u64,
     pub(crate) submit_us: u64,
     pub(crate) present_us: u64,
+}
+
+impl PaintTimes {
+    /// The phases in `gui::PAINT_PHASES` order.
+    pub(crate) fn phases(self) -> [u64; 5] {
+        [
+            self.encode_us,
+            self.upload_us,
+            self.acquire_us,
+            self.submit_us,
+            self.present_us,
+        ]
+    }
 }
 
 impl GpuWindow {
@@ -3703,6 +3699,41 @@ mod reuse_tests {
         plain.fill(0.0, 0.0, 10.0, 10.0, [1, 2, 3]);
         assert_eq!(segments(&plain.batches, true), vec![(false, 0..1)]);
         assert_eq!(segments(&[], true), vec![(false, 0..0)]);
+        // an opaque rounded chip between two runs of text: its anti-aliased rim rides the
+        // open pass, so a mode line of chips costs no pass switch
+        let mut chips = FrameBuilder::new(800.0, 600.0);
+        chips.textured(
+            TexKey::Atlas(0),
+            0.0,
+            0.0,
+            8.0,
+            8.0,
+            [0.0; 4],
+            [255; 4],
+            1,
+            0.0,
+        );
+        chips.solid(
+            0.0,
+            0.0,
+            30.0,
+            12.0,
+            [40, 40, 60, 255],
+            0.0,
+            Edge::Rounded(3.0),
+        );
+        chips.textured(
+            TexKey::Atlas(0),
+            8.0,
+            0.0,
+            8.0,
+            8.0,
+            [0.0; 4],
+            [255; 4],
+            1,
+            0.0,
+        );
+        assert_eq!(segments(&chips.batches, true).len(), 1);
     }
 
     #[test]

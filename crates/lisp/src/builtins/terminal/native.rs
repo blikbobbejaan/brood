@@ -937,10 +937,7 @@ pub(in crate::builtins) fn gui_latency(args: &[Value], _: EnvId, heap: &mut Heap
             (value::kw("paint"), ms(sample.paint_us)),
         ];
         if let Some(split) = sample.split {
-            for (name, us) in ["encode", "upload", "acquire", "submit", "present"]
-                .into_iter()
-                .zip(split)
-            {
+            for (name, us) in crate::host::gui::PAINT_PHASES.into_iter().zip(split) {
                 pairs.push((value::kw(name), ms(us)));
             }
         }

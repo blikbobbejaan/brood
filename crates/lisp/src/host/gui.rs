@@ -42,7 +42,7 @@
 /// `scale` (≥1): the op's text is drawn `scale`× larger, occupying a
 /// `scale`×`scale` block of base cells anchored at its `(row, col)`. The terminal
 /// frontend has no notion of scale and renders 1×. See ADR-079.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Face {
     pub fg: Option<[u8; 3]>,
     pub bg: Option<[u8; 3]>,
@@ -209,6 +209,9 @@ pub struct LatencySample {
     /// microseconds; `None` on the CPU painter
     pub split: Option<[u64; 5]>,
 }
+
+/// The names of `LatencySample::split`'s phases, in order.
+pub const PAINT_PHASES: [&str; 5] = ["encode", "upload", "acquire", "submit", "present"];
 
 /// The pointer shape a cursor zone requests — frontend-neutral (mapped to a winit
 /// `CursorIcon` only inside the GUI backend). `ColResize` is the ↔ used for a
