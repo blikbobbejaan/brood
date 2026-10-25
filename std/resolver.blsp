@@ -409,8 +409,8 @@ all). NONE never matches — a version constraint is about a selected version."
 
 (defn resolve (roots provider &optional preferred)
   "Resolve `roots` (a list of `[name constraint]`) against `provider` into a concrete
-version per package. Returns `[:ok solution]` — `solution` a map of name → version string
-covering every package in the transitive graph — or `[:error message]`, a derivation of why
+version per package. Returns the solution — a map of name → version string
+covering every package in the transitive graph — or a failure (ADR-310) whose message derives why
 no version set fits. Pure: all fetching is the provider's. `preferred` (optional, a name →
 version map, e.g. the prior lock) is chosen first for each package when it still fits, so a
 re-solve keeps existing pins instead of upgrading the whole graph to newest."
@@ -435,12 +435,12 @@ re-solve keeps existing pins instead of upgrading the whole graph to newest."
             result (pg-solve ctx (pg-index-add {} root-ics) seeded (list pg-root-pkg)))
         (pg-cleanup ctx)
         (match result
-          ([:ok decs] [:ok (dissoc decs pg-root-pkg)])
-          (other other)))
+          ([:ok decs] (dissoc decs pg-root-pkg))
+          ([:error message] (failure message))))
       (catch e
         (pg-cleanup ctx)
         (if (and (map? e) (get e :resolver-budget-exceeded))
-          [:error (get e :message)]
+          (failure (get e :message))
           (throw e))))))
 
 (defn- pg-cleanup (ctx) (table/drop (get ctx :universes)) (table/drop (get ctx :steps)))

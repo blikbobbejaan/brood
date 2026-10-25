@@ -207,10 +207,10 @@ transitively-closed lock file and puts each dep's source on *load-path*."
     ;; Brood-version gate BEFORE the solve, so a runtime mismatch reports as one (ADR-209)
     ;; rather than as an opaque "no version satisfies" from deep in the backtracker.
     (package-check-brood-compat prefetched)
-    (let (provider (package-prefetched-provider prefetched))
-      (match (resolver/resolve roots provider preferred)
-        ([:error message] (error "package: could not resolve dependency versions — " message))
-        ([:ok solution] (package-fetch-registry-solution root solution lock-index base))))))
+    (let (solution (resolver/resolve roots (package-prefetched-provider prefetched) preferred))
+      (if (failure? solution)
+        (error "package: could not resolve dependency versions — " (error-message solution))
+        (package-fetch-registry-solution root solution lock-index base)))))
 
 ;; Fetch + extract every package of a resolved `{name → version}` solution into entries.
 ;; `base` is nil on the lock-reuse path (each fetch is served from the `_deps/` cache, and

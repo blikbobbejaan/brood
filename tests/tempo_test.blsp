@@ -12,16 +12,16 @@
   (test "a bare year is a legal value"
     (assert= :year (tempo/resolution (tempo/new! {:year 2026}))))
   (test "gaps in the unit chain are rejected, not guessed"
-    (assert= :error (nth (tempo/new {:year 2026 :day 15}) 0)))
+    (is (failure? (tempo/new {:year 2026 :day 15}))))
   (test "unknown units are rejected"
-    (assert= :error (nth (tempo/new {:year 2026 :fortnight 2}) 0)))
+    (is (failure? (tempo/new {:year 2026 :fortnight 2}))))
   (test "an impossible day is rejected rather than normalised"
-    (assert= :error (nth (tempo/new {:year 2026 :month 2 :day 30}) 0))
-    (assert= :error (nth (tempo/new {:year 2026 :month 2 :day 29}) 0))
-    (assert= :ok (nth (tempo/new {:year 2024 :month 2 :day 29}) 0)))
+    (is (failure? (tempo/new {:year 2026 :month 2 :day 30})))
+    (is (failure? (tempo/new {:year 2026 :month 2 :day 29})))
+    (refute (failure? (tempo/new {:year 2024 :month 2 :day 29}))))
   (test "out-of-range clock components are rejected"
-    (assert= :error (nth (tempo/new {:year 2026 :month 6 :day 15 :hour 24}) 0))
-    (assert= :error (nth (tempo/new {:year 2026 :month 13}) 0)))
+    (is (failure? (tempo/new {:year 2026 :month 6 :day 15 :hour 24})))
+    (is (failure? (tempo/new {:year 2026 :month 13}))))
   ;; The sign used to be padded as if it were a digit, giving "0-44".
   (test "proleptic and negative years render with the sign outside the padding"
     (assert= "0044" (tempo/->iso (tempo/new! {:year 44})))
@@ -47,19 +47,19 @@
     (assert= 50 (tempo/unit (tempo/parse! "2026-06-15T14:30:05.05") :ms))
     (assert= 123 (tempo/unit (tempo/parse! "2026-06-15T14:30:05.123") :ms)))
   (test "malformed input is an error, never a silently repaired value"
-    (assert= :error (nth (tempo/parse "2026-13") 0))
-    (assert= :error (nth (tempo/parse "2026-02-31") 0))
-    (assert= :error (nth (tempo/parse "not-a-date") 0))
-    (assert= :error (nth (tempo/parse "2026-06-15T14:30:05.xyz") 0))
-    (assert= :error (nth (tempo/parse "2026-06-15T14:30T09") 0)))
+    (is (failure? (tempo/parse "2026-13")))
+    (is (failure? (tempo/parse "2026-02-31")))
+    (is (failure? (tempo/parse "not-a-date")))
+    (is (failure? (tempo/parse "2026-06-15T14:30:05.xyz")))
+    (is (failure? (tempo/parse "2026-06-15T14:30T09"))))
   ;; `string/->number` reads a sign, so the obvious digits? test accepted "+6"
   ;; and parsed "2026-+6" as June.
   (test "a signed field is not a digit string"
-    (assert= :error (nth (tempo/parse "2026-+6") 0))
-    (assert= :error (nth (tempo/parse "2026-06-+5") 0))
-    (assert= :error (nth (tempo/parse "2026-06-15T+4:30") 0))
-    (assert= :error (nth (tempo/parse "+2026") 0))
-    (assert= :error (nth (tempo/parse "2026-06-15T14:30:05.+5") 0)))
+    (is (failure? (tempo/parse "2026-+6")))
+    (is (failure? (tempo/parse "2026-06-+5")))
+    (is (failure? (tempo/parse "2026-06-15T+4:30")))
+    (is (failure? (tempo/parse "+2026")))
+    (is (failure? (tempo/parse "2026-06-15T14:30:05.+5"))))
   ;; ->iso emitted "-0044" and parse rejected it: the module could not read its
   ;; own output.
   (test "a negative year round-trips through ->iso"
@@ -74,8 +74,8 @@
             (tempo/new! {:year 0 :month 1 :day 1 :hour 0 :minute 0})]
       (fn (t) (assert= (tempo/->iso t) (tempo/->iso (tempo/parse! (tempo/->iso t)))))))
   (test "a bare sign is not a value"
-    (assert= :error (nth (tempo/parse "-") 0))
-    (assert= :error (nth (tempo/parse "-abc") 0)))
+    (is (failure? (tempo/parse "-")))
+    (is (failure? (tempo/parse "-abc"))))
   (test "round-trips through ->iso at every precision"
     (assert= "2026" (tempo/->iso (tempo/parse! "2026")))
     (assert= "2026-06" (tempo/->iso (tempo/parse! "2026-06")))
@@ -97,9 +97,9 @@
       (assert= (tempo/span-from s) (tempo/span-from (tempo/parse-span! (tempo/->iso-span s))))
       (assert= (tempo/span-to s) (tempo/span-to (tempo/parse-span! (tempo/->iso-span s))))))
   (test "a backwards or malformed interval is an error"
-    (assert= :error (nth (tempo/parse-span "2026-08/2026-06") 0))
-    (assert= :error (nth (tempo/parse-span "2026-06") 0))
-    (assert= :error (nth (tempo/parse-span "2026-06/2026-13") 0))))
+    (is (failure? (tempo/parse-span "2026-08/2026-06")))
+    (is (failure? (tempo/parse-span "2026-06")))
+    (is (failure? (tempo/parse-span "2026-06/2026-13")))))
 
 (describe "between"
   (test "is the hull, gap included — unlike union"

@@ -123,6 +123,11 @@ Guile are.
 
 ### 4. Networking stops at HTTP/1.0 over TCP
 
+**Update 2026-10-26: the kernel half is done.** UDP sockets deliver to the mailbox like TCP
+(`std/net/udp`, ADR-449); `%tls-connect` / `%tls-listen` negotiate ALPN and `tls/protocol`
+reads the result; `http/connection` + `http/request-on` are an HTTP/1.1 keep-alive client
+with chunked decoding (ADR-451). HTTP/2, gRPC and a UDP DNS resolver remain, as packages.
+
 **Worse than it looks.** `std/net/http.blsp` speaks HTTP/1.0, client and server,
 with no keep-alive and no chunked encoding ("deliberately small"). SSE is HTTP/1.0 for the
 same reason (`std/net/sse.blsp`). The kernel has **no UDP** (`std/net/dns.blsp`;
@@ -188,6 +193,13 @@ hive.
 
 ### 7. Debugging and observability do not connect to the outside world
 
+**Update 2026-10-26: done, bar publishing.** `nest dap` is a Debug Adapter Protocol server
+over `debug` (ADR-452: function and line breakpoints, threads, stack, variables, evaluate,
+continue); `nest profile` writes folded stacks (`dev/profile->folded`) that flamegraph.pl,
+inferno and speedscope read; `observe-otlp` (OTLP/HTTP JSON: logs, errors as
+`exception.*` log records, metrics) is written and tested as a package, not yet on hive.
+W3C `traceparent` propagation is still open — `observe` has no traces to propagate.
+
 **Missing.** There is no Debug Adapter Protocol. `std/tool/debug.blsp` speaks its own wire
 protocol, a process-native debugger that is better than a breakpoint in several ways, but
 no editor other than bedit can drive it. `std/jsonrpc` mentions DAP only as a possible
@@ -208,20 +220,32 @@ provider.
 **Kind.** The DAP adapter is std (`std/tool`): it versions with `debug`'s wire, and an
 editor other than bedit needs it. Profile export is std tooling. OTLP is a hive package.
 
-### 8. No enforced convention for errors
+### 8. The error convention: decided, and enforced — this gap was misread
 
-**Missing.** ROADMAP.md line 125 says the `[:ok v]` / `[:error reason]` convention, a
-structured error map shared by `throw` and the tuple, `result` / `unwrap` / `unwrap-or`, and
-tuple-union exhaustiveness in the checker are "deliberately not started". Without the
-checker part, "the convention is a naming rule rather than an enforced one". Go has
-`error`, and Rust has `Result` and `?`. A newcomer to Brood finds
-`try`/`catch`/`finally` (ADR-306) and tuples by habit.
+**Update 2026-10-26: there was no gap; the doc read a stale line.** The first draft of this
+section took ROADMAP's "`[:ok v]` / `[:error reason]` … deliberately not started" (written
+2026-08-30) as current. Two days later ADR-310 decided the question the other way, after
+measuring tuples, raising and a falsy failure on the tree's real call sites: **a function
+that cannot interpret its input returns a `failure`**, a value kind of its own, and a raise
+stays the channel for bugs. Tuples lost because they are "structurally at war with `->`"
+and need a parametric `(result T)` in the checker; `result` / `unwrap` were rejected by
+name. ADR-315 added the mechanisms that stop on a failure — `ok->` (the pipe), `with` (the
+`let`) and a fold that stops once its accumulator is one — and the checker already enforces
+it: `failure` is a tag, so `(or T failure)` is an ordinary union, a failure handed to a
+function wanting `T` is a type finding, and a `failure?` that can never be true is reported.
 
-**Done looks like.** One error shape, a `with`-style chaining macro, and exhaustiveness over
-`(or (tuple :ok T) (tuple :error E))` in `check/exhaustive.rs`, so a forgotten `[:error …]`
-branch warns.
+That is Go's `error` and Rust's `Result` + `?` in a form that survives a pipe. What was left
+was the tree not yet following its own rule: `tempo/new`, `tempo/parse` and
+`tempo/parse-span` still answered `[:ok …]` / `[:error …]` (ADR-310 named tempo as the case
+it was fixing), and so did `resolver/resolve`. All four return a failure now; the `!`
+siblings still raise. That is enforcement the tuples never had: `(tempo/resolution (tempo/parse s))`
+now reads `argument 1 expects tempo, got failure | tempo` in `nest check`, where the tuple
+was silent. The `[:ok …]` tuples left in std are **process replies** — a
+message's tag, a protocol rather than a parse result — which ADR-310 does not cover and
+should not.
 
-**Kind.** Language: a prelude macro plus checker work, recorded as an ADR.
+**Kind.** None left. A newcomer's habit of reaching for tuples is a documentation matter,
+and `docs/brood-for-claude.md` and the writing skill already teach the failure channel.
 
 ### 9. Cost: memory per runtime and per process, and compute speed
 
@@ -293,7 +317,7 @@ of the editor extensions is *unverified*.
    package (gap 5). After this, the ecosystem can grow without a kernel release.
 5. **DAP and profile export (gap 7).** They connect Brood's existing debugger and profiler to
    the editors and tools people already use.
-6. **The error convention (gap 8), then time zones and crypto (gap 6).**
+6. **Time zones and crypto (gap 6)** — done; gap 8 turned out to be decided already.
 7. **Ecosystem packages (gaps 5 and 6).** Redis, MySQL, OTLP, YAML/TOML, HTTP/2 and gRPC, in
    whatever order programs ask for them.
 8. **Footprint and scale (gaps 9 and 10).** Continue the frontier docs' queues, which are

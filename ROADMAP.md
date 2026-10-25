@@ -122,12 +122,13 @@ authorship, not a sweep: ~40 names are side-effecting (`file/rm`, `exit`, `syste
 where an indented example would really run under `doctest`, and the rest need a
 human-meaningful case per function. Do it module-by-module with `doctest` gating each batch.
 
-Ahead, deliberately not started: the `[:ok v]` / `[:error reason]` result convention the `!`
-rename was groundwork for — a structured error map shared by `throw` and the tuple, plus
-`result`/`unwrap`/`unwrap-or`, and **tuple-union exhaustiveness in the checker** (ADR-128
-tuples are tag-disjoint, but `check/exhaustive.rs` covers only literal-enum and sealed
-scrutinees, so a forgotten `[:error …]` branch would not warn). Without that last piece the
-convention is a naming rule rather than an enforced one.
+The result convention this paragraph once listed as "ahead" — `[:ok v]` / `[:error reason]`
+tuples with `result` / `unwrap` and tuple exhaustiveness — was decided against two days
+later: ADR-310 made a known failure a returned **`failure`** value (tuples are at war with
+`->`), and ADR-315 added `ok->`, `with` and the stopping fold. The checker enforces it,
+since `failure` is a union member like any other. The last public parsers still on tuples
+(`tempo/new`, `tempo/parse`, `tempo/parse-span`, `resolver/resolve`) moved over on
+2026-10-26.
 
 
 ### Lisp survey + process-library backlog (2026-08-30)
