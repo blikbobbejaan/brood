@@ -7,7 +7,7 @@ Nothing here was run; every claim cites the file it was read from. Claims marked
 ## The question
 
 ROADMAP.md opens by calling Brood "a general-purpose language and runtime". If someone who
-writes Go, Rust, Elixir, Zig, Node/Deno, Java/.NET or Python picked it up for a service, a
+writes Go, Rust, Zig, Node/Deno, Java/.NET, Python or an actor-runtime language picked it up for a service, a
 CLI or a desktop program today, what would they reach for and not find? This note lists
 those gaps in the order they would stop someone from adopting it, not in order of how
 interesting they are to build.
@@ -23,13 +23,14 @@ does not version with the kernel.
 
 Some of this is ahead of most of the reference languages. A gap list should not hide that.
 
-- **The BEAM's process model with a JIT.** Preemptive M:N scheduling with work stealing and
+- **A mature actor runtime's process model, with a JIT.** Preemptive M:N scheduling with work stealing and
   live migration (docs/scheduler.md, ADR-100), and preemption inside native code since
   ADR-400..403. Links, monitors, selective receive, mailbox bounds (ADR-308), supervisors,
   `gen`, `defstatem` (ADR-437), `defapp` with signal-driven shutdown (ADR-435/436) and a
-  local registry (ADR-445). Encrypted multi-node distribution (docs/distribution.md).
-  In the cross-language benchmark it has the second-best p99 latency in the field, behind
-  Elixir and ahead of Go (brood-benchmark/README.md).
+  local registry (ADR-445) and cluster-wide process groups (ADR-446). Encrypted multi-node
+  distribution (docs/distribution.md). In the cross-language benchmark it has the
+  second-best p99 latency in the field, behind the reference actor runtime and ahead of Go
+  (brood-benchmark/README.md).
 - **Live redefinition is the core design.** Redefining a function reaches every process on
   its next call. Startup images (ADR-218/314) and hot reload (docs/shared-code.md).
 - **A real numeric tower.** Bigints widen on overflow, ratios are exact (ADR-196), decimals
@@ -209,7 +210,7 @@ editor other than bedit needs it. Profile export is std tooling. OTLP is a hive 
 structured error map shared by `throw` and the tuple, `result` / `unwrap` / `unwrap-or`, and
 tuple-union exhaustiveness in the checker are "deliberately not started". Without the
 checker part, "the convention is a naming rule rather than an enforced one". Go has
-`error`, Rust has `Result` and `?`, and Elixir has `with`. A newcomer to Brood finds
+`error`, and Rust has `Result` and `?`. A newcomer to Brood finds
 `try`/`catch`/`finally` (ADR-306) and tuples by habit.
 
 **Done looks like.** One error shape, a `with`-style chaining macro, and exhaustiveness over
@@ -221,9 +222,10 @@ branch warns.
 ### 9. Cost: memory per runtime and per process, and compute speed
 
 **Measured in brood-benchmark/README.md, 2026-09-16.** Base RSS is 52.8 MB, against Go 1.8,
-Python 9.8 and Node 42.8. Holding 300k live processes takes 1.31 GB, against Elixir's
-924 MB. A tree of 20k supervised children takes 491 MB, against Elixir's 153 MB. Compute is
-7.9× C on the geomean of the shared rows, between Node (5.3) and Elixir (10.4). Unboxed
+Python 9.8 and Node 42.8. Holding 300k live processes takes 1.31 GB, against the
+reference actor runtime's 924 MB. A tree of 20k supervised children takes 491 MB, against its
+153 MB. Compute is 7.9× C on the geomean of the shared rows, between Node (5.3) and the actor
+runtime (10.4). Unboxed
 numeric arrays are still listed as "immutability-fraught" (docs/runtime-frontier.md §D),
 which rules Brood out for numeric work.
 
