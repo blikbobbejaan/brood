@@ -287,7 +287,7 @@ text, in char offsets: one `[start old-end new-end]`, a sequence of them in the 
 were made, or nil to have the kernel find the change by comparing the two texts — cheap
 (prefix and suffix, chunk by chunk) and exact for any single contiguous edit, so nil is
 the right default for a caller that does not already know. A splice `[lo hi repl]` is the
-edit `(splice-edit splice)`.
+edit `[lo hi (+ lo (string/length repl))]`.
 
     (editor/treesit/update-tree tree new-text :elixir)   ;=> a new handle; tree still answers for the old text
     (fn? editor/treesit/update-tree)   → true"
@@ -299,13 +299,6 @@ edit `(splice-edit splice)`.
     (editor/treesit/free-tree tree)   ;=> true, then false for the same handle again
     (fn? editor/treesit/free-tree)   → true"
   (%tree-sitter-tree-free tree))
-
-(defn splice-edit (splice)
-  "The tree edit `[start old-end new-end]` a splice `[lo hi repl]` makes: chars `[lo, hi)`
-became `repl`.
-
-    (editor/treesit/splice-edit [3 5 \"p\"])   → [3 5 4]"
-  (let ([lo hi repl] splice) [lo hi (+ lo (string/length repl))]))
 
 (defn tree-changes (tree)
   "Where `tree`'s colouring may differ from the tree it was updated from: a sorted vector of
@@ -325,12 +318,13 @@ every cached band on any edit.
 ABSOLUTE char offsets, each clipped to the range, for the outermost nodes `kind->face-name`
 colours that reach into it. Parses nothing, and walks only the nodes that reach the range —
 and because the tree is the whole document's, a construct opened above `from` colours as what
-it is. nil when the handle is gone: open a fresh tree.
+it is. A vector — `[]` for a range nothing colours — and nil only when the handle is gone,
+so a caller can tell the two apart: open a fresh tree on nil.
 
     (editor/treesit/fontify-tree tree {:string :syntax/string} 0 40)   ;=> [[8 13 :syntax/string] …], nil once tree is freed
     (fn? editor/treesit/fontify-tree)   → true"
   (let (raw (%tree-sitter-tree-spans tree (table-kinds kind->face-name) keywords? from to))
-    (when raw (kind-spans->faces raw kind->face-name))))
+    (when raw (into [] (kind-spans->faces raw kind->face-name)))))
 
 ;; ---- where a windowed fontify may restart -------------------------------------
 
