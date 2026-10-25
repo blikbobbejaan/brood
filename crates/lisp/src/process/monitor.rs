@@ -1,4 +1,4 @@
-//! Erlang-style monitors: a one-shot, unidirectional `[:down …]` to a
+//! Process monitors: a one-shot, unidirectional `[:down …]` to a
 //! **watcher** when the **watched** pid dies (or, for a remote target, when
 //! the link to its node drops).
 //!
@@ -47,14 +47,14 @@ pub(crate) enum Watcher {
 }
 
 /// Monitors: watched-pid → the watchers to notify when it dies. Each watcher
-/// gets a `[:down <mref> <pid> <reason>]` message (Erlang `monitor`,
-/// unidirectional and one-shot). No links yet — a monitor never affects the
+/// gets a `[:down <mref> <pid> <reason>]` message (unidirectional and
+/// one-shot). No links yet — a monitor never affects the
 /// watched process. A single table holds both `Local` and `Remote` watchers,
 /// so the local-monitor path and the cross-node-monitor path share the same
 /// "is the target alive? add or fire :noproc" logic and the same fan-out from
 /// `deregister`.
 ///
-/// Indexed from BOTH ends, as Erlang keeps both sides' monitor lists on the process:
+/// Indexed from BOTH ends, keeping both sides' monitor lists:
 /// `by_target` answers a target's death (fan the downs out), `by_watcher` answers a
 /// watcher's death and its `demonitor` — each touching only that process's own entries.
 /// Without the second index a watcher's death or a `demonitor` walks the WHOLE table,
@@ -178,7 +178,7 @@ impl MonitorTable {
 /// **Pending remote monitors** — the *sender* side of `(monitor remote-pid)`.
 /// Keyed by the peer's node-name, valued by the local triples we'd need to
 /// fire `[:down mref pid :noconnection]` should the link to that peer die
-/// (Erlang semantics: a monitor fires on net-split). Compact mirror of
+/// (a monitor fires on net-split). Compact mirror of
 /// [`MONITORS`] — no down-delivery state, just enough to wake the watcher
 /// when the wire goes away. An entry lives until the monitor resolves:
 /// demonitor, the watcher's own death, node-down — or the DOWN itself
@@ -211,7 +211,7 @@ static NEXT_REF: AtomicU64 = AtomicU64::new(0);
 /// identifies a monitor, so a collision can hand a caller a reply meant for a peer
 /// and strand the real one.
 ///
-/// Erlang qualifies the ref itself by node. We cannot do that cheaply here: `Ref` is
+/// The natural fix qualifies the ref itself by node. We cannot do that cheaply: `Ref` is
 /// a bare `u64` inside `Value`, whose layout is pinned for the JIT
 /// (`value_layout_is_stable_for_the_jit`), so widening it would ripple through the
 /// JIT ABI. Randomising the top 24 bits per runtime instead makes an overlap ~6e-8
@@ -544,8 +544,8 @@ pub(crate) fn demonitor_remote_fanout(mref: u64) {
 
 /// The link to `node` just died. Drop **two** sets of monitors:
 ///   1. **Pending remote**: monitors *we* asked the peer to keep for us. Each
-///      fires `[:down mref pid :noconnection]` to the local watcher (Erlang
-///      semantics on net-split).
+///      fires `[:down mref pid :noconnection]` to the local watcher (on
+///      net-split).
 ///   2. **Inbound remote**: watchers the peer registered on our local pids.
 ///      No notification — the peer is gone — but the entries would otherwise
 ///      leak and a future reconnect would still try to deliver to a fresh

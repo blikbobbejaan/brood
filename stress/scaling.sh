@@ -12,9 +12,10 @@
 #
 # It is deliberately a weak bound. Real speedup on this workload is ~2.5x of a ~3.0x
 # hardware ceiling (2 -> 12 workers, measured against 12 independent OS processes),
-# and the BEAM gets 2.4x on the same box — so Brood is at ~83% of available. The
-# assertion catches the *collapse* case (a lock that serialises the pool), not a few
-# percent of drift, because a tighter bound on a shared CI box is a flaky test.
+# and a mature actor runtime gets 2.4x on the same box — so Brood is at ~83% of
+# available. The assertion catches the *collapse* case (a lock that serialises the
+# pool), not a few percent of drift, because a tighter bound on a shared CI box is a
+# flaky test.
 set -uo pipefail
 
 BROOD=${BROOD:-target/release/brood}

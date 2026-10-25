@@ -48,8 +48,8 @@ Today a node is hand-wired:
 Three frictions, all incidental to the share-nothing model:
 
 1. **The secret is invented per program.** There's no shared default, so every
-   example hardcodes `"demo-cookie"`. Erlang solved this in 1998 with
-   `~/.erlang.cookie`.
+   example hardcodes `"demo-cookie"`. The standard fix is a per-user cookie file
+   in the home directory.
 2. **You must pick an IP and a port** even when both nodes live on one machine —
    which is the common dev case *and* the editor case (a buffer/render server and
    the editor sharing a box). A TCP port is heavyweight addressing for "the brood
@@ -90,8 +90,7 @@ nest run --name foobar app.blsp     # brings the node up, then runs app.blsp
   `getenv` / `random-token` / `file/spit-private` primitives (the kernel carries only
   bytes). `file/spit-private` is the primitive that does the `0600` write a plain
   `file/spit` can't, so the file-mode mechanism stays in Rust while the resolution
-  logic stays in Brood — mirroring Erlang's `~/.erlang.cookie` but expressed in
-  the language. There is **no** `dist::default_cookie()` symbol in the tree.
+  logic stays in Brood — a per-user cookie file, expressed in the language. There is **no** `dist::default_cookie()` symbol in the tree.
 
 `$BROOD_COOKIE` still wins so CI / multi-tenant setups can override without
 touching the file.

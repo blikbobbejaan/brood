@@ -1,5 +1,5 @@
-;; Per-process resource limits — `(proc/flag :max-heap n)` (BEAM
-;; `max_heap_size` analogue; ROADMAP "Robustness gaps vs BEAM / .NET" #2).
+;; Per-process resource limits — `(proc/flag :max-heap n)` (ROADMAP robustness
+;; gaps #2).
 ;;
 ;; Coverage:
 ;;   - flag read/set/clear returns the previous value

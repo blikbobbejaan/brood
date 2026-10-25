@@ -339,7 +339,7 @@ tools — one definition of \"what we know about a process\"."
 Returns `{:processes [{:id :pid :node :name :status :mailbox :memory
 :collections :reductions :monitored-by :parent} ...]}` — the same
 `(proc/info pid)` map the observer reads, so an agent sees mailbox
-backlog, cumulative reductions (Erlang's work counter — is it busy?),
+backlog, cumulative reductions (the work counter — is it busy?),
 heap bytes, GC count and monitors per process, not just the id. Order
 is unspecified — sort by `:id` (or `:reductions` to find the busiest)
 if you need stability.
@@ -708,7 +708,7 @@ Brood pattern, `std/tool/explain.blsp`)."
      :schema {:type "object" :properties {}}
      :handler run-tests-tool}
     {:name "processes"
-     :description "Snapshot every live green process with its runtime stats — id, name, status, mailbox backlog, memory, GC collections, cumulative reductions (Erlang's work counter), monitors and parent. The same per-process view the observer shows. Returns {:processes [{:id :status :mailbox :reductions ...} ...]}. Sort by :reductions to find the busiest process."
+     :description "Snapshot every live green process with its runtime stats — id, name, status, mailbox backlog, memory, GC collections, cumulative reductions (the work counter), monitors and parent. The same per-process view the observer shows. Returns {:processes [{:id :status :mailbox :reductions ...} ...]}. Sort by :reductions to find the busiest process."
      :schema {:type "object" :properties {}}
      :handler processes-tool}
     {:name "process-info"

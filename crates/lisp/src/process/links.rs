@@ -1,4 +1,4 @@
-//! Erlang-style process **links**: symmetric, bidirectional failure coupling —
+//! Process **links**: symmetric, bidirectional failure coupling —
 //! the complement of monitors ([`super::monitor`]). Where a monitor is a one-way
 //! notification (`[:down …]`) that never affects the watched process, a link is
 //! a two-way coupling: when a linked process dies, each peer either
@@ -10,7 +10,7 @@
 //!
 //! This is what lets a supervisor tear its whole subtree down when the supervisor
 //! itself dies (the "orphan on supervisor crash" gap monitors can't close), and
-//! it's the general Erlang `link`/`unlink`/`process_flag(trap_exit, …)`.
+//! it's the general `link`/`unlink`/`trap_exit` mechanism.
 //!
 //! **Cross-node links (ADR-067 dist).** A link may span nodes, mirroring the
 //! remote-monitor machinery ([`super::monitor`] + [`crate::dist`]). Each side
@@ -65,7 +65,7 @@ static REMOTE_LINKS: LazyLock<Mutex<HashMap<u64, Vec<RemotePeer>>>> =
 /// `(link pid)` for a **local** `pid` — symmetrically link the current process and
 /// `pid`. If `pid` is already dead, the caller is notified immediately (a trappable
 /// `[:EXIT pid :noproc]` if it traps, otherwise the caller dies — `:noproc` is
-/// abnormal), matching Erlang. Self-links are a no-op.
+/// abnormal). Self-links are a no-op.
 pub fn link(a: u64, b: u64) {
     if a == b {
         return;
@@ -145,10 +145,10 @@ pub(super) fn notify_peers(dead: u64, reason: &Message) {
 /// Notify one **local** `peer` that linked process `dead` (given as its
 /// `Message::Pid`, local or remote) exited with `reason`: a trappable
 /// `[:EXIT dead reason]` if `peer` traps, otherwise — for an abnormal reason —
-/// propagate by hard-killing `peer` **with the originating reason** (BEAM
-/// semantics: the peer's monitors and its own cascading links see *why* the
+/// propagate by hard-killing `peer` **with the originating reason** (so
+/// the peer's monitors and its own cascading links see *why* the
 /// tree fell, not a blanket `:kill`). A `:normal` reason to a non-trapping
-/// peer does nothing (Erlang semantics).
+/// peer does nothing.
 fn deliver_exit_to(peer: u64, dead_msg: Message, reason: Message) {
     if traps_exit(peer) {
         deliver(peer, exit_message(dead_msg, reason));

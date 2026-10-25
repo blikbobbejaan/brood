@@ -1,6 +1,6 @@
 ;;; chaos2_process_genserver.blsp — gen-server patterns and process state machines
 ;;;
-;;; These mimic Erlang OTP gen_server patterns: a process holds state in its
+;;; These exercise gen-server patterns: a process holds state in its
 ;;; receive loop and responds to typed messages. Tests concurrent access,
 ;;; state corruption, crash-and-restart, and timeout handling.
 ;;;

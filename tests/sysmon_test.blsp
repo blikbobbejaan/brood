@@ -141,7 +141,7 @@ worker's mailbox so it can't satisfy a later test's receive."
     ;; subscription, which under a loaded suite reports every collection in the
     ;; runtime; an event that had already passed the subscriber filter when
     ;; `sysmon-done` disarmed lands AFTER its zero-wait drain (the emitter snapshots
-    ;; its targets, then delivers — Erlang's system_monitor has the same window), and
+    ;; its targets, then delivers — an inherent window of a system monitor), and
     ;; sat in this unit's shared mailbox until this receive took it as `:got-one`
     ;; (seen once in a full run, 2026-09-04). Such a straggler is about some other
     ;; process; `worker` did not exist when the old subscription was live, so an

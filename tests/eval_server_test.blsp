@@ -290,8 +290,8 @@
       (assert= (count (get r :spy)) eval-server/*spy-entry-cap*))) ; 402 entries -> capped
   (test "tracing costs tail-calls only UP TO the cap: each traced self-call is a real crossing"
     ;; Inherent to boundary tracing while it is recording — the wrapper must return after
-    ;; the call, so the self-call is not in tail position (the caveat Erlang/Emacs tracing
-    ;; carries too). So a TAIL loop is traced per-iteration: a 300-deep traced loop fills
+    ;; the call, so the self-call is not in tail position (the caveat any wrapping tracer
+    ;; carries). So a TAIL loop is traced per-iteration: a 300-deep traced loop fills
     ;; the spy cap, where TCO would have shown a single crossing.
     (let (r (eval-capturing "(defn evsrv-t-loop ((0) :done) ((n) (evsrv-t-loop (- n 1))))\n(evsrv-t-loop 300)"
               ["evsrv-t-loop"]))

@@ -42,8 +42,8 @@ The worker-pool size must not be hardcoded. Resolution order:
 3. env var,
 4. CLI flag (`-j N`) — wins.
 
-The settings file is **Brood**, mirroring Elixir (`config/config.exs` is Elixir,
-not TOML) and our "write the language in the language" rule: a `config.blsp`
+The settings file is **Brood**, not TOML, following our "write the language in the
+language" rule: a `config.blsp`
 (project-local, with a user/global fallback) evaluated at startup into a settings
 table. Scheduler thread-count is needed *before* the scheduler exists, so a tiny
 single-threaded bootstrap eval reads the config first, then the pool starts.
@@ -109,7 +109,7 @@ struct Scheduler {
   `receive` (`Waiting` → move into `parked`).
 - **`send`**: lock the target mailbox, push the (copied) `Message`; if the target
   is `Waiting`, move it from `parked` back to `ready` (wake). Send to a dead pid is
-  a no-op (Erlang semantics, as today).
+  a no-op (as today).
 
 ### Send-ness & heap migration
 
@@ -143,11 +143,11 @@ RwLock), so concurrent workers reading code is already fine.
    root thread has no yielder, so it just refreshes its budget — never preempted.
    This was exactly the **additive** step the model promised (no redesign).
 
-## How this compares to the BEAM (what we copy, what we defer)
+## How this compares to a mature actor runtime (what we copy, what we defer)
 
-The target shape is Erlang's, lean:
+The target shape is the standard actor-runtime one, lean:
 
-| BEAM | Brood (as shipped) |
+| mature actor runtime | Brood (as shipped) |
 |---|---|
 | one scheduler thread per core, **per-scheduler run queues** | ✅ worker pool ≈ core count with **per-worker run queues** + steal-on-idle |
 | **reduction-counted preemption** (yield every ~2000 calls) | ✅ implemented (ADR-027): a per-worker budget (~2000, `BROOD_REDUCTIONS`); the JIT batches the countdown at loop back-edges |

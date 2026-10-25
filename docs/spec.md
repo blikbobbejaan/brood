@@ -119,7 +119,7 @@ value and leave their arguments unchanged. The only *binding* mutation in the
 language is `def` rebinding a global (§6) — never the contents of a value
 (ADR-026).
 
-The exception is **table**, Brood's ETS (ADR-107): a shared key→value store behind
+The exception is **table**, the shared mutable table (ADR-107): a shared key→value store behind
 an opaque handle, mutated in place and shared by *identity*, so a handle sent to
 another process names the same store. It deep-clones keys and values on the way in
 and out, so no two processes ever alias stored data — which is what keeps it
@@ -311,7 +311,7 @@ The pin is `^`, not `~`. A pin used to be spelled `~expr` — literally
 `(unquote expr)` — so inside a macro's `` ` `` template the quasiquote walker
 consumed it first and a pinned pattern could not be emitted by a macro at all,
 which is precisely what wrapping the request/reply idiom
-(`(receive ([:reply ^tag v] …))`) requires. `^` (Elixir's spelling) leaves `~` to
+(`(receive ([:reply ^tag v] …))`) requires. `^` leaves `~` to
 quasiquote alone (ADR-150). `~expr` in pattern position is now an error naming the
 fix; Brood has no metadata, so `^` is unambiguous.
 

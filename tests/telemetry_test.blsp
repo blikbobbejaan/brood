@@ -1,4 +1,4 @@
-;; std/telemetry.blsp — Erlang :telemetry-style instrumentation (listener model).
+;; std/telemetry.blsp — event instrumentation (listener model).
 ;; A thorough suite: emit→handler delivery, measurements/metadata, event filtering,
 ;; attach/detach/detach-all/re-attach, multiple handlers, introspection, the span
 ;; lifecycle, forward, cross-process + concurrent emit, sync ordering, the

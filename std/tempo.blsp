@@ -1,9 +1,9 @@
 ;; std/tempo.blsp — time as an interval, not an instant.
 ;;
-;; A Brood adaptation of Tempo, the Elixir library by Kip Cole
+;; A Brood adaptation of Tempo, the library by Kip Cole
 ;; (https://github.com/elixir-tempo/tempo), Copyright 2021 Kip Cole, licensed
 ;; under the Apache License 2.0. An independent reimplementation of Tempo's
-;; model, written from scratch in Brood. No Elixir source is copied. See
+;; model, written from scratch in Brood. No upstream source is copied. See
 ;; NOTICE.md, and PORTING.md for what is adapted and what is not.
 ;;
 ;; Layered on `std/datetime` for exactly three things: the Hinnant civil<->days

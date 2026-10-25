@@ -12,7 +12,7 @@
 ;; top-level fn is what the surrounding style calls for).
 ;;
 ;; Note this is the *list* sieve, unrelated to the `sieve` row in our own benchmark
-;; suite, which is the dense-`Table` bitset version (ROADMAP, Elixir-parity gaps).
+;; suite, which is the dense-`Table` bitset version (ROADMAP).
 
 (defmodule gabriel/primes
   "The Gabriel PRIMES benchmark (list-based sieve) — a conformance port. The oracle is

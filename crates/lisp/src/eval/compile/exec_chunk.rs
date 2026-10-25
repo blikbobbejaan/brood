@@ -1497,7 +1497,7 @@ pub(crate) fn exec_chunk(
 /// `Inst::Call` that pushed the callee and its recorded `pos` (plus the caller
 /// arm's `src_file`) locate the call. Tail calls collapse naturally — a tail
 /// callee reuses its caller's frame, so the entry shows the final callee's name
-/// at the original call site (the BEAM behaviour). Nested drivers (a native's
+/// at the original call site. Nested drivers (a native's
 /// `vm_apply` callback) each append their own frames as the error crosses them,
 /// so the chain accumulates across native boundaries. Only ever runs on the
 /// error path; capped at [`crate::error::MAX_TRACE_FRAMES`] keeping the

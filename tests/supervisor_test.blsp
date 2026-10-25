@@ -1,4 +1,4 @@
-;; std/supervisor.blsp — OTP-style supervision built in Brood on
+;; std/supervisor.blsp — supervision trees built in Brood on
 ;; spawn/monitor/receive/exit. :isolated because each test spawns processes (and
 ;; supervisors) and observes restarts via messages to the test process.
 ;;
@@ -18,7 +18,7 @@
 ;; `spawn-link` (not `spawn`): the child is linked to the supervisor *atomically*, so a
 ;; fast `:normal` exit (e.g. right after `:done`) reaches it as `[:EXIT … :normal]`, never
 ;; a racy `:noproc` that would spuriously restart a `:transient` child. This is the
-;; Erlang convention for supervised children (spawn_link).
+;; convention for supervised children: start them with `spawn-link`.
 (defn watched-spec (to restart)
   {:id :w
    :restart restart

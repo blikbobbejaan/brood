@@ -394,7 +394,7 @@ which is meaningless for a rope, so falling through unconditionally would swap a
   any `:-> RET` — or nil when the op declares none. A spec `(op [args] :-> ret? body…)`
   with a body is a PROVIDED op (ADR-185): `defability` emits its body as an auto-registered
   `:default` impl, so an `impl` that omits the op still gets it (Rust/Haskell provided
-  methods, Elixir `Protocol`'s derived defaults). The body typically calls the ability's
+  methods). The body typically calls the ability's
   *required* ops on `self`, so it works for any id that supplies those."
   (let (tail (rest (rest op)))
     ; forms after `(op-name [args])`
@@ -1008,7 +1008,7 @@ An optional leading docstring is carried onto the generated function.
 (impl Display :keyword (->string [k] (string/substring (str k) 1)))
 (impl Display :symbol (->string [s] (str s)))
 
-;; `Inspect` — the DEBUG form (Elixir's `Inspect`, Haskell's `Show`), the companion
+;; `Inspect` — the DEBUG form (Haskell's `Show`), the companion
 ;; to `Display`. `(inspect x)` is what you want in a log line or a REPL: unambiguous,
 ;; type-revealing, and free to include a wrapper a human reads (`#money<$10.50>`).
 ;; It is DISTINCT from `pr-str` on purpose — `pr-str` must *round-trip* (its output

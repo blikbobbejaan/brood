@@ -1,4 +1,4 @@
-;; std/telemetry.blsp metric aggregators — the Elixir Telemetry.Metrics folded in
+;; std/telemetry.blsp metric aggregators — metrics built in
 ;; Brood over the ADR-106 attach seam: counter / sum / last-value (gauge) / summary
 ;; (running count/mean/stddev/min/max) + every-Nth sampling. State lives in a shared
 ;; `table` (ADR-107); folds run serially in the one listener process.

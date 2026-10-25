@@ -2,7 +2,7 @@
 ;;   ./bin/cli tests/suite.blsp
 ;; (also run by `cargo test` via crates/lisp/tests/suite.rs)
 ;;
-;; ExUnit / `mix test`-style: `describe` groups a feature, `test` names a case.
+;; `describe` groups a feature, `test` names a case.
 ;; The suite runs every test concurrently (:parallel), each in its own process;
 ;; tallying is share-safe (see std/test.blsp).
 ;;

@@ -51,8 +51,8 @@
     ;; no-op footgun), so a crash here surfaces — its monitor sees the error
     ;; reason, not :normal.
     (let ([_w _ref] (spawn-monitor (/ 1 0)))
-      ;; the reason carries the structured error map (BEAM {Reason, Stacktrace}
-      ;; parity): [:error {:kind :message :code …}], not a flattened string
+      ;; the reason carries the structured error map:
+      ;; [:error {:kind :message :code …}], not a flattened string
       (let (reason (receive ([:down _ _ r] r) (after *test-wait-ms* :timeout)))
         (assert= :error (first reason))
         (assert= :runtime (get (first (rest reason)) :kind))

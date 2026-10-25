@@ -18,8 +18,7 @@ static MEM_GUARD: LazyLock<()> = LazyLock::new(|| {
 /// Stage 5 — **a parked process clean of the draining generation doesn't block it**. A
 /// process suspended in `receive` can't report its own liveness for a drain armed *after*
 /// it parked (it never reaches a safepoint). The drain coordinator therefore inspects a
-/// parked process's captured continuation directly — Erlang `check_process_code`-style —
-/// and acks it iff it's clean. Here a worker running gen-1 code parks while a drain of
+/// parked process's captured continuation directly and acks it iff it's clean. Here a worker running gen-1 code parks while a drain of
 /// gen 0 is armed: it is clean of gen 0 and must not stall the drain, even though it will
 /// never run again to report for itself.
 #[test]

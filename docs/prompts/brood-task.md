@@ -11,7 +11,7 @@ Brood code, fetch these three resources in order:
 
 **Brood essentials**
 - Data is immutable; `def` is the only mutation (rebinds globals,
-  Erlang-style hot reload).
+  live code reload across running processes).
 - Loops are tail recursion or processes (`spawn`/`receive`/`send`). No
   `while`, no `set!`.
 - Truthiness: only `nil` and `false` are falsy.

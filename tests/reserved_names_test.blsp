@@ -3,9 +3,9 @@
 ;; prelude, a Rust builtin, or an embedded std module) it is reserved; if you or a
 ;; package author wrote it, it is yours and hot reload is untouched.
 ;;
-;; Why this is a language rule and not a lint: it is the Elixir/Erlang model. There,
-;; the unit of reload is the module and OTP's stdlib is *sticky* — you cannot patch
-;; `Enum.map/2` at runtime. Brood is more dynamic (a `def` rebinds one global and
+;; Why this is a language rule and not a lint: where the unit of reload is the module,
+;; a shipped stdlib can simply be made *sticky* — its modules cannot be patched at
+;; runtime. Brood is more dynamic (a `def` rebinds one global and
 ;; every lookup is late-bound), which is exactly why the shipped surface needed a
 ;; rule rather than a convention.
 ;;

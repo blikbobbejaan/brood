@@ -203,7 +203,7 @@ examples/by-task/
   parse-and-transform/     ;; fused l*/-> pipeline over input
   cli-tool/                ;; nest run with args, exit codes
   long-running-server/     ;; hatch + supervision + reconnect
-  ring-of-processes/       ;; the Erlang ring benchmark
+  ring-of-processes/       ;; the classic process-ring benchmark
   bench-something/         ;; how to measure correctly
 ```
 

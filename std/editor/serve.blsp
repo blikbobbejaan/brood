@@ -179,7 +179,7 @@ usual `ui-run` functions. Registers a session manager under `serve-name` and ret
 its pid (non-blocking) — a daemon's `main` typically calls `(serve …)` then parks
 (`nest run --name N` brings the node up). Each `(attach …)` / `nest attach` then gets
 its own session. The program must already be a node (`node-start` / `nest run --name`).
-Opt-in, like Erlang's `-name`: a runtime serves nothing unless it calls `serve`.
+Opt-in: a runtime serves nothing unless it calls `serve`.
 
     (editor/serve/serve (fn () {:n 0}) view update)   ;=> #<pid …> of the session manager, registered as :ui"
   (proc/register serve-name (spawn (serve-manager make-model view update))))

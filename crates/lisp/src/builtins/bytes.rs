@@ -377,8 +377,8 @@ pub(super) fn bytes_to_value(bytes: impl AsRef<[u8]>, heap: &mut Heap) -> Value 
 
 /// Flatten an **iolist** into `out` at a write boundary (ADR-139): a leaf — a
 /// string, a `bytes`, or a byte int 0–255 — or an arbitrarily nested proper
-/// list/vector of iolists (`nil` = empty; an improper tail is a final leaf, as
-/// in Erlang). Callers describe output as a tree
+/// list/vector of iolists (`nil` = empty; an improper tail is a final leaf).
+/// Callers describe output as a tree
 /// (`[status-line headers "\r\n\r\n" body]`) and nothing is copied until this
 /// single flatten at the device write — which deletes the O(n²)
 /// `(str acc chunk)` accumulation class at its root. A string leaf is **always
@@ -405,7 +405,7 @@ pub(super) fn flatten_iolist(
             }
             Value::Pair(p) => {
                 // Process car first; the cdr is the rest of the iolist (a leaf
-                // there is Erlang's improper tail).
+                // there is an improper tail).
                 let (car, cdr) = {
                     let cell = heap.pair(p);
                     (cell.0, cell.1)

@@ -70,11 +70,11 @@ the exact consistency `namespaces.md` §4 calls "what keeps a self-editing edito
 bijection forecloses multiple modules per file (see `namespaces.md` §8 and the pre-scan
 fix in `docs/devlog.md` 2026-08-12).
 
-## 2. Prior art: Elixir makes the artifact layout *be* the index
+## 2. Prior art: make the artifact layout *be* the index
 
-The instructive precedent. In that ecosystem a source file holds one or many module
+The instructive precedent is an ecosystem where a source file holds one or many module
 definitions; the **compiler emits one artifact per module, named after the module**
-(`Elixir.Foo.Bar.beam`). At runtime a module reference resolves by searching a code path
+(module `Foo.Bar` → artifact `Foo.Bar`). At runtime a module reference resolves by searching a code path
 for the artifact whose *name is the module name* — the filename convention survives, it
 just moved down to the compiled artifact, where the compiler guarantees `name == filename`
 regardless of how the source was arranged. A build manifest records source → modules →
@@ -161,7 +161,7 @@ An index solves **addressing** (find the file), not **scoping** (per-module know
 visibility). Kept separate deliberately:
 
 - **In scope (what the index enables):** *flat* multiple modules per file, each
-  independently addressable by name — the Elixir model. Requires the resolver's
+  independently addressable by name — the §2 model. Requires the resolver's
   forward-reference pre-scan to become **per-module-region** (partition a file's forms by
   `defmodule` boundary; each module's known-names = the defs in its region). **This
   pre-scan landed (ADR-223 Phase 1, 2026-08-12)** as `macros::scan_regions` →
@@ -172,7 +172,7 @@ visibility). Kept separate deliberately:
 - **Out of scope (explicitly not doing):** **lexical submodules** where an inner module
   sees an outer's privates. That needs a `compile_ns` *stack* and a hierarchical privacy
   rule — real core cost for a capability the hierarchical-name model (`gui/window`,
-  ADR-085) + `defn-` already cover at the surface, and which even the Elixir precedent
+  ADR-085) + `defn-` already cover at the surface, and which even the §2 precedent
   declines (§2, lesson 2). Revisit only on a concrete driver.
 
 ## 7. Migration (when built)

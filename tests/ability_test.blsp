@@ -137,7 +137,7 @@
     (assert= (record-id (circle 3)) :ability-test/circle)
     (assert= (record-id {:r 3}) nil)
     (assert= (fields (circle 3)) {:r 3}))
-  (test "a record is NOT = to a bare map with the same fields (Elixir-struct semantics)"
+  (test "a record is NOT = to a bare map with the same fields (nominal identity)"
     ;; the identity intentionally distinguishes it — this is correct, not a leak
     (refute (= (circle 3) {:r 3})))
   (test "two records of different shape are never ="
@@ -575,7 +575,7 @@
       (assert= (receive ([:g v] v)) false))))
 
 ;; ---- derive: `:derives` runs an ability's `:derive-record` recipe (ADR-185) ----
-;; The Elixir `@derive` / Rust `#[derive]` model: the ability declares HOW to derive itself
+;; The Rust `#[derive]` model: the ability declares HOW to derive itself
 ;; (a recipe mapping field names → impl method forms); `defrecord`'s `:derives` runs it at
 ;; LOAD (via `%derive-into`) and registers the impl. Provided ops compose — derive the one
 ;; required op, inherit the rest.

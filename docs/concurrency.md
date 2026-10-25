@@ -11,7 +11,7 @@
 
 ## Goal
 
-Erlang-*style* concurrency, kept lean:
+Actor-model concurrency, kept lean:
 
 - **Use all cores** — N scheduler threads (one per core), true parallelism.
 - **Green processes** — lightweight, cheap (spawn lots of them), not OS threads.
@@ -23,8 +23,7 @@ Erlang-*style* concurrency, kept lean:
   stalls everything — is exactly what we're avoiding. Many schedulers; a hot
   process ties up at most one core, never the whole runtime.
 
-This is the BEAM's shape (N schedulers × many green processes), minus the fancy
-parts (see "Out of scope" below).
+The shape is N schedulers × many green processes, minus the fancy parts (see "Out of scope" below).
 
 ## The model
 
@@ -78,8 +77,8 @@ threads, so it must be `Send`. Today values are `Rc` (`!Send`). Options:
 - **Pin processes to their spawning scheduler** (no live migration); balance only
   at `spawn`; steal only *not-yet-started* work. Keeps per-scheduler `Rc` heaps.
   Simplest; some load imbalance possible. Messages crossing threads are
-  **deep-copied** into a `Send` form and rebuilt on the other side (Erlang copies
-  on send anyway).
+  **deep-copied** into a `Send` form and rebuilt on the other side (share-nothing
+  copies on send anyway).
 - **`Send` per-process heaps** (a `gc-arena` arena per process, or `Arc` values)
   — lets a running process migrate to any scheduler. This is **the same GC work
   we already planned**, so concurrency and the GC migration become one effort.
@@ -90,7 +89,7 @@ GC migration, which unlocks full migration.
 
 ### Shared code, isolated data
 
-Like Erlang: function/macro **definitions are shared** (read-mostly, and
+Function/macro **definitions are shared** (read-mostly, and
 hot-swappable — your "edit on the fly"), while each process's **data is private**
 to its heap. We need a clear split between the shared code table and per-process
 data. Messages are data, so they copy cleanly.
@@ -100,8 +99,8 @@ data. Messages are data, so they copy cleanly.
 We started **cooperative** (a process yielded only at `receive`) and have since
 added **reduction-counted preemption** (ADR-027): `eval`'s loop decrements a
 per-worker budget and the process yields at zero, so a CPU-bound process can't
-monopolise a core even on a small pool. This is the BEAM's fairness mechanism,
-done as the additive step the original design anticipated.
+monopolise a core even on a small pool. This is the standard actor-runtime fairness
+mechanism, done as the additive step the original design anticipated.
 
 ## Out of scope for v1 — all since shipped
 
@@ -164,14 +163,13 @@ This is the largest *core* undertaking in the project. Two consequences:
 
 ## Distribution across nodes (slice 1 implemented)
 
-Erlang-style distribution falls out of share-nothing + copy-on-send: **the
+Distribution falls out of share-nothing + copy-on-send: **the
 network is just a longer copy.** Slice 1 is **done** — two runtimes connect over
 TCP and message each other (ADR-034; full reference in
 [`distribution.md`](distribution.md)). What landed:
 
 - ✅ **Nodes** — named runtimes (`node/start`/`connect`, `name@host`) that link
-  over TCP, authenticated by a shared cookie (Erlang-style; a placeholder for
-  real auth/TLS).
+  over TCP, authenticated by a shared cookie (a placeholder for real auth/TLS).
 - ✅ **Pids carry node identity** — `Value::Pid { node, id }` instead of a bare
   `u64`. `send` is **location-transparent**: local pid → the local registry;
   remote pid → serialize and forward over the link; the peer deserializes into a
@@ -188,7 +186,7 @@ TCP and message each other (ADR-034; full reference in
   on link teardown; `node/monitor` delivers `[:nodedown name]`
   (see [`distribution.md`](distribution.md)).
 
-Caveats Erlang learned the hard way, still to address: security (the cookie is a
+Caveats every distributed runtime learns the hard way, still to address: security (the cookie is a
 placeholder — auth/TLS later), partial failure / net-splits, serialization
 versioning, latency. This fits the project's "backend hosted remotely by a
 frontend" premise — a remote frontend or second backend is just another node that

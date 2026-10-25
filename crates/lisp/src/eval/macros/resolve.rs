@@ -781,7 +781,7 @@ pub(super) fn resolve_sym(
         // `/name` — the addressable ROOT/prelude namespace: an EMPTY module prefix
         // (leading `/`) resolves to the bare root binding, so a module that shadows a
         // prelude name (`(defn map …)` → `mod/map`) can still reach the original as
-        // `/map` (Elixir's `Kernel.foo`). A bare `/` — the division operator, empty
+        // `/map`. A bare `/` — the division operator, empty
         // `rest` — is left alone. An empty prefix can never denote a real module (no
         // module has an empty name), so this collides with nothing.
         if slash == 0 && name.len() > 1 {

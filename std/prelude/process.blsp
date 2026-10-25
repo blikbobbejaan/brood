@@ -37,7 +37,7 @@
 ;;   - a literal `(fn () …)` is already the thunk → pass it through (re-wrapping it
 ;;     would build-and-discard a closure);
 ;;   - a **bare symbol** is a function *name* → wrap it as a CALL `(fn () (name))`,
-;;     so `(spawn worker)` runs `worker` (Erlang's `spawn(fun name/0)`) instead of
+;;     so `(spawn worker)` runs `worker` instead of
 ;;     yielding the closure and exiting. A process body that merely *evaluates* a
 ;;     symbol has no effect, so this is never a legitimate use — the call either
 ;;     works or raises a loud "not callable", never a silent no-op;
@@ -56,14 +56,14 @@ plumbing for the `spawn` special forms."
   "Run an expression in a new green process; returns its pid. Shapes:
   - `(spawn expr)` — anonymous; `expr` is the process body.
   - `(spawn (fn () expr))` — same as above (a zero-arg lambda is the body too, so
-    the Erlang `spawn(fun() -> … end)` habit just works, no silent no-op).
+    passing a thunk just works, no silent no-op).
   - `(spawn fn-name)` — a bare function name is **called**: `(spawn worker)` runs
-    `(worker)` (Erlang's `spawn(fun name/0)`), not `worker`-then-exit.
+    `(worker)`, not `worker`-then-exit.
   - `(spawn name expr)` — named & idempotent: returns the existing pid if
     a live process is already registered under `name`. The hot-reload-friendly
     form (reloading the file doesn't fire a second worker).
 
-  Erlang **let-it-crash** (`spawn/1`): an uncaught throw kills the process and
+  **Let it crash**: an uncaught throw kills the process and
   any monitors see `[:down ref pid [:error {:kind :message … :trace}]]` immediately
   (the reason carries the structured error map, call trace included).
 
@@ -88,7 +88,7 @@ plumbing for the `spawn` special forms."
 
 (defmacro spawn-link (expr)
   "Spawn a new green process running `expr` and `link` it to the caller **atomically**
-(Erlang `spawn_link`, ADR-067) — returns its pid. The link is symmetric: if either
+(ADR-067) — returns its pid. The link is symmetric: if either
 process dies abnormally the other is taken down too (or receives a trappable `[:EXIT …]`
 if it `(proc/trap-exit true)`'d). The link is established *before* the child runs, so even an
 instant exit reaches the caller with its **true** reason — unlike a separate
@@ -102,7 +102,7 @@ passed through (not re-wrapped), like `spawn`.
 
 (defmacro spawn-monitor (expr)
   "Spawn a new green process running `expr` and `monitor` it from the caller
-**atomically** (Erlang `spawn_monitor`) — returns `[pid ref]`. When the child dies the
+**atomically** — returns `[pid ref]`. When the child dies the
 caller receives `[:down ref pid reason]`, one-shot and unidirectional (contrast
 `spawn-link`, which is symmetric and kills).
 
@@ -149,7 +149,7 @@ A zero-arg lambda `(fn () …)` body is passed through (not re-wrapped), like `s
 ;; (%match-build-chain) to build a *matcher* fn: given a message it returns which clause
 ;; matched and what it bound (see below), or nil on no match. The %receive primitive runs that
 ;; over the mailbox — scanning in order, removing+running the first match, leaving
-;; non-matching messages queued (true Erlang selective receive).
+;; non-matching messages queued (true selective receive).
 ;;
 ;;   (receive
 ;;     ([:say text]      (%write-out (str text "\n")))
@@ -171,8 +171,8 @@ A zero-arg lambda `(fn () …)` body is passed through (not re-wrapped), like `s
 ;;
 ;; Emitting the body at the call site also puts it in the owning arm's bytecode, so a
 ;; receive loop's `(recur …)`/self-call is an ordinary tail call in that arm rather
-;; than a call through a thunk — Erlang's "receive clauses compile into the enclosing
-;; function", reached from the Brood side.
+;; than a call through a thunk — the receive clauses compile into the enclosing
+;; function.
 
 ;; The variables a clause's pattern binds, de-duplicated: a non-linear pattern (`[a a]`)
 ;; lists `a` twice, but binds it once (the repeat compiles to an equality check).

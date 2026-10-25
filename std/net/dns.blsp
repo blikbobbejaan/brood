@@ -7,9 +7,8 @@
 ;;
 ;; Why it exists: enumerating the addresses behind a name is how a cluster finds its own
 ;; members. On Fly, `<app>.internal` has one AAAA per machine; on Kubernetes a headless service
-;; has one A per pod. Erlang has `:inet_res` for exactly this and Elixir's libcluster builds its
-;; DNSPoll strategy on it — without something equivalent, a Brood node can dial a peer it was
-;; told about but cannot discover one.
+;; has one A per pod. A DNS-polling cluster strategy is built on exactly this — without it, a
+;; Brood node can dial a peer it was told about but cannot discover one.
 (defmodule dns
   "Resolve a hostname to its A/AAAA records, over TCP.
 

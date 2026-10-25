@@ -1,6 +1,6 @@
 ;; Records — `defrecord` (ADR-130): named, optionally-typed maps that ALSO carry a
 ;; nominal identity (a reserved `:__id__` `:module/name` keyword), so `ability` dispatch
-;; tells them apart from a bare map and from other records (Elixir-struct semantics — a
+;; tells them apart from a bare map and from other records (nominal identity — a
 ;; record is NOT `=` to a bare map with the same fields). `record?`/`record-id`/`fields`
 ;; are the clean, id-free view. A record is still a plain immutable map underneath:
 ;; `get`/`assoc`/`merge` work, plus one accessor per field.

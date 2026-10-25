@@ -336,7 +336,7 @@
 ;; A caught builtin error's map carries :trace — the call stack at the raise,
 ;; innermost frame first, each entry {:fn name :file f :line l :col c} with
 ;; absent fields omitted. Entries pair a frame's fn with the call site that
-;; entered it; tail calls collapse into their caller's frame (BEAM-style).
+;; entered it; tail calls collapse into their caller's frame.
 
 (defn trace-inner (x) (/ x 0))
 (defn trace-middle (x) (+ 1 (trace-inner x)))

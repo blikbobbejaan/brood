@@ -167,7 +167,7 @@
 
 (describe "proc: a child dies with its owning process"
   :isolated
-  ;; Erlang port semantics: when the owning green process exits — normally or by a
+  ;; Ownership semantics: when the owning green process exits — normally or by a
   ;; crash — the scheduler's retirement path (`retire_pid_tail`) closes every child
   ;; it still owns, exactly as it already closes its sockets. Before this hook
   ;; existed, an owner that exited without `os/close` orphaned the OS child forever:

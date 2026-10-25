@@ -791,7 +791,7 @@ anything arriving while a run is in flight waits its turn."
     (:run state) (update state :queue (fn (q) (into [] (append (or q []) [req]))))
     (get req :test) (evsrv-start-run state req)
     (get req :attach)
-    ;; Reported rather than assumed, and the model of this is `beam-attach`: an attach
+    ;; Reported rather than assumed: an attach
     ;; that silently did not happen leaves you evaluating locally while believing you
     ;; are not, which is the one failure the feature must never have.
       (let (r (check-allow :discarded-catch

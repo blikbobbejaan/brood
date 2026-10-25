@@ -179,7 +179,7 @@ pub(crate) fn walk_children_mut<F: FnMut(&mut Node)>(node: &mut Node, mut f: F) 
 
 /// Does the value in frame `slot` **escape** — appear anywhere other than as the vector
 /// operand of an in-range `(nth slot K)`? Immutability makes this a pure reachability walk
-/// (no alias analysis — BEAM does none): a value is only reachable through references the
+/// (no alias analysis needed): a value is only reachable through references the
 /// code explicitly creates, so any `Local(slot)` outside an element read means it's returned,
 /// passed to a call, captured, or stored — i.e. escapes. Used by EA scalar replacement.
 pub(crate) fn local_escapes(node: &Node, slot: usize, nelems: usize) -> bool {
@@ -225,8 +225,7 @@ pub(crate) fn rewrite_elem_reads(node: &mut Node, slot: usize, base: usize, nele
 /// `(let (p [e0 … eN]) …)` whose `p` is read only as `(nth p K)` is rewritten so each element
 /// binds to its own frame slot and the reads become direct `Local` reads — the vector is
 /// **never allocated**, and the arm gets *simpler* (so it JITs better, not worse). Immutability
-/// makes the escape test a pure reachability walk; BEAM does no EA, so this is a structural
-/// edge. Conservative: a single-binder `let` of a small vector literal, all uses in-range
+/// makes the escape test a pure reachability walk. Conservative: a single-binder `let` of a small vector literal, all uses in-range
 /// constant `nth`. Bumps `next_slot` by the element count. Recurses (nested lets covered).
 pub(crate) fn ea_scalar_replace(node: &mut Node, next_slot: &mut usize) -> bool {
     const MAX_ELEMS: usize = 8;

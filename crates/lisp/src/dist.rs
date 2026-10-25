@@ -2,11 +2,11 @@
 //! them. Two nodes on one machine speak over a **Unix-domain socket** addressed
 //! by name (no port); across machines, over **TCP**. The handshake, framing,
 //! heartbeat and teardown are identical over both — only the carrier ([`Stream`])
-//! differs (ADR-068). Erlang-style distribution falls out of share-nothing +
+//! differs (ADR-068). Distribution falls out of share-nothing +
 //! copy-on-send — *the network is just a longer copy* (ADR-013, `concurrency.md`).
 //!
 //! **Slice 1 (this module):** node naming, an authenticated TCP handshake (a
-//! shared cookie, like Erlang's), and
+//! shared cookie), and
 //! location-transparent [`send`](crate::process::send) to a remote process. A
 //! process is addressed either by a [`Value::Pid`](crate::core::value::Value::Pid)
 //! — which carries node identity, so the same value works locally or across the
@@ -511,7 +511,7 @@ static PENDING_DIALS: LazyLock<RwLock<HashSet<Symbol>>> =
     LazyLock::new(|| RwLock::new(HashSet::new()));
 
 /// Whether to form a transitive **cluster mesh** (ADR-088): when set (the
-/// default — Erlang's behaviour), connecting to one node auto-connects you to
+/// default), connecting to one node auto-connects you to
 /// every node it knows. Set `BROOD_NO_MESH=1` for point-to-point links only
 /// (you connect to exactly the nodes you dial, no transitive discovery). Read
 /// once at first use.
@@ -910,8 +910,7 @@ fn qualify_node_name(name: Symbol) -> Symbol {
 /// `(monitor-node name pid)` — deliver `[:nodedown name]` to `pid` when a link to
 /// `name` goes down. Persistent (fires on each down) until the process exits.
 /// If `name` isn't us and there's no current link, the node is effectively
-/// already down and `[:nodedown]` is delivered immediately (Erlang's
-/// `monitor_node` semantics).
+/// already down and `[:nodedown]` is delivered immediately.
 pub(crate) fn monitor_node(name: Symbol, pid: u64) {
     let name = qualify_node_name(name);
     // Registration and the liveness check must be atomic w.r.t. `fire_nodedown`
@@ -919,7 +918,7 @@ pub(crate) fn monitor_node(name: Symbol, pid: u64) {
     // both prevents the race where fire_nodedown sees a new watcher AND our
     // own fallback also fires.
     //
-    // Always register — monitor_node is persistent (Erlang semantics): fires on
+    // Always register — monitor_node is persistent: fires on
     // every future down event until the process exits. Dedup so a pid calling
     // (monitor-node name) again after a reconnect doesn't double-fire per down.
     //
@@ -991,8 +990,7 @@ pub(crate) fn connected_nodes() -> Vec<Symbol> {
 /// this process. Shuts the socket down (so the peer's reader hits EOF and fires
 /// its own node-down) and runs `drop_link` on our side, which removes the `NODES`
 /// entry and fires `[:nodedown name]` to our monitors. Same teardown the reader
-/// takes on a clean peer exit, just triggered deliberately — Erlang's
-/// `disconnect_node/1`. Returns `true` if a link existed, `false` if there was
+/// takes on a clean peer exit, just triggered deliberately. Returns `true` if a link existed, `false` if there was
 /// nothing connected under `name`. Our own reader will also hit EOF and call
 /// `drop_link(name, id)`, but the generation-id guard makes the second call a
 /// no-op, so `[:nodedown]` fires exactly once.
@@ -1022,10 +1020,10 @@ pub(crate) enum Target {
 
 /// Deliver `msg` to `target` on `node`, location-transparently: a local node
 /// delivers in-process; a remote one forwards over the link. Unknown name,
-/// unknown/disconnected node, or a dead pid is a silent no-op (Erlang semantics).
+/// unknown/disconnected node, or a dead pid is a silent no-op.
 ///
 /// Returns whether a route existed at all: `true` for any local target (even a
-/// dead pid — process liveness stays Erlang-silent) and for a remote node with
+/// dead pid — process liveness stays silent) and for a remote node with
 /// a live link; `false` when the node is **unknown/disconnected** (the message
 /// was dropped on the floor). `send` surfaces that as a catchable
 /// `:noconnection` error when the sending process opted in via
@@ -1035,7 +1033,7 @@ pub(crate) enum Target {
 /// Warn, once per name, that a message addressed to a **registered name no process holds**
 /// was dropped.
 ///
-/// The drop itself is correct and stays correct: Erlang semantics, and legitimate — the name
+/// The drop itself is correct and stays correct, and legitimate — the name
 /// may simply be gone, or never have existed. What this fixes is the **silence**. `send` is
 /// fire-and-forget, so the sender has already moved on and cannot be told; the receiving node
 /// is the only party that knows the message died. A silent drop otherwise surfaces only as a

@@ -93,7 +93,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         // keyword `connect`/`nodes` hand back (or a symbol).
         Sig::new(vec![sym.union(kw)], bool_ty),
         &["name"],
-        "Tear down the link to peer node `name` now, without exiting this process (Erlang's disconnect_node) — fires [:nodedown name] on both sides and prunes `name` from (nodes). Returns true if a link existed, false otherwise. Use it to leave a node/cluster cleanly while staying alive.",
+        "Tear down the link to peer node `name` now, without exiting this process — fires [:nodedown name] on both sides and prunes `name` from (nodes). Returns true if a link existed, false otherwise. Use it to leave a node/cluster cleanly while staying alive.",
         disconnect);
     // guest links (ADR-415) — `std/node.blsp`'s grant-guest / revoke-guest / peer-grant
     primitives.def(
@@ -235,8 +235,8 @@ pub(super) fn demonitor_node(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
     Ok(Value::nil())
 }
 
-/// `(disconnect name)` — drop the link to peer `name` now (Erlang's
-/// `disconnect_node`). Returns `true` if a link existed, `false` otherwise.
+/// `(disconnect name)` — drop the link to peer `name` now, without exiting
+/// this process. Returns `true` if a link existed, `false` otherwise.
 pub(super) fn disconnect(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let name = expect_node_name(heap, "%disconnect", arg(args, 0))?;
     Ok(Value::boolean(crate::dist::disconnect(name)))

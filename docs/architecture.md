@@ -143,7 +143,7 @@ depth — stop-the-world for that one process only, since heaps are never
 shared. Slots are **never reused in place** (survivors relocate; handles carry
 a generation epoch, so a stale handle trips a debug tripwire instead of
 aliasing — the invariant that closed the scheduler race surface, `f90f0de`).
-The shared `def`'d code region is reclaimed separately by the Erlang-style
+The shared `def`'d code region is reclaimed separately by the
 two-generation RUNTIME collector (ADR-091); large immutable byte strings live
 in the refcounted cross-process blob heap (`core/blob.rs`). The whole model
 stays contained because *all heap construction goes through the helpers in

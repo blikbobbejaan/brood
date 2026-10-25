@@ -1,4 +1,4 @@
-//! The shared mutable table — Brood's ETS (ADR-107), the ONE identity-mutable structure
+//! The shared mutable table (ADR-107), the ONE identity-mutable structure
 //! the language has. Values are deep-copied in and out so no two processes alias stored
 //! data; the store itself is `crate::core::table`.
 
@@ -14,7 +14,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     use super::signature_types::*;
     use crate::core::value::Arity;
     use crate::types::Sig;
-    // In-memory shared table — Brood's ETS (ADR-107). A `Value::Table` handle into a
+    // In-memory shared mutable table (ADR-107). A `Value::Table` handle into a
     // global registry of stores holding deep clones (Message form); sendable across
     // processes (every copy shares one store) but local to this runtime.
     primitives.def(
@@ -22,7 +22,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(0),
         Sig::nullary(table_ty),
         &[],
-        "Create a new empty in-memory table (Brood's ETS): a shared, mutable key→value store behind an opaque handle. Unlike a map it is mutated in place (`table/put`/`table/delete`) and shared by identity — the handle can be sent to other processes, which all see the same store. Stores deep clones (keys/values are copied in and out), so no two processes alias a stored value. Local to this runtime; not node-portable. The table dies with the process that created it, unless a global holds it (`def`). Returns the handle.",
+        "Create a new empty in-memory table: a shared, mutable key→value store behind an opaque handle. Unlike a map it is mutated in place (`table/put`/`table/delete`) and shared by identity — the handle can be sent to other processes, which all see the same store. Stores deep clones (keys/values are copied in and out), so no two processes alias a stored value. Local to this runtime; not node-portable. The table dies with the process that created it, unless a global holds it (`def`). Returns the handle.",
         table_new);
     primitives.def(
         kw::TABLE_PUT,
@@ -108,7 +108,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         table_free);
 }
 
-// ---------- in-memory shared table (Brood's ETS, ADR-107) ----------
+// ---------- in-memory shared mutable table (ADR-107) ----------
 // A `Value::Table(id)` handle; the store lives in `crate::core::table`. These builtins are
 // thin wrappers — all the storage / locking / clone-in-clone-out lives there.
 

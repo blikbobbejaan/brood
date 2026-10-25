@@ -670,7 +670,7 @@ fn call_native(heap: &mut Heap, id: NativeId, argv: &[Value], env: EnvId) -> Lis
         )));
     }
     let func = nat.func;
-    // Dirty-CPU diagnostic (BEAM's NIF-reduction model), armed by
+    // Dirty-CPU diagnostic (natives charged in reductions), armed by
     // `BROOD_STALL_MS`: in a green process, time the call, charge long natives
     // against the reduction budget (`scheduler::charge_native`) and name the
     // builtin that held the worker. Gated behind the stall tracer because
@@ -1042,7 +1042,7 @@ pub(crate) fn native_stack_error(remaining: usize) -> LispError {
 /// "memory limit exceeded …" — the ADR-043 soft-memory backstop.
 /// "process heap limit exceeded …" — this process's live heap stayed over its
 /// own `(proc/flag :max-heap n)` cap after a collection. Catchable; uncaught
-/// it kills just this process (the BEAM `max_heap_size` behaviour).
+/// it kills just this process.
 pub(crate) fn proc_memory_limit_error(live: usize, limit: usize) -> LispError {
     LispError::runtime(format!(
         "process heap limit exceeded: {live} live bytes after collection \

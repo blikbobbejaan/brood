@@ -1,7 +1,7 @@
 # Testing in Brood
 
 Brood ships a small test framework written **in Brood itself** (`std/tool/test.blsp`),
-loaded with `(require 'test)`. It is ExUnit / `mix test`-flavoured: `describe`
+loaded with `(require 'test)`: `describe`
 groups, `test` cases, and a runner that runs everything **in parallel by
 default** across the process model, with opt-in serialisation for tests that
 share state.

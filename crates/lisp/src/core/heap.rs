@@ -15,7 +15,7 @@
 //! - **RUNTIME** — a [`RuntimeCode`] region (behind `Arc`) holding a runtime's
 //!   `def`'d code and its global bindings. **Mutable and shared** by all of a
 //!   runtime's inner (spawned) processes, so a redefinition is visible to a
-//!   running process on its next global lookup (Erlang-style hot reload). The
+//!   running process on its next global lookup (live code reload). The
 //!   code slabs are append-only (old code is never moved or freed, so in-flight
 //!   calls keep running it); the global bindings are a `RwLock<HashMap>`.
 //!
@@ -521,7 +521,7 @@ pub(crate) struct HeapExtras {
 
     pub(crate) gc_ns_last: u64,
 
-    /// Per-process heap limit (bytes), the BEAM `max_heap_size` analogue — set by
+    /// Per-process heap limit (bytes) — set by
     /// this process on itself via `(proc/flag :max-heap n)`, `None` = unlimited
     /// (the default; the ADR-043 global soft/hard cap is separate). Checked
     /// **after** each collection against the *surviving* footprint (nursery +
@@ -537,7 +537,7 @@ pub(crate) struct HeapExtras {
     /// `(proc/flag :send-errors on)` — when set, a `send` whose target *node*
     /// is unknown/disconnected raises a catchable `:noconnection` error instead
     /// of silently dropping the message (the dist self-healing seam). Default
-    /// off: Erlang's silent-send semantics.
+    /// off: a send to an unreachable node is silent.
     pub(crate) proc_send_errors: bool,
 
     /// `(proc/flag :no-break on)` — a breakpoint (`std/debug` `break`) passes this process
@@ -1003,8 +1003,8 @@ pub struct Heap {
     /// **RUNTIME collector — Stage 3c (local clean-ack cache, ADR-091).** The drain
     /// epoch this process last reported *clean* for (0 = none). While a drain stays
     /// armed — which it does for the whole run whenever a long-lived process pins the
-    /// draining generation (a top-level test-runner loop still executing old-gen code;
-    /// Erlang has the same local-call limitation) — every process's safepoint calls
+    /// draining generation (a top-level test-runner loop still executing old-gen
+    /// code) — every process's safepoint calls
     /// `report_gen_liveness`, and a process that already acked clean would re-take the
     /// shared `drain_acks` *read* lock every frame just to re-confirm its ack. That
     /// per-frame lock, across every worker for the whole run, is the residual cost once

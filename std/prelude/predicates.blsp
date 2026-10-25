@@ -101,7 +101,7 @@ also how you default deliberately: `(let (n (parse s)) (if (failure? n) 0 n))`.
     (rope? \"hi\")                      → false   ; a plain string is not a rope"
   (%eq (type-of x) :rope))
 (defn table? (x)
-  "True if `x` is an in-memory table (from `(table/new)`) — Brood's shared mutable ETS store.
+  "True if `x` is an in-memory table (from `(table/new)`) — Brood's shared mutable key→value store.
 
     (table? (table/new))   → true
     (table? {})            → false   ; a map is immutable, and a different kind"

@@ -1,8 +1,8 @@
 (defmodule debug
-  "A process-native tracing debugger — the actor-model answer to Elixir's `dbg`.
+  "A process-native tracing debugger — the actor-model answer to a breakpoint.
 
-Elixir's `dbg`/`IEx.pry` is a synchronous, single-session, terminal-bound pause: it
-blocks the process waiting for the one IEx session, so it needs a TIMEOUT, and a
+A conventional breakpoint is a synchronous, single-session, terminal-bound pause: it
+blocks the process waiting for the one terminal session, so it needs a TIMEOUT, and a
 second process hitting the same point queues behind the first. Both limits come from
 one root cause — the debugger is a terminal, not a process.
 
@@ -191,7 +191,7 @@ are just a Brood predicate, so no recompile and no cost on the false path. (A ma
 
 ;; ---- function-boundary instrumentation (trace-fn / break-fn) -----------------
 ;; `spy` instruments a FORM in source; these instrument a FUNCTION in the live image
-;; with no source edit — the Erlang `dbg:tpl` / Emacs `trace-function` move. The name
+;; with no source edit — the Emacs `trace-function` move. The name
 ;; is rebound to a wrapper (late binding, ADR-013: every existing call site takes the
 ;; new definition on its next call — the same def-rebinding seam `nest test --cover`
 ;; instruments with); the original fn value is kept in `*traced-fns*` and restored by
@@ -492,7 +492,7 @@ A name nobody holds is left alone — an untraced name, or one already restored 
 
 ;; ---- aggregate / statistical querying (debug the population, not one hit) ----
 ;; When thousands of processes hit the same trace point you don't want thousands of
-;; dumps (Elixir's failure mode) — you want the DISTRIBUTION and the OUTLIERS. Because
+;; dumps — you want the DISTRIBUTION and the OUTLIERS. Because
 ;; traces are data, not text, these are plain folds over the debugger's event log.
 (defn trace-entries (dbg: (or map pid) -> seqable)
   "The raw `:trace` events the debugger collected (each `{:pid :entry :seq …}`).

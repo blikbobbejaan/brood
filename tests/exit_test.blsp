@@ -1,4 +1,4 @@
-;; `(exit pid reason)` — Erlang-style exit signals (ADR-063). `:kill` is the
+;; `(exit pid reason)` — exit signals (ADR-063). `:kill` is the
 ;; untrappable hard kill (caught at the reduction tick, so it stops even a tight
 ;; CPU loop that never receives); any other reason is the soft signal (the target
 ;; dies at its next `receive`). A parked process is killed directly; an already-dead

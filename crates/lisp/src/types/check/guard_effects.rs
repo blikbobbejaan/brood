@@ -5,8 +5,8 @@
 //! and in a `receive` it re-runs against **every scanned message on each mailbox re-scan**
 //! (the scan restarts at the front on every suspend/resume). So an effect in a guard fires on
 //! paths the match never selects, and a `receive` guard's effect fires repeatedly against
-//! messages it never consumes. LFE/Erlang restrict guards to a pure, total sublanguage for
-//! exactly this reason.
+//! messages it never consumes. Languages with guards commonly restrict them to a pure,
+//! total sublanguage for exactly this reason.
 //!
 //! This pass flags message-passing / process-control, `Table`-mutation, I/O, and
 //! global-rebinding primitives in a guard. It is **advisory and purely syntactic** (no type

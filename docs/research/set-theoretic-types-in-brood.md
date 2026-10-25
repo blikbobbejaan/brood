@@ -16,10 +16,10 @@ Source map: theory → `elixir-set-theoretic-types.md`; as-built plan/contract �
 
 ## The one-paragraph difference
 
-**Elixir is building a *sound gradual* type system; Brood has built a
+**The paper describes a *sound gradual* type system; Brood has built a
 *set-theoretic advisory disjointness linter*.** Same algebra (types are sets of
 values, subtyping is inclusion), same `dynamic()`-inside-the-lattice intent — but
-Elixir's checker may refuse code / drive runtime checks and must therefore carry
+the paper's checker may refuse code / drive runtime checks and must therefore carry
 the full soundness machinery (strong/weak arrows, materialization through
 application, exhaustiveness). Brood's checker **only ever warns**, only on a
 **provable disjointness**, and is engineered for **zero false positives** (ADR-024,

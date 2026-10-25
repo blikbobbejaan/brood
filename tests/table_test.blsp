@@ -1,4 +1,4 @@
-;; table — the in-memory shared store (Brood's ETS, ADR-107). A thorough suite:
+;; table — the in-memory shared mutable store (ADR-107). A thorough suite:
 ;; put/get/default/overwrite, absent-vs-stored-nil, structural + handle keys, the
 ;; key-must-be-data guard, has?/delete/count, atomic table/incr, snapshot
 ;; (empty/after-mutation/as-a-real-map), identity equality, drop + use-after-drop on
@@ -253,7 +253,7 @@
         (is (not (table/drop t)))
         (assert= (table/get u :a) 2)))))
 
-;; ---- lifetime: a table dies with the process that created it (ETS ownership) ----
+;; ---- lifetime: a table dies with the process that created it (its owner) ----
 ;; …unless a global holds it: `def` pins what it promotes, so a module's
 ;; `(def- cache (table/new))` outlives whichever process happened to load the module.
 (def table-test-pinned nil)

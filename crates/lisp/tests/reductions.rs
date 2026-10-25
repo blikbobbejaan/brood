@@ -1,4 +1,4 @@
-//! `process-info`'s `:reductions` accounting (Erlang's scheduling unit). Its own test
+//! `process-info`'s `:reductions` accounting (the scheduling unit). Its own test
 //! binary so it runs the **real** worker pool — isolated from `preemption.rs`, which
 //! drives quanta by hand with the worker pool disabled (`set_test_no_workers`); the two
 //! must not share a process or the global pool config collides.

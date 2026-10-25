@@ -2,7 +2,7 @@
 ;;
 ;; Design notes (the *why*; the *what* is in the docstrings below):
 ;;  - The first real app on the M3 display/input seam (ADR-046): an
-;;    Erlang-observer-style view of this runtime — node stats up top, a navigable
+;;    live process view of this runtime — node stats up top, a navigable
 ;;    table of live processes (id · name · status · mailbox · memory · monitors)
 ;;    below. Proves the protocol + key loop end-to-end and needs no rope/buffer.
 ;;  - Per-process data comes from `(proc/info pid)` (ADR-051): a kernel snapshot
@@ -107,7 +107,7 @@ attach). Drive the standalone app from the shell with `nest observe`."
 
 (defn- observe-cells (id nm status mbox mem reds rate mon)
   "One table line's eight fixed-width columns (used for both header and rows).
-`reds` is the cumulative reduction count — Erlang's scheduling unit — and `rate`
+`reds` is the cumulative reduction count — the scheduler's work unit — and `rate`
 the reductions/second since the last refresh, so a *currently* busy process
 stands out at a glance (cumulative only tells you lifetime work). `mem` and
 `rate` arrive pre-rendered (a string or `\"-\"`)."
@@ -888,7 +888,7 @@ requester's pid (which routes over the link). Ignores anything else."
   "Make THIS runtime observable from a peer: spawn an agent and register it as
 `:observe`, so a remote `observe-connect` can request process snapshots. The
 program must already be a node — call `(node/start name addr cookie)` first.
-Returns the agent's pid. Opt-in, like Erlang's `-name`: a program isn't observable
+Returns the agent's pid. Opt-in: a program isn't observable
 unless it opens itself up.
 
     (observer/observe-serve)   ;=> the `:observe` agent's pid"

@@ -178,7 +178,7 @@ passes. A report that does not match belongs to another test — drop it and kee
       (crash-report-drain)
       (start {:sink (crash-report-collect me)})
       ;; a supervised-style crash: the child is linked to a trapping parent; the
-      ;; parent handles it, and the reporter STILL reports it (OTP logs handled crashes)
+      ;; parent handles it, and the reporter STILL reports it (a handled crash is still logged)
       (spawn (do
                (proc/trap-exit true)
                (spawn-link (crash-report-boom :linked))

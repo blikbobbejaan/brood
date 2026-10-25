@@ -152,7 +152,7 @@ pub enum Control {
 /// was called *from* — which is buildable from purely local frame state in both
 /// engines and collapses tail calls identically (a tail callee reuses its
 /// caller's frame, so the entry shows the tail chain's final name at the
-/// original call site — the BEAM behaviour).
+/// original call site).
 /// Where a caught user error was raised: its payload with the position, file and trace the
 /// error had collected when a handler caught it (KI-291, [`Heap::note_caught`]).
 ///
@@ -284,7 +284,7 @@ pub mod error_codes {
     /// of exhausting host RAM. Catchable; tune via `BROOD_MEM_LIMIT`.
     pub const MEMORY_LIMIT: &str = "E0043";
     /// This process's live heap stayed over its own `(proc/flag :max-heap n)`
-    /// limit after a collection — the BEAM `max_heap_size` analogue. Raised at
+    /// limit after a collection. Raised at
     /// the next safepoint **in that process only** (a catchable kill: uncaught,
     /// it retires just the offender; every other process is untouched — unlike
     /// the ADR-043 *hard* cap, which aborts the whole OS process).

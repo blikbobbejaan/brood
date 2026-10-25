@@ -60,8 +60,8 @@ degrades to a plain case-insensitive name/docstring search, e.g.
 ;; `(spy expr)` evaluates `expr`, traces every evaluated subexpression's value in
 ;; evaluation order, and returns the value UNCHANGED — so it is referentially
 ;; transparent: wrap or unwrap `spy` around any form with zero behavioural change
-;; (the Elixir `dbg` property). Unlike `dbg`, which special-cases a fixed handful
-;; of constructs, `spy` leans on homoiconicity: it fully macroexpands the form
+;; Rather than special-casing a fixed handful of constructs, `spy` leans on
+;; homoiconicity: it fully macroexpands the form
 ;; (re-expanding at every node, since `macroexpand` only resolves the outer head)
 ;; and instruments each evaluated position IN PLACE, so laziness is preserved —
 ;; an untaken `if` branch or a short-circuited `and` tail never traces. A pipeline

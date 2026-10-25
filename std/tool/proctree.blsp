@@ -4,7 +4,7 @@
 ;; flat `(map proc/info (proc/list))` snapshot, produce a depth-tagged forest
 ;; — roots first, each followed by its DFS descendants — for an indented tree view.
 ;; The lineage comes from each map's `:parent` (the spawner's id, nil for the root),
-;; the Erlang-`process_info` field. Shared by std/observer's tree sort and bedit's
+;; the `proc/info` field. Shared by std/observer's tree sort and bedit's
 ;; *Process List*, so neither reimplements the walk. No IO, no UI deps — just the
 ;; ordering.
 

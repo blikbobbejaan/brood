@@ -1,5 +1,5 @@
 //! The type lattice — step 1 of the set-theoretic type direction (ADR-023,
-//! inspired by Elixir's set-theoretic + gradual type system).
+//! semantic subtyping, set-theoretic + gradual; Castagna, Duboc, Valim).
 //!
 //! A [`Ty`] **is a set of values**, represented as a bitset over the runtime
 //! [`Tag`]s (the value-set atoms — see [`crate::core::value::Tag`]). On this model the

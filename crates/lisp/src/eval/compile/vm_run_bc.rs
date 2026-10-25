@@ -907,7 +907,7 @@ pub(crate) fn vm_run_bc(
     // do — the reduction was ticked, the deadline and quantum checks ran, and the caller's
     // next call or back edge runs them again. Only a due collection (and the heap-limit
     // raise a collection arms) cannot wait, and the `Done` arm declines to set this when
-    // either is pending. BEAM likewise charges a reduction per call, not per return.
+    // either is pending. A reduction is charged per call, not per return.
     let mut returned_to_caller = false;
 
     // Raise `e` from the current frame: if one of THIS driver's open `try`s can take it,

@@ -5,7 +5,7 @@
 ;;     (test "multiplies" (assert= (* 2 3) 6) (assert-error (/ 1 0))))
 ;;   (run-tests)
 ;;
-;; ExUnit / `mix test`-style: `describe` groups related cases, `test` names a
+;; `describe` groups related cases, `test` names a
 ;; case with a string. `deftest` (one test named by a symbol, no group) is kept
 ;; for convenience and expands to `test`. See docs/testing.md for the full guide.
 ;;
@@ -610,8 +610,8 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;;    :names    ("math › adds")}              ; exact full labels (backs --failed)
 ;;
 ;; A *selector* is `[key value]`: `test`/`describe` match a substring of the test
-;; name / group label, anything else is a tag name. Mirrors `mix test --only
-;; tag`, `--only test:"name"`, `--only describe:"group"`.
+;; name / group label, anything else is a tag name: `--only tag`,
+;; `--only test:"name"`, `--only describe:"group"`.
 (defn- test-parse-selector (selector-string)
   "Parse an `--only`/`--exclude`/`--include` selector into `[key value]` — `tag`, `tag:value`, `test:substring`, or `describe:substring`."
   (let (i (index-of selector-string ":"))
@@ -679,7 +679,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; Resolve one FILE:LINE selector to the exact declared line of the test it
 ;; addresses: the LAST test in that file declared at or before LINE. So pointing
 ;; anywhere inside a test's body (not just at its header) selects that test —
-;; the `mix test path:line` behaviour. nil when the file has no test at/before it.
+;; what `nest test path:line` runs. nil when the file has no test at/before it.
 (defn- test-resolve-line (units file target)
   (fold (test-all-tests units)
     nil
@@ -781,7 +781,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
     (bit/and (bit/xor h (bit/shift-right h 15)) test-fnv-mask)))
 
 ;; Keep only the tests belonging to shard `index` of `count` (0-based) — the
-;; `mix test --partitions` analogue, for splitting a suite across CI machines.
+;; Partitions, for splitting a suite across CI machines.
 (defn- test-shard-units (units index total)
   (if (or (nil? total) (< total 2))
     units
@@ -1130,7 +1130,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; Stop the run once this many tests have failed (0 = unlimited, the default).
 ;; Checked by `run-driver` between steps, so it stops at the next step boundary
 ;; rather than mid-flight — a batch already in progress still reports, so the
-;; count can overshoot slightly. `mix test --max-failures`.
+;; count can overshoot slightly.
 (defdyn *test-max-failures* 0)
 
 ;; The parallel/serial units run in bounded groups (see `*parallel-batch*`) — the
@@ -1716,7 +1716,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 
 ;; Run one pass thunk up to `n` times, stopping at the first failing pass. A pass
 ;; RAISES when the suite fails, so the raise itself ends the loop — no result
-;; inspection needed. `mix test --repeat-until-failure`.
+;; inspection needed.
 (defn- test-repeat (n pass)
   (if (<= n 1)
     (pass)

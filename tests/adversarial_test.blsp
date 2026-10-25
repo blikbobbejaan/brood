@@ -134,7 +134,7 @@
     (let (me (self))
       (assert-error (send me %add))))
 
-  (test "send to a dead pid is silently dropped (Erlang semantics)"
+  (test "send to a dead pid is silently dropped"
     (let (dead (spawn (fn () nil))
           ; worker exits immediately
           _ (receive (after 50 nil)))

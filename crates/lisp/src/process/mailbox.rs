@@ -10,7 +10,7 @@
 //!   a `Message`, dispatches by `Value::Pid` or `{:name :node}` map.
 //! - [`receive_match`] is the **selective** receive — scans messages in
 //!   order, runs the user's matcher in eval-tail position, removes the
-//!   first match. Non-matches stay queued (Erlang semantics).
+//!   first match. Non-matches stay queued.
 //! - a clean top-level green `receive` on an empty mailbox **captures** its
 //!   continuation (returning a suspend signal for the scheduler to park);
 //!   [`wait_for_message`] **blocks** the caller on the condvar for the cases
@@ -123,7 +123,7 @@ pub(super) struct Mailbox {
     /// process that's churning memory (many collections) vs. a quiet one. Backs
     /// `process-info`'s `:collections`.
     pub(super) gc_runs: AtomicU64,
-    /// The owning process's **cumulative reduction count** — the Erlang scheduling
+    /// The owning process's **cumulative reduction count** — the scheduling
     /// unit (≈ one per eval combination). Accumulated by the scheduler at each
     /// quantum boundary (`run_one`: `REDUCTION_BUDGET − remaining`), so it grows
     /// continuously as the process runs, not only on `receive` like `mem`/`gc_runs`.
@@ -331,7 +331,7 @@ pub(super) struct MailboxState {
     /// not the next `receive`)? Hardness is a property of the *request*, separate
     /// from the reason value: `(exit pid :kill)` is hard with reason `:kill`, and
     /// **link propagation is hard with the originating reason** — so a cascading
-    /// death reports *why* the tree fell (BEAM propagates the reason), not a
+    /// death reports *why* the tree fell, not a
     /// blanket `:kill`. Meaningful only while `kill` is `Some`.
     pub(super) kill_hard: bool,
     /// The parked green process waiting on this mailbox, if any. `send` takes it
@@ -585,8 +585,8 @@ impl Mailbox {
         {
             let mut st = crate::core::sync::lock(&self.state);
             // A latched **hard** kill is **sticky**: a later *soft* `(exit pid
-            // reason)` must not overwrite it (Erlang's guarantee that `exit(pid,
-            // kill)` can't be undone — otherwise a racing soft exit could downgrade
+            // reason)` must not overwrite it (an `(exit pid :kill)` can't be
+            // undone — otherwise a racing soft exit could downgrade
             // the kill and spare a CPU-bound target, which only honours a hard kill
             // at `preempt`). A fresh hard kill may still upgrade a pending soft
             // reason; the first hard reason wins thereafter.
@@ -989,7 +989,7 @@ fn try_deliver_local(src: &Heap, pid: u64, v: Value) -> LocalDelivery {
         return LocalDelivery::Declined { mailbox: Some(mb) };
     }
     let mut st = crate::core::sync::lock(&mb.state);
-    // One-shot reply alias (OTP 24): the receiver deactivated this ref, so the reply is
+    // One-shot reply alias: the receiver deactivated this ref, so the reply is
     // dropped here — before the cross-heap copy, before the queue, before any wake.
     // `is_empty` is the whole cost when nothing is deactivated, which is every ordinary
     // process; we already hold the lock, so it is a field read on a hot line.
@@ -1072,7 +1072,7 @@ fn deliver_envelope_timed(pid: u64, env: Envelope) {
 /// waiter), so the wake finds none to enqueue.
 fn push_and_wake(mb: &Mailbox, env: Envelope) {
     let mut st = crate::core::sync::lock(&mb.state);
-    // One-shot reply alias (OTP 24) — the wire-path twin of the check in
+    // One-shot reply alias — the wire-path twin of the check in
     // `try_deliver_local`. Dropped here, so it never occupies a queue slot and no
     // later selective receive ever re-scans it. See `DeadAliases`.
     if !st.dead_aliases.is_empty()
@@ -1120,7 +1120,7 @@ pub(super) fn wake_both(mb: &Mailbox, parked: Option<Box<Process>>, cv_waiter: b
 /// **registered-name address** for bootstrapping a peer before you hold its pid.
 /// Routing is location-transparent: a local target delivers in-process; a remote
 /// one is forwarded over the node link (`crate::dist`). Sending to a dead/unknown
-/// target is a silent no-op (Erlang semantics) — with one opt-in exception: a
+/// target is a silent no-op — with one opt-in exception: a
 /// process that set `(process-flag :send-errors true)` gets a catchable
 /// `:noconnection` error when the target *node* is unknown/disconnected (the
 /// message would otherwise be dropped on the floor until a reconnect), so it can
@@ -1196,7 +1196,7 @@ pub fn send(heap: &Heap, target_val: Value, msg_val: Value) -> Result<(), LispEr
                 node,
             )
         }
-        // A bare registered name — Erlang's `Name ! Msg`. The local-node case of the
+        // A bare registered name. The local-node case of the
         // `{:name :node}` address, so a process that registered itself is reachable as
         // `(send :editor msg)` with no `whereis` round trip: that lookup answered
         // `nil | pid`, and every caller either guarded it or handed `nil` to `send` and
@@ -1600,7 +1600,7 @@ fn apply_matcher(
 }
 
 /// Scan the mailbox from index `*i` for the first message a clause matches, advancing
-/// `*i` past non-matching messages (Erlang selective receive — non-matches stay
+/// `*i` past non-matching messages (selective receive — non-matches stay
 /// queued). Returns `Ok(Some(answer))` — the matcher's `[idx var…]` result for the
 /// matched clause, with that message removed — or `Ok(None)` when every
 /// currently-queued message was scanned with no match (the caller then either captures

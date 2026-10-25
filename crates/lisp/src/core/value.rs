@@ -364,7 +364,7 @@ macro_rules! handle {
             /// A handle into the runtime's mutable shared code region, in code
             /// **generation 0** (the shorthand for the common single-generation
             /// case). See [`runtime_gen`](Self::runtime_gen) for the 2-generation
-            /// RUNTIME collector (ADR-091 Erlang-style): `code_gen` selects which
+            /// RUNTIME collector (ADR-091): `code_gen` selects which
             /// of the two live `CodeSlabs` this handle addresses.
             #[inline]
             pub fn runtime(index: usize) -> Self {
@@ -712,7 +712,7 @@ pub enum Value {
     Native(NativeId),
     /// A unique, opaque reference token from `(ref)` — a fresh monotonic id, the
     /// only way to make one. Distinct from `Int` so a reply tagged with a ref can
-    /// never be confused with a pid or a user integer (Erlang's `make_ref`). Sent
+    /// never be confused with a pid or a user integer. Sent
     /// by value across processes; compared by identity.
     Ref(u64),
     /// A process identifier, carrying **node identity** (`node`, an interned node
@@ -737,7 +737,7 @@ pub enum Value {
     /// mechanism (the owning process drives it via the `proc-*` primitives and
     /// receives its output as mailbox messages); **never** sent across processes.
     Subprocess(u64),
-    /// An **in-memory table** (Brood's ETS, ADR-107) — an id into the global table
+    /// An **in-memory table** (the shared mutable table, ADR-107) — an id into the global table
     /// registry (`crate::core::table`). Like a `Socket`/`Subprocess` it is a scalar handle,
     /// not a heap object: the GC never traces or moves it. **Unlike** them it is
     /// *shared, not process-local* — the handle is sent by value across processes and
@@ -1750,7 +1750,7 @@ pub(crate) mod jit_layout {
 mod runtime_gen_handle_tests {
     use super::*;
 
-    // The 2-generation RUNTIME code handle encoding (ADR-091 Erlang-style).
+    // The 2-generation RUNTIME code handle encoding (ADR-091).
     #[test]
     fn runtime_gen_round_trips_and_stays_runtime() {
         for &g in &[0usize, 1] {

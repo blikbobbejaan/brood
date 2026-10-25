@@ -1,4 +1,4 @@
-;; std/proc/gen.blsp — the gen_server-style process framework. Built in Brood on
+;; std/proc/gen.blsp — the server process framework. Built in Brood on
 ;; spawn/send/receive/ref. :isolated because each test spawns processes and we
 ;; (re)define servers as globals.
 

@@ -14,8 +14,8 @@
 > **Slice 2 (identity leak) — resolved pragmatically, no kernel change.** Verifying the
 > constraints changed the plan: the `Value` layout is JIT-pinned and map ops match
 > `Value::Map` with catch-alls, so a `Record` variant is a pervasive, risky change; and
-> — the key realization — a record being **`≠` to a bare map is correct** (Elixir-struct
-> semantics), so we do *not* want to hide the id from `=`, and a record *printing* with
+> — the key realization — a record being **`≠` to a bare map is correct** (nominal
+> record semantics), so we do *not* want to hide the id from `=`, and a record *printing* with
 > its id is informative, not a leak. The one genuinely harmful leak — an internal key
 > reaching external JSON — is fixed in std (`json-encode` omits `:__id__`), and a clean
 > `record?`/`record-id`/`fields` API means nothing outside `ability` touches `:__id__`.
@@ -117,7 +117,7 @@ reaches. Speed was never the blocker; **dispatch identity for user types** is.
 
 - **Lever 1 — route stdlib cross-cutting ops through standard protocols** (`Encode`
   for JSON, `Show`, `Seq`, `Compare`). This is the conventional architecture
-  (Clojure/Elixir expose core abstractions as protocols). Pure `std` change, ships
+  (Clojure exposes core abstractions as protocols). Pure `std` change, ships
   now. **But** its *extension* value is capped by the same wall: a record already
   encodes/prints/seqs *as its map*, so all a user can newly extend is "wrap a
   built-in kind differently" — niche.
@@ -146,8 +146,7 @@ kernel. Findings:
 - **Modules are compile-time namespaces, not runtime values.** The `Value` enum
   has no `Module` / `Record` / `Struct` / `Tag` variant. A module is a symbol
   prefix (`db/start`) over one flat global table. You cannot make a value point at
-  its module the way an Elixir struct points at `__struct__: Date` — there is no
-  module object to point at.
+  a module object — there is no module object to point at.
 - **But `(current-ns)` yields the current *compilation* namespace as a symbol**,
   capturable at macro-expansion. So a value can carry its module *by name*.
 - **Trap:** runtime `(current-ns)` reflects the *caller's* compile context, not the
@@ -171,7 +170,7 @@ Refinements the prototype forced:
 1. **Identity is the namespaced record-*name*, not the module.** A module holds
    many records (`geometry` → circle *and* rect); bare-module identity collides.
    Modules serve as the *namespace that disambiguates* nominal record names — the
-   real substrate. (Elixir's one-struct-per-module, relaxed.)
+   real substrate. (One record per module would be the stricter rule; this relaxes it.)
 2. **ADR-011 is threaded cleanly.** Only values built by the identity constructor
    dispatch nominally; a plain `{:type …}` map stays `:map`. Explicit,
    construction-time, zero inference — exactly the implicit version ADR-011
@@ -194,8 +193,7 @@ JSON of circle: {"__id__":"geometry/circle","r":2}  ; leaks into serialization
 That last line is the killer: the flagship use case for per-record dispatch is
 *custom serialization*, and the naïve tag pollutes exactly that. Every generic
 map consumer (`json-encode`, `pr-str`, `keys`, `=`) would have to learn to skip
-`:__id__`. Elixir avoids this because `__struct__` is hidden from `==`-vs-map and
-its encoders strip it.
+`:__id__`, unless the tag is hidden from map equality and the encoders strip it.
 
 **So: zero-kernel is feasible but leaky; a clean version needs a bounded kernel
 carve-out** — a hidden identity slot on maps (or a real `Record` variant) that
@@ -309,7 +307,7 @@ We are not obliged to pick an existing point. Seeds for a Brood-native synthesis
 5. **Hot-reload-safe** — resolution reads live globals; nothing frozen at
    expansion that a later (re)definition should change.
 6. **Node-local** — dispatch resolves against the running node's code; values
-   crossing the wire carry no impl (Erlang's "code must be loaded on both nodes").
+   crossing the wire carry no impl (code must be loaded on both nodes).
 7. **Coherent, or explicitly-not** — conflicts are impossible by construction, or
    any incoherence is visibly opt-in, never silent.
 8. **Minimal machinery** — Brood's ethos (small, structural, immutable). Prefer

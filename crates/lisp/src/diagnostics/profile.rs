@@ -1,6 +1,6 @@
 //! Sampling CPU profiler over the VM's reified frame stacks — the "no
 //! Brood-level CPU profile" half of the observability timing tier (ROADMAP
-//! survey gap #4; BEAM has `:fprof`/`eprof`, .NET has dotnet-trace).
+//! survey gap #4; .NET has dotnet-trace).
 //!
 //! Mechanism: a ticker thread bumps [`EPOCH`] at the requested rate; every
 //! `vm_run_bc` driver compares a loop-local last-seen value against it at the

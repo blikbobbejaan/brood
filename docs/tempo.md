@@ -16,7 +16,7 @@ Required by section 4(b) of the Apache License:
 
 Changes made in this adaptation:
 
-- Reimplemented in Brood Lisp rather than Elixir. No source from the original work
+- Reimplemented in Brood Lisp. No source from the original work
   is reproduced; the design — a single resolution-carrying type, half-open interval
   semantics, Allen-relation comparison, unit-implied enumeration — is what has been
   adapted.

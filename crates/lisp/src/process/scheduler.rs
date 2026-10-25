@@ -263,8 +263,8 @@ thread_local! {
 /// process for as long as they run — including whichever one was going to kill them. A
 /// two-worker suite sat 30 minutes with both workers looping under `eval`. So it goes
 /// dirty, as a worker blocked in a native-nested `receive` does: its queue moves to live
-/// workers, and the last live executor going dirty starts an overflow drainer (BEAM's
-/// dirty CPU schedulers, at the moment the run proves long). Until [`cpu_dirty_leave`].
+/// workers, and the last live executor going dirty starts an overflow drainer (a dirty
+/// CPU scheduler, at the moment the run proves long). Until [`cpu_dirty_leave`].
 pub(crate) fn cpu_dirty_enter() {
     if !IS_EXECUTOR.with(|e| e.get()) || CPU_DIRTY.with(|d| d.replace(true)) {
         return;
@@ -327,7 +327,7 @@ thread_local! {
     /// top-level receive can capture its continuation (and migrate); a **native-nested**
     /// receive cannot (the native frame can't be captured, and re-running it repeats
     /// side effects — the §8.1 footgun), so it falls back to **blocking** its worker
-    /// like a BEAM dirty scheduler (§7.4). Set per `vm_run_bc` entry to that call's
+    /// like a dirty scheduler (§7.4). Set per `vm_run_bc` entry to that call's
     /// `top_level` and restored on exit, so it reflects the innermost driver.
     static CAPTURE_TOP_LEVEL: Cell<bool> = const { Cell::new(false) };
 }
@@ -475,7 +475,7 @@ static WORKERS_STARTED: Once = Once::new();
 /// A native-nested `receive` blocks its executor thread (§7.4); when every executor is
 /// blocked this hits 0 and any work queued behind the blocks is stranded (no live thread
 /// to drain or steal it). The scheduler then spawns an [`overflow_drain`] thread — an
-/// on-demand "dirty scheduler", exactly as BEAM grows dirty schedulers — so progress is
+/// on-demand "dirty scheduler" — so progress is
 /// always possible. Incremented when an executor starts running and on a dirty-block
 /// wake; decremented when an executor dirty-blocks and when an overflow drainer exits.
 static LIVE_EXECUTORS: AtomicUsize = AtomicUsize::new(0);
@@ -1147,7 +1147,7 @@ fn report_parked_liveness() {
 /// generation.
 ///
 /// Also drives [`report_parked_liveness`] first, so a parked-but-clean process (which
-/// can't report for itself) doesn't block the drain — Erlang `check_process_code`-style.
+/// can't report for itself) doesn't block the drain.
 pub fn old_gen_drained(heap: &Heap) -> bool {
     if !heap.drain_active() {
         return false;

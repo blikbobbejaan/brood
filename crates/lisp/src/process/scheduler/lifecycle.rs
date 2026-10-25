@@ -74,7 +74,7 @@ fn deregister_timed(pid: u64, reason: Message, heap: Option<&Heap>) {
     // stay consistent). A no-op when no drain is armed.
     if let Some(heap) = heap {
         heap.drain_note_exit(pid);
-        // The tables it created die with it, as an ETS table does with its owner — before
+        // The tables it created (and owns) die with it — before
         // the downs below make the death observable (KI-183's rule).
         crate::core::table::release_owned(pid, heap.owned_tables());
     }
@@ -201,15 +201,15 @@ pub(crate) fn exit_reason_phrase(reason: &Message) -> String {
     }
 }
 
-/// The untrappable hard-kill reason — Erlang's `exit(pid, kill)`. A `:kill` exit
+/// The untrappable hard-kill reason — `(exit pid :kill)`. A `:kill` exit
 /// fires at the next reduction tick (`preempt`); any other reason is the soft
 /// signal that waits for the next `receive` iteration.
 pub(super) fn is_kill_reason(reason: &Message) -> bool {
     matches!(reason, Message::Keyword(k) if *k == *pk::KILL_SYMBOL)
 }
 
-/// `(exit pid reason)` — deliver an exit signal to a green process (Erlang
-/// `exit/2`). `reason = :kill` is the **untrappable hard** kill: the target dies at
+/// `(exit pid reason)` — deliver an exit signal to a green process.
+/// `reason = :kill` is the **untrappable hard** kill: the target dies at
 /// its next reduction tick (`preempt`), or immediately if it's parked. Any other
 /// reason is the **soft** signal: the target dies at its next `receive` iteration
 /// (a tight non-`receive` loop won't honour it — cooperative). Monitors fire
@@ -233,7 +233,7 @@ pub fn exit(pid: u64, reason: Message) {
 
 /// Link propagation's kill: **hard** (the peer dies at its next reduction tick,
 /// like `:kill`) but carrying the **originating reason** — so the peer's own
-/// monitors and cascading links report *why* the tree fell (the BEAM behaviour),
+/// monitors and cascading links report *why* the tree fell,
 /// not a blanket `:kill`. Hardness and reason are independent (`request_kill`).
 pub(crate) fn exit_propagate(pid: u64, reason: Message) {
     exit_with(pid, reason, true);
@@ -273,14 +273,14 @@ fn exit_with(pid: u64, reason: Message, hard: bool) {
 /// Returns the new pid. The user-facing `spawn` macro wraps an arbitrary
 /// expression into such a thunk (`(spawn e)` → `(%spawn (fn () e))`), so the
 /// expression's free locals are captured lexically rather than passed as args.
-/// Erlang-style let-it-crash: an uncaught throw kills the process, monitors
+/// Let-it-crash: an uncaught throw kills the process, monitors
 /// fire `[:down :error …]` immediately.
 pub fn spawn(heap: &Heap, f: Value) -> Result<u64, LispError> {
     spawn_impl(heap, f, false, None)
 }
 
 /// As [`spawn`], but **atomically links** the new child to the spawner *before* it can
-/// run — the Erlang `spawn_link` primitive. Closes the spawn→link gap: a separate
+/// run — the `spawn-link` primitive. Closes the spawn→link gap: a separate
 /// `(link pid)` after the child's pid is returned can miss a child that already exited
 /// (linking a dead pid yields `[:EXIT pid :noproc]`, *losing the real reason*). With the
 /// link registered before the child is enqueued, its eventual exit always reaches the
@@ -292,7 +292,7 @@ pub fn spawn_linked(heap: &Heap, f: Value) -> Result<u64, LispError> {
 }
 
 /// As [`spawn`], but **atomically monitors** the new child from the spawner *before* it
-/// can run — the Erlang `spawn_monitor` primitive, and the monitor-side twin of
+/// can run — the `spawn-monitor` primitive, and the monitor-side twin of
 /// [`spawn_linked`]. Returns `(pid, mref)`.
 ///
 /// The gap it closes is the same one, and just as real: `(let (p (spawn …) r (monitor p)))`
@@ -432,7 +432,7 @@ fn spawn_impl_timed(
     }
 
     ensure_workers();
-    // Spawn placement is scan-free (BEAM model): local worker if we're on one, else
+    // Spawn placement is scan-free: local worker if we're on one, else
     // round-robin; work-stealing rebalances. The O(workers) least-loaded `assign_worker`
     // scan stays only on the wake/migration path (`wake_enqueue`), not the spawn hot path.
     let worker_id = pick_spawn_worker();

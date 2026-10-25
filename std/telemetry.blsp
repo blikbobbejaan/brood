@@ -1,4 +1,4 @@
-;; std/telemetry.blsp — Erlang :telemetry-style instrumentation.
+;; std/telemetry.blsp — event-based instrumentation.
 ;; Loaded on first `telemetry/…` reference.
 ;;
 ;; Design notes (the *why*; the *what* is in the docstrings):
@@ -9,7 +9,7 @@
 ;;    *throwing* handler doesn't even do that (the listener catches it and detaches the
 ;;    handler). An UNCATCHABLE handler fault (a stack overflow, `(exit … :kill)`) kills
 ;;    only the listener; supervise it (see `start`) and it restarts with the
-;;    handler table intact. This is the deliberate trade-off vs. Erlang's inline
+;;    handler table intact. This is the deliberate trade-off vs. inline
 ;;    dispatch: we accept one listener as a serialization point in exchange for total
 ;;    emitter isolation. Keep handlers cheap, or `forward` heavy work to your own
 ;;    process — the listener only dispatches.
@@ -19,11 +19,11 @@
 ;;    attach/detach are configuration-time data ops (they never run handler code), so
 ;;    they can't crash from a handler either.
 ;;  - Events are plain Brood values compared by structural `=`: a keyword (:request)
-;;    or, Erlang-style, a vector of keyword segments ([:http :request :stop]). `span`
+;;    or a vector of keyword segments ([:http :request :stop]). `span`
 ;;    builds the :start/:stop/:exception sub-events off a base vector.
 
 (defmodule telemetry
-  "An Erlang :telemetry-style instrumentation seam, written in Brood. Code `emit`s a
+  "An instrumentation seam, written in Brood. Code `emit`s a
 named event with a measurements map and a metadata map; every handler `attach`ed to
 that event runs on each emit. Crucially, handlers run in a dedicated LISTENER process,
 reached by a fire-and-forget `send` — so a handler can never crash, hang, or slow the
@@ -189,7 +189,7 @@ handler logic in a process you own, off even the listener. Returns `id`.
   *telemetry-handlers*)
 
 ;; ---- declared events (defevent) — events as data with a checked schema -------
-;; Erlang `:telemetry` events are bare atoms with no declared shape: a handler and the
+;; A plain event is a bare keyword with no declared shape: a handler and the
 ;; emitter agree on the measurement/metadata keys by convention only. `defevent` declares
 ;; that shape ONCE — and, crucially, gets it CHECKED. The trick (same one `defrecord` uses
 ;; for field types, ADR-130) is to reuse the `sig` seam: `defevent` generates a *typed
@@ -582,7 +582,7 @@ unsubscribes and exits.
         (throw e)))))
 
 (defmacro span (event metadata & body)
-  "Time `body` as a telemetry span around `event` (a vector base, Erlang-style):
+  "Time `body` as a telemetry span around `event` (a vector base):
 emits `event`++`[:start]` before, `event`++`[:stop]` with `{:duration ms}` after a
 normal return, or `event`++`[:exception]` with `{:duration ms}` and the error in the
 metadata on a throw (then re-raises). `metadata` is a map shared by all three events.
@@ -590,7 +590,7 @@ The events are emitted async (fire-and-forget); the timing measures `body` runni
 the caller. Returns `body`'s value."
   `(telemetry-span ~event ~metadata (fn () ~@body)))
 
-;; ---- metric aggregators (Elixir Telemetry.Metrics, folded in Brood) ----------
+;; ---- metric aggregators (folded in Brood) -----------------------------------
 ;; An aggregator is just an `attach` of a folding handler — ADR-106 anticipated
 ;; exactly this ("a handler that folds events into running stats"). Because every
 ;; handler runs SERIALLY in the one listener process, a plain read-modify-write on
@@ -672,7 +672,7 @@ read). Returns `id`."
 ;; ---- distribution / histogram (bucketed, bounded) ---------------------------
 ;; The percentile-capable aggregator ADR-106 anticipated. Like `summary` it keeps
 ;; only running aggregates — here per-bucket counts against explicit upper bounds
-;; (Prometheus / Elixir-`Telemetry.Metrics`-`distribution` shape) — so state stays
+;; (the Prometheus histogram shape) — so state stays
 ;; bounded no matter how many events fire (no samples retained). Percentiles are
 ;; ESTIMATED from the buckets by linear interpolation (`metric-percentile`), the
 ;; standard `histogram_quantile` trade: bounded memory for approximate quantiles.

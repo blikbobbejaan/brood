@@ -195,7 +195,7 @@ multiplexing several green processes don't leak each other's depths.
 - **GC doesn't fire if a program stays at `GC_BLOCK > 1` forever** — e.g. a
   server loop wrapped in `(try (loop) (catch …))` keeps the outer eval
   blocked in `%try` and never reaches a safepoint until it unwinds.
-  Idiomatic Erlang-style loops `try` *within* an iteration, returning to the
+  Idiomatic server loops `try` *within* an iteration, returning to the
   outermost between iterations; that case GCs every iteration. The
   pathological case is recoverable by adding explicit rooting to the few
   builtins that hold transients across eval — incremental, no architectural
