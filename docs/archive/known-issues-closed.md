@@ -14945,6 +14945,29 @@ looking for".
 Runs: [39950556262](https://github.com/broodlang/brood/actions/runs/39950556262) (`7ed008cf`),
 [39954644031](https://github.com/broodlang/brood/actions/runs/39954644031) (`e9e1af8b`).
 
+## KI-301 — the JIT prepass miscounted a staged call, and every arm with one before a join bailed ✅ FIXED 2026-10-25
+
+**Symptom.** Found while profiling `json`: `BROOD_JIT_BAIL_TRACE=1` named
+`join-depth-mismatch at ip=12: prepass=2 edges=[1, 1]` for `json/digits-run`, `int-end`,
+`frac-end`, `exp-end` and `object-acc`, which all ran interpreted for good. The shape is common:
+`(if (and (< i n) (digit? (nth s i -1))) …)`. No wrong answer, only a slow one.
+
+**Cause.** KI-19 makes a call whose argument can run user code resolve its operator first: the
+compiler rewrites the head to a `GlobalIc`, which `emit` pushes ahead of the arguments, and the
+`Inst::Call` keeps `head: Some(sym)` with `staged: true`. The JIT's emit loop consumes such a
+call as a computed callee (pops `argc + 1`), but `prepass::block_analysis_checked` read only
+`head.is_some()` and counted the call as unstaged (pops `argc`). Every leader after a staged
+call was sized one deeper than the stack the emit loop brought to it, and `resolve_edges`
+refused the join. `jit_plan`'s checkpoint-depth model had the same omission, which only
+over-sized the journal.
+
+**Fix.** Both models count a staged call's callee: `head.is_some() && !staged` for the prepass,
+`head.is_none() || staged` for the checkpoint depth. **Guard.**
+`tests/count_nth_inline_test.blsp` "the arm is native (was: join-depth-mismatch, bailed)": with
+`BROOD_JIT_BAIL_TRACE=1` the 260c43bc binary prints the mismatch and `reason=join-depth-or-widening`
+for that exact function, and the fixed binary lowers it (and leaf-inlines `cn-digit?` into it).
+Measured with the `count`/`nth` inlines: `json` −20.8%, `regex` −11.4% (`make ab --floor`).
+
 ## KI-297 — a require waiter without a death watch outlived a killed claimant ✅ FIXED 2026-10-24
 
 **Symptom.** Found by review, never observed: a waiter on a module load blocks until the 30 s

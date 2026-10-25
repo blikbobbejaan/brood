@@ -32,7 +32,12 @@ pub(crate) fn lower_map_prim3(heap: &Heap, node: &mut Node) {
     let hit = match &*node {
         Node::Call { callee, args, .. } if args.len() == 3 => call_head_sym(callee)
             .and_then(|h| resolve_prim3(heap, h).map(|op| (h, op)))
-            .filter(|(_, op)| matches!(op, PrimOp3::MapGet3 | PrimOp3::MapAssoc)),
+            .filter(|(_, op)| {
+                matches!(
+                    op,
+                    PrimOp3::MapGet3 | PrimOp3::MapAssoc | PrimOp3::VectorRefOr
+                )
+            }),
         _ => None,
     };
     let Some((head, op)) = hit else {
@@ -1249,7 +1254,7 @@ pub(crate) fn node_touches_heap(node: &Node) -> bool {
         // A length read is a structure read, like `nth`; a contract probe reads the frame
         // stack and only ever appears in a shim, which never tiers.
         Node::Prim1 {
-            op: PrimOp1::VectorLen | PrimOp1::ContractTail,
+            op: PrimOp1::VectorLen | PrimOp1::Count | PrimOp1::ContractTail,
             ..
         } => true,
         Node::Const(_) | Node::Local(_) | Node::Global(_) | Node::GlobalIc { .. } => false,

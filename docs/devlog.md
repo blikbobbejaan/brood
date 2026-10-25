@@ -3675,3 +3675,21 @@ misnumbered. Counted repetition now reaches the engine as `{m,n}`, which keeps o
 the last iteration's capture (44 cases). Two more cases differ by design: a `]` first in a set
 closes it (`[]` is the empty set). Also `os/trap`'s pipe uses `pipe` + `FD_CLOEXEC`; macOS has
 no `pipe2`.
+
+2026-10-25 (`count` and `(nth v i default)` inline; KI-301): profiling `json` found that a call
+to a small prelude function cost ~2 000–3 000 instructions from native code, whatever it did:
+`count` of a four-element vector 3 100, `(nth v i -1)` 1 200, `seq/subvec` ~6 000. `count`
+becomes `PrimOp1::Count` (`Heap::count_inline`: vector, string, range, bytes, set, nil, non-record
+map, proper list; anything else dispatches the Brood `count`) and `(nth v i default)`
+`PrimOp3::VectorRefOr` (`Heap::nth3_inline`), each a VM arm plus a JIT callback that deopts on a
+decline: 3 100 → 220 and 1 200 → 250 instructions. Removing the call also lets an arm whose only
+call was one of them past the call-mediated gate. KI-301: the JIT prepass counted a staged call
+(KI-19) as unstaged, so every arm with one before a join bailed — `json`'s number scanners among
+them. `std/json` reads with `(nth s i -1)` (the `json-at` helper is gone) and slices a string with
+no escape instead of consing and reversing it; `seq/subvec` has two fixed arities. `make ab --floor`
+against 260c43bc: `json` −20.8%, `regex` −11.4%, `base64` −13.6% in one run and −2.5% in the next,
+nothing past the gate. `pingpong`/`ring` read +3% at equal instructions. `make ab-vm` read
+`pfib` +11% at tier 1: equal-or-fewer instructions, identical when pinned one thread per core, and a
+same-source control build moves the µop-cache counters further than this change does, so it is code
+placement under SMT, not work. Also found: KI-302, `startup` +3% from `7acef6e2`, left open. Not run
+on this machine: `tests/count_nth_inline_test.blsp` is new and runs in CI.

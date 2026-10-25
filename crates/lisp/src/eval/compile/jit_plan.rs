@@ -353,7 +353,7 @@ pub(super) fn jit_ckpt_depth(
             // The pure 3-ary map ops (ADR-368): pop three, push one, no effect to journal —
             // a deopt re-run recomputes a read or a fresh map, never a second store.
             Inst::Prim3 {
-                op: PrimOp3::MapGet3 | PrimOp3::MapAssoc,
+                op: PrimOp3::MapGet3 | PrimOp3::MapAssoc | PrimOp3::VectorRefOr,
                 ..
             } => d >= 3 && merge(&mut depth, &mut work, ip + 1, d - 2),
             Inst::MakeVector(n) => d >= *n && merge(&mut depth, &mut work, ip + 1, d - n + 1),
@@ -369,11 +369,16 @@ pub(super) fn jit_ckpt_depth(
             }
             Inst::SelfCall { argc } => d >= *argc, // terminal (frame reset + loop)
             Inst::Call {
-                argc, tail, head, ..
+                argc,
+                tail,
+                head,
+                staged,
+                ..
             } => {
                 // A free-global head isn't staged (the IC resolves the callee), so
-                // the call consumes only `argc` operands; a computed head adds one.
-                let consumed = argc + usize::from(head.is_none());
+                // the call consumes only `argc` operands; a computed head adds one, and so
+                // does a staged named head (KI-19), whose callee sits below the args.
+                let consumed = argc + usize::from(head.is_none() || *staged);
                 if d < consumed {
                     false
                 } else if *tail {
@@ -763,7 +768,7 @@ pub(super) mod codegen {
             // table-put deep-copies key and value; `assoc` path-copies a fresh trie. The
             // 3-arity map READ is the one 3-ary op that provably allocates nothing — the
             // same `Heap::map_get` reasoning as `MapGet` above.
-            Inst::Prim3 { op, .. } => !matches!(op, PrimOp3::MapGet3),
+            Inst::Prim3 { op, .. } => !matches!(op, PrimOp3::MapGet3 | PrimOp3::VectorRefOr),
             Inst::MakeVector(_) | Inst::MakeMap(_) | Inst::MakeClosure { .. } => true,
             _ => false,
         }

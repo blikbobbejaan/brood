@@ -104,6 +104,12 @@ pub enum PrimOp3 {
     /// vector receiver declines to the wrapper's `%vector-assoc` branch. ALLOCATES (never
     /// collects), so the planner lists it under `inst_may_allocate`/`inst_allocates_hot`.
     MapAssoc,
+    /// `(nth v i default)` on a vector with a fixnum index — `Heap::nth3_inline` is the
+    /// rule: the element in range, else the default. Bytes, lists, records and a bad index
+    /// decline to the prelude `nth`, which stays the definition. Pure: never allocates.
+    /// The 2-arity `(nth v i)` is [`PrimOp::VectorRef`]; this is its default-taking twin,
+    /// which was a full Brood call (~1 200 instructions from native code, 2026-10-25).
+    VectorRefOr,
 }
 
 impl PrimOp3 {
@@ -156,6 +162,16 @@ pub enum PrimOp1 {
     /// which `%vector-ref` then reads through [`PrimOp::VectorRef`]. A non-vector
     /// defers to the native for its exact type error.
     VectorLen,
+    /// The prelude `count` (special-cased in `resolve_prim1`, like `nth` → `VectorRef`):
+    /// the sizes the heap already holds — a vector, string, range, bytes, set, nil, a
+    /// non-record map, a proper list — answered inline by [`Heap::count_inline`]. A
+    /// record, seq-view, rope, table, improper list or `Seqable` impl dispatches the real
+    /// `count`, which stays the definition. Every `count` was otherwise a full Brood call
+    /// (~3 000 instructions from native code, 2026-10-25) — and its body builds a closure,
+    /// so it never tiers itself.
+    ///
+    /// [`Heap::count_inline`]: crate::core::heap::Heap::count_inline
+    Count,
     /// `(%contract-tail? ret)` — is the frame directly beneath this one a contract shim
     /// suspended at its [`PrimOp::ContractAwait`] with a declared result EQUAL to `ret`?
     /// Then this activation's result is already going to be checked against `ret`, and the

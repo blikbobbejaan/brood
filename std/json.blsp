@@ -46,12 +46,9 @@ parser for dogfooding and modest payloads (e.g. a daemon's JSON API).")
 ;; every comparison a string-equality through the slow dispatch path. Int codes make
 ;; every per-char test a pure integer prim (`=`/`<=` on i64s — register work in a
 ;; JIT'd arm), the same conversion that took the regex matcher call-free. `s` in every
-;; parser helper below is that code vector; -1 is the end-of-input sentinel.
-(defn- json-at (s i n)
-  "The code point at `i`, or -1 at/after the end (so callers never index past `n`)."
-  ;; `n` is `(count s)` at every caller, a relation the checker does not carry this far;
-  ;; the `or` says the same thing in a form it reads — past the end `nth` is nil, and -1.
-  (if (< i n) (or (nth s i) -1) -1))
+;; parser helper below is that code vector; -1 is the end-of-input sentinel, read as
+;; `(nth s i -1)` — an inline vector read (`PrimOp3::VectorRefOr`), never a call, so a
+;; scanner built from it stays clear of the JIT's call-mediated gate.
 
 (defn- json-slice (s:vector i:int end:any -> string)
   "The code points [i, end) of `s`, joined back into a string."
@@ -186,7 +183,7 @@ point, or combine a high+low surrogate pair into one astral code point. Returns
 
 (defn- json-escape (s i n)
   "An escape body starting at `i` (after the backslash). Returns `[code next-index]`."
-  (let (c (json-at s i n))
+  (let (c (nth s i -1))
     (cond
       (= c 34) [34 (+ i 1)]
       ; \"
@@ -210,7 +207,7 @@ point, or combine a high+low surrogate pair into one astral code point. Returns
 ;; `acc` is the content CODES collected in reverse; the string is assembled once at
 ;; the close quote (a per-char `(str acc c)` would be O(n²)).
 (defn- string-acc (s i n acc)
-  (let (c (json-at s i n))
+  (let (c (nth s i -1))
     (cond
       (= c -1) (error "json: unterminated string")
       ;; `%codepoints->string`, not `(apply str (map int->char …))`: one native pass
@@ -226,9 +223,23 @@ point, or combine a high+low surrogate pair into one astral code point. Returns
         (error "json: unescaped control character in string: U+" (string/upper (hex4-digits c)))
       else (string-acc s (+ i 1) n (cons c acc)))))
 
+(defn- plain-end (s i n)
+  "The index of the first code at or after `i` that ends a run of plain string content —
+a quote, a backslash or a control character — or `n`."
+  (if (< i n)
+    (let (c (nth s i -1))
+      (if (or (= c 34) (= c 92) (< c 32)) i (plain-end s (+ i 1) n)))
+    i))
+
 (defn- json-string (s i n)
   "A string body starting at `i` (just after the opening quote). Returns `[str end]`."
-  (string-acc s i n nil))
+  ;; Most strings hold no escape: find the close quote and slice once, instead of consing
+  ;; every code and reversing. An escape, a control character or the end takes the
+  ;; per-code path from the start, which decodes or reports it.
+  (let (j (plain-end s i n))
+    (if (= (nth s j -1) 34)
+      [(json-slice s i j) (+ j 1)]
+      (string-acc s i n nil))))
 
 ;; -- literals --
 (defn- lit-match (s i codes k m)
@@ -249,7 +260,7 @@ point, or combine a high+low surrogate pair into one astral code point. Returns
   (let ([v j0] (json-value s i n)
         j (skip-ws s j0 n)
         acc2 (cons v acc)
-        c (json-at s j n))
+        c (nth s j -1))
     (cond
       (= c 44) (array-acc s (skip-ws s (+ j 1) n) n acc2)
       ; ,
@@ -260,18 +271,18 @@ point, or combine a high+low surrogate pair into one astral code point. Returns
 (defn- json-array (s i n)
   "An array body starting at `i` (just after `[`). Returns `[vector end]`."
   (let (i2 (skip-ws s i n))
-    (if (= (json-at s i2 n) 93)
+    (if (= (nth s i2 -1) 93)
       [[] (+ i2 1)]
       (array-acc s i2 n nil))))
 
 ;; -- objects --
 (defn- object-acc (s i n acc)
   (let (i2 (skip-ws s i n))
-    (if (not (= (json-at s i2 n) 34))
+    (if (not (= (nth s i2 -1) 34))
       (error "json: expected string key at index " i2)
       (let ([k j0] (json-string s (+ i2 1) n)
             j1 (skip-ws s j0 n))
-        (if (not (= (json-at s j1 n) 58))
+        (if (not (= (nth s j1 -1) 58))
           (error "json: expected ':' after key at index " j1)
           (let ([v j2] (json-value s (skip-ws s (+ j1 1) n) n)
                 j3 (skip-ws s j2 n)
@@ -280,7 +291,7 @@ point, or combine a high+low surrogate pair into one astral code point. Returns
                 ; so `{"__id__":"x"}` decoded to a value that answered `record?` and
                 ; re-encoded WITHOUT the key. Decoded JSON is never a record.
                 acc2 (%map-assoc acc (if (= k "__id__") k (keyword k)) v)
-                c (json-at s j3 n))
+                c (nth s j3 -1))
             (cond
               (= c 44) (object-acc s (+ j3 1) n acc2)
               (= c 125) [acc2 (+ j3 1)]
@@ -289,13 +300,13 @@ point, or combine a high+low surrogate pair into one astral code point. Returns
 (defn- json-object (s i n)
   "An object body starting at `i` (just after `{`). Returns `[map end]`."
   (let (i2 (skip-ws s i n))
-    (if (= (json-at s i2 n) 125)
+    (if (= (nth s i2 -1) 125)
       [{} (+ i2 1)]
       (object-acc s i2 n {}))))
 
 (defn- json-value (s i n)
   "One JSON value at index `i` (whitespace already skipped). Returns `[value end]`."
-  (let (c (json-at s i n))
+  (let (c (nth s i -1))
     (cond
       (= c 123) (json-object s (+ i 1) n)
       ; {

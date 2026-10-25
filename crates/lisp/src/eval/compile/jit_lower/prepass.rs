@@ -95,8 +95,14 @@ pub(crate) fn block_analysis_checked(
                 // For a free-global head (head=Some) the callee is resolved via the call IC
                 // and is NOT staged on the operand stack — only the `argc` args are: net `1-argc`.
                 // For a computed head (head=None) the callee IS staged below the args: net `-argc`.
-                Inst::Call { argc, head, .. } => {
-                    cur += if head.is_some() {
+                // So is a STAGED named head (KI-19): its `GlobalIc` pushed the callee ahead of
+                // the args, and the emit loop consumes it as a computed callee. Counting it as
+                // unstaged put every leader after such a call one deeper than the emit stack,
+                // and the arm bailed at the join (`join-depth-mismatch`).
+                Inst::Call {
+                    argc, head, staged, ..
+                } => {
+                    cur += if head.is_some() && !*staged {
                         1 - *argc as i32
                     } else {
                         -(*argc as i32)

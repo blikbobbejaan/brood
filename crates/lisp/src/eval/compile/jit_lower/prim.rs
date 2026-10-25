@@ -412,6 +412,21 @@ pub(super) fn emit_prim1(
             b.switch_to_block(cont);
             stack.push(Op::Int(len));
         }
+        PrimOp1::Count => {
+            // `count`: the `VectorLen` shape — one callback answering a size the heap holds,
+            // or -1 for a shape only the prelude `count` decides, which deopts to the VM.
+            // Not a safepoint (no allocation).
+            let [w0, w1, w2] = read_words(b, operand, frame);
+            let c = b.ins().call(funcs.count, &[funcs.heap, w0, w1, w2]);
+            let len = b.inst_results(c)[0];
+            let ok = b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, len, 0);
+            let cont = b.create_block();
+            let deopt_reason = deopt_code(b, DeoptReason::CountDeclined);
+            b.ins()
+                .brif(ok, cont, &[], deopt, &[BlockArg::Value(deopt_reason)]);
+            b.switch_to_block(cont);
+            stack.push(Op::Int(len));
+        }
         PrimOp1::TypeOf => {
             // Total over every operand — no deopt. An unboxed operand's tag is known at
             // compile time (constant keyword); a boxed one loads its keyword id from the
