@@ -3652,3 +3652,10 @@ first, each once, and everything stops in reverse on a signal or `application/sh
 `:main` names an application, `nest run` and a release run it, and `--check-boot` starts and
 stops it. Not run on this machine: `tests/application_test.blsp` and
 `crates/cli/tests/application_sigterm.rs` are new and run in CI.
+
+2026-10-25 (regex conformance corpus, ROADMAP corpora item 4): `tests/corpus/regex` vendors
+rust-lang/regex's Fowler testregex files (345 cases, expectations for leftmost-first, which is
+Brood's semantics). `tests/conformance_regex_test.blsp` reads their TOML subset and compares
+every first match and group span with `regex/find`. Cases that differ because of Brood's
+dialect (no case-insensitive mode, no POSIX classes, `\n`/`\xHH` are letters) are listed by
+name with the reason, and the test fails if one starts agreeing. Not run on this machine.

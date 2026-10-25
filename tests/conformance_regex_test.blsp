@@ -1,0 +1,118 @@
+;; tests/conformance_regex_test.blsp — Fowler's testregex cases against std/regex.
+;;
+;; The corpus (rust-lang/regex `testdata/fowler`, MIT; see tests/corpus/regex/README.md)
+;; is Glenn Fowler's testregex suite by way of Go, with every expectation re-derived for
+;; LEFTMOST-FIRST matching — Brood's semantics (ADR-389) — so a case is a pass/fail, not
+;; a POSIX-vs-Perl judgement. Each case names a pattern, a haystack and the spans of the
+;; first match and of every group in it (`[]` for a group that did not take part).
+;;
+;; Brood's pattern dialect is not upstream's: it has no case-insensitive mode, no POSIX
+;; `[[:class:]]` sets, and `\n`/`\xHH` mean the letters `n`/`x`, never a byte. Those cases
+;; are listed in `rx-divergent` with the reason, and the list is checked both ways: a
+;; listed case that starts agreeing fails too, so the list cannot outlive its reason.
+;;
+;; The files are TOML. Nothing in the tree parses TOML, and these use a fixed subset —
+;; `[[test]]` headers and one `key = value` per line, the values literal strings, ints,
+;; bools and nested int arrays — so the reader is the few lines below.
+
+(defmodule conformance-regex-test (:use test) (:use corpus))
+
+(def- rx-divergent
+  {"basic51" "no case-insensitive mode"
+   "basic57" "no POSIX [[:upper:]] set"
+   "basic58" "no POSIX [[:lower:]] set"
+   "basic59" "no POSIX [[:upper:]] set"
+   "basic65" "\\n in a pattern is the letter n"
+   "basic66" "\\n in a pattern is the letter n"
+   "basic68" "\\n in a pattern is the letter n"
+   "basic171" "\\xHH in a pattern is the letter x"})
+
+;; ---- reading the TOML subset ----------------------------------------------------
+
+(defn- rx-value (text)
+  (cond
+    (string/starts-with? text "'''") (string/drop-suffix (string/drop-prefix text "'''") "'''")
+    (= text "true") true
+    (= text "false") false
+    ;; An int or a nested array of ints: Brood data once the commas are gone.
+    else (reflect/read-string (string/replace text "," " "))))
+
+;; Every case in `path`, in file order, as a map keyed by the TOML key's string.
+(defn- rx-cases (path)
+  (reverse (fold (corpus-lines path)
+             ()
+             (fn (cases line)
+               (let (i (index-of line " = "))
+                 (cond
+                   (= line "[[test]]") (cons {} cases)
+                   (or (< i 0) (empty? cases)) cases
+                   else
+                     (cons (assoc (first cases)
+                             (string/substring line 0 i)
+                               (rx-value (string/substring line (+ i 3) (string/length line))))
+                       (rest cases))))))))
+
+(defn- rx-all-cases () (mapcat (corpus-files "regex") rx-cases))
+
+;; Upstream's `unescape = true`: `\n` and `\xHH` in a haystack name the character.
+(defn- rx-unescape (s)
+  (letrec (go (fn (cs acc)
+                (cond
+                  (empty? cs) (string/codepoints-> (reverse acc))
+                  (and (= (first cs) 92) (= (second cs) 110)) (go (drop cs 2) (cons 10 acc))
+                  (and (= (first cs) 92) (= (second cs) 120))
+                    (go (drop cs 4)
+                      (cons (hex->int (string/codepoints-> (take (drop cs 2) 2))) acc))
+                  else (go (rest cs) (cons (first cs) acc)))))
+    (go (seq (string/->codepoints s)) ())))
+
+;; ---- what Brood answers -----------------------------------------------------------
+
+(defn- rx-span (m) (if (nil? m) [] [(get m :start) (get m :end)]))
+
+;; In upstream's shape: `[]` for no match, else `[[whole group…]]`. An anchored case
+;; wants a match starting at 0, and a leftmost-first search finds one there exactly when
+;; one exists, preferring the same one an anchored search would.
+(defn- rx-answer (case)
+  (let (haystack (if (get case "unescape")
+                   (rx-unescape (get case "haystack"))
+                   (get case "haystack"))
+        found (try
+                (regex/find (get case "regex") haystack)
+                (catch e [:raised (error-message e)])))
+    (cond
+      (nil? found) []
+      (vector? found) found
+      (and (get case "anchored") (not (= 0 (get found :start)))) []
+      else [(into [(rx-span found)] (map (get found :groups) rx-span))])))
+
+(defn- rx-agrees? (case) (= (rx-answer case) (get case "matches")))
+
+(defn- rx-report (case)
+  [(get case "name") (get case "regex") (get case "haystack") (get case "matches") (rx-answer case)])
+
+(describe "Fowler testregex (leftmost-first, via rust-lang/regex)"
+  :tags [:conformance]
+  (test "the corpus is present and whole"
+    (is (corpus-present? "regex"))
+    (assert= 345 (count (rx-all-cases))))
+  (test "every case outside the divergence list matches as upstream expects"
+    (assert= ()
+      (map (seq/filter (rx-all-cases)
+             (fn (case)
+               (and (not (contains? rx-divergent (get case "name"))) (not (rx-agrees? case)))))
+        rx-report)))
+  (test "every listed divergence is a corpus case that still diverges"
+    (let (cases (rx-all-cases)
+          names (into #{} (map cases (fn (case) (get case "name")))))
+      (assert= () (seq/reject (keys rx-divergent) (fn (name) (contains? names name))))
+      (assert= ()
+        (map (seq/filter cases
+               (fn (case) (and (contains? rx-divergent (get case "name")) (rx-agrees? case))))
+          (fn (case) (get case "name"))))))
+  (test "the TOML reader reads every value kind the corpus uses"
+    (assert= "a]" (rx-value "'''a]'''"))
+    (assert= true (rx-value "true"))
+    (assert= 1 (rx-value "1"))
+    (assert= [[[0 3] []]] (rx-value "[[[0, 3], []]]"))
+    (assert= (string/codepoints-> [10 97 1]) (rx-unescape "\\na\\x01"))))

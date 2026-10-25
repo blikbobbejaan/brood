@@ -262,8 +262,25 @@ suite_gabriel() {
   fi
 }
 
+# ------------------------------------------------------------------------- regex
+# Glenn Fowler's testregex cases, by way of Go and then rust-lang/regex, which
+# re-derived the expectations for leftmost-first matching (Brood's semantics, ADR-389)
+# and ships them as TOML. MIT (rust-lang/regex's licence; the data's own history is in
+# the upstream README). Small, so vendored whole.
+REGEX_COMMIT=80b9d14e4be9f0b703a742d11c064abce05f210b
+REGEX_BASE="https://raw.githubusercontent.com/rust-lang/regex/$REGEX_COMMIT"
+
+suite_regex() {
+  local d="$CORPUS/regex"
+  mkdir -p "$d/data"
+  for f in basic repetition nullsubexpr; do
+    fetch "$REGEX_BASE/testdata/fowler/$f.toml" "$d/data/$f.toml"
+  done
+  fetch "$REGEX_BASE/LICENSE-MIT" "$d/LICENSE"
+}
+
 # ----------------------------------------------------------------------- driver
-SUITES=(parse-number dectest json ucd csv utf8 crypto gabriel)
+SUITES=(parse-number dectest json ucd csv utf8 crypto gabriel regex)
 
 main() {
   local want=()
