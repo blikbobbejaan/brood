@@ -3890,3 +3890,19 @@ read-only review passes; no scheduler lost-wakeup path exists — every worker w
 `image_section_decode_test` — the 89267d84 binary provides a module whose only section does not
 decode; this one refuses it, once and to eight racing processes. A desktop probe script, not the
 suite; the suite runs in CI.
+
+2026-10-26 (a wake stops reading the clock; what a park/wake round trip costs): `pingpong`'s round
+trip is ~12 900 instructions, ~6 000 cycles and 82 locked instructions. The locked instructions
+are not the cost: giving each allocator thread its own counter shard (a plain load and store)
+took 14 of them away and moved neither the round trip nor an allocation loop, across repeats and
+the whole run, so it is not in. Every wake read the clock to stamp `queued_at`, a figure only a
+thief looks at: `wake_enqueue` now leaves it 0, and the first thief that looks stamps it
+(`within_first_refusal`), so the owner's first refusal starts no earlier than before. A spawn or
+preempted process is still stamped when queued (a fan-out's children are what thieves take). −330
+instructions a round trip; `ring` −4.1% and −4.6% over two A/Bs against 8b7fddaa (best of 21),
+`pingpong` 0 to −1.4%, `spawn`/`supervisor` flat; `spawn-live` read +1 to +2% wall-clock with
+the same instruction and cycle counts. Also measured: each process runs `receive` twice per
+message (the scan that parks and the one on resume), and the rest of the round trip is spread
+over ~40 sites, none above ~3%. The send-then-receive native loop that would remove `ping`'s
+bytecode was built and measured slower on 2026-10-17 (ADR-410's amendment). Guard: the
+`first_refusal_tests` unit tests. Not run on this machine: the suites run in CI.

@@ -194,12 +194,20 @@ pub(crate) fn sched_dbg() -> bool {
     crate::diagnostics::debug_flags::is_set(&ON, "BROOD_SCHED_DBG")
 }
 
+/// Queue a process that was not parked — a fresh spawn, a preempted process — stamped
+/// now for the steal grace: a thief is what takes a fan-out's children, and a stamp made
+/// at its first look would hold each steal back a further grace.
 pub(crate) fn enqueue(mut proc: Box<Process>) {
+    proc.queued_at = now_nanos();
+    push_runnable(proc);
+}
+
+/// Put `proc` on its worker's run queue, stamped by the caller (`queued_at`).
+fn push_runnable(proc: Box<Process>) {
     let wid = proc.worker_id;
     if sched_dbg() {
         eprintln!("[sched] enq pid={} wid={}", proc.pid, wid);
     }
-    proc.queued_at = now_nanos();
     set_status(&proc.mailbox, ST_RUNNABLE); // queued, awaiting a worker turn
     // Count it as stealable runnable work (the `try_steal` fast-path hint), balanced by
     // the single decrement in `run_one`. SeqCst so the dirty-block / drainer exhaustion
@@ -240,7 +248,13 @@ pub(crate) fn enqueue(mut proc: Box<Process>) {
 /// **dirty** block — it reads busy (its `run_one` hasn't returned) and `assign_worker`
 /// excludes it, so the woken process is moved off it. (Preempt re-enqueue uses plain
 /// [`enqueue`] instead, to keep a hot process local.)
+///
+/// A woken process goes unstamped (`queued_at` 0). A wake is the per-message path, and
+/// the stamp is a clock read for a figure only a thief looks at: two clock reads, ~330 of
+/// a ping-pong round trip's ~12 900 instructions. The first thief to see it stamps it, so
+/// its owner's first refusal starts no earlier than it would have.
 pub(crate) fn wake_enqueue(mut proc: Box<Process>) {
+    proc.queued_at = 0;
     // Direct handoff: when a *running worker* wakes a process — almost always a `send`
     // readying a parked receiver — enqueue it onto THIS worker's queue, not the
     // receiver's parked home worker. Send-then-block is the dominant shape, so running
@@ -249,7 +263,7 @@ pub(crate) fn wake_enqueue(mut proc: Box<Process>) {
     // the wait if we don't block. Root/timer threads (no `CURRENT_WORKER`) fall through.
     if let Some(current) = CURRENT_WORKER.with(|c| c.get()) {
         proc.worker_id = current;
-        enqueue(proc);
+        push_runnable(proc);
         return;
     }
     if WORKER_BUSY[proc.worker_id].load(Ordering::Relaxed) {
@@ -259,7 +273,7 @@ pub(crate) fn wake_enqueue(mut proc: Box<Process>) {
         }
         proc.worker_id = new_wid;
     }
-    enqueue(proc);
+    push_runnable(proc);
 }
 
 /// Wake one parked worker so it can come and steal, skipping `wid` (the worker that just
@@ -334,12 +348,16 @@ fn try_steal(thief_wid: usize, saw_young: &mut bool) -> Option<Box<Process>> {
         // Take from the back (the owner pops the front): the process the owner is
         // least likely to run next. `STEALABLE` is only a hint, so an empty queue
         // is normal here.
-        // First refusal: leave a just-queued process to its owner for `STEAL_GRACE_NS`
-        // (see there). Only the BACK entry is inspected — the one we would take — so this
-        // is a single compare, and a queue whose back is too young is simply skipped this
-        // pass rather than scanned.
-        if q.back()
-            .is_some_and(|p| now_nanos().saturating_sub(p.queued_at) < steal_grace_ns())
+        // First refusal: leave a queued process to its owner for `STEAL_GRACE_NS` (see
+        // there) from when it was queued — or, for a woken one `wake_enqueue` left
+        // unstamped, from when a thief first saw it: that first look stamps it.
+        // Only the BACK entry is inspected — the one we would take — so this is a single
+        // compare, and a queue whose back is too young is simply skipped this pass rather
+        // than scanned.
+        let grace = steal_grace_ns();
+        if grace != 0
+            && let Some(back) = q.back_mut()
+            && within_first_refusal(&mut back.queued_at, now_nanos(), grace)
         {
             *saw_young = true;
             continue;
@@ -355,6 +373,16 @@ fn try_steal(thief_wid: usize, saw_young: &mut bool) -> Option<Box<Process>> {
         }
     }
     None
+}
+
+/// Is a queued process stamped `queued_at` still inside its owner's first refusal at
+/// `now`? An unstamped one (0, a wake — see `wake_enqueue`) is stamped `now` by this first
+/// look, and is inside it.
+fn within_first_refusal(queued_at: &mut u64, now: u64, grace: u64) -> bool {
+    if *queued_at == 0 {
+        *queued_at = now;
+    }
+    now.saturating_sub(*queued_at) < grace
 }
 
 /// Steal one queued process from **any** worker's queue — the [`overflow_drain`] variant
@@ -1191,6 +1219,33 @@ fn park_on_receive(proc: Box<Process>, mailbox: &Arc<Mailbox>) {
         proc.spawns_since_park = 0;
         st.waiter = Some(proc);
         return;
+    }
+}
+
+#[cfg(test)]
+mod first_refusal_tests {
+    use super::*;
+
+    /// A woken process is queued unstamped; the first thief to look stamps it and leaves
+    /// it, so its owner still gets the whole grace from then. Without the stamp an
+    /// unstamped process reads as queued at time 0, i.e. ancient, and is stolen at once.
+    #[test]
+    fn an_unstamped_process_is_stamped_by_the_first_look_and_refused() {
+        let mut queued_at = 0;
+        assert!(within_first_refusal(&mut queued_at, 1_000_000, 5_000));
+        assert_eq!(queued_at, 1_000_000);
+        assert!(within_first_refusal(&mut queued_at, 1_004_999, 5_000));
+        assert!(!within_first_refusal(&mut queued_at, 1_005_000, 5_000));
+        assert_eq!(queued_at, 1_000_000, "a later look keeps the first stamp");
+    }
+
+    /// A process `enqueue` stamped is judged from its stamp, as before.
+    #[test]
+    fn a_stamped_process_is_judged_from_when_it_was_queued() {
+        let mut queued_at = 2_000;
+        assert!(within_first_refusal(&mut queued_at, 6_000, 5_000));
+        assert!(!within_first_refusal(&mut queued_at, 7_000, 5_000));
+        assert_eq!(queued_at, 2_000);
     }
 }
 

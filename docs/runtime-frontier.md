@@ -204,6 +204,12 @@ re-enqueue, worker pickup, and one matcher activation per candidate.
   worker-pickup path at **~0.18 µs of a 1.37 µs send+receive — 13%**. Direct handoff
   already took the large win here (1.9×). Not worth further work while the copy path is
   ~50%.
+  *Re-measured 2026-10-26:* a `pingpong` round trip is ~12 900 instructions, ~6 000 cycles
+  and 82 locked instructions, spread over ~40 sites with none above ~3%. Locked
+  instructions are not its cost on one worker: removing 14 (the allocator's counter
+  shards) moved nothing, so a lock-free mailbox would not either. Each process runs
+  `receive` twice per message (the scan that parks, then the resumed one). A wake no
+  longer reads the clock (`ring` −4%).
 
 **Methodology note, learned the hard way twice now:** size these microbenchmarks so JIT
 compilation amortizes. At 20 000 round trips the JIT-off arm (then `BROOD_NO_JIT=1`, now `BROOD_TIER=1`) looked *18% faster*, which

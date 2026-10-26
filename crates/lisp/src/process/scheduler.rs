@@ -110,9 +110,10 @@ pub(super) struct Process {
     /// `Ctx`). `run_one` installs it into `CURRENT` per quantum and reads it back after,
     /// so `begin_capture`/`take_capture` persist across `receive` suspends.
     capture: Vec<Arc<Mutex<String>>>,
-    /// Monotonic nanos at which this process was last enqueued, or 0 if never. Read only
-    /// by `try_steal`, to give the owning worker a brief **first refusal** on freshly
-    /// queued work (see `steal_grace_ns`).
+    /// Monotonic nanos at which this process was queued, or 0 when it is unstamped. Read
+    /// only by `try_steal`, to give the owning worker a brief **first refusal** on queued
+    /// work (see `steal_grace_ns`). `enqueue` stamps a spawn or a preempted process; a
+    /// woken one goes unstamped (`wake_enqueue`) and the first thief to see it stamps it.
     queued_at: u64,
     /// How many children this process has spawned since it last **parked** in `receive`.
     /// Preemption does not reset it — only actually blocking does — so it answers exactly
@@ -590,14 +591,15 @@ thread_local! {
     static SPAWNS_SINCE_PARK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
-/// Monotonic nanoseconds since the first call — a cheap `u64` clock for `queued_at`, so a
-/// `Process` carries a plain integer rather than an `Instant`.
+/// Monotonic nanoseconds since the first call, never 0 — a cheap `u64` clock for
+/// `queued_at` (where 0 means unstamped), so a `Process` carries a plain integer rather
+/// than an `Instant`.
 fn now_nanos() -> u64 {
     // `web_time::Instant` (std on native, `performance.now()` on wasm) — plain
     // `std::time::Instant::now()` panics under wasm, which the cooperative scheduler hits
-    // on the very first `enqueue` (`queued_at`).
+    // on the scheduler's first clock read.
     static EPOCH: LazyLock<web_time::Instant> = LazyLock::new(web_time::Instant::now);
-    EPOCH.elapsed().as_nanos() as u64
+    (EPOCH.elapsed().as_nanos() as u64).max(1)
 }
 
 /// Per-worker "is currently running a process" flag. Index = `worker_id`, sized
