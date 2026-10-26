@@ -3952,3 +3952,30 @@ change gutter needs no `git diff` subprocesses (ADR-468). Guards: `namespace_tes
 buffer_client, diff, treesit_module, eval_vm, layers, keymap, doc_examples, doctest — all green,
 and each new guard sabotaged red. Not run here: the Rust unit tests of `line_diff.rs` (clippy
 compiled them), `lazy_load_test` (it needs a `brood` binary beside `nest`), the rest of the suite.
+2026-10-26 (ADR-469, a caret that blinks in the window): `[:cursor row col style colour blink]`
+with `editor/display/cursor-blink` (`{:interval ms :blinks n}`) hands the blink to the GUI
+window. It keeps the clock on its own thread, restarts it shown on every key, click, wheel step
+and caret move, holds it shown without focus, and stops after `:blinks` cycles. A toggle costs
+no turn of the app's loop, and the CPU painter re-rasterises only the caret's row (its strip
+diff knows a blinking leaf whose phase flipped). Guard: `paint::strip_diff_tests` (a flip
+repaints one row; hidden equals the frame without the caret; scroll blits in every phase match
+a full raster). The clock itself is not covered: headless makes a draw a no-op. Run here:
+the filtered `cargo test -p brood --lib` (strip diff, fragments, cell regions, robustness) and
+`display`, `gui`, `gui_robustness` headless; the suites run in CI.
+
+2026-10-26 (ADR-470, memoised fragments reach the window): `ui-memo`'s marker says whether it
+was reused, `gui-display` declares `:fragments?`, and `ui-run` hands it the frame with its
+markers (`ui-harvest frame true` tables them without splicing). `%gui-draw` keeps a per-window
+parse cache: a reused fragment that is the same heap value under the same key is last frame's
+`Arc<[Op]>`, carried as `Op::Fragment`, and the frame diff, the strip diff and `prev_ops` cost
+a pointer per unchanged fragment. Guard: `fragments::tests`, `paint::strip_diff_tests`,
+`tests/ui_test.blsp`, all run here; the suites run in CI.
+
+2026-10-26 (ADR-471, a line-state highlight cache): `text/changed-range` (native
+`%rope-changed-range`, appended in `editor_native` for the intern-order reason) finds what
+changed between two ropes from both ends. `editor/highlight`'s `line-cache-update` keeps
+`[text state-in spans state-out]` per line and re-lexes from an edit's first line until the
+state agrees with the old line's; a stateless lexer keeps a memo by line text.
+`editor/lexer/lexer-line-lexer` adapts every table grammar. Guard: `changed_range_tests`,
+`tests/highlight_test.blsp`, `tests/lexer_test.blsp`, `doc_examples`, all run here; the suites
+run in CI.
