@@ -335,10 +335,14 @@ pub(crate) fn debug_check_fast_link_mirror(
         // deopts), so the entry refusing to link it is not a desync. Without this clause the
         // check fired deterministically on `jit::type_mixed_join_edges_stay_exact`, whose
         // `code` arm latches after sixteen deopts while `work`'s site still mirrors it.
+        // Or the callee's stamp moved past the mirror's epoch: an entry that finds its code
+        // still right moves the stamp to the live epoch (KI-303), so the epoch has moved
+        // since the IR's raw load — the same race as above, seen through the callee.
         None => debug_assert!(
             heap.vm_call_ic_entry_epoch(site)
                 .is_none_or(|e| e != mirror_epoch)
-                || heap.vm_call_ic_entry_native_installed(site) != Some(true),
+                || heap.vm_call_ic_entry_native_installed(site) != Some(true)
+                || heap.global_epoch() != mirror_epoch,
             "fast-link mirror at epoch {mirror_epoch} (site {site}, head {head}) has an entry at the \
              same epoch that does not fast-link: mirror=(code={code:#x}, nslots={nslots}) — a \
              mirror published for an entry the authoritative rules refuse"

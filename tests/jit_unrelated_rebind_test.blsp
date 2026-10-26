@@ -1,0 +1,64 @@
+;;; A rebind somewhere else in the runtime leaves a native arm native (KI-303).
+;;;
+;;; Every rebind moves the global code epoch, and a native arm entered after it used to reset
+;;; to untried and recompile whatever the rebind was. Under a steady trickle of unrelated
+;;; `def`s — a REPL, a hot reload, the suite's own loads — a hot inner loop never stayed
+;;; native. `native_still_valid` now checks what the arm's native code baked in and moves its
+;;; stamp forward when none of it changed. With that check removed (the guard resetting on
+;;; any epoch move), the first case reads `:untried` right after the call.
+;;;
+;;; The second case is the trickle itself: a process rebinding a name in a loop while the
+;;; arm settles. Besides the native entry, the tier-up election marked its arm stale whenever
+;;; the epoch moved during its pre-load, taking any concurrent rebind for a module the
+;;; pre-load had loaded; the arm was rebuilt untried every time and never got there.
+;;;
+;;; The third case is the other half: a rebind the arm DOES call through must still reach
+;;; the new definition, which native code's own call path re-checks against the live epoch.
+
+(defmodule jit-unrelated-rebind-test (:use test) (:use suite-helpers))
+
+(defn- ur-loop (n acc) (if (= n 0) acc (ur-loop (dec n) (+ acc 1))))
+
+(def ur-unrelated (fn (x) x))
+
+(defn- ur-trickle-loop (n acc) (if (= n 0) acc (ur-trickle-loop (dec n) (+ acc 2))))
+
+(def ur-noise 0)
+
+(defn- ur-rebind (i stop)
+  (if (table/get stop :done)
+    i
+    (do (def ur-noise i) (ur-rebind (inc i) stop))))
+
+(def ur-step (fn (x) (+ x 1)))
+(defn- ur-calls (n acc) (if (= n 0) acc (ur-calls (dec n) (ur-step acc))))
+
+(describe "a rebind elsewhere"
+  :isolated (test "leaves a native arm native"
+    (when (%native-tier?)
+      (assert= :native (settle ur-loop 2 (fn () (ur-loop 500 0)) 50))
+      ;; a rebind: the global code epoch moves
+      (def ur-unrelated (fn (x) (+ x 1)))
+      (assert= 500 (ur-loop 500 0))
+      (assert= :native (get (dev/jit-state ur-loop 2) :state))))
+
+  :isolated (test "a hot arm goes native and stays there while another process keeps rebinding"
+    (when (%native-tier?)
+      (let (stop (table/new)
+            me (self))
+        (spawn (send me [:rebinds (ur-rebind 0 stop)]))
+        (let (st (settle ur-trickle-loop 2 (fn () (ur-trickle-loop 500 0)) 200))
+          (assert= 1000 (ur-trickle-loop 500 0))
+          (table/put stop :done true)
+          (let (rebinds (receive ([:rebinds n] n) (after 20000 :timeout)))
+            (assert (> rebinds 0))
+            (assert= :native st))))))
+
+  (test "a rebound callee is still reached by the native arm that calls it"
+    (when (%native-tier?)
+      (assert= :native (settle ur-calls 2 (fn () (ur-calls 500 0)) 50)))
+    (assert= 500 (ur-calls 500 0))
+    (def ur-step (fn (x) (+ x 2)))
+    (assert= 1000 (ur-calls 500 0))
+    (def ur-step (fn (x) (+ x 1)))
+    (assert= 500 (ur-calls 500 0))))

@@ -210,6 +210,60 @@ pub(crate) fn vm_direct_eligible(heap: &Heap, arm: &CompiledArm, argc: usize) ->
     !code.is_null() && code != crate::jit::BAILED && code != crate::jit::QUEUED
 }
 
+/// Is `arm`'s installed native code still right although the global epoch moved (KI-303)?
+/// Each thing a lowering bakes in that a rebind can change, checked against the runtime as
+/// it is now — the way [`LeafInline::still_valid`] checks a leaf derivation, which is also
+/// re-checked here:
+///
+/// - no RUNTIME handle it holds has moved (`code_relocations`, which only a migration, a
+///   freed generation or a compaction bumps);
+/// - every operator it inlined still resolves to the same native primitive
+///   ([`chunk_ops_all_native`] — what an election checks before lowering);
+/// - its own name still names it, when the code calls itself by name: a self-tail loop's
+///   native back edge, the register worker's direct self-link (a non-tail `Call` on
+///   `dbg_name`) and the inlined upgrade's self-recursion all run THIS body without a lookup;
+/// - it is not marked stale by a module load (ADR-366).
+///
+/// Global reads and calls are not in the list: native code re-checks those against the
+/// live epoch itself (the global-read cache, the fast links), so they follow a rebind
+/// without the arm being reset. Nor is a float context taken from a `def`'d global
+/// (`float_globals`, `jit_float_context`): it is a guess behind `as_f64`'s tag guard, so a
+/// global that changed type is a deopt, never a miscompile.
+#[cfg(feature = "jit")]
+pub(crate) fn native_still_valid(heap: &Heap, arm: &CompiledArm, genv: EnvId) -> bool {
+    use std::sync::atomic::Ordering::{Acquire, Relaxed};
+    if heap.code_relocations() != arm.compile_relocations.load(Acquire)
+        || arm.stale_bindings.load(Acquire)
+        || !chunk_ops_all_native(heap, arm)
+        || arm
+            .leaf
+            .as_ref()
+            .is_some_and(|leaf| !leaf.still_valid(heap))
+    {
+        return false;
+    }
+    let Some(name) = arm.dbg_name else {
+        // No name, so nothing calls itself by one — but an inlined self-recursion needs it.
+        return arm.inline_name.is_none();
+    };
+    if arm.inline_name.is_some_and(|n| n != name) {
+        return false;
+    }
+    let calls_itself = arm.inline_name.is_some()
+        || arm.chunk.as_ref().is_some_and(|c| {
+            c.code.iter().any(|i| match i {
+                Inst::SelfCall { .. } => true,
+                Inst::Call { head: Some(h), .. } => *h == name,
+                _ => false,
+            })
+        });
+    if calls_itself {
+        record_self_global_ok(arm, heap, genv);
+        return arm.self_global_ok.load(Relaxed);
+    }
+    true
+}
+
 /// Would [`jit_tier_in_frame`] return `None` for `arm` without touching anything — and so
 /// may the driver skip the tier check (and the frame bookkeeping around it) outright?
 /// True for the two early exits every interpreted activation of a refused arm takes: the
@@ -354,6 +408,8 @@ fn jit_tier_in_frame_slow(
         && ptr != crate::jit::BAILED
         && ptr != crate::jit::QUEUED
     {
+        arm.compile_relocations
+            .store(heap.code_relocations(), Release);
         arm.compile_epoch.store(epoch, Release);
         // Trace the ADOPT path: this arm installs a peer's compiled pointer
         // WITHOUT lowering, so it never reaches the `BROOD_JIT_DUMP_IR` dump.
@@ -407,19 +463,18 @@ fn jit_tier_in_frame_slow(
         // stale by construction (`leaf-derivation-stale` was this, permanently). Mark it and
         // run the VM; the next activation recompiles and re-tiers from the better chunk.
         {
-            let epoch = heap.global_epoch();
-            let ready = preload_arm_globals(arm, heap, heap.read_root_env(env));
+            let preloaded = preload_arm_globals(arm, heap, heap.read_root_env(env));
             // A module it names is mid-load in another process: stay on the VM, whose miss
             // parks, and re-elect later — not BAILED, the load will finish.
-            if !ready {
+            let Some(loaded) = preloaded else {
                 if crate::diagnostics::debug_flags::jit_bail_trace() {
                     let name = arm.dbg_label();
                     eprintln!("[jit-bail] arm={name} reason=module-load-in-flight (retries)");
                 }
                 arm.jit_calls.store(0, Relaxed);
                 return None;
-            }
-            if heap.global_epoch() != epoch {
+            };
+            if loaded {
                 heap.mark_arm_stale(arm);
                 if crate::diagnostics::debug_flags::trace_compile() {
                     let name = arm.dbg_label();
@@ -489,6 +544,8 @@ fn jit_tier_in_frame_slow(
                 }
             }
         }
+        arm.compile_relocations
+            .store(heap.code_relocations(), Release);
         arm.compile_epoch.store(heap.global_epoch(), Release);
         if arm
             .jit_code
@@ -526,15 +583,31 @@ fn jit_tier_in_frame_slow(
         return None;
     }
     // A real, installed code pointer. Hot-reload guard: if the global epoch moved since
-    // the arm was compiled, some `def` happened — invalidate the arm (reset to untried)
-    // and run the VM this activation. The next call re-tiers, re-validating operators and
-    // recompiling at the new epoch, or bailing if one was genuinely redefined. Any rebind
-    // anywhere moves the epoch, so a runtime that keeps defining keeps its hot arms
-    // re-compiling (KI-303); moving the stamp forward here when nothing the arm baked in
-    // changed broke the fast-link mirror's invariant and a self-link's late binding.
-    if arm.compile_epoch.load(Acquire) != heap.global_epoch() {
-        deopt::reset_native_state(arm);
-        return None;
+    // the arm was compiled, some rebind happened somewhere in the runtime. Nearly always it
+    // is one this arm's native code does not depend on — another module's `def`, a module
+    // load, a registry write, an isolate restore — and resetting for those kept a hot arm
+    // re-compiling for as long as anything was being defined: under a steady trickle of
+    // unrelated `def`s an inner loop never left `:queued` (KI-303). So check what the native
+    // code baked in (`native_still_valid`) and move the stamp forward when none of it
+    // changed; only a real change resets the arm, which re-tiers, re-validating operators
+    // and recompiling at the new epoch, or bailing if one was genuinely redefined.
+    {
+        let epoch = heap.global_epoch();
+        if arm.compile_epoch.load(Acquire) != epoch {
+            if !native_still_valid(heap, arm, heap.read_root_env(env)) {
+                deopt::reset_native_state(arm);
+                return None;
+            }
+            // `epoch` was read before the checks: a rebind racing them moves the epoch past
+            // it, so the next entry checks again. The leaf derivation was just re-checked
+            // too; its stamp moves first, so a lowering that reads the arm's stamp and then
+            // the derivation's never sees the derivation behind (`jit_lower`'s
+            // `leaf-derivation-stale`).
+            if let Some(leaf) = arm.leaf.as_ref() {
+                leaf.epoch.fetch_max(epoch, Release);
+            }
+            arm.compile_epoch.fetch_max(epoch, Release);
+        }
     }
     // `code` and `compile_epoch` were read separately, and a peer (this `CompiledArm` is
     // shared across the runtime's processes, ADR-215) may have reset the arm and re-elected

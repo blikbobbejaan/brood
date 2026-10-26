@@ -131,8 +131,14 @@ pub(crate) fn jit_arm_for_code(code: *const u8) -> Option<Arc<CompiledArm>> {
 /// answer is `false` — the arm is not ready to go native — so the election stays on the VM,
 /// whose routed miss parks, and tries again later. Lowering it now would be wrong, not just
 /// slow: a native read of a name that is still unbound raises.
+///
+/// The answer: `None` when not ready, else whether a name the arm reads that was unbound
+/// is bound now — the chunk was compiled without that binding (ADR-366). Asked directly,
+/// not read off the global epoch: the epoch also moves for every rebind elsewhere in the
+/// runtime, and under a steady trickle of them every election marked its arm stale, so a
+/// hot arm was recompiled from scratch for as long as anything was being defined (KI-303).
 #[cfg(feature = "jit")]
-pub(super) fn preload_arm_globals(arm: &CompiledArm, heap: &mut Heap, env: EnvId) -> bool {
+pub(super) fn preload_arm_globals(arm: &CompiledArm, heap: &mut Heap, env: EnvId) -> Option<bool> {
     use crate::core::value::Symbol;
     fn globals_of(chunk: &Chunk, out: &mut Vec<Symbol>) {
         for inst in &chunk.code {
@@ -147,7 +153,7 @@ pub(super) fn preload_arm_globals(arm: &CompiledArm, heap: &mut Heap, env: EnvId
         }
     }
     let Some(chunk) = arm.chunk.as_ref() else {
-        return true;
+        return Some(false);
     };
     let mut syms: Vec<Symbol> = Vec::new();
     globals_of(chunk, &mut syms);
@@ -175,12 +181,20 @@ pub(super) fn preload_arm_globals(arm: &CompiledArm, heap: &mut Heap, env: EnvId
     // Only a QUALIFIED unbound name can load anything; `global_miss` applies the same
     // exclusions the compile-time hooks do. The env is rooted across each load by the
     // callee; nothing else here is a heap handle.
+    let unbound: Vec<Symbol> = syms
+        .into_iter()
+        .filter(|&sym| {
+            crate::core::value::symbol_name_ref(sym).contains('/')
+                && heap.env_get(env, sym).is_none()
+        })
+        .collect();
     let env_base = heap.env_roots_len();
     let env_root = heap.root_env(env);
     let mut ready = true;
-    for sym in syms {
-        if crate::core::value::symbol_name_ref(sym).contains('/') {
+    for &sym in &unbound {
+        {
             let env = heap.read_root_env(env_root);
+            // An earlier name's load may have bound this one.
             if heap.env_get(env, sym).is_some() {
                 continue;
             }
@@ -214,8 +228,10 @@ pub(super) fn preload_arm_globals(arm: &CompiledArm, heap: &mut Heap, env: EnvId
             }
         }
     }
+    let env = heap.read_root_env(env_root);
+    let loaded = unbound.iter().any(|&sym| heap.env_get(env, sym).is_some());
     heap.truncate_env_roots(env_base);
-    ready
+    ready.then_some(loaded)
 }
 
 /// Snapshot which free globals this arm reads currently hold a `Value::Float` into
@@ -300,6 +316,8 @@ pub(crate) fn jit_compile_now(heap: &Heap, arm: &Arc<CompiledArm>, base: usize) 
                 );
             }
         }
+        arm.compile_relocations
+            .store(heap.code_relocations(), Release);
         arm.compile_epoch.store(epoch, Release);
         arm.jit_code.store(ptr, Release);
         arm.shared_published
@@ -441,19 +459,22 @@ pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::La
                     &arm.jit_code
                 };
                 // The epoch this lowering starts under — the one `jit_tier` stamped on the arm
-                // when it queued the work. What comes out is valid for THAT epoch only. A
-                // `def` (or a deopt re-lowering) resets the arm meanwhile (`reset_native_state`
-                // nulls `jit_code`, then `inline_code`), and the next activation re-queues it
-                // under the new epoch; a lowering that finished after that used to be stored
-                // anyway: into `jit_code`, where the re-queued compile then found the slot
-                // filled and skipped, or into `inline_code`, swapped in on the next entry —
-                // and the dedupe map below recorded it under the NEW epoch, serving it to the
-                // re-queued copy. A leaf-spliced `step` kept running after `step` was
-                // redefined (undef_test, 10 of 10).
+                // when it queued the work, or a later one an entry moved it to after checking
+                // that the code is still right (KI-303). A `def` that invalidates the arm (or
+                // a deopt re-lowering) resets it meanwhile (`reset_native_state` counts the
+                // reset, then nulls `jit_code` and `inline_code`), and the next activation
+                // re-queues it under the new epoch; a lowering that finished after that used
+                // to be stored anyway: into `jit_code`, where the re-queued compile then found
+                // the slot filled and skipped, or into `inline_code`, swapped in on the next
+                // entry — and the dedupe map below recorded it under the NEW epoch, serving it
+                // to the re-queued copy. A leaf-spliced `step` kept running after `step` was
+                // redefined (undef_test, 10 of 10). So what decides is the reset count: the
+                // stamp also moves for a rebind the code does not depend on.
                 let lowered_at = arm.compile_epoch.load(std::sync::atomic::Ordering::SeqCst);
+                let resets_at = arm.native_resets.load(std::sync::atomic::Ordering::SeqCst);
                 let still_valid = |arm: &CompiledArm| {
                     use std::sync::atomic::Ordering::SeqCst;
-                    if arm.compile_epoch.load(SeqCst) != lowered_at {
+                    if arm.native_resets.load(SeqCst) != resets_at {
                         return false;
                     }
                     // An inlined body is swapped in over the small native it was lowered

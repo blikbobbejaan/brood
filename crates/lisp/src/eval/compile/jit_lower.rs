@@ -266,9 +266,11 @@ pub(crate) fn jit_lower_inlined_arm(
         // (or a prim its body uses), and the derivation can't be re-checked here (no
         // heap on this thread). Refuse → the upgrade BAILs and the small native keeps
         // running; the caller re-derives fresh only when its closure is recompiled.
-        if arm.compile_epoch.load(std::sync::atomic::Ordering::Acquire)
-            != leaf.epoch.load(std::sync::atomic::Ordering::Acquire)
-        {
+        // Behind, not merely different: a native entry that finds the arm still right moves
+        // both stamps forward, the derivation's first (KI-303). Read in the other order, the
+        // arm's stamp first, a move landing between the reads leaves the derivation ahead.
+        let compiled_at = arm.compile_epoch.load(std::sync::atomic::Ordering::Acquire);
+        if leaf.epoch.load(std::sync::atomic::Ordering::Acquire) < compiled_at {
             return bail("leaf-derivation-stale");
         }
         // The spliced body + chunk live on the resume arm, which `arm` owns and
@@ -841,6 +843,15 @@ fn jit_lower_arm_inner(
             )
         };
         b.switch_to_block(blk);
+        // The slot caches hold SSA values, which are only usable where their definition
+        // dominates. A leader is a join or a branch target, and the block emitted just before
+        // it in ip order may be a sibling branch that does not reach it: `&optional`'s
+        // prologue stores the default in its then-branch, and the body's `(+ acc n)` after the
+        // join read that constant on every path, so a loop over an optional accumulator
+        // answered 1 for 5000050000 once it went native — given the argument or not.
+        for cache in [frame.slot_i64_cache, frame.slot_f64_cache] {
+            cache.borrow_mut().fill(None);
+        }
         let mut stack = control::leader_entry_stack(&mut b, blk, reprs.as_deref());
         let mut j = ip;
         loop {

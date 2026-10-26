@@ -68,34 +68,6 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 
 (An open entry's `## KI-N` section goes here until it is resolved.)
 
-## KI-303 — a hot arm does not stay native while anything else in the runtime rebinds (open)
-
-**Seen:** CI run 40232107201 (`6577bfaf`): `shared_vector_read_test` "the arms are native and
-stay native" read `:untried` for `sv-row-sum` after 6 000 calls (threshold 128), in both suite
-jobs, every try; run 40237227384 then added `receive_loop_jit_test` "a loop that parks on EVERY
-message still goes native".
-
-**Cause, reproduced.** Every rebind moves the global code epoch — a `def` of a live name, a
-module publish (it rebinds `*features*`), a registry write, an isolate restore — and a native
-arm entered after one resets to untried and recompiles, whatever was rebound. The suite
-rebinds constantly, so a settle beside other tests can read `:untried` or `:queued` for as long
-as it runs. A diagnostic script on the desktop (approved for this) showed it: alone, the
-inner loop went native at once; with one process redefining an unrelated function in a
-loop, it sat at `:queued` every round. That is also why it never reproduced outside the
-runner: an idle runtime rebinds nothing.
-
-**A fix that was withdrawn (ADR-450).** Moving the arm's stamp forward at native entry when
-nothing it baked in had changed (relocations, inlined operators, a leaf derivation, a
-self-loop's name, ADR-366 staleness) fixed the diagnostic and broke CI run 40237227384: the
-fast-link mirror's debug cross-check fired (`link.rs:338`), `jit_self_rebind_test` answered 12
-for 1001 (the register worker's direct self-link is a `Call` on its own name, not a
-`SelfCall`, so the check missed it), and `optional_defaults_test`'s deep loop answered 1. The
-epoch is load-bearing in more places than the arm's own guard; a scoped invalidation needs
-those enumerated first — the fast-link mirror, the self-link, the optional-default flag
-slot — and a run of the suite before it lands.
-
-**Meanwhile:** the two settle tests run `:isolated`, alone, where nothing else rebinds.
-
 
 ## Index — status per issue
 
@@ -103,7 +75,8 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
-| KI-303 | **a hot arm does not stay native while anything else in the runtime rebinds** — `shared_vector_read_test`'s `sv-row-sum` read `:untried` after 6 000 calls (threshold 128), in both suite jobs, every try (CI run 40232107201) | ⚠️ **OPEN** — section above: cause reproduced (any rebind resets every native arm), the first fix (ADR-450) withdrawn after it broke three JIT tests; the two settle tests run `:isolated` meanwhile |
+| KI-304 | **a native loop over an `&optional` accumulator answered 1 for 5000050000** — `(defn sum-down (n &optional (acc 0)) …)`, given the argument or not; found while closing KI-303, whose resets had kept the suite's own deep-loop case on the VM | ✅ **FIXED 2026-10-26** — the lowering's slot caches (`slot_i64_cache`, `slot_f64_cache`) held SSA values across block leaders: the prologue's then-branch stores the default, and `(+ acc n)` after the join read that constant on every path. The emitter drops both caches at each leader. Guard: `optional_defaults_test` "a loop over an optional accumulator keeps its sum on the native tier" (the 3333b20b binary answers 1) |
+| KI-303 | **a hot arm did not stay native while anything else in the runtime rebinds** — `shared_vector_read_test`'s `sv-row-sum` read `:untried` after 6 000 calls (threshold 128), in both suite jobs, every try (CI run 40232107201) | ✅ **FIXED 2026-10-26** — two resets, both triggered by ANY rebind: a native entry after an epoch move reset the arm, and the tier-up election marked its arm stale whenever the epoch moved during its pre-load. ADR-450 reinstated with what its first attempt missed (a self-link by name, a stamp that could move backwards, the in-flight install check), and the pre-load now says whether it bound anything. Guard: `jit_unrelated_rebind_test` (three cases, one with a process rebinding in a loop while the arm settles) |
 | KI-302 | **`startup` +3% from `7acef6e2` (`next-impl`)** — first blamed on a third registry write per `impl`; it was the prelude crossing a hash-table doubling in the image load's position table | ✅ **FIXED 2026-10-25** — the prelude image header carries the position count and the load reserves it once. Guard: `positioned_list_tests` (the count is what `from_message` stamps) |
 | KI-301 | **the JIT prepass counted a staged call (KI-19) as unstaged, so every arm with one before a branch join bailed** — `join-depth-mismatch`, e.g. `(if (and (< i n) (digit? (nth s i -1))) …)`; `json`'s number scanners and `object-acc` ran interpreted for good | ✅ **FIXED 2026-10-25** — the prepass and the checkpoint-depth model count the staged callee. Guard: `count_nth_inline_test` tier case (`:bailed` on the old binary under the bail trace) |
 | KI-300 | **a thin-wrapper callback did not tier within `settle`'s window** — `tests/jit_computed_call_test.blsp:77` got `:untried` for `(fn (a x) (+ a x))` in CI run 40133808011 (`bbb74f2b`); green in the run before | ✅ **FIXED 2026-10-25 — the test's ordering.** The interpreter redirects a thin wrapper to its inner head (ADR-069, `compile/dispatch.rs`), so `add`'s arm is counted only once the caller `fold-with` is native and calls it through the computed head. `settle` waited only on `add`'s queue, never on `fold-with`'s: with `fold-with`'s compile still queued on a loaded runner, all 500 rounds ran interpreted (~0.1 s) and `add` read `:untried`. Both thin-wrapper tests now settle `fold-with` first, as the by-name test already settled `sum-by-name`, and the two tests that `def` mid-test run `:isolated`, so their epoch bump cannot send a native `fold-with` back to the queue between settles. By construction (no primitive stalls the compiler thread to force the old order) |

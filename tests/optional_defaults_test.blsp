@@ -71,7 +71,20 @@
       (assert= :native (settle native-default 1 (fn () (drive-native-default 4000 nil)) 40))
       (assert= {:x 1} (native-default 1))
       (assert= {:x 1 :y 2} (native-default 1 {:y 2}))
-      (assert= 0 (get (%jit-arm-state native-default 1) :deopts-total)))))
+      (assert= 0 (get (%jit-arm-state native-default 1) :deopts-total))))
+
+  ;; The prologue's then-branch stores the default, and the native lowering kept that store's
+  ;; SSA value as the slot's for the rest of the arm: `(+ acc n)` after the join read the
+  ;; constant on every path, given the argument or not, and the loop answered 1. The
+  ;; suite's own deep-loop case above ran on the VM — every rebind elsewhere in the runtime
+  ;; reset the arm (KI-303) — so it never saw native code.
+  (test "a loop over an optional accumulator keeps its sum on the native tier"
+    (when (%native-tier?)
+      (assert= :native (settle sum-down 1 (fn () (sum-down 1000)) 40)))
+    (assert= 15 (sum-down 5))
+    (assert= 5000050000 (sum-down 100000))
+    (assert= 5000050000 (sum-down 100000 0))
+    (assert= 5000050010 (sum-down 100000 10))))
 
 (describe "&optional defaults across processes"
   :isolated (test "workers calling one function with and without its optionals agree"

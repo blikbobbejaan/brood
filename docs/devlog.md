@@ -3857,3 +3857,22 @@ is backed out and `jit_unrelated_rebind_test` with it. The cause stays reproduce
 attempt enumerates every `code_epoch` reader first and runs the suite before it lands.
 `shared_vector_read_test` and `receive_loop_jit_test`'s settle cases run `:isolated` meanwhile,
 alone, where no other test rebinds. Not run on this machine.
+
+2026-10-26 (ADR-450 reinstated; KI-303 and KI-304 fixed): KI-303 had two resets, not one. Besides
+the native entry, the tier-up election marked its arm stale whenever the epoch moved during
+`preload_arm_globals`, taking any concurrent rebind for a module the pre-load had loaded, and a
+stale arm is rebuilt untried — why `sv-row-sum` read `:untried` even with the first attempt in.
+The pre-load now answers whether a name the arm reads went from unbound to bound. Of the first
+attempt's three regressions: the name check now covers any call by the arm's own name (the
+register worker's self-link) and an inlined self-recursion; the stamp moves with `fetch_max`,
+since two processes storing it could leave it behind a published fast-link mirror, and the
+mirror's debug check accepts a callee stamped past its epoch; the compiler's install check counts
+resets (`native_resets`) instead of comparing the stamp. The third, `optional_defaults_test`
+answering 1, was a separate miscompile the resets had hidden (KI-304): the lowering's slot caches
+held SSA values across block leaders, so `&optional`'s default store in the prologue's then-branch
+was read after the join on every path. The emitter drops both caches at each leader. A desktop
+diagnostic (approved for KI-303) with a process rebinding a name 3 million times kept the hot
+arms native and the sums right; the 3333b20b binary answered 1. Guards:
+`jit_unrelated_rebind_test` (restored, plus a case that settles while a process rebinds in a
+loop) and `optional_defaults_test`'s native-tier accumulator case. Not run on this machine: the
+suites run in CI.

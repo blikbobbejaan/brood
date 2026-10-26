@@ -414,7 +414,10 @@ fn reset_arm_untried(heap: &Heap, arm: &CompiledArm) {
 /// case 8). `jit_code` goes first, so a reader that still sees the inlined flags sees a
 /// null pointer and interprets.
 pub(super) fn reset_native_state(arm: &CompiledArm) {
-    use std::sync::atomic::Ordering::{Relaxed, Release};
+    use std::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
+    // First, so a lowering in flight that re-checks it after its own store sees the reset
+    // (the compiler thread's `install`).
+    arm.native_resets.fetch_add(1, SeqCst);
     arm.jit_code.store(std::ptr::null_mut(), Release);
     // Unsettle: the re-tier may adopt this very pointer back from the shared cache, and the
     // upgrade state below is being reset for it.

@@ -15342,3 +15342,71 @@ attaching the arm (`83f3ea06`, a throwaway CI ref, run
 test red in both jobs that run it, `test` and the tree-walker's, at "in 5 fresh interpreters the
 caller's inlined upgrade was installed before its small native ever published", with nothing
 else red.
+
+## KI-303 — a hot arm did not stay native while anything else in the runtime rebinds ✅ FIXED 2026-10-26
+
+**Seen:** CI run 40232107201 (`6577bfaf`): `shared_vector_read_test` "the arms are native and
+stay native" read `:untried` for `sv-row-sum` after 6 000 calls (threshold 128), in both suite
+jobs, every try; run 40237227384 then added `receive_loop_jit_test` "a loop that parks on EVERY
+message still goes native". Never reproduced outside the runner: an idle runtime rebinds nothing.
+
+**Cause: two resets, both taken for ANY rebind.** Every rebind moves the global code epoch — a
+`def` of a live name, a module publish (it rebinds `*features*`), a registry write, an isolate
+restore — and the suite rebinds constantly.
+
+1. A native arm entered after an epoch move reset to untried and recompiled, whatever had been
+   rebound.
+2. The tier-up election marked its arm stale (ADR-366) whenever the epoch moved while
+   `preload_arm_globals` ran, reading the move as "the pre-load loaded a module". Any
+   concurrent rebind passed for one, and a stale arm is rebuilt from scratch, untried. This is
+   why the first fix (ADR-450, entry-side only) still read `:untried` in CI.
+
+**The first fix and what it missed (CI run 40237227384).** ADR-450 moved the arm's stamp
+forward at native entry when nothing its code baked in had changed. Three things broke:
+
+- `jit_self_rebind_test` answered 12 for 1001: the register worker's direct self-link is a
+  non-tail `Call` on the arm's own name, and the name check covered only `SelfCall` loops.
+- The fast-link mirror's debug cross-check fired (`link.rs:338`): the stamp was a plain store,
+  so two processes moving it at once could leave it BEHIND a published mirror's epoch, and a
+  callee stamped past the mirror's epoch looked like a desync rather than the documented race
+  of an epoch moving under the IR's raw load.
+- `optional_defaults_test`'s deep loop answered 1 for 5000050000. That one was not ADR-450's:
+  it is KI-304, a miscompile the resets had been hiding by keeping the arm on the VM.
+
+**Fix.** ADR-450 reinstated, with: the self-name check on any call by the arm's own name (and on
+an inlined self-recursion); the stamp (and a leaf derivation's, first) moved with `fetch_max`;
+the mirror check tolerating a callee stamped past the mirror's epoch; and the background
+compiler's install check counting resets (`native_resets`) instead of comparing the stamp,
+which now also moves without one. The election asks `preload_arm_globals` whether a name the
+arm reads went from unbound to bound, instead of reading the epoch. A desktop diagnostic
+(approved for this issue) with one process rebinding a name 3 million times kept every hot arm
+native and every answer right.
+
+**Guard:** `tests/jit_unrelated_rebind_test.blsp` — a native arm stays native across an
+unrelated `def`; an arm settles to `:native` while a spawned process rebinds a name in a loop;
+a rebound callee is still reached by the native caller.
+
+## KI-304 — a native loop over an `&optional` accumulator answered 1 ✅ FIXED 2026-10-26
+
+**Seen:** while closing KI-303. `(defn sum-down (n &optional (acc 0)) (if (= n 0) acc (sum-down
+(- n 1) (+ acc n))))` answered 1 for `(sum-down 100000)` once its arm was native — and for
+`(sum-down 100000 0)` too — on the `3333b20b` binary; right at tier 1. `BROOD_NO_INT_SLOT_CACHE=1`
+made it right.
+
+**Cause.** The lowering's slot caches (`slot_i64_cache`, and its float twin `slot_f64_cache`)
+remember the SSA value last stored to a slot, so a later read skips the load and the tag check.
+They lived for the whole single pass over the arm and were never dropped at a block leader. An
+`&optional` default runs in the arm's prologue, `(if <missing> (set acc 0) nil)`: the then-branch's
+store cached the constant, the else-branch was emitted next, and the body's `(+ acc n)` after the
+join read the constant on every path — an SSA value that does not dominate its use, which the
+release backend does not verify. Every iteration added `n` to 0.
+
+**Why it survived.** `optional_defaults_test` has the deep loop, and it passed: the suite rebinds
+constantly, and before KI-303's fix every rebind reset the arm, so the case ran on the VM.
+
+**Fix.** The emitter drops both caches when it enters a leader. A cached read across a block
+boundary now reloads and tag-checks, as an uncached one always did.
+
+**Guard:** `optional_defaults_test` "a loop over an optional accumulator keeps its sum on the
+native tier" — settles `sum-down` to `:native`, then checks the sum with the argument missing,
+given as 0 and given as 10.
