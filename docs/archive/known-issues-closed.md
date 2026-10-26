@@ -15438,3 +15438,26 @@ boundary now reloads and tag-checks, as an uncached one always did.
 **Guard:** `optional_defaults_test` "a loop over an optional accumulator keeps its sum on the
 native tier" — settles `sum-down` to `:native`, then checks the sum with the argument missing,
 given as 0 and given as 10.
+
+## KI-305 — a rebound type predicate did not reach native code that had inlined it ✅ FIXED 2026-10-26
+
+**Seen:** by reading, while landing the `(vector …)` inline; then on demand. A user's own
+`(def my-int? (fn (x) (%eq (type-of x) :int)))` called from a self-tail loop over
+`(1 :a 2 "s" 3)`: after `(def my-int? (fn (x) true))` the loop answered 3 at tier 2 and 5 at
+tier 1, and re-warming did not change it.
+
+**Cause.** The lowering recognises a type predicate by shape, not name, and inlines it as
+`PrimOp1::TypeIs`, so a user's predicate is inlined as well as the prelude's. The VM re-checks
+an inlined `Prim1` head on every epoch move; native code runs the tag compare unguarded and
+relies on `native_still_valid`, whose `chunk_ops_native` re-checked only the `Prim2` family.
+The `Prim3` inlines had the same gap, unreachable today because their heads are reserved.
+
+**Fix.** `chunk_ops_native` re-checks `Prim1` and `Prim3` heads with `resolve_prim1` /
+`resolve_prim3`, as it does `Prim2`'s. A rebind resets the arm, and the next election latches
+it `:bailed` (`chunk-ops-not-all-native`) — the same as a rebound `+` — so it runs on the VM,
+whose guard follows the new binding and, if the canonical predicate comes back, re-inlines it.
+
+**Guard:** `jit_prim1_rebind_test` — settles the loop `:native`, rebinds the predicate,
+checks the answer and that the arm left the native tier, then restores it and checks again.
+The first push asserted the arm went native again after the restore; the latch never allows
+that, and CI said so.
