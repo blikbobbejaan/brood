@@ -27,7 +27,10 @@
 (impl Counted count-nth-inline-test/cn-tally (->count [t] (get t :n)))
 
 ;; Hot callers, so the inline runs in native code once they tier.
-(defn cn-count (v) (+ 0 (count v)))
+;; `cn-count` is handed every shape on purpose, an uncountable `42` among them (the value
+;; cases below), so the checker's caller-derived type for `v` is wider than `count` admits.
+(check-allow :type-mismatch
+  (defn cn-count (v) (+ 0 (count v))))
 (defn cn-nth (v i) (+ 0 (nth v i -1)))
 (defn cn-nth-any (v i d) (nth v i d))
 (defn- cn-digit? (c) (and (>= c 48) (<= c 57)))
@@ -35,6 +38,17 @@
 
 (defn- sum-counts (v i acc) (if (= i 0) acc (sum-counts v (- i 1) (+ acc (cn-count v)))))
 (defn- sum-nths (v i acc) (if (= i 0) acc (sum-nths v (- i 1) (+ acc (cn-nth v (math/rem i 6))))))
+
+;; The tier cases' own callers. The value cases above feed `cn-count` and `cn-nth` the
+;; shapes the inline declines on purpose, which deopt; a tier case asserting no deopts on
+;; those arms read what its neighbours did to them, once a rebind elsewhere stopped
+;; resetting a native arm between tests (KI-303). These arms see only vectors.
+(defn cn-count-hot (v) (+ 0 (count v)))
+(defn cn-nth-hot (v i) (+ 0 (nth v i -1)))
+(defn- sum-counts-hot (v i acc)
+  (if (= i 0) acc (sum-counts-hot v (- i 1) (+ acc (cn-count-hot v)))))
+(defn- sum-nths-hot (v i acc)
+  (if (= i 0) acc (sum-nths-hot v (- i 1) (+ acc (cn-nth-hot v (math/rem i 6))))))
 
 (describe "count, inline"
   (test "every shape the heap holds a size for answers what the Brood definition does"
@@ -66,14 +80,10 @@
 
   (test "an arm whose only call was `count` is native (was: refused by the call gate)"
     (when (%native-tier?)
-      ;; Deopts counted across THIS drive: the test above feeds `cn-count` the shapes it
-      ;; declines on purpose, and the arm stays native across tests now that a rebind
-      ;; elsewhere no longer resets it (KI-303), so its count is not this test's to read.
-      (let (st (settle cn-count 1 (fn () (sum-counts [1 2 3] 4000 0)) 40)
-            before (get (%jit-arm-state cn-count 1) :deopts-total))
+      (let (st (settle cn-count-hot 1 (fn () (sum-counts-hot [1 2 3] 4000 0)) 40))
         (assert= :native st)
-        (assert= 12000 (sum-counts [1 2 3] 4000 0))
-        (assert= before (get (%jit-arm-state cn-count 1) :deopts-total))))))
+        (assert= 12000 (sum-counts-hot [1 2 3] 4000 0))
+        (assert= 0 (get (%jit-arm-state cn-count-hot 1) :deopts-total))))))
 
 (describe "nth with a default, inline"
   (test "in range, out of range and negative indices answer as the Brood nth does"
@@ -93,12 +103,10 @@
 
   (test "an arm whose only call was `(nth v i d)` is native"
     (when (%native-tier?)
-      ;; Counted across this drive, as for `cn-count` above: the arm is native across tests.
-      (let (st (settle cn-nth 2 (fn () (sum-nths [0 1 2 3 4 5] 4000 0)) 40)
-            before (get (%jit-arm-state cn-nth 2) :deopts-total))
+      (let (st (settle cn-nth-hot 2 (fn () (sum-nths-hot [0 1 2 3 4 5] 4000 0)) 40))
         (assert= :native st)
-        (assert= 10000 (sum-nths [0 1 2 3 4 5] 4000 0))
-        (assert= before (get (%jit-arm-state cn-nth 2) :deopts-total))))))
+        (assert= 10000 (sum-nths-hot [0 1 2 3 4 5] 4000 0))
+        (assert= 0 (get (%jit-arm-state cn-nth-hot 2) :deopts-total))))))
 
 (def- cn-digit-codes (string/->codepoints "12345678x"))
 
