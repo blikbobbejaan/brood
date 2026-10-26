@@ -46,7 +46,13 @@
 >    `brood_rt_vec_nursery_base` publishes the LOCAL base, re-read after a safepoint, and guard it
 >    with the generation version `code_gen_ref` already keeps. Expected: most of the 31%.
 >    Measure on `matmul`, `nqueens` and `sieve` (all read `def`'d vectors in hot loops).
-> 2. **Then** unboxed element storage, where it still pays: a vector whose elements are all
+> 2. ⏸ **SET ASIDE 2026-10-26, measured — the premise does not hold.** A `Float` is immediate in
+>    the 24-byte `Value`, so there is no float box on read; `mandelbrot` reads no vectors;
+>    `nbody`'s ~180 element reads a step are L1-resident, where a tag check is ~1% of the step;
+>    `matmul`'s strided column read misses L1 at 24 or 8 bytes a cell alike. And every one of
+>    ~174 `heap.vector(id)` readers takes a `&[Value]` slice a packed store cannot hand out. What
+>    `nbody` did need was `(vector a …)` compiling to `MakeVector` (−10.7%, devlog 2026-10-26).
+>    The original item follows. **Then** unboxed element storage, where it still pays: a vector whose elements are all
 >    `Int` or all `Float` could keep them as packed 8-byte words, chosen at construction (as V8's
 >    elements kinds are) and invisible to Brood. It stays one `Value` kind, fully immutable
 >    (ADR-026: a fresh vector per update, no mutable buffer), so the type lattice and

@@ -3906,3 +3906,20 @@ message (the scan that parks and the one on resume), and the rest of the round t
 over ~40 sites, none above ~3%. The send-then-receive native loop that would remove `ping`'s
 bytecode was built and measured slower on 2026-10-17 (ADR-410's amendment). Guard: the
 `first_refusal_tests` unit tests. Not run on this machine: the suites run in CI.
+
+2026-10-26 (`(vector a …)` compiles to `MakeVector`; packed vectors set aside): `nbody`'s
+`advance`, `(vector (advance-body b 0) … (advance-body b 4))`, ran on the VM. Its only vector came
+from a call to the variadic `vector` native, so it failed the JIT's call-mediated gate. The
+lowering now compiles a call whose head is the bare, reserved `vector` (1 to 32 arguments) to the
+literal's `Node::Vector`. No guard: a reserved name cannot be rebound, and a module that defines
+its own `vector` has its bare uses qualified to it, which this does not match (checked with a
+module-local `vector` before and after). `nbody` −10.7% (`make ab --floor` against 8b7fddaa, best of
+11); every other row noise across two A/Bs, `spawn` re-run at 31 reps (−2.4%, 0.0%). Packed
+int/float vector storage (compute-frontier's design note, item 2) was measured first and set aside:
+a `Float` is already immediate in the 24-byte `Value` (no box on read), `mandelbrot` reads no
+vectors, `nbody`'s ~180 element reads a step are L1-resident (a tag check is ~1% of a step), and
+`matmul`'s strided column read misses L1 at 24 or 8 bytes alike. Against that, every one of ~174
+`heap.vector(id)` readers takes a `&[Value]` slice a packed store cannot provide. Guard:
+`vector_call_inline_test` (values on every tier, argument order, a module's own `vector`, 32 and
+33 arguments, workers across processes, and a tier case: `vci-pair` bails `call-mediated-boxed`
+on the 8b7fddaa binary and is native here). Not run on this machine: the suites run in CI.

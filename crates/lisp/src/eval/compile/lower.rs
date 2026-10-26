@@ -1139,6 +1139,26 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                 // 1-ary sequence primitives (`first`/`rest`) inline the same way
                 // (ADR-096) — the list-iteration workhorses of every prelude
                 // sequence fn.
+                // `(vector a …)` builds what the literal `[a …]` does, so it compiles to the
+                // literal's `MakeVector` instead of a call to the variadic native: no call
+                // frame, and an arm whose only vector is built this way gets the general
+                // lowering's `MakeVector` admission rather than the call-mediated bail
+                // (`nbody`'s `advance` ran on the VM for it). No guard, unlike the prims
+                // above: a bare `vector` is a reserved name, so the native it names now is the
+                // one it names for good, and a module that defines its own `vector` has every
+                // bare use qualified to it (`m/vector`), which this does not match. Capped at
+                // the JIT's `MakeVector` limit, past which a call keeps the arm admissible.
+                if value::symbol_is(h, "vector")
+                    && (2..=33).contains(&items.len())
+                    && scope.lookup(h).is_none()
+                    && head_is_native(heap, h, "vector")
+                {
+                    let elems = items[1..]
+                        .iter()
+                        .map(|&e| compile_node(heap, e, scope, false))
+                        .collect::<Option<Vec<_>>>()?;
+                    return Some(Node::Vector(elems.into_boxed_slice()));
+                }
                 if items.len() == 2 && scope.lookup(h).is_none() {
                     if let Some(op) = resolve_prim1(heap, h) {
                         let a = compile_node(heap, items[1], scope, false)?;
