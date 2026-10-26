@@ -24,7 +24,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], any),
         &["form"],
-        "Evaluate a form in the global environment.\n\n    (reflect/eval '(+ 1 2))   → 3",
+        "Evaluate a form in the global environment. A lone symbol naming a bound global is read directly, without the compile pass, so a name kept for late binding (a keymap command, a layer, a hook) costs a table read.\n\n    (reflect/eval '(+ 1 2))   → 3\n    ((reflect/eval 'inc) 41)   → 42",
         eval_builtin,
     );
     primitives.def(
@@ -179,6 +179,18 @@ pub(super) fn register(primitives: &mut super::Primitives) {
 }
 
 pub(super) fn eval_builtin(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
+    // A lone symbol naming a bound global is a table read (ADR-465): the late-bound lookups
+    // the editor runs per key (a keymap command, a layer, a hook kept as a symbol) asked
+    // the whole compile pass below — macroexpand, resolve, a known-names clone and a VM
+    // run — for what is one global read. The fast path resolves the name exactly as that
+    // pass would and declines whenever the pass could do anything but read it (a macro, a
+    // foreign private name, an ambiguous import, an unbound name), so every error and every
+    // other answer still comes from the full pass.
+    if let Value::Sym(s) = arg(args, 0)
+        && let Some(found) = crate::eval::macros::resolve_bound_global(heap, s, heap.env_root(env))
+    {
+        return Ok(found);
+    }
     let root = heap.env_root(env);
     // Route a runtime-evaluated form through the compiling VM when it's enabled, so a form
     // handed to `eval` isn't stuck on the ~10-14× tree-walker (deferred.md #9): `compile::run`
