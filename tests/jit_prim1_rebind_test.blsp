@@ -1,0 +1,33 @@
+;;; A rebound type predicate reaches the native arm that inlined it (KI-305).
+;;;
+;;; The compiler lowers any one-line `(%eq (type-of x) :kw)` predicate to `PrimOp1::TypeIs`
+;;; by shape — a user's own as well as the prelude's — so the inline is only sound while the
+;;; head still names that closure. The VM re-checks it on every epoch move; native code
+;;; does not, and `native_still_valid` re-checked only the 2-ary inlines, so after
+;;; `(def pr-int? (fn (x) true))` a native `pr-tally` kept running the old tag compare and
+;;; answered 3 where the VM answered 5. Sabotage: on the 8b7fddaa binary this file's shape,
+;;; run as a script, reads 3 after the rebind at tier 2 and 5 at tier 1.
+
+(defmodule jit-prim1-rebind-test (:use test) (:use suite-helpers))
+
+(def pr-int? (fn (x) (%eq (type-of x) :int)))
+
+(defn- pr-tally (xs acc)
+  (if (nil? xs) acc (pr-tally (rest xs) (if (pr-int? (first xs)) (+ acc 1) acc))))
+
+(def pr-data (list 1 :a 2 "s" 3))
+
+(defn- pr-drive (n acc) (if (= n 0) acc (pr-drive (dec n) (+ acc (pr-tally pr-data 0)))))
+
+(describe "a rebound type predicate"
+  :isolated (test "reaches a native arm that inlined it, and the arm goes native again"
+    (when (%native-tier?)
+      (assert= :native (settle pr-tally 2 (fn () (pr-drive 400 0)) 50)))
+    (assert= 3 (pr-tally pr-data 0))
+    (def pr-int? (fn (x) true))
+    (assert= 5 (pr-tally pr-data 0))
+    (assert= 5000 (pr-drive 1000 0))
+    (def pr-int? (fn (x) (%eq (type-of x) :int)))
+    (assert= 3 (pr-tally pr-data 0))
+    (when (%native-tier?)
+      (assert= :native (settle pr-tally 2 (fn () (pr-drive 400 0)) 50)))))

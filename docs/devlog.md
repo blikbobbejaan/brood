@@ -3923,3 +3923,10 @@ vectors, `nbody`'s ~180 element reads a step are L1-resident (a tag check is ~1%
 `vector_call_inline_test` (values on every tier, argument order, a module's own `vector`, 32 and
 33 arguments, workers across processes, and a tier case: `vci-pair` bails `call-mediated-boxed`
 on the 8b7fddaa binary and is native here). Not run on this machine: the suites run in CI.
+
+2026-10-26 (KI-305: a rebound type predicate reaches native code): a user's own
+`(%eq (type-of x) :kw)` predicate is inlined as `PrimOp1::TypeIs`, and `native_still_valid`
+re-checked only the 2-ary inlines, so a native caller kept the old predicate after a `def`
+(3 where the VM answered 5). `chunk_ops_native` now re-checks `Prim1` and `Prim3` heads too.
+Guard: `jit_prim1_rebind_test`; its shape run as a script reads 3 at tier 2 on 8b7fddaa and 5
+after. Not run on this machine: the suites run in CI.

@@ -4,7 +4,7 @@
 
 use super::*;
 
-/// Are all the arm chunk's inlined 2-ary primitives still bound to their native
+/// Are all the arm chunk's inlined primitives (1-, 2- and 3-ary) still bound to their native
 /// implementations (ADR-096 §4.A epoch-guard, evaluated eagerly)? The JIT lowers
 /// `+`/`<`/… to raw machine ops, which is sound only while the head symbol resolves to
 /// the matching `%`-native (and arg-map). A `(def + …)` rebinds it; [`resolve_prim`]
@@ -51,6 +51,11 @@ pub(crate) fn chunk_ops_native(heap: &Heap, chunk: &Chunk) -> bool {
             };
             matches!(resolve_prim(heap, *head), Some((o, m)) if o == *op && m == want)
         }
+        // The 1- and 3-ary inlines carry the same epoch guard on the VM, and native code
+        // runs them without it — a user's own type predicate (`TypeIs`) is rebindable, so a
+        // `(def p? …)` must take the arm off the native tier like a rebound `+` does.
+        Inst::Prim1 { op, head, .. } => resolve_prim1(heap, *head) == Some(*op),
+        Inst::Prim3 { op, head, .. } => resolve_prim3(heap, *head) == Some(*op),
         _ => true,
     })
 }
