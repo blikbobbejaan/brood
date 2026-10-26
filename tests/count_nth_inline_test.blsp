@@ -66,9 +66,14 @@
 
   (test "an arm whose only call was `count` is native (was: refused by the call gate)"
     (when (%native-tier?)
-      (let (st (settle cn-count 1 (fn () (sum-counts [1 2 3] 4000 0)) 40))
+      ;; Deopts counted across THIS drive: the test above feeds `cn-count` the shapes it
+      ;; declines on purpose, and the arm stays native across tests now that a rebind
+      ;; elsewhere no longer resets it (KI-303), so its count is not this test's to read.
+      (let (st (settle cn-count 1 (fn () (sum-counts [1 2 3] 4000 0)) 40)
+            before (get (%jit-arm-state cn-count 1) :deopts-total))
         (assert= :native st)
-        (assert= 0 (get (%jit-arm-state cn-count 1) :deopts))))))
+        (assert= 12000 (sum-counts [1 2 3] 4000 0))
+        (assert= before (get (%jit-arm-state cn-count 1) :deopts-total))))))
 
 (describe "nth with a default, inline"
   (test "in range, out of range and negative indices answer as the Brood nth does"
@@ -88,9 +93,12 @@
 
   (test "an arm whose only call was `(nth v i d)` is native"
     (when (%native-tier?)
-      (let (st (settle cn-nth 2 (fn () (sum-nths [0 1 2 3 4 5] 4000 0)) 40))
+      ;; Counted across this drive, as for `cn-count` above: the arm is native across tests.
+      (let (st (settle cn-nth 2 (fn () (sum-nths [0 1 2 3 4 5] 4000 0)) 40)
+            before (get (%jit-arm-state cn-nth 2) :deopts-total))
         (assert= :native st)
-        (assert= 0 (get (%jit-arm-state cn-nth 2) :deopts))))))
+        (assert= 10000 (sum-nths [0 1 2 3 4 5] 4000 0))
+        (assert= before (get (%jit-arm-state cn-nth 2) :deopts-total))))))
 
 (def- cn-digit-codes (string/->codepoints "12345678x"))
 

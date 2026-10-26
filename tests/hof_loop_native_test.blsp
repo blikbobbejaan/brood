@@ -30,9 +30,13 @@
 
   (test "is native (was: call-spill-exhausted, bailed)"
     (when (%native-tier?)
-      (let (st (settle hl-map 3 (fn () (hl-run 400)) 40))
+      ;; Deopts counted across this drive: the test above throws out of the arm, and the
+      ;; arm stays native across tests now that a rebind elsewhere does not reset it (KI-303).
+      (let (st (settle hl-map 3 (fn () (hl-run 400)) 40)
+            before (get (%jit-arm-state hl-map 3) :deopts-total))
         (assert= :native st)
-        (assert= 0 (get (%jit-arm-state hl-map 3) :deopts)))
+        (hl-run 400)
+        (assert= before (get (%jit-arm-state hl-map 3) :deopts-total)))
       (assert= :native (settle hl-keep 3 (fn () (hl-run-keep 400)) 40))))
 
   (test "builds the same lists under collection pressure"
