@@ -3933,3 +3933,22 @@ its shape run as a script reads 3 at tier 2 on 8b7fddaa with the arm `:native`, 
 `:bailed` after. The first push's guard also asked the arm to go native again once the predicate
 was restored, which the latch never allows; CI went red on it, and on the KI having no archive
 section. Not run on this machine: the suites run in CI.
+
+2026-10-26 (the editor's per-event costs: ADR-465..468): four mechanisms bedit's performance
+audit asked of the language. `reflect/eval` of a lone symbol bound as a global reads the table
+instead of running the compile pass, resolving the name as the pass would and declining
+whenever the pass could do anything but read it (ADR-465; every late-bound keymap, layer and
+hook lookup was a compile). `editor/buffer`'s splice log keeps a typing or deletion run as one
+entry, with the texts it passed through so a holder that synced mid-run still gets an exact
+splice, and an undo, redo or region undo logs the splice it restored, so a language server
+synced after a long burst or across C-/ is sent edits rather than the document (ADR-466).
+`%tree-sitter-tree-chain` / `-kids` / `-alive?` answer the structural queries from a held tree,
+and `indent-column` and the `point-*` motions take an optional held tree, so the first query
+after an edit no longer parses the whole file (ADR-467). `%diff-line-hunks` is Myers' line diff
+with git's indent-heuristic compaction, under `diff/line-hunks` and `diff/line-status`, so a
+change gutter needs no `git diff` subprocesses (ADR-468). Guards: `namespace_test`,
+`buffer_test`, `treesit_module_test`, `diff_test`, and the unit tests in
+`builtins/line_diff.rs`. Run here (single files, the GUI-less treesit-grammars nest): namespace, buffer,
+buffer_client, diff, treesit_module, eval_vm, layers, keymap, doc_examples, doctest — all green,
+and each new guard sabotaged red. Not run here: the Rust unit tests of `line_diff.rs` (clippy
+compiled them), `lazy_load_test` (it needs a `brood` binary beside `nest`), the rest of the suite.
