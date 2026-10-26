@@ -7,6 +7,10 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 ## Unreleased
 
 **Added.**
+- `path/expand-env` (`$NAME`, `${NAME}`, `$$`), its inverse `path/escape-env`, and
+  `path/substitute` / `path/substitute-start` — a typed path read the way Emacs's
+  `substitute-in-file-name` reads one: a `//` or `/~/` part-way through starts the path over.
+  A caller that can see the disk passes `keep?` to keep a real file named `~name` a file.
 - `nest profile FILE`: run a program under the sampling profiler and write folded stacks
   (flamegraph.pl, inferno, speedscope); `dev/profile->folded` for a histogram in hand.
 - `nest dap` (ADR-452): a Debug Adapter Protocol server on TCP over `debug`, so VS Code,

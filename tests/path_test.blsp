@@ -153,3 +153,38 @@
     (assert= (%user-home "brood-surely-no-such-user") nil))
   (test "the empty name is no user"
     (assert= (%user-home "") nil)))
+
+(describe "path/expand-env"
+  (test "$NAME and ${NAME} are the environment's"
+    (let (home (%getenv "HOME"))
+      (assert= (path/expand-env "$HOME/a") (str home "/a"))
+      (assert= (path/expand-env "${HOME}x") (str home "x"))))
+  (test "$$ is a literal dollar, and an unset variable stays as typed"
+    (assert= (path/expand-env "a$$b") "a$b")
+    (assert= (path/expand-env "$$HOME") "$HOME")
+    (assert= (path/expand-env "/x/$BROOD_SURELY_UNSET/y") "/x/$BROOD_SURELY_UNSET/y"))
+  (test "a lone or trailing $ is left alone"
+    (assert= (path/expand-env "a$") "a$")
+    (assert= (path/expand-env "$1") "$1"))
+  (test "escape-env is its inverse"
+    (assert= (path/expand-env (path/escape-env "/t/a$HOME$$")) "/t/a$HOME$$")))
+
+(describe "path/substitute"
+  (test "// starts the path over"
+    (assert= (path/substitute "~/src//etc/hosts") "/etc/hosts")
+    (assert= (path/substitute-start "~/src//etc/") 6))
+  (test "/~/ starts over at the home, still spelled ~"
+    (assert= (path/substitute "/usr/lib/~/notes") "~/notes")
+    (assert= (path/substitute-start "/usr/lib/~/x") 9))
+  (test "a ~name that is no user is an ordinary component"
+    (assert= (path/substitute "/tmp/~brood-surely-no-such-user/x")
+      "/tmp/~brood-surely-no-such-user/x"))
+  (test "keep? claims a ~ component as a file of the directory before it"
+    (let (seen (path/substitute "/srv/$$a/~/x" (fn (directory component) (= directory "/srv/$a/"))))
+      (assert= seen "/srv/$a/~/x")))
+  (test "a variable that holds an absolute path starts over too"
+    (assert= (path/substitute "/tmp/$HOME/a") (str (%getenv "HOME") "/a")))
+  (test "nothing to substitute is the text as typed"
+    (assert= (path/substitute "") "")
+    (assert= (path/substitute "a/b") "a/b")
+    (assert= (path/substitute-start "/") 0)))

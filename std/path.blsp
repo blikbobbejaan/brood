@@ -241,6 +241,97 @@ that merely starts with the home's text (`/home/me2` under `/home/me`), is uncha
         (str "~" (string/substring path (string/length home) (string/length path)))
       else path)))
 
+;; ---- a path as a person types it -------------------------------------------
+;;
+;; Emacs's `substitute-in-file-name`: what a path PROMPT reads, as opposed to what a shell
+;; does. `$VAR` expands; a `//` or `/~/` part-way through starts the path over, so a
+;; person can type a new path after the old one without clearing the line. Reading the
+;; environment and the user database is all it does — whether a `~name` is a FILE in the
+;; directory before it is the caller's question (`keep?`), since `path` never touches the
+;; filesystem (ADR-234).
+
+;; `$NAME`, `${NAME}`, or `$$` (a literal dollar)
+(def- *env-reference* "\\$(?:\\$|\\{([A-Za-z_]\\w*)\\}|([A-Za-z_]\\w*))")
+
+(defn expand-env (text:string -> string)
+  "`text` with every `$NAME` and `${NAME}` replaced by that environment variable, and `$$`
+by a literal `$` ([[escape-env]] is the inverse). A variable that is not set stays as
+typed. Nothing else is read: no `~`, no glob, no command.
+
+    (path/expand-env \"/tmp/$$x\")                                   → \"/tmp/$x\"
+    (path/expand-env \"$BROOD_SURELY_UNSET/a\")                      → \"$BROOD_SURELY_UNSET/a\"
+    (= (path/expand-env \"${HOME}/a\") (str (%getenv \"HOME\") \"/a\"))   → true"
+  (regex/replace *env-reference*
+    text
+    (fn (found)
+      (if (= (:text found) "$$")
+        "$"
+        (let ([braced bare] (:groups found))
+          (or (%getenv (:text (or braced bare))) (:text found)))))))
+
+(defn escape-env (path:string -> string)
+  "`path` with every `$` doubled, so [[expand-env]] and [[substitute]] read it back as
+exactly that name — how a file name from the disk goes into text that will be expanded.
+
+    (path/escape-env \"/tmp/a$b\")                      → \"/tmp/a$$b\"
+    (path/expand-env (path/escape-env \"/tmp/a$HOME\"))   → \"/tmp/a$HOME\""
+  (string/replace path "$" "$$"))
+
+(defn- names-a-home? (component)
+  "Is `component` (`~` or `~name`) a home: `~` always, `~name` when `name` is a user."
+  (or (= component "~")
+    (not (nil? (%user-home (string/substring component 1 (string/length component)))))))
+
+(defn- restart-at? (text i n start keep? directory-of)
+  "Does a new path begin at index `i` of `text` (length `n`, live from `start`)? At a `/`
+right after a `/`, and at a `~` / `~name` component right after a `/` when it names a home
+that `keep?` does not claim as an entry of the directory before it."
+  (and (> i start)
+    (= (string/char-at text (dec i)) "/")
+    (or (= (string/char-at text i) "/")
+      (and (= (string/char-at text i) "~")
+        (let (slash (index-of text "/" i)
+              component (string/substring text i (if (< slash 0) n slash)))
+          (and (names-a-home? component)
+            (not (keep? (directory-of (string/substring text start i)) component))))))))
+
+(defn- restart-scan (text i n start keep? directory-of)
+  (cond
+    (>= i n) start
+    (restart-at? text i n start keep? directory-of)
+      (restart-scan text (inc i) n i keep? directory-of)
+    else (restart-scan text (inc i) n start keep? directory-of)))
+
+(defn- never-kept (directory component) false)
+
+(defn substitute-start (text:string &optional keep? -> int)
+  "Where the part of `text` that still counts begins: 0, or the index of the last `//`'s
+second slash or `/~/`'s `~`. Everything before it was overridden — a prompt paints it as a
+shadow. `keep?`, when given, is `(fn (directory component) -> bool)`: true when the
+`~name` `component` is a real entry of `directory` (the text before it, its variables
+expanded) and so is a file there, not a home.
+
+    (path/substitute-start \"~/src//etc/\")   → 6
+    (path/substitute-start \"/usr/lib/~/x\")  → 9
+    (path/substitute-start \"~/src/\")        → 0"
+  (restart-scan text 0 (string/length text) 0 (or keep? never-kept) expand-env))
+
+(defn substitute (text:string &optional keep? -> string)
+  "The path `text` means, the way Emacs reads a typed file name (`substitute-in-file-name`):
+what follows the last `//` or `/~/` ([[substitute-start]]), with its variables expanded
+([[expand-env]]). A variable whose value is an absolute path starts the path over too. A
+`~` stays a `~` — [[absolute]] expands it. `keep?` as in [[substitute-start]].
+
+    (path/substitute \"~/src//etc/hosts\")   → \"/etc/hosts\"
+    (path/substitute \"/usr/lib/~/notes\")   → \"~/notes\"
+    (path/substitute \"/tmp/$$x\")           → \"/tmp/$x\"
+    (path/substitute \"/srv/~/x\" (fn (directory component) true))   → \"/srv/~/x\""
+  (let (keep? (or keep? never-kept)
+        typed (string/substring text (substitute-start text keep?) (string/length text))
+        expanded (expand-env typed)
+        start (restart-scan expanded 0 (string/length expanded) 0 keep? identity))
+    (string/substring expanded start (string/length expanded))))
+
 (defn temp (prefix:string -> string)
   "A fresh, unpredictable path under `/tmp`: `<prefix><32 hex chars>`, NOT created —
 `file/spit` a file there or `file/mkdir` a directory. The name comes from the OS CSPRNG, so
