@@ -3876,3 +3876,17 @@ arms native and the sums right; the 3333b20b binary answered 1. Guards:
 `jit_unrelated_rebind_test` (restored, plus a case that settles while a process rebinds in a
 loop) and `optional_defaults_test`'s native-tier accumulator case. Not run on this machine: the
 suites run in CI.
+
+2026-10-26 (KI-127's cause; an undecodable image section raises): the one silent 48-minute hang of
+`autoload_race` (2026-09-11) was a racing child's death behind a bare `receive`, and the death is
+the one `9de9f2d3` measured two weeks later under libtest — `unbound symbol: string/blank?` while a
+sibling test rebuilt the stdlib image. KI-224's process-wide image handle (fixed 2026-10-13) made
+the section read misaligned; the second half was still live: a section that does not decode
+answers nil from `%image-load-section` after defining the entries before the bad one, and the
+materialiser provided the module anyway. It raises now, so a misread image fails like a broken
+source module and `require-one` releases the claim to its waiters. Found by reading (two
+read-only review passes; no scheduler lost-wakeup path exists — every worker wait is bounded at
+500 ms, and the receive park and every delivery share the mailbox lock). Guard:
+`image_section_decode_test` — the 89267d84 binary provides a module whose only section does not
+decode; this one refuses it, once and to eight racing processes. A desktop probe script, not the
+suite; the suite runs in CI.

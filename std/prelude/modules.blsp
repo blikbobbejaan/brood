@@ -1054,12 +1054,22 @@ not a header, or does not read: the load itself reports a malformed one."
                          " regs, "
                          nimpls
                          " impls\n"))))
-          ;; Bindings last — the moment the module becomes reachable by a global hit.
-          (%image-load-section img-path
-            (first sec)
-            (second sec)
-            (not (nil? embedded))
-            (->string key))
+          ;; Bindings last — the moment the module becomes reachable by a global hit. A
+          ;; section that does not decode (bytes read under another build's directory, a torn
+          ;; file) answers nil with whatever entries came before the bad one already defined:
+          ;; providing then published a module with names missing, and its callers died of
+          ;; `unbound symbol` — the silent half of KI-127. It raises instead, as a broken
+          ;; source module does, and `require-one` releases the claim and its waiters.
+          (unless (%image-load-section img-path
+                    (first sec)
+                    (second sec)
+                    (not (nil? embedded))
+                    (->string key))
+            (error "require: module '"
+              (->string key)
+              "' did not decode from the image "
+              img-path
+              "; rebuild the image"))
           (when (%getenv "BROOD_IMAGE_TRACE") (%eprint (str "[image] " (->string key) "\n")))
           ;; `provide` after all of it: it is what makes `require-one` return immediately for
           ;; every other process, so providing earlier publishes a module whose dependencies

@@ -1,0 +1,42 @@
+;;; A module whose image section does not decode is refused, never half-provided (KI-127).
+;;;
+;;; `%image-load-section` answers nil when a section's bytes do not decode — read under
+;;; another build's directory (KI-224, a sibling runtime re-pointing a shared handle), or a
+;;; torn file — with whatever entries came before the bad one already defined. The image
+;;; materialiser ignored that answer and provided the module anyway, so its callers died of
+;;; `unbound symbol` on a name the module defines: a racing child in `autoload_race` did, and
+;;; its parent waited on a bare `receive` for 48 minutes (KI-127). It raises now, as a broken
+;;; source module does, and `require-one` releases the claim to every waiter.
+;;;
+;;; The image here is three entries' worth of count followed by bytes no entry decodes to.
+;;; On the binary before the fix, `require-one` returned and the module read as provided.
+
+(defmodule image-section-decode-test (:use test))
+
+(defn- ghost-image (key)
+  (let (p (temp-dir "brood-ghost-image-"))
+    (file/spit-bytes p (bytes 3 0 0 0 255 255 255 255 255 255 255 255 9 9 9 9))
+    (%add-image-source! p {key [0 16]})
+    p))
+
+(defn- try-require (key)
+  (try
+    (do (require-one key) :provided)
+    (catch e (if (includes? (error-message e) "did not decode") :refused (error-message e)))))
+
+(describe "an image section that does not decode"
+  :isolated (test "refuses the module instead of providing it with names missing"
+    (ghost-image "ki127-ghost-one")
+    (assert= :refused (try-require "ki127-ghost-one"))
+    (assert (not (contains? *features* "ki127-ghost-one")))
+    ;; refused again, not provided by the first attempt's partial load
+    (assert= :refused (try-require "ki127-ghost-one")))
+
+  :isolated (test "refuses every process that races its first require, and strands none"
+    (ghost-image "ki127-ghost-fan")
+    (let (me (self))
+      (dotimes (_ 8)
+        (spawn (send me [:r (try-require "ki127-ghost-fan")])))
+      (assert= (repeat 8 :refused)
+        (map (range 8) (fn (_) (receive ([:r v] v) (after 20000 :timeout)))))
+      (assert (not (contains? *features* "ki127-ghost-fan"))))))

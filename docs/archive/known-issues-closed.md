@@ -9459,7 +9459,7 @@ main-thread rule is what the design now satisfies — but "a window appears on m
 observation nobody has made. The first person with a Mac should run the probe; if it fails it
 will fail at `gui-open`, not at compile time.
 
-## KI-127 — `autoload_race` hung silently for 48 minutes ☑️ hardened 2026-09-12, cause open
+## KI-127 — `autoload_race` hung silently for 48 minutes ✅ cause found and fixed 2026-10-26
 
 **What was seen.** One `cargo test -p brood` on 2026-09-11 never finished: the
 `autoload_race` test binary sat asleep — `S`, 0% CPU, 31 threads — for 48 minutes with
@@ -9496,6 +9496,34 @@ image-backed variants included) ran 150 times with a `yes` on every core, then 1
 beside a `-j28` workspace suite: no failure, slowest run under a second. That makes 382 clean
 runs in all. It stays a watch item with its diagnostic armed, because the one hang was never
 explained. The next occurrence names its cause.
+
+**Cause, found 2026-10-26 (by reading, not by a reproduction).** A child died, and the bare
+`receive` made the death a hang. What killed it was measured twelve days after the hang and not
+linked back: `9de9f2d3` (2026-09-24) records that under **libtest** — tests are threads of one
+process, where nextest gives each its own — with no image cached, "a child died of `unbound
+symbol: string/blank?` (3 of 6 fresh-cache runs)" while both imaged races built at once. The
+2026-09-11 run was `cargo test` (libtest), beside a loop deleting and rebuilding the image.
+Two defects made that death:
+
+1. **KI-224** (fixed 2026-10-13): the open-image registry was process-wide, so a sibling test's
+   `%image-index` of its fresh rebuild re-pointed this runtime's handle, and a section was read
+   at the offsets of the directory this runtime had indexed — another build's bytes.
+2. **Still open until now:** a section that does not decode makes `%image-load-section` answer
+   nil, with the entries before the bad one already defined; the materialiser
+   (`std/prelude/modules.blsp`) ignored the answer and `provide`d the module. `string` read as
+   loaded with `blank?` missing, and the caller's re-lookup raised `unbound symbol`.
+
+The loader's 30 s backstop never printed because no process was waiting on the load: the dying
+child was the claimant's caller, not a waiter. Every re-run missed it because the
+`IMAGED_RACE` test lock (added with `9de9f2d3`) had already serialised the two image builds.
+
+**Fix.** The materialiser raises when a section does not decode — "module '…' did not decode
+from the image …" — and never provides it; `require-one` releases the claim and wakes its
+waiters, as for a broken source module. **Guard:** `tests/image_section_decode_test.blsp`, a
+hand-written image whose one section does not decode: required once, and by eight racing
+processes. The `89267d84` binary provides the module (`:provided`); this one refuses all eight.
+The process-wide handle has its own guard since KI-224
+(`per_runtime_handle_tests::a_rebuild_indexed_by_another_runtime_does_not_move_this_runtimes_sections`).
 
 ## KI-132 — the JIT latches the syntax highlighter's walk onto the VM: every helper of `hl-spans` deopt-thrashes ✅ FIXED 2026-09-15 (ADR-353)
 
