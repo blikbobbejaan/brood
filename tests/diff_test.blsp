@@ -164,3 +164,84 @@ index 0000000..3333333
       (assert= 2 (diff/hunk-new-line h 1))
       (assert= 2 (diff/hunk-old-line h 1))
       (assert= 3 (diff/hunk-old-line h 2)))))
+
+;; ---- the native line diff (ADR-468) -------------------------------------------
+
+(deftype diff-hunk (tuple int int int int))
+
+(defn- diff-rebuild-hunk (old-lines:vector new-lines:vector at:int out:vector hunk:diff-hunk -> any)
+  ;; `[at' out']`: `out` with the unchanged lines up to `hunk` and its new lines
+  (let ([old-start old-count new-start new-count] hunk)
+    [(+ old-start old-count)
+      (into (into out (seq/subvec old-lines at old-start))
+        (seq/subvec new-lines new-start (+ new-start new-count)))]))
+
+(defn- diff-rebuild (old-lines:vector new-lines:vector hunks:vector)
+  ;; `old-lines` with every hunk's new lines put in place of its old ones
+  (letrec (walk (fn (at:int out:vector remaining)
+                  (if (empty? remaining)
+                    (into out (seq/subvec old-lines at (count old-lines)))
+                    (let ([next-at next-out] (diff-rebuild-hunk old-lines
+                                               new-lines
+                                               at
+                                               out
+                                               (first remaining)))
+                      (walk next-at next-out (rest remaining))))))
+    (walk 0 [] hunks)))
+
+(describe "line-hunks / line-status"
+  (test "identical texts have no hunks, and a lone trailing newline is no change"
+    (assert= (diff/line-hunks "a\nb\n" "a\nb\n") [])
+    (assert= (diff/line-hunks "a\nb\n" "a\nb") [])
+    (assert= (diff/line-hunks "" "") []))
+
+  (test "a replacement, an insertion and a deletion"
+    (assert= (diff/line-hunks "a\nb\nc\n" "a\nx\nc\n") [[1 1 1 1]])
+    (assert= (diff/line-hunks "a\nc\n" "a\nb\nc\n") [[1 0 1 1]])
+    (assert= (diff/line-hunks "a\nb\nc\n" "a\nc\n") [[1 1 1 0]])
+    (assert= (diff/line-hunks "" "a\n") [[0 0 0 1]]))
+
+  ;; the placement the indent heuristic exists for: a function added between two
+  ;; blank-separated ones is the new function and the blank after it, not the blank above
+  ;; it and the tail of the old one
+  (test "an added block lands where git puts it"
+    (assert= (diff/line-hunks "def a\n  1\nend\n\ndef c\n  3\nend\n"
+               "def a\n  1\nend\n\ndef b\n  2\nend\n\ndef c\n  3\nend\n")
+      [[4 0 4 4]]))
+
+  ;; the diff alone puts the inserted `x` first in the run (where its search met it); git
+  ;; slides a change through a run of equal lines to the run's end, and so does this
+  (test "an insertion in a run of equal lines slides to the end of the run"
+    (assert= (diff/line-hunks "A\np\nx\nx\nB\n" "C\np\nx\nx\nx\nB\n") [[0 1 0 1] [4 0 4 1]]))
+
+  (test "a rope diffs as its text"
+    (let (old "one\ntwo\nthree\n" new "one\n2\nthree\nfour\n")
+      (assert= (diff/line-hunks (text/from-string old) (text/from-string new))
+        (diff/line-hunks old new))))
+
+  (test "the hunks rebuild the new text, over edits at many places"
+    (let (old-lines (into [] (map (range 300) (fn (i) (str "line " (math/mod i 7)))))
+          new-lines (-> old-lines
+                      (assoc 60 "changed")
+                      (seq/remove-nth 150)
+                      (assoc 200 "also changed")
+                      (seq/subvec 0 280)
+                      (into ["tail"]))
+          hunks (diff/line-hunks (string/join old-lines "\n") (string/join new-lines "\n")))
+      (is (> (count hunks) 2))
+      (assert= (diff-rebuild old-lines new-lines hunks) new-lines)))
+
+  (test "line-status reads a hunk as a change gutter does"
+    (assert= (diff/line-status "a\nb\nc\n" "a\nx\ny\nc\n") {1 :modified 2 :added})
+    (assert= (diff/line-status "a\nb\nc\n" "a\nc\n") {1 :deleted})
+    (assert= (diff/line-status "a\n" "a\n") {}))
+
+  :isolated (test "the same answer computed in other processes"
+    (let (old (string/join (map (range 400) (fn (i) (str "row " (math/mod i 11)))) "\n")
+          new (string/replace old "row 3" "ROW 3")
+          here (diff/line-status old new)
+          me (self))
+      (map (range 4) (fn (_) (spawn (send me (diff/line-status old new)))))
+      (let (answers (fold (range 4) [] (fn (acc _) (conj acc (receive)))))
+        (is (> (count here) 30))
+        (is (every? answers (fn (answer) (= answer here))))))))

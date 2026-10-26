@@ -193,12 +193,15 @@ fn parse_cached(src: &str, lang: &str) -> Result<tree_sitter::Tree, LispError> {
 /// `:container` replaces the presence of `:kids`, which is how the full projection says
 /// "this node has children"; the point of these queries is not to build them.
 #[cfg(feature = "treesit")]
-fn node_shallow(heap: &mut Heap, node: tree_sitter::Node, b2c: &[u32]) -> Value {
+fn node_shallow<T: SpanText>(heap: &mut Heap, node: tree_sitter::Node, text: &T) -> Value {
     let kw = |k: &str| Value::keyword(value::intern(k));
     heap.map_from_pairs(vec![
         (kw("kind"), kw(node.kind())),
-        (kw("start"), Value::int(b2c[node.start_byte()] as i64)),
-        (kw("end"), Value::int(b2c[node.end_byte()] as i64)),
+        (
+            kw("start"),
+            Value::int(text.char_of(node.start_byte()) as i64),
+        ),
+        (kw("end"), Value::int(text.char_of(node.end_byte()) as i64)),
         (kw("named"), Value::boolean(node.is_named())),
         (kw("container"), Value::boolean(node.child_count() > 0)),
     ])
@@ -227,7 +230,19 @@ fn char_to_byte(b2c: &[u32], ch: u32) -> usize {
 pub fn chain(heap: &mut Heap, src: &str, lang: &str, offset: i64) -> LispResult {
     let tree = parse_cached(src, lang)?;
     let b2c = byte_to_char_offsets(src);
-    let byte = char_to_byte(&b2c, offset.max(0) as u32);
+    Ok(chain_in(heap, &tree, &FlatText { src, b2c: &b2c }, offset))
+}
+
+/// The chain walk itself, over any text the tree was parsed from — a flat string (the
+/// text-keyed [`chain`]) or a held tree's rope ([`tree_chain`]).
+#[cfg(feature = "treesit")]
+fn chain_in<T: SpanText>(
+    heap: &mut Heap,
+    tree: &tree_sitter::Tree,
+    text: &T,
+    offset: i64,
+) -> Value {
+    let byte = text.byte_of(offset.max(0) as usize);
     let mut out: Vec<Value> = Vec::new();
     let mut node = tree.root_node();
     let broken = node.has_error();
@@ -237,7 +252,7 @@ pub fn chain(heap: &mut Heap, src: &str, lang: &str, offset: i64) -> LispResult 
         // chain — which only ever sees one path.
         let n = match (
             node.parent().is_none() && broken,
-            node_shallow(heap, node, &b2c),
+            node_shallow(heap, node, text),
         ) {
             (true, Value::Map(id)) => heap.map_assoc(
                 id,
@@ -259,7 +274,7 @@ pub fn chain(heap: &mut Heap, src: &str, lang: &str, offset: i64) -> LispResult 
             None => break,
         }
     }
-    Ok(heap.alloc_vector(out))
+    heap.alloc_vector(out)
 }
 
 /// `(tree-sitter-kids source lang offset)` — the named children of the deepest node
@@ -273,7 +288,14 @@ pub fn chain(heap: &mut Heap, src: &str, lang: &str, offset: i64) -> LispResult 
 pub fn kids(heap: &mut Heap, src: &str, lang: &str, offset: i64) -> LispResult {
     let tree = parse_cached(src, lang)?;
     let b2c = byte_to_char_offsets(src);
-    let byte = char_to_byte(&b2c, offset.max(0) as u32);
+    Ok(kids_in(heap, &tree, &FlatText { src, b2c: &b2c }, offset))
+}
+
+/// The kids walk itself, over a flat string ([`kids`]) or a held tree's rope
+/// ([`tree_kids`]).
+#[cfg(feature = "treesit")]
+fn kids_in<T: SpanText>(heap: &mut Heap, tree: &tree_sitter::Tree, text: &T, offset: i64) -> Value {
+    let byte = text.byte_of(offset.max(0) as usize);
     // STRICTLY containing, so a point sitting exactly at a node's start belongs to that
     // node's parent — which is what makes `forward-sexp` step OVER the form at point
     // rather than into it.
@@ -292,9 +314,9 @@ pub fn kids(heap: &mut Heap, src: &str, lang: &str, offset: i64) -> LispResult {
     let out: Vec<tree_sitter::Node> = node.named_children(&mut cursor).collect();
     let vals: Vec<Value> = out
         .into_iter()
-        .map(|c| node_shallow(heap, c, &b2c))
+        .map(|c| node_shallow(heap, c, text))
         .collect();
-    Ok(heap.alloc_vector(vals))
+    heap.alloc_vector(vals)
 }
 
 /// The most error nodes one call reports. A buffer someone is halfway through
@@ -391,6 +413,8 @@ pub fn errors(heap: &mut Heap, src: &str, lang: &str) -> LispResult {
 trait SpanText {
     /// The char offset of byte `byte`.
     fn char_of(&self, byte: usize) -> usize;
+    /// The byte offset of char `ch`, clamped to the text.
+    fn byte_of(&self, ch: usize) -> usize;
     /// Does the text in `[start, end)` begin with a letter? (the keyword rule)
     fn starts_alphabetic(&self, start: usize, end: usize) -> bool;
 }
@@ -406,6 +430,9 @@ impl SpanText for FlatText<'_> {
     fn char_of(&self, byte: usize) -> usize {
         self.b2c[byte] as usize
     }
+    fn byte_of(&self, ch: usize) -> usize {
+        char_to_byte(self.b2c, u32::try_from(ch).unwrap_or(u32::MAX))
+    }
     fn starts_alphabetic(&self, start: usize, end: usize) -> bool {
         self.src[start..end]
             .chars()
@@ -418,6 +445,9 @@ impl SpanText for FlatText<'_> {
 impl SpanText for ropey::Rope {
     fn char_of(&self, byte: usize) -> usize {
         self.byte_to_char(byte.min(self.len_bytes()))
+    }
+    fn byte_of(&self, ch: usize) -> usize {
+        self.char_to_byte(ch.min(self.len_chars()))
     }
     fn starts_alphabetic(&self, start: usize, end: usize) -> bool {
         start < end
@@ -990,6 +1020,42 @@ pub fn tree_free(handle: u64) -> bool {
         .is_some()
 }
 
+/// `(%tree-sitter-tree-chain tree offset)` — [`chain`] over a held tree: no parse, no flat
+/// copy of the text, O(depth). `Nil` for a gone handle.
+#[cfg(feature = "treesit")]
+pub fn tree_chain(heap: &mut Heap, handle: u64, offset: i64) -> LispResult {
+    let Some(entry) = tree_entry(handle) else {
+        return Ok(Value::Nil);
+    };
+    Ok(chain_in(heap, &entry.tree, &entry.text, offset))
+}
+
+/// `(%tree-sitter-tree-kids tree offset)` — [`kids`] over a held tree. `Nil` for a gone
+/// handle.
+#[cfg(feature = "treesit")]
+pub fn tree_kids(heap: &mut Heap, handle: u64, offset: i64) -> LispResult {
+    let Some(entry) = tree_entry(handle) else {
+        return Ok(Value::Nil);
+    };
+    Ok(kids_in(heap, &entry.tree, &entry.text, offset))
+}
+
+/// `(%tree-sitter-tree-alive? tree)` — is the handle still held? Marks it used, as every
+/// query does, so a holder that only checks keeps its tree from being the one evicted.
+#[cfg(feature = "treesit")]
+pub fn tree_alive(handle: u64) -> bool {
+    let mut handles = crate::core::sync::lock(&TREE_HANDLES);
+    handles.clock += 1;
+    let now = handles.clock;
+    match handles.entries.get_mut(&handle) {
+        Some(entry) => {
+            entry.last_used = now;
+            true
+        }
+        None => false,
+    }
+}
+
 #[cfg(not(feature = "treesit"))]
 fn without_treesit(who: &str) -> LispError {
     LispError::runtime(format!(
@@ -1031,6 +1097,21 @@ pub fn tree_changes(_heap: &mut crate::core::heap::Heap, _handle: u64) -> LispRe
 
 #[cfg(not(feature = "treesit"))]
 pub fn tree_free(_handle: u64) -> bool {
+    false
+}
+
+#[cfg(not(feature = "treesit"))]
+pub fn tree_chain(_heap: &mut crate::core::heap::Heap, _handle: u64, _offset: i64) -> LispResult {
+    Err(without_treesit("%tree-sitter-tree-chain"))
+}
+
+#[cfg(not(feature = "treesit"))]
+pub fn tree_kids(_heap: &mut crate::core::heap::Heap, _handle: u64, _offset: i64) -> LispResult {
+    Err(without_treesit("%tree-sitter-tree-kids"))
+}
+
+#[cfg(not(feature = "treesit"))]
+pub fn tree_alive(_handle: u64) -> bool {
     false
 }
 
