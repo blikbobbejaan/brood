@@ -6,7 +6,49 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+## v0.44.0 — WASI by grant, typed parameters, and the runtime's long week
+
+A wasm component can now be a real program: WASI preview 2 by explicit grant (never the
+network), its interface exports and resources, and `include-bytes` so a package ships one.
+Parameters can carry their types in the arglist. Sorted collections, a process registry and
+cluster-wide process groups, `defapp` and `defstatem`, crypto beyond ed25519, UDP, TLS
+streams with ALPN, HTTP/1.1 keep-alive and a DAP server join std. The GUI takes the keyboard
+the user has and the fonts they installed. Underneath: a parallel cold load, edit-scoped
+image rebuilds, and a long run of VM, heap, process and JIT work. Two changes break callers
+(see **Changed**). The narrative is the devlog's 2026-10-22 to 2026-10-26 entries.
+
 **Added.**
+- WASI preview 2 by grant (ADR-453): `(%wasm-load src grants)` gives a component the
+  directories (`:dirs` `[host guest]`, `[host guest :write]`), environment (`:env`),
+  arguments (`:args`) and stdio (`:stdio`) it is granted — clocks and randomness come with
+  any grants map, the network never does. Interface exports are called as `iface#fn` (bare
+  when unique), guest resources come back as tokens released with `%wasm-release`, and
+  enums, variants and records lower as they lift.
+- `include-bytes` (ADR-454): a file's bytes spliced in at compile time, so a package ships a
+  wasm component and its hash pins it. An include now resolves against the package of the
+  file naming it, so development and a release read the same file.
+- Typed parameters (ADR-420): `(defn area (w:number h:number -> number) …)` — the arglist
+  carries the signature.
+- Sorted maps and sorted sets (ADR-430); `seq/iterate`, an unbounded source only
+  `seq/transduce` consumes (ADR-431); stateful transducer stages such as `seq/xtake`
+  (ADR-421); the `Counted` ability, so `count` and `empty?` ask a collection record its size;
+  `next-impl`, the impl one precedence tier down (ADR-432); `caar` to `cdddr` (ADR-447).
+- A pattern clause may take `& rest`, so a macro writes one clause per shape (ADR-434).
+- `std/settings`: declared settings with a default, type and doc (ADR-428); multi-term fuzzy
+  queries (ADR-429).
+- A process registry, with `{:via registry :key key}` as a gen address (ADR-445), and
+  process groups across a cluster (ADR-446).
+- `defapp` and `os/trap` for the runtime's own SIGTERM (ADR-435/436); `defstatem`, a state
+  machine over the gen envelopes (ADR-437).
+- Tree-sitter tree handles (ADR-443): a whole-document parse kept, reparsed from edits and
+  queried by range.
+- The GUI keyboard is the user's (ADR-441): OS key repeat, Super, F-keys, layout glyphs, IME,
+  focus-in and wheel lines; a held key stops with the hand — in the window, under the kitty
+  keyboard protocol, inferred in every other terminal, and across a served thin client.
+  Installed fonts by name, fallback by coverage, opt-in ligatures (ADR-442).
+- `dev/why-not-native`: why the JIT refused a function, kept with the refused arm.
+- Doctest illustrations: `;=>` examples that are read and callee-checked, not run.
+- A path prompt's Backspace after a `/` takes the whole component (`lineedit`).
 - `path/expand-env` (`$NAME`, `${NAME}`, `$$`), its inverse `path/escape-env`, and
   `path/substitute` / `path/substitute-start` — a typed path read the way Emacs's
   `substitute-in-file-name` reads one: a `//` or `/~/` part-way through starts the path over.
@@ -55,6 +97,22 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   inverse of `os/shell-quote`, for a command line typed into a prompt and run as an argv.
 
 **Changed.**
+- **Breaking:** `gen/start` takes `{:link :name}`; `gen/start-link` and `gen/start-named`
+  are gone (ADR-433).
+- **Breaking:** `tempo/new`, `tempo/parse`, `tempo/parse-span` and `resolver/resolve` answer a
+  failure value, not `[:ok …]` / `[:error …]` (ADR-310's rule; test with `failure?`).
+- A project module that a dependency also declares is refused instead of silently shadowed.
+- A cold build loads its modules in a pool of processes (ADR-426), the default again
+  (`BROOD_LOAD_SEQUENTIAL=1` opts out); an edit reloads the edited modules and their
+  dependents while the image keeps the rest (ADR-419).
+- `ui-run` skips view and draw when a turn leaves the model unchanged (ADR-444).
+- The editor cursor steps by grapheme cluster, never by code point (ADR-422).
+- A rethrown user error keeps where it was raised (ADR-427).
+- `get`'s default means absent, so a record collection's miss still asks `Lookup` (KI-298).
+- Faster throughout: VM calls and inline primitives, heap allocation and the GC, message
+  copying and mailbox locking, module and macro resolution, the checker; the JIT keeps more
+  code native (a self-tail loop over a list, def'd vectors read inline, a rebind elsewhere no
+  longer demoting a native arm — KI-301, KI-303, KI-304).
 - **Breaking:** `nest new --template hatch` and `--template web-api` are gone from std. They
   are hatch's now: `nest new shop --from hatch --template app` (or `api`), which depends on
   hatch by registry version instead of needing `../hatch` and `../store-postgres` checked out
@@ -68,7 +126,22 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   `node/peer-grant` adds `:claimed`, the name the guest gave itself. `node/start` refuses a
   name starting `guest~`, and a peer claiming one is refused as a full link.
 
+**Fixed.**
+- A require cycle split across processes is broken by one process, not waited out, and a
+  module that throws at load under a require chain loads once (KI-290).
+- Macro rewrites copy what they duplicate (KI-288); pipeline fusion, guest pids and a require
+  waiter's death watch (KI-295–297); three defects from a review of the week's riskiest
+  commits (KI-292–294); the prelude image sizes its position table once (KI-302).
+- A gen call by kernel name resolves the name before it monitors; regex counted repetition
+  keeps one group per paren; `os/trap` builds on macOS; a lifted trap restores the signal's
+  prior disposition.
+- GUI: subpixel text on every GPU adapter, LCD-filtered once; fallback fonts by cluster; a
+  window whose first GPU frame was skipped is shown; a key that types another keystroke ends
+  the first with its key-up; a burst of one key in a terminal is presses, not a held key.
+
 **Security.**
+- A guest link's standing is the link's, not its node name's (KI-286), and a guest can never
+  take a full peer's node name (KI-287).
 - A guest could still claim the node name of a full peer that had never linked to its host,
   and receive what that host sent to a pid of the peer (KI-287's last case). A guest is never
   registered under a name it chose now, so this cannot happen (ADR-425).
