@@ -297,18 +297,18 @@ restarts this whole sub-tree (escalation). Children are terminated on shutdown."
 ;; against the budget and is tried again, and a child that can never start trips
 ;; `max-restarts` (and escalates to the parent supervisor) instead.
 (defn- supervisor-try-start (child)
-  "Start `child`, returning the fresh child record — or `nil` if its `:start` thunk
-raised (or returned a non-pid), having reported the failure on stderr. The failure
-is a *failed restart attempt*, never a supervisor crash."
+  "Start `child`, returning the fresh child record — or a `failure` naming the child and
+the cause if its `:start` thunk raised (or returned a non-pid), having reported it on
+stderr. The failure is a *failed restart attempt*, never a supervisor crash."
   (try
     (supervisor-start-child child)
     (catch e
-      (io/puts "supervisor: child "
-        (pr-str (get child :id (get child :name)))
-        " failed to start: "
-        (error-message e)
-        :to *err*)
-      nil)))
+      (let (failed (failure "supervisor: child "
+                     (pr-str (get child :id (get child :name)))
+                     " failed to start: "
+                     (error-message e)))
+        (io/puts (error-message failed) :to *err*)
+        failed))))
 
 (defn- supervisor-restart (state child)
   "Restart `child` (`:one-for-one`): record the restart in the intensity window;
@@ -325,7 +325,7 @@ rather than throwing out of the loop and killing the supervisor."
       (supervisor-giveup state
         (supervisor-ordered (dissoc (get state :children) (get child :pid))))
       (let (fresh (supervisor-try-start child))
-        (if (nil? fresh)
+        (if (failure? fresh)
           ;; Failed attempt: carry the (already bumped) window forward and try again.
           ;; `child` still keys off the dead pid, so the retry targets the same slot.
           (supervisor-restart (assoc state :restarts recent) child)
@@ -351,7 +351,7 @@ A `:start` that raises also yields `nil` — the child is reported on stderr and
 dropped from supervision, rather than throwing out of the receive loop and taking
 the supervisor (and every healthy sibling in the group) down with it."
   (if (supervisor-restartable? (get child :restart :permanent) reason)
-    (supervisor-try-start child)
+    (let (fresh (supervisor-try-start child)) (if (failure? fresh) nil fresh))
     nil))
 
 (defn- supervisor-group-restart (state trigger reason)
@@ -407,14 +407,14 @@ abnormal (`:killed`) — leaving unaffected children running. Bounded by intensi
 
 (defn- supervisor-do-start-child (state spec from r)
   "Handle `[:start-child spec]`: start + link the new child, append it (preserving
-start order), reply its pid — or reply `[:error msg]` if the spec's `:start` thunk
+start order), reply its pid — or reply the `failure` if the spec's `:start` thunk
 raised (a caller's bad spec must not kill the supervisor, and *must* still get a
 reply, or the caller blocks forever)."
   (let (seq (get state :next-seq 0)
         started (supervisor-try-start spec))
-    (if (nil? started)
+    (if (failure? started)
       (do
-        (send from [:reply r [:error "supervisor: :start failed"]])
+        (send from [:reply r started])
         (supervisor-loop state))
       (let (child (assoc started :seq seq))
         (send from [:reply r (get child :pid)])
@@ -441,13 +441,13 @@ request). Reply the new pid, or `:not-found`."
       (do (send from [:reply r :not-found]) (supervisor-loop state))
       (do
         (supervisor-terminate-child child)
-        ;; A `:start` that raises replies `[:error …]` and drops the child, rather
+        ;; A `:start` that raises replies its `failure` and drops the child, rather
         ;; than throwing out of the loop (which killed the supervisor *and* left the
         ;; caller blocked on a reply that would never come).
         (let (fresh (supervisor-try-start child))
-          (if (nil? fresh)
+          (if (failure? fresh)
             (do
-              (send from [:reply r [:error "supervisor: :start failed"]])
+              (send from [:reply r fresh])
               (supervisor-loop (supervisor-remove state (get child :pid))))
             (do
               (send from [:reply r (get fresh :pid)])
@@ -561,8 +561,9 @@ a dead supervisor raises instead of hanging.
 (defn start-child (sup spec)
   "Start a new child under a running supervisor `sup` from child `spec` (the same
 map shape `start` takes) — the dynamic-supervisor entry point. The
-child is linked and supervised like any static child. Returns its pid, or
-`[:error msg]` if the spec's `:start` thunk raised. Synchronous (see
+child is linked and supervised like any static child. Returns its pid, or a
+`failure` naming the child and the cause if the spec's `:start` thunk raised (the
+supervisor carries on without it). Synchronous (see
 `which-children` for the deadline / dead-server behaviour).
 
     (supervisor/start-child sup {:id :extra :start (fn () (spawn-link (work)))})   ;=> the child's pid"
@@ -579,7 +580,8 @@ Synchronous (see `which-children` for the deadline / dead-server behaviour).
 (defn restart-child (sup key)
   "Terminate the child of `sup` identified by `key` (`:id` or pid) and start a fresh
 incarnation from the same spec (not counted against the restart-intensity window).
-Returns the new pid, `:not-found`, or `[:error msg]` if the `:start` thunk raised.
+Returns the new pid, `:not-found`, or a `failure` if the `:start` thunk raised (the
+child is then dropped from supervision).
 Synchronous (see `which-children` for the deadline / dead-server behaviour).
 
     (supervisor/restart-child sup :worker)   ;=> the new pid, or :not-found"

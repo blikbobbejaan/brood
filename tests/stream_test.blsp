@@ -13,12 +13,6 @@ full budget still yields the failing value, while a merely slow one is forgiven.
 
 ;; ---- sources ----------------------------------------------------------------
 
-(defn- stepped (r)
-  "`stream/next`'s result as the vector it should be, or a failed test. It answers
-  `[:ok v] | :done | vector`, so indexing it directly is unchecked; `:done` here means the
-  stream ended earlier than the test expects."
-  (if (vector? r) r (error "stream-test: expected a step vector, got " r)))
-
 (describe "empty"
   (test "immediately done"
     (assert= :done (stream/next (stream/empty)))))
@@ -344,9 +338,11 @@ full budget still yields the failing value, while a merely slow one is forgiven.
       (assert= :done (stream/next s))
       (assert= :done (stream/next s))))
 
-  (test "a producer that crashed surfaces as [:err …], not a hang"
+  (test "a producer that crashed surfaces as a failure, not a hang"
     (let (p (spawn (receive ([:next _] (error "producer boom")))))
-      (assert= :err (first (stepped (stream/next p))))))
+      (let (r (stream/next p))
+        (is (failure? r))
+        (is (includes? (error-message r) "producer died")))))
 
   (test "a producer that already exited answers :done"
     (let ([p ref] (spawn-monitor :nothing))
@@ -355,7 +351,9 @@ full budget still yields the failing value, while a merely slow one is forgiven.
 
   (test "timeout-ms bounds a producer that is alive but never answers"
     (let (p (spawn (receive (:never nil) (after 4000 nil))))
-      (assert= :err (first (stepped (stream/next p 40))))))
+      (let (r (stream/next p 40))
+        (is (failure? r))
+        (is (includes? (error-message r) "timed out after 40 ms")))))
 
   (test "the monitor leaves no [:down] behind in the caller's mailbox"
     ;; WAITS for the mailbox to drain rather than sleeping past the expected moment. A

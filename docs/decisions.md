@@ -211,7 +211,7 @@ out to already exist (`nest check` has always exited 1 on any warning).
 | 160 | Alternative (`or`) and conjunction (`and`) patterns; map keys are sub-patterns |
 | 161 | Transducers become public surface |
 | 162 | Retire the `lambda` alias: `fn` is the only spelling |
-| 163 | The convention questions the syntax review raised, settled |
+| 163 | The convention questions the syntax review raised, settled *(failure half superseded by ADR-310)* |
 | 164 | `get`/`nth` diagnostics: an error must name the operation the caller wrote |
 | 165 | A keyword is callable as an accessor; nothing else data-like is |
 | 166 | Reserved names: the language's own functions cannot be redefined |

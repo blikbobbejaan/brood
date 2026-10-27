@@ -412,14 +412,29 @@
         (is (not (includes? (pr-str reason) "flaky: cannot start"))))
       (table/drop t)))
 
-  (test "start-child replies [:error …] instead of killing the supervisor"
+  (test "start-child returns a failure instead of killing the supervisor"
     ;; The caller must get a reply either way — the old code threw out of the loop,
     ;; which killed the supervisor AND left the caller blocked on a reply that
-    ;; could never come.
+    ;; could never come. The reply is a `failure` carrying the cause (ADR-310).
     (let (t (table/new)
           sup (start (list)))
       (let (r (start-child sup (flaky-spec t 0)))
-        (is (= (first r) :error)))
+        (is (failure? r))
+        (is (includes? (error-message r) "failed to start"))
+        (is (includes? (error-message r) "flaky: cannot start")))
+      ;; the supervisor is still alive and still answering
+      (assert= 0 (count-children sup))
+      (stop sup)
+      (table/drop t)))
+
+  (test "restart-child returns a failure and drops the child when the restart raises"
+    ;; The first start succeeds, the explicit restart's `:start` raises.
+    (let (t (table/new)
+          sup (start (list)))
+      (is (pid? (start-child sup (flaky-spec t 1))))
+      (let (r (restart-child sup :flaky))
+        (is (failure? r))
+        (is (includes? (error-message r) "flaky: cannot start")))
       ;; the supervisor is still alive and still answering
       (assert= 0 (count-children sup))
       (stop sup)

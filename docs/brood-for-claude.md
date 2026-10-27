@@ -261,10 +261,13 @@ next to `chunk-every`, `enumerate` (Python), `scan` (Haskell), `&optional`
 80}} opts) …))`. Brood has no `&key` and won't (ADR-163) — the map plus `:keys`
 destructuring is the convention, and it composes with `merge` for defaults.
 
-**Failure: `throw` for bugs, a tagged vector for expected alternatives** (ADR-163).
-Throw when the caller almost certainly cannot continue (type error, missing file,
-protocol violation); return `[:ok v]` / `[:error e]` when failing is an ordinary
-outcome to branch on (parsing user input, a lookup that may miss, a timeout).
+**Failure: `throw` for bugs, a returned `failure` for expected outcomes** (ADR-310).
+Throw when the caller almost certainly cannot continue (type error, wrong arity,
+protocol violation); return `(failure "fn-name: what went wrong: " value)` when failing
+is an ordinary outcome to branch on (parsing user input, a decode that may not fit).
+A lookup that merely misses returns `nil` — absence, not failure. Tagged vectors
+(`[:ok v]`, `[:error e]`) are for *message data* between processes (`gen` replies, exit
+reasons), not a failure convention. See "A `failure` is a returned value" below.
 Symbols are kebab-case (`out-of-range?`, not `outOfRange`/`out_of_range`).
 
 **Tail-recursive helpers get a suffix naming what they accumulate or do** —

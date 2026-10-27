@@ -43,17 +43,18 @@ transformers, and terminals — each transformer adds one green process.
   ;; An exhausted source exits `:normal` after its last `:stream-done`, and a monitor
   ;; placed on an ALREADY-exited process reports `:noproc` without retaining the
   ;; original reason — so both read as a clean end of stream. Anything else is a crash,
-  ;; and the consumer gets it as an error rather than as silent exhaustion.
+  ;; and the consumer gets it as a failure rather than as silent exhaustion.
   (if (or (= reason :normal) (= reason :noproc))
-    :done [:err (str "stream/next: producer died: " (pr-str reason))]))
+    :done (failure "stream/next: producer died: " (pr-str reason))))
 
 (defn next (s &optional timeout-ms)
   "Request the next element from stream `s`.
-Returns `[:ok v]` for a value, `:done` when exhausted, or `[:err msg]` on error.
+Returns `[:ok v]` for a value, `:done` when exhausted, or a `failure` on error (ADR-310).
+A value stays wrapped because it may itself be `nil` or `:done`.
 
 Monitors `s` for the duration, so a producer that has **exited** — an exhausted
 source (which exits after its last `:stream-done`, KI-33) or one that crashed —
-answers `:done` / `[:err …]` instead of parking the caller forever. `timeout-ms`
+answers `:done` / a failure instead of parking the caller forever. `timeout-ms`
 additionally bounds the wait on a producer that is alive but never replies; omit
 it (the default) for an I/O stream that may legitimately be slow, where the
 monitor is the whole guard.
@@ -66,14 +67,14 @@ monitor is the whole guard.
                 (receive
                   ([:stream-val v] [:ok v])
                   (:stream-done :done)
-                  ([:stream-err msg] [:err msg])
+                  ([:stream-err msg] (failure msg))
                   ([:down ^m _ reason] (stream-down-result reason)))
                 (receive
                   ([:stream-val v] [:ok v])
                   (:stream-done :done)
-                  ([:stream-err msg] [:err msg])
+                  ([:stream-err msg] (failure msg))
                   ([:down ^m _ reason] (stream-down-result reason))
-                  (after timeout-ms [:err (str "stream/next: timed out after " timeout-ms " ms")]))))
+                  (after timeout-ms (failure "stream/next: timed out after " timeout-ms " ms")))))
       (demonitor m)
       ; don't leak a late [:down] into the caller's mailbox
       (receive ([:down ^m _ _] :ok) (after 0 :ok))
@@ -484,7 +485,7 @@ Raises on a stream error.
   (match (next s)
     (:done acc)
     ([:ok v] (%fold-loop f (f acc v) s))
-    (item (error "fold: " (second item)))))
+    (failed (error "fold: " (error-message failed)))))
 
 (defn ->list (s)
   "Collect all elements of `s` into a list.
@@ -496,7 +497,7 @@ Raises on a stream error.
   (match (next s)
     (:done acc)
     ([:ok v] (collect-loop s (cons v acc)))
-    (item (error "->list: " (second item)))))
+    (failed (error "->list: " (error-message failed)))))
 
 (defn ->vector (s)
   "Collect all elements of `s` into a vector.
@@ -511,7 +512,7 @@ Raises on a stream error.
   (match (next s)
     (:done nil)
     ([:ok v] (do (f v) (for-each s f)))
-    (item (error "for-each: " (second item)))))
+    (failed (error "for-each: " (error-message failed)))))
 
 (defn count (s)
   "Count the elements in `s`, consuming it.
@@ -530,7 +531,7 @@ then `:stream-eof` when done (or `[:stream-err msg]` + `:stream-eof` on error).
   (match (next src)
     (:done (send sink :stream-eof))
     ([:ok v] (do (send sink [:stream-data v]) (pipe-loop src sink)))
-    (item (do (send sink [:stream-err (second item)]) (send sink :stream-eof)))))
+    (failed (do (send sink [:stream-err (error-message failed)]) (send sink :stream-eof)))))
 
 (defn ->socket (s sock)
   "Drain stream `s`, writing each chunk to `sock` with `tcp/send`. Returns nil.

@@ -96,6 +96,16 @@ A `Ty` **is a set of values**, and the type operations *are* set operations:
   intersection alike — and a tagged union becomes usable: `{ok: int}` asserts `:error`
   is absent, so a field read through `{ok: int} | {error: string}` resolves, and the
   two alternatives are provably disjoint.
+- **A known failure is its own atom** (ADR-310). `failure` is a tag, so a function that
+  can fail on its input has the plain union `(or number failure)` — no parametric
+  `(result T)`, which is what sank the tagged-tuple design. Write it in a sig the same way:
+  `(sig parse (string -> (or int failure)))`. The checker narrows on `failure?` like any
+  type predicate; reports a `failure?` test that can never be true (ADR-315); and reports
+  a failure that reaches a parameter which cannot take one (ADR-316) — but only when the
+  failure arm is *positively* known, since `any` admits a failure the way it admits
+  everything. Stopping on a failure is a form you reach for (`ok->`, `with`), not
+  something primitives do. Tagged vectors (`[:ok v]`, `[:error e]`) remain ordinary
+  vector types — the shape of message data between processes, not a failure encoding.
 - **The complement is sayable** (ADR-263): `(not T)` joins `(or …)`/`(and …)` in
   the grammar, so "anything but nil" is `(and any (not nil))`. Exact on flat terms and
   on **literal sets** (ADR-268 — a literal refinement is held positively *or*
