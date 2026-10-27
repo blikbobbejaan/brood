@@ -9,7 +9,7 @@
 //! positioned node maps** the Brood CST gives — `{:kind :start :end :named}` for
 //! leaves (plus `:text`, the raw source), and additionally `:kids` (a vector of
 //! child maps) for any node with children. `:start`/`:end` are half-open
-//! CHARACTER offsets (tree-sitter counts bytes; we project them, exactly as
+//! CHARACTER offsets (tree-sitter counts s; we project them, exactly as
 //! `parse-source-positioned`), so `std/tool/sexp`'s structural navigation and the
 //! editor's `:fontify` service run over a foreign tree **unchanged**. `:named`
 //! distinguishes grammar nodes from anonymous tokens (keywords/punctuation like
@@ -423,6 +423,13 @@ trait SpanText {
     /// The text in bytes `[start, end)` — borrowed whenever it lies in one piece, which is
     /// what a selector's `:text` compares against (ADR-487).
     fn text_in(&self, start: usize, end: usize) -> std::borrow::Cow<'_, str>;
+    /// The text's length in bytes.
+    fn byte_length(&self) -> usize;
+    /// The bytes from `byte` to the end of the piece holding it — what a parse callback
+    /// hands tree-sitter (an injected parse reads the outer text in place, ADR-489).
+    fn bytes_from(&self, byte: usize) -> &[u8];
+    /// The tree-sitter points (line, byte column) of `bytes`, which ascend.
+    fn points_of(&self, bytes: &[usize]) -> Vec<tree_sitter::Point>;
 }
 
 #[cfg(feature = "treesit")]
@@ -448,6 +455,31 @@ impl SpanText for FlatText<'_> {
     fn text_in(&self, start: usize, end: usize) -> std::borrow::Cow<'_, str> {
         std::borrow::Cow::Borrowed(&self.src[start..end])
     }
+    fn byte_length(&self) -> usize {
+        self.src.len()
+    }
+    fn bytes_from(&self, byte: usize) -> &[u8] {
+        &self.src.as_bytes()[byte.min(self.src.len())..]
+    }
+    fn points_of(&self, bytes: &[usize]) -> Vec<tree_sitter::Point> {
+        // one forward pass over the text, since the bytes ascend
+        let source = self.src.as_bytes();
+        let (mut row, mut line_start, mut scanned) = (0usize, 0usize, 0usize);
+        bytes
+            .iter()
+            .map(|byte| {
+                let byte = (*byte).min(source.len());
+                for (offset, character) in source[scanned.min(byte)..byte].iter().enumerate() {
+                    if *character == b'\n' {
+                        row += 1;
+                        line_start = scanned + offset + 1;
+                    }
+                }
+                scanned = scanned.max(byte);
+                tree_sitter::Point::new(row, byte - line_start)
+            })
+            .collect()
+    }
 }
 
 #[cfg(feature = "treesit")]
@@ -469,6 +501,19 @@ impl SpanText for ropey::Rope {
             Some(piece) => std::borrow::Cow::Borrowed(piece),
             None => std::borrow::Cow::Owned(slice.to_string()),
         }
+    }
+    fn byte_length(&self) -> usize {
+        self.len_bytes()
+    }
+    fn bytes_from(&self, byte: usize) -> &[u8] {
+        if byte >= self.len_bytes() {
+            return &[];
+        }
+        let (chunk, chunk_start, _, _) = self.chunk_at_byte(byte);
+        &chunk.as_bytes()[byte - chunk_start..]
+    }
+    fn points_of(&self, bytes: &[usize]) -> Vec<tree_sitter::Point> {
+        bytes.iter().map(|byte| point_of(self, *byte)).collect()
     }
 }
 
@@ -777,18 +822,19 @@ impl SpanQuery<'_> {
     }
 }
 
-/// Collect `[start end reported]` for the OUTERMOST nodes the table colours, in source
-/// order, descending only into children that reach the query's window. A span is clipped
-/// to the window, so a string opened above it reports only its visible part. `context` is
-/// where `node` sits in its parent — what a table's context entries match against.
+/// Collect `(start end reported)` BYTE spans for the OUTERMOST nodes the table colours, in
+/// source order, descending only into children that reach the query's window. A span is
+/// clipped to the window, so a string opened above it reports only its visible part.
+/// `context` is where `node` sits in its parent — what a table's context entries match
+/// against. Bytes, not chars, so injected spans (ADR-489) can be spliced in before the one
+/// conversion [`raw_spans_value`] makes.
 #[cfg(feature = "treesit")]
 fn spans_into<T: SpanText>(
-    heap: &mut Heap,
     node: tree_sitter::Node,
     context: &NodeContext,
     text: &T,
     query: &SpanQuery,
-    out: &mut Vec<Value>,
+    out: &mut Vec<RawSpan>,
 ) {
     // An anonymous token whose text starts with a letter is a language keyword — the
     // cross-language rule, so a table need only name the handful of NAMED nodes it
@@ -811,13 +857,7 @@ fn spans_into<T: SpanText>(
                 node.end_byte().min(to).max(node.start_byte().max(from)),
             ),
         };
-        let span = vec![
-            Value::int(text.char_of(start) as i64),
-            Value::int(text.char_of(end) as i64),
-            reported,
-        ];
-        let v = heap.alloc_vector(span);
-        out.push(v);
+        out.push((start, end, reported));
         return; // coloured whole: do not descend
     }
     let mut cursor = node.walk();
@@ -842,7 +882,7 @@ fn spans_into<T: SpanText>(
             named_index += 1;
         }
         if query.touches(&child) {
-            spans_into(heap, child, &child_context, text, query, out);
+            spans_into(child, &child_context, text, query, out);
         }
         if !cursor.goto_next_sibling() {
             break;
@@ -850,8 +890,48 @@ fn spans_into<T: SpanText>(
     }
 }
 
-/// `(tree-sitter-spans source lang table keywords?)` — the fontify query: `[start end
-/// reported]` for the outermost nodes `table` colours, in source order.
+/// A span as the walk collects it: BYTE offsets `[start, end)` and what it reports.
+#[cfg(feature = "treesit")]
+type RawSpan = (usize, usize, Value);
+
+/// Raw byte spans as the `[start end reported]` vector a span query answers, in char offsets.
+#[cfg(feature = "treesit")]
+fn raw_spans_value<T: SpanText>(heap: &mut Heap, text: &T, raw: Vec<RawSpan>) -> Value {
+    let mut out: Vec<Value> = Vec::with_capacity(raw.len());
+    for (start, end, reported) in raw {
+        let span = vec![
+            Value::int(text.char_of(start) as i64),
+            Value::int(text.char_of(end) as i64),
+            reported,
+        ];
+        out.push(heap.alloc_vector(span));
+    }
+    heap.alloc_vector(out)
+}
+
+/// The host walk of one tree, then — when the caller declared injections — the embedded
+/// documents' spans spliced over it (ADR-489). Shared by the text and held-tree paths, so
+/// the two answer alike.
+#[cfg(feature = "treesit")]
+fn host_and_injected_spans<T: SpanText>(
+    tree: &tree_sitter::Tree,
+    text: &T,
+    query: &SpanQuery,
+    injections: Option<&Injections>,
+) -> Vec<RawSpan> {
+    let mut host: Vec<RawSpan> = Vec::new();
+    let root = tree.root_node();
+    spans_into(root, &NodeContext::ROOT, text, query, &mut host);
+    match injections {
+        Some(injections) if !injections.rules.is_empty() => {
+            splice_injections(root, text, query, injections, host)
+        }
+        _ => host,
+    }
+}
+
+/// `(tree-sitter-spans source lang table keywords? injections)` — the fontify query: `[start
+/// end reported]` for the outermost nodes `table` colours, in source order.
 ///
 /// **Why a table and not only a kind set (ADR-486).** A kind alone cannot tell apart the
 /// names a grammar gives one kind: in HCL a block's type, an attribute's name and a called
@@ -871,6 +951,9 @@ fn spans_into<T: SpanText>(
 /// `keywords?` adds the cross-language rule that an anonymous token beginning with a
 /// letter is a keyword, reported as kind `:__keyword__`. It is a flag rather than a kind
 /// because no grammar names it: keywords surface as anonymous tokens of every kind.
+///
+/// `injections` (ADR-489) names the nodes whose text is another language's document; their
+/// spans replace the host's there.
 #[cfg(feature = "treesit")]
 pub fn spans(
     heap: &mut Heap,
@@ -878,6 +961,7 @@ pub fn spans(
     lang: &str,
     table: &SpanTable,
     keywords: bool,
+    injections: Option<&Injections>,
 ) -> LispResult {
     let tree = parse_cached(src, lang)?;
     let b2c = byte_to_char_offsets(src);
@@ -886,11 +970,581 @@ pub fn spans(
         keywords,
         window: None,
     };
-    let mut out: Vec<Value> = Vec::new();
     let text = FlatText { src, b2c: &b2c };
+    let raw = host_and_injected_spans(&tree, &text, &query, injections);
+    Ok(raw_spans_value(heap, &text, raw))
+}
+
+// ---- injections: another language's document inside this one (ADR-489) ---------------
+//
+// A Markdown fence's body is Rust, an Elixir `~H` sigil's is HEEx, a Terraform heredoc's is
+// shell. tree-sitter parses such a document IN PLACE: a parser given `included_ranges` reads
+// only those byte ranges of the text, as one document, and its nodes carry the outer text's
+// offsets. So the pieces of one embedded document (a heredoc split by `${…}` interpolations)
+// parse together, and nothing is copied or re-based.
+//
+// Two layers. [`range_spans`] colours given ranges with a given language — what a host with
+// no tree (a line lexer) calls. [`splice_injections`] is the declarative half for a
+// tree-sitter host: the host's injection RULES say, by selector, which nodes hold another
+// language's text; the walk finds them, each parent's matching children are one document, and
+// that document's spans replace the host's over its pieces.
+//
+// An injected document is parsed per call, over what the call asked for. No injected tree is
+// held: a held host tree answers a frame's window, and the documents reaching into it are
+// parsed again for that frame. The caps below bound what one call can parse.
+
+/// The most bytes one embedded document is parsed whole. A longer one is cut to the query's
+/// window (losing what lies above it, as a windowed fontify without a held tree does), and
+/// without a window it is left in the host's colours.
+#[cfg(feature = "treesit")]
+pub const INJECTION_DOCUMENT_BYTES: usize = 32 * 1024;
+
+/// The most bytes of embedded documents one call parses; documents past it keep the host's
+/// colours. What bounds a file of a thousand fences to the cost of a few.
+#[cfg(feature = "treesit")]
+pub const INJECTION_CALL_BYTES: usize = 128 * 1024;
+
+/// The most embedded documents one call collects.
+#[cfg(feature = "treesit")]
+pub const INJECTION_DOCUMENTS: usize = 64;
+
+/// The most pieces (included ranges) one document has; a document of more keeps the host's
+/// colours rather than hand tree-sitter an unbounded range list.
+#[cfg(feature = "treesit")]
+pub const INJECTION_PIECES: usize = 256;
+
+/// The language of an embedded document: fixed by the rule, or read from a node beside it.
+#[derive(Debug)]
+#[cfg_attr(not(feature = "treesit"), allow(dead_code))]
+pub enum InjectedLanguage {
+    /// `:lang :bash` — every matching document is this language.
+    Fixed(String),
+    /// `:lang-from :info_string` — the first word of a node of this kind among the content's
+    /// parent's children (a fence's info string, a sigil's name), or else among the content
+    /// node's own; `:aliases` maps a word to a language (`"sh"` → `bash`, `"H"` → `heex`),
+    /// and a word with no alias names its language itself, lowercased.
+    From {
+        kind: String,
+        aliases: std::collections::HashMap<String, String>,
+    },
+}
+
+/// One injection rule: the nodes whose text is the embedded document, and its language.
+#[derive(Debug)]
+#[cfg_attr(not(feature = "treesit"), allow(dead_code))]
+pub struct InjectionRule {
+    pub content: Selector,
+    pub language: InjectedLanguage,
+}
+
+/// What a host declares about embedded documents: its rules, and the face table to colour
+/// each injected language with. A language with no table here is never injected — which is
+/// also what keeps an open `:lang-from` word (`~r`, a fence tagged `text`) from reaching a
+/// grammar nobody meant.
+#[derive(Debug, Default)]
+#[cfg_attr(not(feature = "treesit"), allow(dead_code))]
+pub struct Injections {
+    pub rules: Vec<InjectionRule>,
+    pub tables: std::collections::HashMap<String, SpanTable>,
+}
+
+/// One embedded document as the walk finds it: the rule that matched, the parent whose
+/// matching children it is, and those children — its pieces, in source order.
+#[cfg(feature = "treesit")]
+struct InjectedDocument<'tree> {
+    rule: usize,
+    parent: tree_sitter::Node<'tree>,
+    pieces: Vec<tree_sitter::Node<'tree>>,
+}
+
+#[cfg(feature = "treesit")]
+fn overlaps(start: usize, end: usize, window: Option<(usize, usize)>) -> bool {
+    match window {
+        None => true,
+        Some((from, to)) => {
+            (start < to && end > from) || (start == end && from <= start && start < to)
+        }
+    }
+}
+
+/// Collect the embedded documents under `node` that reach into `window`. At each node the
+/// walk tests EVERY child against the rules — a document's pieces outside the window still
+/// belong to it, so a window on the middle of a heredoc parses all of it — and descends only
+/// into children that matched nothing and reach the window. A matched child is not entered:
+/// the outermost content node is the document, and injections do not nest.
+#[cfg(feature = "treesit")]
+fn injections_into<'tree, T: SpanText>(
+    node: tree_sitter::Node<'tree>,
+    context: &NodeContext,
+    text: &T,
+    rules: &[InjectionRule],
+    window: Option<(usize, usize)>,
+    out: &mut Vec<InjectedDocument<'tree>>,
+) {
+    if out.len() >= INJECTION_DOCUMENTS {
+        return;
+    }
+    let mut cursor = node.walk();
+    if !cursor.goto_first_child() {
+        return;
+    }
+    let mut named_index = 0;
+    let mut here: Vec<InjectedDocument<'tree>> = Vec::new();
+    loop {
+        let child = cursor.node();
+        // past the window, only a document already open here can still gain pieces
+        let past = window.is_some_and(|(_, to)| child.start_byte() >= to);
+        if past && here.is_empty() {
+            break;
+        }
+        let child_context = NodeContext {
+            parent: Some(node),
+            field: cursor.field_name(),
+            nth: child.is_named().then_some(named_index),
+            outer: Some(context),
+        };
+        if child.is_named() {
+            named_index += 1;
+        }
+        match rules
+            .iter()
+            .position(|rule| rule.content.holds(child, &child_context, text))
+        {
+            Some(rule) => match here.iter_mut().find(|document| document.rule == rule) {
+                Some(document) => document.pieces.push(child),
+                None => here.push(InjectedDocument {
+                    rule,
+                    parent: node,
+                    pieces: vec![child],
+                }),
+            },
+            None if !past && overlaps(child.start_byte(), child.end_byte(), window) => {
+                injections_into(child, &child_context, text, rules, window, out);
+            }
+            None => {}
+        }
+        if !cursor.goto_next_sibling() {
+            break;
+        }
+    }
+    out.extend(here.into_iter().filter(|document| {
+        document
+            .pieces
+            .iter()
+            .any(|piece| overlaps(piece.start_byte(), piece.end_byte(), window))
+    }));
+    out.truncate(INJECTION_DOCUMENTS);
+}
+
+/// The word a `:lang-from` node names: its text's leading run of letters, digits and `_ - +
+/// #` (`rust` of `rust,ignore`, `c++`, `H`).
+#[cfg(feature = "treesit")]
+fn language_word<T: SpanText>(node: tree_sitter::Node, text: &T) -> Option<String> {
+    let source = text.text_in(node.start_byte(), node.end_byte());
+    let word: String = source
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || "_-+#".contains(*c))
+        .collect();
+    (!word.is_empty()).then_some(word)
+}
+
+/// The language of `document`, by its rule.
+#[cfg(feature = "treesit")]
+fn document_language<'tree, T: SpanText>(
+    document: &InjectedDocument<'tree>,
+    rule: &InjectionRule,
+    text: &T,
+) -> Option<String> {
+    let (kind, aliases) = match &rule.language {
+        InjectedLanguage::Fixed(lang) => return Some(lang.clone()),
+        InjectedLanguage::From { kind, aliases } => (kind, aliases),
+    };
+    let first_of_kind = |node: tree_sitter::Node<'tree>| -> Option<tree_sitter::Node<'tree>> {
+        let mut cursor = node.walk();
+        node.children(&mut cursor)
+            .find(|child| child.kind() == kind.as_str())
+    };
+    let named_by = first_of_kind(document.parent).or_else(|| {
+        document
+            .pieces
+            .first()
+            .and_then(|piece| first_of_kind(*piece))
+    })?;
+    let word = language_word(named_by, text)?;
+    Some(
+        aliases
+            .get(&word)
+            .cloned()
+            .unwrap_or_else(|| word.to_lowercase()),
+    )
+}
+
+/// Parse byte `pieces` (sorted, disjoint, non-empty) of `text` as ONE `lang` document — the
+/// included-ranges parse. None when no grammar for `lang` loads, or the parse fails: an
+/// embedded language's grammar is optional, and its absence is never an error.
+#[cfg(feature = "treesit")]
+fn parse_pieces<T: SpanText>(
+    text: &T,
+    lang: &str,
+    pieces: &[(usize, usize)],
+) -> Option<tree_sitter::Tree> {
+    let language = language_for(lang).ok()?;
+    let mut parser = checkout_parser(lang, &language).ok()?;
+    let bytes: Vec<usize> = pieces
+        .iter()
+        .flat_map(|(start, end)| [*start, *end])
+        .collect();
+    // a grammar's scanner may ask the lexer for its column (Python's indentation, Markdown's
+    // block structure), and the column comes from the range's point
+    let points = text.points_of(&bytes);
+    let ranges: Vec<tree_sitter::Range> = pieces
+        .iter()
+        .enumerate()
+        .map(|(index, (start, end))| tree_sitter::Range {
+            start_byte: *start,
+            end_byte: *end,
+            start_point: points[2 * index],
+            end_point: points[2 * index + 1],
+        })
+        .collect();
+    let tree = parser.set_included_ranges(&ranges).ok().and_then(|()| {
+        let length = text.byte_length();
+        parser.parse_with_options(
+            &mut |byte: usize, _point: tree_sitter::Point| -> &[u8] {
+                if byte >= length {
+                    &[]
+                } else {
+                    text.bytes_from(byte)
+                }
+            },
+            None,
+            None,
+        )
+    });
+    // a pooled parser must not carry this call's ranges into the next parse
+    let _ = parser.set_included_ranges(&[]);
+    return_parser(lang, parser);
+    tree
+}
+
+/// The injected document's spans: `pieces` of `text` parsed as one `lang` document and
+/// walked with `table`, each span clipped to the pieces (a string spanning an interpolation
+/// colours only the string's own text) and to `window`. None when there is no grammar.
+#[cfg(feature = "treesit")]
+fn injected_spans<T: SpanText>(
+    text: &T,
+    lang: &str,
+    pieces: &[(usize, usize)],
+    table: &SpanTable,
+    keywords: bool,
+    window: Option<(usize, usize)>,
+) -> Option<Vec<RawSpan>> {
+    let tree = parse_pieces(text, lang, pieces)?;
+    let query = SpanQuery {
+        table,
+        keywords,
+        window: None,
+    };
+    let mut whole: Vec<RawSpan> = Vec::new();
+    spans_into(
+        tree.root_node(),
+        &NodeContext::ROOT,
+        text,
+        &query,
+        &mut whole,
+    );
+    let (from, to) = window.unwrap_or((0, usize::MAX));
+    let mut clipped = Vec::with_capacity(whole.len());
+    for (start, end, reported) in whole {
+        for (piece_start, piece_end) in pieces {
+            let low = start.max(*piece_start).max(from);
+            let high = end.min(*piece_end).min(to);
+            if low < high || (start == end && low == high && start == low) {
+                clipped.push((low, high, reported));
+            }
+        }
+    }
+    Some(clipped)
+}
+
+/// Sort byte ranges, drop empty ones and merge the overlapping — what an included-ranges parse
+/// requires of them.
+#[cfg(feature = "treesit")]
+fn normalized_pieces(mut pieces: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    pieces.retain(|(start, end)| start < end);
+    pieces.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(pieces.len());
+    for (start, end) in pieces {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
+}
+
+/// Bound one document's pieces to what a call may parse: whole when it fits
+/// [`INJECTION_DOCUMENT_BYTES`], else cut to `window`; None when it still does not fit, or
+/// has more than [`INJECTION_PIECES`] pieces.
+#[cfg(feature = "treesit")]
+fn bounded_pieces(
+    pieces: Vec<(usize, usize)>,
+    window: Option<(usize, usize)>,
+) -> Option<Vec<(usize, usize)>> {
+    let size =
+        |pieces: &[(usize, usize)]| pieces.iter().map(|(start, end)| end - start).sum::<usize>();
+    let pieces = if size(&pieces) <= INJECTION_DOCUMENT_BYTES {
+        pieces
+    } else {
+        let (from, to) = window?;
+        normalized_pieces(
+            pieces
+                .into_iter()
+                .map(|(start, end)| (start.max(from), end.min(to)))
+                .collect(),
+        )
+    };
+    (!pieces.is_empty()
+        && pieces.len() <= INJECTION_PIECES
+        && size(&pieces) <= INJECTION_DOCUMENT_BYTES)
+        .then_some(pieces)
+}
+
+/// The host's `spans` with every embedded document's spans spliced over it: the documents
+/// reaching the query's window are found, parsed within the caps, and over each one's pieces
+/// the host's spans are cut away and the injected ones put in. A document whose language
+/// has no table or no grammar, or that the caps leave out, keeps the host's colours.
+#[cfg(feature = "treesit")]
+fn splice_injections<T: SpanText>(
+    root: tree_sitter::Node,
+    text: &T,
+    query: &SpanQuery,
+    injections: &Injections,
+    host: Vec<RawSpan>,
+) -> Vec<RawSpan> {
+    let mut documents: Vec<InjectedDocument> = Vec::new();
+    injections_into(
+        root,
+        &NodeContext::ROOT,
+        text,
+        &injections.rules,
+        query.window,
+        &mut documents,
+    );
+    let mut budget = INJECTION_CALL_BYTES;
+    let mut covered: Vec<(usize, usize)> = Vec::new();
+    let mut injected: Vec<RawSpan> = Vec::new();
+    for document in &documents {
+        let rule = &injections.rules[document.rule];
+        let Some(lang) = document_language(document, rule, text) else {
+            continue;
+        };
+        let Some(table) = injections.tables.get(&lang) else {
+            continue;
+        };
+        let pieces = normalized_pieces(
+            document
+                .pieces
+                .iter()
+                .map(|piece| (piece.start_byte(), piece.end_byte()))
+                .collect(),
+        );
+        let Some(pieces) = bounded_pieces(pieces, query.window) else {
+            continue;
+        };
+        let size: usize = pieces.iter().map(|(start, end)| end - start).sum();
+        if size > budget {
+            continue;
+        }
+        let Some(spans) = injected_spans(text, &lang, &pieces, table, query.keywords, query.window)
+        else {
+            continue;
+        };
+        budget -= size;
+        covered.extend(pieces);
+        injected.extend(spans);
+    }
+    if covered.is_empty() {
+        return host;
+    }
+    let covered = normalized_pieces(covered);
+    let mut spliced = subtract_ranges(host, &covered);
+    spliced.extend(injected);
+    spliced.sort_by_key(|(start, end, _)| (*start, *end));
+    spliced
+}
+
+/// `spans` with every part inside a `covered` range (sorted, disjoint) cut away: a span
+/// straddling one keeps its parts outside it, a zero-width span inside one is dropped.
+#[cfg(feature = "treesit")]
+fn subtract_ranges(spans: Vec<RawSpan>, covered: &[(usize, usize)]) -> Vec<RawSpan> {
+    let mut out = Vec::with_capacity(spans.len());
+    for (start, end, reported) in spans {
+        // the first covered range that ends after the span starts
+        let first = covered.partition_point(|(_, covered_end)| *covered_end <= start);
+        let mut cursor = start;
+        let mut dropped = false;
+        for (covered_start, covered_end) in &covered[first..] {
+            if *covered_start >= end && !(start == end && *covered_start == start) {
+                break;
+            }
+            if start == end {
+                dropped = *covered_start <= start && start < *covered_end;
+                break;
+            }
+            if *covered_start > cursor {
+                out.push((cursor, *covered_start, reported));
+            }
+            cursor = cursor.max(*covered_end);
+        }
+        if start == end {
+            if !dropped {
+                out.push((start, end, reported));
+            }
+        } else if cursor < end {
+            out.push((cursor, end, reported));
+        }
+    }
+    out
+}
+
+/// `(%tree-sitter-range-spans text lang ranges table keywords?)` — chars `ranges` of `text`
+/// parsed as ONE `lang` document and coloured with `table`: `[start end reported]` in the
+/// outer text's char offsets, clipped to the ranges. `Nil` when no grammar for `lang` loads.
+/// Ranges are sorted and merged; past [`INJECTION_PIECES`] ranges or [`INJECTION_CALL_BYTES`]
+/// bytes the rest are left out, so the call is bounded whatever it is handed.
+#[cfg(feature = "treesit")]
+pub fn range_spans(
+    heap: &mut Heap,
+    text: RangeText,
+    lang: &str,
+    ranges: &[(usize, usize)],
+    table: &SpanTable,
+    keywords: bool,
+) -> LispResult {
+    fn bounded_byte_ranges<T: SpanText>(
+        text: &T,
+        ranges: &[(usize, usize)],
+    ) -> Vec<(usize, usize)> {
+        let pieces = normalized_pieces(
+            ranges
+                .iter()
+                .map(|(start, end)| (text.byte_of(*start), text.byte_of(*end)))
+                .collect(),
+        );
+        let mut budget = INJECTION_CALL_BYTES;
+        let mut kept = Vec::new();
+        for (start, end) in pieces.into_iter().take(INJECTION_PIECES) {
+            if budget == 0 {
+                break;
+            }
+            let end = end.min(start + budget);
+            budget -= end - start;
+            kept.push((start, end));
+        }
+        kept
+    }
+    fn answer<T: SpanText>(
+        heap: &mut Heap,
+        text: &T,
+        lang: &str,
+        ranges: &[(usize, usize)],
+        table: &SpanTable,
+        keywords: bool,
+    ) -> Value {
+        let pieces = bounded_byte_ranges(text, ranges);
+        if pieces.is_empty() {
+            return if language_for(lang).is_ok() {
+                heap.alloc_vector(Vec::new())
+            } else {
+                Value::Nil
+            };
+        }
+        match injected_spans(text, lang, &pieces, table, keywords, None) {
+            Some(mut raw) => {
+                raw.sort_by_key(|(start, end, _)| (*start, *end));
+                raw_spans_value(heap, text, raw)
+            }
+            None => Value::Nil,
+        }
+    }
+    Ok(match text {
+        RangeText::Rope(rope) => answer(heap, &rope, lang, ranges, table, keywords),
+        RangeText::Flat(src) => {
+            let b2c = byte_to_char_offsets(&src);
+            let flat = FlatText {
+                src: &src,
+                b2c: &b2c,
+            };
+            answer(heap, &flat, lang, ranges, table, keywords)
+        }
+    })
+}
+
+/// The text a range query colours: a rope, read in place, or a string.
+#[cfg_attr(not(feature = "treesit"), allow(dead_code))]
+pub enum RangeText {
+    Rope(ropey::Rope),
+    Flat(String),
+}
+
+/// Widen `changed` byte ranges (sorted, disjoint) so each covers every embedded document it
+/// reaches, whole — an edit inside a fence can recolour the fence below the edit (a quote
+/// opened there), which the HOST tree's changed ranges cannot know, since the host's syntax
+/// did not change. A change to what names a document's language (a fence's info string)
+/// widens to that document too.
+#[cfg(feature = "treesit")]
+fn widen_to_documents(
+    tree: &tree_sitter::Tree,
+    text: &ropey::Rope,
+    rules: &[InjectionRule],
+    changed: Vec<(usize, usize)>,
+) -> Vec<(usize, usize)> {
     let root = tree.root_node();
-    spans_into(heap, root, &NodeContext::ROOT, &text, &query, &mut out);
-    Ok(heap.alloc_vector(out))
+    let mut widened = Vec::with_capacity(changed.len());
+    for (from, to) in changed {
+        let mut documents: Vec<InjectedDocument> = Vec::new();
+        // a deletion is a zero-width change; the window must still touch the nodes around it
+        let window = (from, to.max(from + 1));
+        injections_into(
+            root,
+            &NodeContext::ROOT,
+            text,
+            rules,
+            Some(window),
+            &mut documents,
+        );
+        let (mut low, mut high) = (from, to);
+        for document in &documents {
+            let start = document
+                .pieces
+                .first()
+                .map_or(low, |piece| piece.start_byte());
+            let end = document
+                .pieces
+                .last()
+                .map_or(high, |piece| piece.end_byte());
+            low = low.min(start);
+            high = high.max(end);
+        }
+        widened.push((low, high));
+    }
+    normalized_pieces_keep_empty(widened)
+}
+
+/// [`normalized_pieces`] that keeps zero-width ranges (a deletion's place).
+#[cfg(feature = "treesit")]
+fn normalized_pieces_keep_empty(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    ranges.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
 }
 
 // ---- tree handles: a parse tree a caller keeps, edits and queries (ADR-443) ----------
@@ -1282,9 +1936,10 @@ pub fn tree_reparse(
     }))
 }
 
-/// `(%tree-sitter-tree-spans tree table keywords? from to)` — the fontify walk over a held
-/// tree, restricted to chars `[from, to)` and clipped to it; `Nil` for a gone handle. The
-/// walk still starts at the root, so a node's context is the whole document's.
+/// `(%tree-sitter-tree-spans tree table keywords? from to injections)` — the fontify walk over
+/// a held tree, restricted to chars `[from, to)` and clipped to it; `Nil` for a gone handle.
+/// The walk still starts at the root, so a node's context is the whole document's. Embedded
+/// documents reaching the window are parsed for this call (ADR-489): no injected tree is held.
 #[cfg(feature = "treesit")]
 pub fn tree_spans(
     heap: &mut Heap,
@@ -1293,6 +1948,7 @@ pub fn tree_spans(
     keywords: bool,
     from: i64,
     to: i64,
+    injections: Option<&Injections>,
 ) -> LispResult {
     let Some(entry) = tree_entry(handle) else {
         return Ok(Value::Nil);
@@ -1306,29 +1962,27 @@ pub fn tree_spans(
         keywords,
         window: Some(window),
     };
-    let mut out: Vec<Value> = Vec::new();
-    let root = entry.tree.root_node();
-    spans_into(
-        heap,
-        root,
-        &NodeContext::ROOT,
-        &entry.text,
-        &query,
-        &mut out,
-    );
-    Ok(heap.alloc_vector(out))
+    let raw = host_and_injected_spans(&entry.tree, &entry.text, &query, injections);
+    Ok(raw_spans_value(heap, &entry.text, raw))
 }
 
-/// `(%tree-sitter-tree-changes tree)` — the char ranges `[start end]` of `tree`'s text whose
-/// colouring may differ from the tree it was reparsed from; `Bool(true)` when it was a fresh
-/// parse (everything may differ), `Nil` for a gone handle.
+/// `(%tree-sitter-tree-changes tree injections)` — the char ranges `[start end]` of `tree`'s
+/// text whose colouring may differ from the tree it was reparsed from; `Bool(true)` when it
+/// was a fresh parse (everything may differ), `Nil` for a gone handle. With injection rules,
+/// each range is widened over the embedded documents it reaches (ADR-489).
 #[cfg(feature = "treesit")]
-pub fn tree_changes(heap: &mut Heap, handle: u64) -> LispResult {
+pub fn tree_changes(heap: &mut Heap, handle: u64, injections: Option<&Injections>) -> LispResult {
     let Some(entry) = tree_entry(handle) else {
         return Ok(Value::Nil);
     };
     let Some(changed) = entry.changed else {
         return Ok(Value::Bool(true));
+    };
+    let changed = match injections {
+        Some(injections) if !injections.rules.is_empty() && !changed.is_empty() => {
+            widen_to_documents(&entry.tree, &entry.text, &injections.rules, changed)
+        }
+        _ => changed,
     };
     let ranges: Vec<Value> = changed
         .into_iter()
@@ -1418,12 +2072,17 @@ pub fn tree_spans(
     _keywords: bool,
     _from: i64,
     _to: i64,
+    _injections: Option<&Injections>,
 ) -> LispResult {
     Err(without_treesit("%tree-sitter-tree-spans"))
 }
 
 #[cfg(not(feature = "treesit"))]
-pub fn tree_changes(_heap: &mut crate::core::heap::Heap, _handle: u64) -> LispResult {
+pub fn tree_changes(
+    _heap: &mut crate::core::heap::Heap,
+    _handle: u64,
+    _injections: Option<&Injections>,
+) -> LispResult {
     Err(without_treesit("%tree-sitter-tree-changes"))
 }
 
@@ -1454,8 +2113,22 @@ pub fn spans(
     lang: &str,
     _table: &SpanTable,
     _keywords: bool,
+    _injections: Option<&Injections>,
 ) -> LispResult {
     parse(heap, src, lang)
+}
+
+#[cfg(not(feature = "treesit"))]
+pub fn range_spans(
+    _heap: &mut crate::core::heap::Heap,
+    _text: RangeText,
+    _lang: &str,
+    _ranges: &[(usize, usize)],
+    _table: &SpanTable,
+    _keywords: bool,
+) -> LispResult {
+    // no grammar can load in a runtime without tree-sitter, and a missing grammar is nil
+    Ok(crate::core::value::Value::Nil)
 }
 
 /// `(tree-sitter-load-grammar path lang)` — load a tree-sitter grammar from a
@@ -2013,7 +2686,7 @@ mod tree_handle_tests {
     fn spans_of(handle: u64, from: i64, to: i64) -> Vec<(i64, i64)> {
         let mut heap = Heap::new();
         let table = SpanTable::of_kinds(vec!["string".to_string(), "comment".to_string()]);
-        let v = tree_spans(&mut heap, handle, &table, false, from, to).expect("spans");
+        let v = tree_spans(&mut heap, handle, &table, false, from, to, None).expect("spans");
         heap.seq_items(v)
             .expect("a vector")
             .into_iter()
@@ -2063,7 +2736,7 @@ mod tree_handle_tests {
         assert!(tree_free(fresh));
         let mut heap = Heap::new();
         let empty = SpanTable::default();
-        let gone = tree_spans(&mut heap, fresh, &empty, false, 0, 10).expect("answers");
+        let gone = tree_spans(&mut heap, fresh, &empty, false, 0, 10, None).expect("answers");
         assert!(matches!(gone, Value::Nil), "a freed handle reads as nil");
     }
 }

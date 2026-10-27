@@ -4220,3 +4220,22 @@ of comparing the two ropes; `editor/buffer/buffer-splices-cover` (was the privat
 `buffer-cover-step` fold) folds a buffer's splices into that range, so an editor passes its
 splice log's answer. Run here: `buffer_test`, `highlight_test` (told == found == a cold cache,
 four edits), `doc_examples`, `audit`, `nest check --strict` on both files.
+
+2026-10-27 (ADR-489, injections): tree-sitter could parse a document in one language only, so
+code embedded in another (a Markdown fence, Elixir's `~H`, a Terraform heredoc, a Dockerfile
+`RUN` line) could not be coloured as itself. Two layers on tree-sitter's included ranges. First,
+`%tree-sitter-range-spans` (std `fontify-ranges`) colours given char ranges of a string or rope
+as ONE document in the outer text's offsets, nil/`()` for a missing grammar; it is what a line
+lexer calls. Second, `%tree-sitter-spans` / `%tree-sitter-tree-spans` / `%tree-sitter-tree-changes`
+(std `fontify` / `fontify-tree` / `tree-changes`) take an optional injection spec: `{:rules
+[{:content selector :lang kw | :lang-from kind :aliases {word kw}}] :faces {lang table}}`. A
+parent's matching children are one document. Its spans replace the host's over its pieces, and
+an interpolation between the pieces keeps the host's colours. Injected trees are parsed per call
+over the window and not held, capped at 32 KB a document (cut to the window past that), 128 KB
+and 64 documents a call. `tree-changes` widens an edit over the embedded document it lands in.
+`injection-problems` validates a spec. The span walk now collects byte spans and converts them
+once at the end. Run here: `treesit_module_test` (76; Ruby/Elixir, plus installed
+HCL/Python/Rust/Go), `doc_examples`, `audit`, `nest check --strict` on `std/editor/treesit.blsp`,
+`cargo test -p brood --lib treesit` (gui, treesit-grammars), and clippy (gui, treesit-grammars;
+and with treesit off). Three guards were sabotaged red: one document per piece, a walk stopping
+at the window, and a pooled parser keeping its ranges. Nothing was measured.

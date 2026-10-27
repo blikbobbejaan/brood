@@ -206,6 +206,8 @@ pub fn register(heap: &mut Heap, root: EnvId) {
     treesit::register_tree_queries(&mut primitives);
     // And again: declaring a grammar without loading it (ADR-481).
     treesit::register_grammar_declarations(&mut primitives);
+    // And again: colouring ranges of a text as an embedded document (ADR-489).
+    treesit::register_injections(&mut primitives);
 }
 
 #[cfg(test)]

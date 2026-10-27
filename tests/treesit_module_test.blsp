@@ -678,3 +678,227 @@
         (assert= (%tree-sitter-tree-spans tree faces false 0 (string/length src))
           (%tree-sitter-spans src :rust faces false))
         (editor/treesit/free-tree tree)))))
+
+;; ---- injections: another language's document inside this one (ADR-489) ----------------
+
+(when tsm-grammars?
+  ;; `x = "abc` and `def"` are two ranges of one Ruby document: together they are a
+  ;; string, and the `def` after the gap is inside it — alone, the second range is a keyword.
+  (def tsm-split "x = \"abc@@@@def\"\n")
+
+  (describe "injections: ranges of a text as one document"
+    (test "ranges spanning several pieces parse as one document, in the outer text's offsets"
+      (assert= (%tree-sitter-range-spans tsm-split :ruby [[0 8] [12 17]] {:string :s} true)
+        [[4 8 :s] [12 16 :s]])
+      ;; the second piece alone is code, which is what one document is not
+      (assert= (first (%tree-sitter-range-spans tsm-split :ruby [[12 17]] {:string :s} true))
+        [12 15 :__keyword__]))
+
+    (test "an injected parse leaves the pooled parser whole for the next document"
+      ;; the parser goes back to a pool; one still carrying [[0 3]] would read `# r` alone
+      (%tree-sitter-range-spans "# range only\n" :ruby [[0 3]] {:comment :c} false)
+      (assert= (%tree-sitter-spans "# r\n\"after the range\"\n"
+                 :ruby {:comment :c :string :s}
+                 false)
+        [[0 3 :c] [4 21 :s]]))
+
+    (test "a rope answers as the string does, and ranges are sorted and merged"
+      (assert= (%tree-sitter-range-spans (text/from-string tsm-split)
+                 :ruby [[12 17] [0 8] [2 5]]
+                 {:string :s}
+                 true)
+        (%tree-sitter-range-spans tsm-split :ruby [[0 8] [12 17]] {:string :s} true)))
+
+    (test "a missing grammar yields no spans and never raises"
+      (assert= (%tree-sitter-range-spans tsm-split :no-such-grammar [[0 8]] {:string :s} true) nil)
+      (assert= (editor/treesit/fontify-ranges tsm-split :no-such-grammar [[0 8]] {:string :s}) '()))
+
+    (test "fontify-ranges colours an Elixir heredoc's body as Ruby, with resolved faces"
+      (let (src "x = \"\"\"\ndef a\n  1\nend\n\"\"\"\n"
+            body [(+ 7 1) (index-of src "\"\"\"" 8)])
+        (assert= (editor/treesit/fontify-ranges src :ruby [body] {:integer :syntax/number} false)
+          (list [16 17 (editor/face/face :syntax/number)])))))
+
+  ;; An Elixir host with Ruby embedded twice: a `~R` sigil (its language read from the sigil's
+  ;; name) and a heredoc split by an interpolation (a fixed language, two pieces).
+  (def tsm-inject-src "x = ~R\"\"\"\ndef a\n  1\nend\n\"\"\"\ny = \"\"\"\ndef a#{x}\nend\n\"\"\"\n")
+  (def tsm-inject-host {:sigil :str :string :str})
+  (def tsm-inject-rb {:integer :rb-int :method :rb-method})
+  (def tsm-inject
+    {:rules [{:content {:kind :quoted_content :parent :sigil}
+              :lang-from :sigil_name
+              :aliases {"R" :ruby}}
+              {:content {:kind :quoted_content :parent :string} :lang :ruby}]
+     :faces {:ruby tsm-inject-rb}})
+  (def tsm-injected
+    [[4 9 :str]
+      [10 23 :rb-method]
+      [24 27 :str]
+      [32 35 :str]
+      [36 41 :rb-method]
+      [41 45 :str]
+      [45 49 :rb-method]
+      [50 53 :str]])
+
+  (defn tsm-clip (spans from to)
+    ;; spans as a window [from, to) of a held tree reports them
+    (into []
+      (seq/keep spans
+        (fn ([start end reported])
+          (when (and (< start to) (> end from))
+            [(math/max start from) (math/min end to) reported])))))
+
+  (describe "injections: declared on a tree-sitter host"
+    (test "the injected language's spans replace the host's over the content"
+      (assert= (%tree-sitter-spans tsm-inject-src :elixir tsm-inject-host false)
+        [[4 27 :str] [32 53 :str]])
+      (assert= (%tree-sitter-spans tsm-inject-src :elixir tsm-inject-host false tsm-inject)
+        tsm-injected))
+
+    (test "a parent's matching children are ONE document: the method spans the interpolation"
+      ;; `\ndef a` and `\nend\n` are each half a method; only together are they one
+      (let (spans (%tree-sitter-spans tsm-inject-src :elixir tsm-inject-host false tsm-inject))
+        (assert= (seq/filter spans (fn (sp) (>= (first sp) 32)))
+          (list [32 35 :str] [36 41 :rb-method] [41 45 :str] [45 49 :rb-method] [50 53 :str]))))
+
+    (test "processes injecting at once each get the same spans"
+      ;; the injected parses share the runtime's parser pool; each process's answer is its own
+      (assert= (seq/distinct (seq/pmap (range 0 8)
+                               (fn (_)
+                                 (%tree-sitter-spans tsm-inject-src
+                                   :elixir tsm-inject-host false tsm-inject))))
+        (list tsm-injected)))
+
+    (test "a language with no table or no grammar keeps the host's colours"
+      (let (host (%tree-sitter-spans tsm-inject-src :elixir tsm-inject-host false))
+        ;; no grammar for :nope
+        (assert= (%tree-sitter-spans tsm-inject-src
+                   :elixir tsm-inject-host
+                   false
+                   {:rules [{:content {:kind :quoted_content :parent :string} :lang :nope}]
+                    :faces {:nope tsm-inject-rb}})
+          host)
+        ;; no table: the sigil's word without an alias is `r`, which :faces does not name
+        (assert= (%tree-sitter-spans tsm-inject-src
+                   :elixir tsm-inject-host
+                   false
+                   {:rules [{:content {:kind :quoted_content :parent :sigil} :lang-from :sigil_name}]
+                    :faces {:ruby tsm-inject-rb}})
+          host)))
+
+    (test "held-tree spans equal the text's, over the whole file and over a window"
+      (let (tree (editor/treesit/open-tree tsm-inject-src :elixir)
+            whole (%tree-sitter-spans tsm-inject-src :elixir tsm-inject-host false tsm-inject))
+        (assert= (%tree-sitter-tree-spans tree
+                   tsm-inject-host
+                   false
+                   0
+                   (string/length tsm-inject-src)
+                   tsm-inject)
+          whole)
+        ;; a window inside the sigil's body still parses the whole body
+        (assert= (%tree-sitter-tree-spans tree tsm-inject-host false 12 20 tsm-inject)
+          (tsm-clip whole 12 20))
+        ;; and one over the second heredoc's tail sees the document its first piece began
+        (assert= (%tree-sitter-tree-spans tree tsm-inject-host false 46 54 tsm-inject)
+          (tsm-clip whole 46 54))
+        (editor/treesit/free-tree tree)))
+
+    (test "a window ending before a document's later pieces still parses them"
+      ;; Ruby's `"a` is a string only with the `b"` after the interpolation: a window over
+      ;; the first piece alone must not see it unterminated
+      (let (src "z = \"\"\"\nq = \"a#{x}b\"\n\"\"\"\n"
+            rule {:rules [{:content {:kind :quoted_content :parent :string} :lang :ruby}]
+                  :faces {:ruby {:string :rb-string}}}
+            tree (editor/treesit/open-tree src :elixir)
+            whole (%tree-sitter-spans src :elixir {:string :str} false rule))
+        (assert= (tsm-clip whole 8 15) [[12 14 :rb-string] [14 15 :str]])
+        (assert= (%tree-sitter-tree-spans tree {:string :str} false 8 15 rule)
+          (tsm-clip whole 8 15))
+        (editor/treesit/free-tree tree)))
+
+    (test "fontify and fontify-tree resolve the injected table's faces"
+      (let (host-faces {:sigil :syntax/string :string :syntax/string}
+            injections {:rules (get tsm-inject :rules) :faces {:ruby {:method :syntax/function}}}
+            spans (editor/treesit/fontify tsm-inject-src :elixir host-faces false injections)
+            tree (editor/treesit/open-tree tsm-inject-src :elixir))
+        (assert= (nth (seq/find spans (fn (sp) (= (first sp) 10))) 2)
+          (editor/face/face :syntax/function))
+        (assert= (editor/treesit/fontify-tree tree
+                   host-faces
+                   0
+                   (string/length tsm-inject-src)
+                   false
+                   injections)
+          (into [] spans))
+        (editor/treesit/free-tree tree)))
+
+    (test "an edit inside an embedded document widens the tree's changes over all of it"
+      (let (tree (editor/treesit/open-tree tsm-inject-src :elixir)
+            edited (str (string/substring tsm-inject-src 0 12)
+                     "\""
+                     (string/substring tsm-inject-src 12 (string/length tsm-inject-src)))
+            next (editor/treesit/update-tree tree edited :elixir))
+        ;; the host saw a character typed; the Ruby inside it may have recoloured to its end
+        (assert= (editor/treesit/tree-changes next) [[12 13]])
+        (assert= (editor/treesit/tree-changes next tsm-inject) [[9 25]])
+        (editor/treesit/free-tree tree)
+        (editor/treesit/free-tree next)))
+
+    (test "a document past the per-document cap keeps the host's colours unless a window cuts it"
+      (let (body (string/join (map (range 0 4000) (fn (_) "def a\nend\n")) "")
+            src (str "y = \"\"\"\n" body "\"\"\"\n")
+            rule {:rules [{:content {:kind :quoted_content :parent :string} :lang :ruby}]
+                  :faces {:ruby tsm-inject-rb}}
+            tree (editor/treesit/open-tree src :elixir))
+        ;; 40 KB of Ruby is past 32 KB: the whole-text query leaves it a string
+        (assert= (%tree-sitter-spans src :elixir tsm-inject-host false rule)
+          [[4 (dec (string/length src)) :str]])
+        ;; a window parses the part it shows
+        (assert= (%tree-sitter-tree-spans tree tsm-inject-host false 8 28 rule)
+          [[8 17 :rb-method] [18 27 :rb-method]])
+        (editor/treesit/free-tree tree)))
+
+    (test "a malformed spec is refused by the kernel and named by injection-problems"
+      (assert= (count (editor/treesit/injection-problems tsm-inject)) 0)
+      (each [[{:rules [{:content :x :lang :ruby :aliases {"a" :ruby}}] :faces {:ruby {}}} 1]
+              [{:rules [{:lang :ruby}] :faces {:ruby {}}} 1]
+              [{:rules [{:content {:feild :x} :lang :ruby}] :faces {:ruby {}}} 1]
+              [{:rules [{:content :x :lang-from :y :aliases {:a :ruby}}] :faces {:ruby {}}} 1]
+              [{:rules [] :faces {:ruby {{} :f}}} 1]
+              [{:rulez []} 1]]
+        (fn ([spec problems])
+          (assert= (count (editor/treesit/injection-problems spec)) problems)
+          (is (failure? (check-allow :discarded-catch
+                          (try
+                            (%tree-sitter-spans "x\n" :elixir {} false spec)
+                            (catch e (failure (error-message e)))))))))
+      ;; a fixed language with no table is legal to the kernel (it injects nothing) and a
+      ;; problem to a registration, which can only have meant a table
+      (assert= (count (editor/treesit/injection-problems {:rules [{:content :x :lang :sql}]
+                                                          :faces {}}))
+        1))))
+
+(when (and (tsm-installed? :hcl) (tsm-installed? :python))
+  (describe "injections: an HCL heredoc as Python"
+    (test "the heredoc's identifier names the language; its pieces are one document"
+      (let (src "x = <<-PY\n  def f(): return \"${var.a}\"\nPY\n"
+            injections {:rules [{:content {:kind :template_literal :parent :heredoc_template}
+                                 :lang-from :heredoc_identifier
+                                 :aliases {"PY" :python}}]
+                        :faces {:python {:string :py-string :identifier :py-name}}}
+            host {:heredoc_template :str}
+            tree (editor/treesit/open-tree src :hcl)
+            spans (%tree-sitter-spans src :hcl host true injections))
+        ;; Python's `""` spans the `${var.a}` between its quotes; each quote is its own piece
+        (assert= spans
+          [[4 12 :str]
+            [12 15 :__keyword__]
+            [16 17 :py-name]
+            [21 27 :__keyword__]
+            [28 29 :py-string]
+            [29 37 :str]
+            [37 38 :py-string]
+            [38 41 :str]])
+        (assert= (%tree-sitter-tree-spans tree host true 0 (string/length src) injections) spans)
+        (editor/treesit/free-tree tree)))))

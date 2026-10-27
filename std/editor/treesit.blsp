@@ -123,6 +123,83 @@ misspelt selector fails at load rather than at the first frame drawn.
     (editor/treesit/face-table-problems {{:kind :identifier :text #{\"def\" \"if\"} :parent {:kind :call}} :syntax/keyword})   → ()"
   (seq/keep (%map-pairs table) (fn ([selector face-name]) (selector-problem selector face-name))))
 
+;; An INJECTION spec (ADR-489) is the third thing a language hands the seam: which of its
+;; nodes hold another language's text. Checked here for the same reason as a face table —
+;; the kernel refuses a malformed one, but at the first frame.
+
+(def- injection-rule-keys #{:content :lang :lang-from :aliases})
+
+(defn- injection-rule-problems (rule faces)
+  ;; what is wrong with one injection rule, as a list of messages — the last, a language the
+  ;; rule can only ever name that has no table, being a rule that colours nothing
+  (let (shown (pr-str rule)
+        content (get rule :content)
+        fixed (get rule :lang)
+        from (get rule :lang-from)
+        aliases (get rule :aliases))
+    (cond
+      (not (map? rule)) (list (str shown " is not an injection rule map"))
+      (not (every? (keys rule) (fn (k) (contains? injection-rule-keys k))))
+        (list (str shown " names a key other than :content :lang :lang-from :aliases"))
+      (nil? content) (list (str shown " names no :content selector"))
+      (not (or (keyword? content) (map? content)))
+        (list (str shown ": :content is a node kind or a selector map"))
+      (and (map? content) (selector-shape-problem content 1))
+        (list (selector-shape-problem content 1))
+      (= (nil? fixed) (nil? from))
+        (list (str shown " names its language with :lang or with :lang-from — exactly one"))
+      (not (keyword? (or fixed from))) (list (str shown ": :lang and :lang-from are keywords"))
+      (and fixed aliases) (list (str shown ": :aliases goes with :lang-from, not :lang"))
+      (not (or (nil? aliases)
+             (and (map? aliases)
+               (every? (%map-pairs aliases) (fn ([word lang]) (and (string? word) (keyword? lang)))))))
+        (list (str shown ": :aliases maps a string word to a language keyword"))
+      else
+        (seq/keep (if fixed [fixed] (vals (or aliases {})))
+          (fn (lang)
+            (when (not (contains? faces lang))
+              (str shown " injects " lang ", which has no face table in :faces")))))))
+
+(defn injection-problems (injections:any -> list)
+  "What is malformed in the injection spec `injections` — one message per problem, `()` when
+it is sound. The spec says which nodes of a tree-sitter language hold ANOTHER language's
+text, and how to colour it (ADR-489):
+
+    {:rules [{:content {:kind :quoted_content :parent :sigil}   ; the nodes whose text it is
+              :lang-from :sigil_name                            ; …named by a node beside them
+              :aliases {\"H\" :heex}}                           ; …whose first word maps so
+             {:content {:kind :template_literal :parent :heredoc_template}
+              :lang :bash}]                                     ; or a fixed language
+     :faces {:heex heex-table :bash bash-table}}                ; each language's face table
+
+`:content` is a face-table selector. A parent's matching children are ONE document (a
+heredoc's pieces between `${…}` interpolations parse together). `:lang-from` names a node
+kind among the content's siblings, else its children — a fence's info string, a sigil's
+name — whose first word, through `:aliases` or lowercased as it is, is the language. A
+document whose language has no table in `:faces`, or no grammar, keeps the host's colours.
+What a registration checks beside `face-table-problems`.
+
+    (editor/treesit/injection-problems {:rules [{:content :heredoc :lang :bash}] :faces {:bash {:string :syntax/string}}})   → ()
+    (count (editor/treesit/injection-problems {:rules [{:content :heredoc :lang :bash :lang-from :x}] :faces {}}))   → 1
+    (count (editor/treesit/injection-problems {:rules [{:content :x :lang :sql}] :faces {}}))   → 1"
+  (cond
+    (not (map? injections)) (list (str (pr-str injections) " is not an injection spec map"))
+    (not (every? (keys injections) (fn (k) (contains? #{:rules :faces} k))))
+      (list "an injection spec takes :rules and :faces only")
+    :else
+      (let (rules (get injections :rules [])
+            faces (get injections :faces {}))
+        (cond
+          (not (or (vector? rules) (list? rules))) (list ":rules is a vector of injection rules")
+          (not (map? faces)) (list ":faces maps a language keyword to its face table")
+          :else
+            (append (mapcat rules (fn (rule) (injection-rule-problems rule faces)))
+              (mapcat (%map-pairs faces)
+                (fn ([lang table])
+                  (if (not (keyword? lang))
+                    (list (str ":faces key " (pr-str lang) " is not a language keyword"))
+                    (map (face-table-problems table) (fn (problem) (str lang ": " problem)))))))))))
+
 ;; ---- is this text finished? -------------------------------------------------
 ;; The question a LIVE evaluator asks before it sends anything, and the one thing a
 ;; parser must answer carefully: text that is merely *unfinished* is not text that is
@@ -302,16 +379,22 @@ the tree-sitter parse it walks."
 ;; The kernel walk matches the selectors itself (it is standing on the parent when it
 ;; reaches the child), so a context costs the walk nothing and no Brood runs per node.
 
-(defn- table-spans->faces (raw kind->face-name)
+(defn- table-spans->faces (raw kind->face-name injections)
   "The `[start end face-name]` spans a span query answers, as `[start end face]` — each
-face name resolved, `:__keyword__` as `:syntax/keyword`."
+face name resolved, `:__keyword__` as `:syntax/keyword`. The names come from the host's
+table and from every injected language's table in `injections` (ADR-489), since an
+injected span reports its own table's face name."
   ;; Each face resolved ONCE per call — per face name, not per span. A window has a few
   ;; hundred spans and a table a dozen entries, and looking the face up for every span was
   ;; two thirds of the whole fontify (1.28 ms against 0.41 ms on a 250-line Elixir window,
   ;; measured in bedit) — paid on every keystroke in every tree-sitter language.
-  (let (resolved (fold (%map-pairs kind->face-name)
+  (let (tables (cons kind->face-name (vals (get injections :faces {})))
+        resolved (fold tables
                    {:__keyword__ (face :syntax/keyword)}
-                   (fn (acc [_ name]) (assoc acc name (face name)))))
+                   (fn (acc table)
+                     (fold (%map-pairs table)
+                       acc
+                       (fn (inner [_ name]) (assoc inner name (face name)))))))
     ;; a LIST, as before — the `:fontify` contract, and what `shift-spans` and the view
     ;; consume; returning a vector here compared unequal to every list in sight
     (seq/keep raw
@@ -319,7 +402,7 @@ face name resolved, `:__keyword__` as `:syntax/keyword`."
         (let (resolved-face (get resolved (nth sp 2)))
           (when resolved-face [(nth sp 0) (nth sp 1) resolved-face]))))))
 
-(defn fontify (text lang kind->face-name &optional (keywords? true))
+(defn fontify (text lang kind->face-name &optional (keywords? true) (injections nil))
   "A `:fontify` service: `[start end face]` colour spans for `text` parsed as the
 tree-sitter language keyword `lang` (`:ruby`/`:elixir`), from a face table — `{selector
 :syntax/face-name}`, a selector being a node kind or a context map (see above: `{:parent
@@ -335,9 +418,31 @@ table colours — and a closure cannot say what that is. Fontify is the one cons
 genuinely visits every node, so it was the one paying for the whole-tree projection:
 thousands of Brood maps per keystroke, built to read `:kind` off each and discard the
 rest. `face-of-kinds` / `face-of-syntax` remain for anything that wants the node→face
-function itself (plain kinds only)."
-  (table-spans->faces (%tree-sitter-spans text lang kind->face-name keywords?) kind->face-name))
+function itself (plain kinds only).
+
+`injections` (ADR-489) declares the code EMBEDDED in this language — a fence's body, a
+sigil's, a heredoc's — as `{:rules [rule …] :faces {lang table}}`; see `injection-problems`
+for the shape. Over each embedded document the host's spans give way to its own language's."
+  (table-spans->faces (%tree-sitter-spans text lang kind->face-name keywords? injections)
+    kind->face-name injections))
 (sig fontify (string keyword any -> any))
+
+(defn fontify-ranges (text lang ranges kind->face-name &optional (keywords? true))
+  "`fontify` over PART of `text`: the char `ranges` (`[start end]` each) parsed as ONE
+document in the tree-sitter language `lang`, its spans `[start end face]` in `text`'s own
+char offsets, clipped to the ranges. `text` is a string or a rope (read in place).
+
+What a host WITHOUT a tree calls to colour code embedded in it (ADR-489): a line-lexed
+Markdown buffer colours a fence's body as the language its info string names, a Dockerfile
+colours a `RUN` line as shell. The ranges are one document, so code split across them — a
+fence whose lines the host hands over one by one, a heredoc broken by interpolations —
+parses as it reads. `()` when `lang` has no grammar: an embedded language's grammar is
+optional, and a caller keeps its own colours there. Bounded: past 256 ranges or 128 KB the
+rest is left uncoloured.
+
+    (editor/treesit/fontify-ranges \"# x\\n\" :no-such-grammar [[0 3]] {:string :syntax/string})   → ()"
+  (let (raw (%tree-sitter-range-spans text lang ranges kind->face-name keywords?))
+    (if (nil? raw) '() (table-spans->faces raw kind->face-name nil))))
 
 ;; ---- a tree per document: incremental parsing (ADR-443) ----------------------------
 ;; `fontify` takes TEXT, which makes it a pure service and a poor fit for a view: the
@@ -391,31 +496,35 @@ do not fit the two texts rather than build a wrong tree.
     (fn? editor/treesit/free-tree)   → true"
   (%tree-sitter-tree-free tree))
 
-(defn tree-changes (tree)
+(defn tree-changes (tree &optional (injections nil))
   "Where `tree`'s colouring may differ from the tree it was updated from: a sorted vector of
 disjoint char ranges `[start end]` — the edited text, plus every range whose syntax the edit
 changed (a quote typed above the screen recolours everything after it, and this says so).
 `[]` when the text did not change, `true` for a tree from a fresh parse (anything may
 differ), nil when the handle is gone. What a span cache invalidates by, instead of dropping
-every cached band on any edit.
+every cached band on any edit. With `injections` (as `fontify`'s) a range reaching an
+embedded document is widened over all of it: an edit inside a fence can recolour the fence
+below the edit, which the host's tree cannot know, its own syntax being unchanged.
 
     (editor/treesit/tree-changes (editor/treesit/open-tree text :elixir))   ;=> true — a fresh parse
     (editor/treesit/tree-changes (editor/treesit/update-tree tree text :elixir))   ;=> [] — nothing changed
     (fn? editor/treesit/tree-changes)   → true"
-  (%tree-sitter-tree-changes tree))
+  (%tree-sitter-tree-changes tree injections))
 
-(defn fontify-tree (tree kind->face-name from to &optional (keywords? true))
+(defn fontify-tree (tree kind->face-name from to &optional (keywords? true) (injections nil))
   "`fontify` over a held tree, for chars `[from, to)` of its text: `[start end face]` spans in
 ABSOLUTE char offsets, each clipped to the range, for the outermost nodes `kind->face-name`
 colours that reach into it. Parses nothing, and walks only the nodes that reach the range —
 and because the tree is the whole document's, a construct opened above `from` colours as what
 it is. A vector — `[]` for a range nothing colours — and nil only when the handle is gone,
-so a caller can tell the two apart: open a fresh tree on nil.
+so a caller can tell the two apart: open a fresh tree on nil. `injections` as `fontify`'s: the
+embedded documents reaching the range are parsed for this call — none is held beside the
+tree — each whole up to 32 KB and cut to the range past that (ADR-489).
 
     (editor/treesit/fontify-tree tree {:string :syntax/string} 0 40)   ;=> [[8 13 :syntax/string] …], nil once tree is freed
     (fn? editor/treesit/fontify-tree)   → true"
-  (let (raw (%tree-sitter-tree-spans tree kind->face-name keywords? from to))
-    (when raw (into [] (table-spans->faces raw kind->face-name)))))
+  (let (raw (%tree-sitter-tree-spans tree kind->face-name keywords? from to injections))
+    (when raw (into [] (table-spans->faces raw kind->face-name injections)))))
 
 (defn tree-alive? (tree)
   "Whether `tree` is still held — not freed, not evicted. Marks it used, as a query does, so a

@@ -50,10 +50,10 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         tree_sitter_errors);
     primitives.def(
         "%tree-sitter-spans",
-        Arity::exact(4),
-        Sig::new(vec![string, kw, list_ty.union(vec_ty).union(map_ty), any], vec_ty),
-        &["source", "lang", "table", "keywords?"],
-        "The fontify query: [start end reported] for the OUTERMOST nodes the face `table` colours, in source order, not descending into one that matched. `table` is a list/vector of kind keywords (each reported as itself), or a map from SELECTOR to what a span reports: a selector is a kind keyword, or a context map {:kind :parent :field :nth :text} — the node's kind, its parent (a kind, or a selector map the parent must satisfy in turn, at most 3 maps deep), the field it fills in the parent (tree-sitter's field name), its index among the parent's named children and its exact source text (a string or a set of strings) — whose given constraints must all hold. When several match, the most specific wins: the node's own constraints first (:text over :field over :parent over :nth over :kind), then each ancestor selector's, then the narrower :text set, so any context entry beats the plain kind (ADR-486, ADR-487). With keywords? true, an anonymous token beginning with a letter is also reported, as kind :__keyword__ — the cross-language keyword rule, which no grammar names. Which kinds get which face stays with the caller; what this avoids is projecting every node into a map to read its kind and discard the rest, which is what a windowed fontify did on every keystroke.",
+        Arity::range(4, 5),
+        Sig::with_optional(vec![string, kw, list_ty.union(vec_ty).union(map_ty), any], vec![any], vec_ty),
+        &["source", "lang", "table", "keywords?", "&optional", "injections"],
+        "The fontify query: [start end reported] for the OUTERMOST nodes the face `table` colours, in source order, not descending into one that matched. `table` is a list/vector of kind keywords (each reported as itself), or a map from SELECTOR to what a span reports: a selector is a kind keyword, or a context map {:kind :parent :field :nth :text} — the node's kind, its parent (a kind, or a selector map the parent must satisfy in turn, at most 3 maps deep), the field it fills in the parent (tree-sitter's field name), its index among the parent's named children and its exact source text (a string or a set of strings) — whose given constraints must all hold. When several match, the most specific wins: the node's own constraints first (:text over :field over :parent over :nth over :kind), then each ancestor selector's, then the narrower :text set, so any context entry beats the plain kind (ADR-486, ADR-487). With keywords? true, an anonymous token beginning with a letter is also reported, as kind :__keyword__ — the cross-language keyword rule, which no grammar names. Which kinds get which face stays with the caller; what this avoids is projecting every node into a map to read its kind and discard the rest, which is what a windowed fontify did on every keystroke. INJECTIONS (ADR-489): an optional {:rules [rule …] :faces {lang table}} naming the nodes whose text is another language's document — a rule is {:content selector :lang :bash} or {:content selector :lang-from kind :aliases {word lang}} (the language read from the first word of the content's sibling, or child, of that kind) — whose spans, from that language's :faces table, replace the host's over the content; a parent's matching children are ONE document (included ranges), and a document whose language has no table or no grammar keeps the host's colours.",
         tree_sitter_spans);
     // Tree HANDLES (ADR-443): a whole document's parse tree, held across edits and
     // reparsed incrementally, queried over a range — what an editor's view keeps per
@@ -74,17 +74,17 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         tree_sitter_tree_reparse);
     primitives.def(
         "%tree-sitter-tree-spans",
-        Arity::exact(5),
-        Sig::new(vec![ref_ty, list_ty.union(vec_ty).union(map_ty), any, int, int], vec_or_nil),
-        &["tree", "table", "keywords?", "from", "to"],
-        "The fontify query over a held tree, for chars [from, to) of its text only: [start end reported] for the OUTERMOST nodes the face table colours (as in %tree-sitter-spans, context selectors included) that reach into the range, in source order, each clipped to the range — so a string opened above it reports its visible part, coloured as a string, because the tree is the whole document's. Walks only the nodes that reach the range. keywords? as in %tree-sitter-spans (an anonymous token beginning with a letter is :__keyword__). Absolute char offsets. nil when the handle is gone (freed or evicted): open a fresh tree.",
+        Arity::range(5, 6),
+        Sig::with_optional(vec![ref_ty, list_ty.union(vec_ty).union(map_ty), any, int, int], vec![any], vec_or_nil),
+        &["tree", "table", "keywords?", "from", "to", "&optional", "injections"],
+        "The fontify query over a held tree, for chars [from, to) of its text only: [start end reported] for the OUTERMOST nodes the face table colours (as in %tree-sitter-spans, context selectors included) that reach into the range, in source order, each clipped to the range — so a string opened above it reports its visible part, coloured as a string, because the tree is the whole document's. Walks only the nodes that reach the range. keywords? as in %tree-sitter-spans (an anonymous token beginning with a letter is :__keyword__). Absolute char offsets. nil when the handle is gone (freed or evicted): open a fresh tree. injections as in %tree-sitter-spans: the embedded documents reaching the range are parsed for this call (no injected tree is held), each whole when it fits 32 KB and cut to the range otherwise.",
         tree_sitter_tree_spans);
     primitives.def(
         "%tree-sitter-tree-changes",
-        Arity::exact(1),
-        Sig::new(vec![ref_ty], any),
-        &["tree"],
-        "Where tree's colouring may differ from the tree it was reparsed from: a sorted vector of disjoint char ranges [start end] of its text — the edited text itself plus tree-sitter's changed ranges (a quote typed above the screen recolours everything after it, and this says so). [] when the text did not change; true for a tree from a fresh parse (everything may differ); nil when the handle is gone. What a span cache invalidates by, instead of throwing every band away on any edit.",
+        Arity::range(1, 2),
+        Sig::with_optional(vec![ref_ty], vec![any], any),
+        &["tree", "&optional", "injections"],
+        "Where tree's colouring may differ from the tree it was reparsed from: a sorted vector of disjoint char ranges [start end] of its text — the edited text itself plus tree-sitter's changed ranges (a quote typed above the screen recolours everything after it, and this says so). [] when the text did not change; true for a tree from a fresh parse (everything may differ); nil when the handle is gone. What a span cache invalidates by, instead of throwing every band away on any edit. With injections (as in %tree-sitter-spans), each range is widened over the embedded documents it reaches, whole: an edit inside a fence can recolour the fence below it, which the host tree cannot know.",
         tree_sitter_tree_changes);
     primitives.def(
         "%tree-sitter-tree-free",
@@ -202,7 +202,8 @@ pub(super) fn tree_sitter_spans(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
     let lang = ts_lang(heap, "%tree-sitter-spans", arg(args, 1))?;
     let table = ts_table(heap, "%tree-sitter-spans", arg(args, 2))?;
     let keywords = !matches!(arg(args, 3), Value::Nil | Value::Bool(false));
-    crate::host::treesit::spans(heap, &src, &lang, &table, keywords)
+    let injections = ts_injections(heap, "%tree-sitter-spans", arg(args, 4))?;
+    crate::host::treesit::spans(heap, &src, &lang, &table, keywords, injections.as_ref())
 }
 
 /// `(tree-sitter-load-grammar path lang)` — load a grammar shared library at
@@ -474,12 +475,23 @@ pub(super) fn tree_sitter_tree_spans(args: &[Value], _: EnvId, heap: &mut Heap) 
     let keywords = !matches!(arg(args, 2), Value::Nil | Value::Bool(false));
     let from = expect_int(heap, who, arg(args, 3))?;
     let to = expect_int(heap, who, arg(args, 4))?;
-    crate::host::treesit::tree_spans(heap, handle, &table, keywords, from, to)
+    let injections = ts_injections(heap, who, arg(args, 5))?;
+    crate::host::treesit::tree_spans(
+        heap,
+        handle,
+        &table,
+        keywords,
+        from,
+        to,
+        injections.as_ref(),
+    )
 }
 
 pub(super) fn tree_sitter_tree_changes(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let handle = ts_handle(heap, "%tree-sitter-tree-changes", arg(args, 0))?;
-    crate::host::treesit::tree_changes(heap, handle)
+    let who = "%tree-sitter-tree-changes";
+    let handle = ts_handle(heap, who, arg(args, 0))?;
+    let injections = ts_injections(heap, who, arg(args, 1))?;
+    crate::host::treesit::tree_changes(heap, handle, injections.as_ref())
 }
 
 pub(super) fn tree_sitter_tree_free(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
@@ -541,4 +553,210 @@ pub(super) fn tree_sitter_declare_grammar(args: &[Value], _: EnvId, heap: &mut H
 pub(super) fn tree_sitter_grammar_status(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let lang = ts_lang(heap, "%tree-sitter-grammar-status", arg(args, 0))?;
     crate::host::treesit::grammar_status(heap, &lang)
+}
+
+// ---- injections: another language's document inside this one (ADR-489) ----------------
+
+/// Colouring given ranges of a text as one embedded document — registered LAST from
+/// `builtins::register`, for the intern-table order reason `register_tree_queries` gives.
+pub(super) fn register_injections(primitives: &mut super::Primitives) {
+    use super::signature_types::*;
+    use crate::core::value::Arity;
+    use crate::types::Sig;
+    primitives.def(
+        "%tree-sitter-range-spans",
+        Arity::exact(5),
+        Sig::new(
+            vec![rope.union(string), kw, list_ty.union(vec_ty), list_ty.union(vec_ty).union(map_ty), any],
+            vec_or_nil,
+        ),
+        &["text", "lang", "ranges", "table", "keywords?"],
+        "The fontify query over PART of a text: the char `ranges` ([start end] each) of `text` — a rope (read in place) or a string — parsed as ONE document in the tree-sitter language `lang` (tree-sitter's included ranges, so a heredoc split by interpolations parses as one), and [start end reported] for the outermost nodes the face `table` colours (as in %tree-sitter-spans), in the OUTER text's char offsets, each clipped to the ranges, in source order. What a host without a tree (a line lexer: a Markdown fence, a Dockerfile RUN line) calls to colour embedded code in its own language. nil when no grammar for `lang` loads — an embedded language's grammar is optional, so this never raises for one. Ranges are sorted and merged; past 256 ranges or 128 KB the rest are left uncoloured, so a call is bounded whatever it is handed (ADR-489).",
+        tree_sitter_range_spans,
+    );
+}
+
+/// `(%tree-sitter-range-spans text lang ranges table keywords?)` —
+/// `crate::host::treesit::range_spans`.
+pub(super) fn tree_sitter_range_spans(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    use crate::host::treesit::RangeText;
+    let who = "%tree-sitter-range-spans";
+    let text = match arg(args, 0) {
+        Value::Rope(id) => RangeText::Rope(heap.rope(id).clone()),
+        Value::Str(_) => RangeText::Flat(expect_string(heap, who, arg(args, 0))?),
+        other => return Err(LispError::wrong_type(heap, who, "rope or string", other)),
+    };
+    let lang = ts_lang(heap, who, arg(args, 1))?;
+    let mut ranges = Vec::new();
+    for range in heap.seq_items(arg(args, 2))? {
+        let parts = heap.seq_items(range)?;
+        if parts.len() != 2 {
+            return Err(LispError::runtime(format!(
+                "{who}: a range is [start end], got {} items",
+                parts.len()
+            )));
+        }
+        let start = ts_offset(heap, who, parts[0])?;
+        let end = ts_offset(heap, who, parts[1])?;
+        ranges.push((start, end.max(start)));
+    }
+    let table = ts_table(heap, who, arg(args, 3))?;
+    let keywords = !matches!(arg(args, 4), Value::Nil | Value::Bool(false));
+    crate::host::treesit::range_spans(heap, text, &lang, &ranges, &table, keywords)
+}
+
+/// A span query's injections (ADR-489), or None for nil:
+///
+/// ```text
+/// {:rules [{:content {:kind :quoted_content :parent :sigil}
+///           :lang-from :sigil_name :aliases {"H" :heex}}
+///          {:content {:kind :template_literal :parent :heredoc_template} :lang :bash}]
+///  :faces {:heex {…face table…} :bash {…}}}
+/// ```
+///
+/// A rule's `:content` is a face-table selector (a kind keyword or a selector map); it names
+/// its language with `:lang` (a keyword) or `:lang-from` (a node kind keyword) plus optional
+/// `:aliases` (string word → language keyword), never both. `:faces` maps each injected
+/// language to its face table. Anything else is refused, as a face table's misspelt key is.
+fn ts_injections(
+    heap: &Heap,
+    who: &'static str,
+    v: Value,
+) -> Result<Option<crate::host::treesit::Injections>, LispError> {
+    use crate::host::treesit::{InjectedLanguage, InjectionRule, Injections, Selector};
+    let Value::Map(id) = v else {
+        return match v {
+            Value::Nil => Ok(None),
+            other => Err(LispError::wrong_type(
+                heap,
+                who,
+                "nil or an injection spec {:rules [...] :faces {...}}",
+                other,
+            )),
+        };
+    };
+    let keyword_name = |heap: &Heap, what: &str, v: Value| match v {
+        Value::Keyword(name) => Ok(value::symbol_name(name)),
+        other => Err(LispError::wrong_type(
+            heap,
+            who,
+            &format!("a keyword for {what}"),
+            other,
+        )),
+    };
+    let mut injections = Injections::default();
+    for (key, entry) in heap.map_entries(id) {
+        match keyword_name(heap, "an injection spec key", key)?.as_str() {
+            "rules" => {
+                for rule in heap.seq_items(entry)? {
+                    let Value::Map(rule_id) = rule else {
+                        return Err(LispError::wrong_type(
+                            heap,
+                            who,
+                            "an injection rule map",
+                            rule,
+                        ));
+                    };
+                    let mut content: Option<Selector> = None;
+                    let mut fixed: Option<String> = None;
+                    let mut from: Option<String> = None;
+                    let mut aliases = std::collections::HashMap::new();
+                    for (rule_key, rule_value) in heap.map_entries(rule_id) {
+                        match keyword_name(heap, "an injection rule key", rule_key)?.as_str() {
+                            "content" => {
+                                content = Some(match rule_value {
+                                    Value::Keyword(kind) => {
+                                        Selector::of_kind(value::symbol_name(kind))
+                                    }
+                                    Value::Map(selector_id) => {
+                                        ts_selector(heap, who, selector_id, 1)?
+                                    }
+                                    other => {
+                                        return Err(LispError::wrong_type(
+                                            heap,
+                                            who,
+                                            "a node kind keyword or a selector map for :content",
+                                            other,
+                                        ));
+                                    }
+                                })
+                            }
+                            "lang" => fixed = Some(keyword_name(heap, ":lang", rule_value)?),
+                            "lang-from" => {
+                                from = Some(keyword_name(heap, ":lang-from", rule_value)?)
+                            }
+                            "aliases" => {
+                                let Value::Map(aliases_id) = rule_value else {
+                                    return Err(LispError::wrong_type(
+                                        heap,
+                                        who,
+                                        "a map from word to language for :aliases",
+                                        rule_value,
+                                    ));
+                                };
+                                for (word, lang) in heap.map_entries(aliases_id) {
+                                    let word = match word {
+                                        Value::Str(_) => expect_string(heap, who, word)?,
+                                        other => {
+                                            return Err(LispError::wrong_type(
+                                                heap,
+                                                who,
+                                                "a string word in :aliases",
+                                                other,
+                                            ));
+                                        }
+                                    };
+                                    aliases.insert(
+                                        word,
+                                        keyword_name(heap, "an :aliases language", lang)?,
+                                    );
+                                }
+                            }
+                            other => {
+                                return Err(LispError::runtime(format!(
+                                    "{who}: an injection rule takes :content :lang :lang-from :aliases, not :{other}"
+                                )));
+                            }
+                        }
+                    }
+                    let Some(content) = content else {
+                        return Err(LispError::runtime(format!(
+                            "{who}: an injection rule names its :content selector"
+                        )));
+                    };
+                    let language = match (fixed, from) {
+                        (Some(lang), None) if aliases.is_empty() => InjectedLanguage::Fixed(lang),
+                        (None, Some(kind)) => InjectedLanguage::From { kind, aliases },
+                        _ => {
+                            return Err(LispError::runtime(format!(
+                                "{who}: an injection rule names its language with :lang, or with \
+                                 :lang-from (and optional :aliases) — exactly one"
+                            )));
+                        }
+                    };
+                    injections.rules.push(InjectionRule { content, language });
+                }
+            }
+            "faces" => {
+                let Value::Map(faces_id) = entry else {
+                    return Err(LispError::wrong_type(
+                        heap,
+                        who,
+                        "a map from language to face table for :faces",
+                        entry,
+                    ));
+                };
+                for (lang, table) in heap.map_entries(faces_id) {
+                    let lang = keyword_name(heap, "a :faces language", lang)?;
+                    injections.tables.insert(lang, ts_table(heap, who, table)?);
+                }
+            }
+            other => {
+                return Err(LispError::runtime(format!(
+                    "{who}: an injection spec takes :rules and :faces, not :{other}"
+                )));
+            }
+        }
+    }
+    Ok(Some(injections))
 }
