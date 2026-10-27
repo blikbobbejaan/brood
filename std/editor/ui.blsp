@@ -862,8 +862,8 @@ and is NOT folded into `update`.
 
 **Named timers (ADR-102).** The poll timeout is `ui-poll-ms` — the soonest live
 timer in `(ui-timers model)`. A timed-out poll (nil) fires the earliest due timer via
-`ui-fire`, folding `[:timer name]` (or the bare `:tick` legacy beat). A real input
-stamps `:last-input` on the `clock` (so idle timers reset). The `clock` is threaded
+`ui-fire`, folding `[:timer name]` (or the bare `:tick` legacy beat). A turn that folded
+USER input stamps `:last-input` on the `clock` (so idle timers reset; ADR-490). The `clock` is threaded
 alongside `model`/`last-good` and is wall-clock bookkeeping, NOT model state: it does
 **not** roll back on a crash (a key the user pressed stays pressed), and the `:focus`
 branch passes it through without advancing `:last-input` (a focus message isn't input).
@@ -1069,10 +1069,12 @@ mailbox's priority lane, the terminal's keyboard, a thin client's keys — so a 
 queued behind a language server's diagnostics or a test stream. A coalescing app folds
 background only for `*ui-fold-budget-ms*` per turn (the model's `:fold-budget-ms`), then
 renders and looks again: a flood of any size delays a keystroke by about one budget plus
-one fold. Every turn still makes one arrival-order fold, so background keeps moving while
-input never stops, and a due timer fires on every turn. A producer whose message only
-matters at its newest value sends it with `proc/send-latest`, so a newer one replaces it
-while it waits.
+one fold. Every turn still makes one arrival-order fold (a non-coalescing app: the turn
+after one whose input jumped the queue), so background keeps moving while input never
+stops, and a due timer fires on every turn. Only input holds an `:idle?` timer back: the
+display says whether what it parked for was input (`:poll-tagged`, `display-poll-tagged`),
+so an idle beat still comes during a flood. A producer whose message only matters at its
+newest value sends it with `proc/send-latest`, so a newer one replaces it while it waits.
 
 **The watchdog (ADR-490).** An `update` fold or a `view` slower than `*ui-slow-ms*` (the
 model's `:slow-ms`) is reported, naming the input it folded by its tag (`ui-input-tag`) —

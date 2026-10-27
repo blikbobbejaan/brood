@@ -4266,3 +4266,18 @@ input's tag, to the model's `:on-slow` or stderr. Run here: `ui_test` (77), `ser
 `display_test`, `observer_test`, `gui_test`, `sse_test`, `doc_examples`, `audit`, `nest check
 --strict` on `ui.blsp` and `serve.blsp`, `cargo test -p brood --lib mailbox::tests`, and
 clippy (gui, treesit-grammars). Nothing was measured.
+
+2026-10-27 (ADR-490, the gaps closed): `proc/send-latest` / `proc/send-priority` keep their
+lane through a locally registered name (bedit's `:editor`) and a `{:name :node}` address
+naming this node. A receive never hands over a LATEST message superseded while it was out
+for a pattern check (checked for LATEST candidates only). Only USER input stamps
+`:last-input`: displays gained `:poll-tagged` (`[message input?]`, over the new
+`proc/receive-lane`), so an idle beat fires during a flood. A non-coalescing app takes the
+oldest message on the turn after one whose input jumped the queue. `ui-coalesce-motion`
+matches a window's `{:at …}` motion, which it never had. The thin client ships keys before
+painting; the terminal client draws only the newest queued frame. Run here: `ui_test` (84),
+`serve_test` (16), `display`, `observer`, `gui`, `sse`, `doc_examples`, `audit`, the
+`receive_*` and `mailbox_order` tests, `cargo test -p brood --lib mailbox::tests`,
+`cargo test -p cli --test serve_attach`, `nest check --strict` on `ui.blsp` / `serve.blsp`,
+clippy (gui, treesit-grammars). The supersession and idle-timer guards were sabotaged red.
+Nothing was measured.
