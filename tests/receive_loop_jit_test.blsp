@@ -4,7 +4,7 @@
 ;; These pin that the native loop answers what the interpreted one does, stays native across
 ;; parks, and that every other way into such an arm still works.
 
-(defmodule receive-loop-jit-test (:use test))
+(defmodule receive-loop-jit-test (:use test) (:use suite-helpers))
 
 ;; An arm's tier once its background compile, if one is queued, has finished — a loaded
 ;; machine can leave a hot arm `:queued` for a while, and that says nothing about this change.
@@ -139,13 +139,20 @@
     ;; park must leave the frame at ip 0, where the resume counts toward the tier
     ;; threshold; parked mid-arm, it never gets hot.
     ;; Its own loop function: the other tests make `acc-loop` hot with bursts.
-    (let (pid (spawn (lonely-loop 0)))
-      (dotimes (k 400)
-        (send pid [:add 1])
-        (ask-total pid))
-      (assert= 400 (ask-total pid))
-      (when (%native-tier?)
-        (assert= :native (tier-of lonely-loop 1 500)))
+    ;; Driven by `settle`, not one fixed burst: under a full suite the compile queue can be
+    ;; full when the arm turns hot, which resets it to untried with its count at zero
+    ;; (`jit_tier`), and a single 400-message burst then read `:untried` (CI, 3 of 5 runs on
+    ;; 2026-10-27). A loop parked mid-arm never counts a resume, so it stays `:untried`
+    ;; however many rounds run — the defect this guards still fails it.
+    (let (pid (spawn (lonely-loop 0))
+          one-at-a-time (fn ()
+                          (dotimes (k 100)
+                            (send pid [:add 1])
+                            (ask-total pid))))
+      (if (%native-tier?)
+        (assert= :native (settle lonely-loop 1 one-at-a-time 30))
+        (one-at-a-time))
+      (is (>= (ask-total pid) 100))
       (send pid :stop)))
   (test "a native loop killed while parked dies, and its monitor hears of it"
     (warm-acc-loop)

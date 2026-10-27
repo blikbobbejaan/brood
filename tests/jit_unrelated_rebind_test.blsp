@@ -46,7 +46,11 @@
     (when (%native-tier?)
       (let (stop (table/new)
             me (self))
-        (spawn (send me [:rebinds (ur-rebind 0 stop)]))
+        ;; The rebinder says it is running before the arm settles: left to the scheduler it
+        ;; sometimes had not run once by the time `settle` finished, the case read
+        ;; `rebinds` 0, and the trickle it exists to test never happened (CI, 2026-10-27).
+        (spawn (do (def ur-noise -1) (send me :rebinding) (send me [:rebinds (ur-rebind 1 stop)])))
+        (assert= :rebinding (receive (:rebinding :rebinding) (after 20000 :timeout)))
         (let (st (settle ur-trickle-loop 2 (fn () (ur-trickle-loop 500 0)) 200))
           (assert= 1000 (ur-trickle-loop 500 0))
           (table/put stop :done true)
