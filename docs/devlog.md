@@ -4090,3 +4090,27 @@ one tentative chain that the next walk confirms at the first agreeing state. Sep
 the whole buffer's string. Run here: `tests/highlight_test.blsp` (seven new cases, counting
 lexer calls), `tests/treesit_module_test.blsp` (rope against string, with and without a
 tree), `lexer`, `doc_examples`, `audit`, and `nest check --strict` on both files.
+
+2026-10-27 (main's red, attributed and cleared): four reds across the morning's CI runs, each
+traced to its cause.
+- **The strict checker gate** flagged `tests/highlight_test.blsp`'s edit script. It mixed
+  `[:insert line text …]` and `[:delete from to …]` in one vector, so the checker typed the
+  third slot `int | string`. Each step now carries its edit as a function (`lc-insert-at`,
+  `lc-delete-lines`): one shape, and nothing was widened.
+- **bedit's `testrun_test.blsp:307`** destructured a `ui-memo` marker with ADR-470's old
+  arity. bedit's HEAD already reads it by index. `BEDIT_REF` moved to `e48287f5`, after bedit's
+  `nest check`, `--check-boot` and that test file passed here. bedit's whole suite runs in CI:
+  the smoke target is refused on this machine.
+- **`receive_loop_jit_test` "parks on EVERY message"** read `:untried` in 3 of 5 runs. A full
+  compile queue resets a hot arm to untried with its count at zero, and one 400-message burst
+  was its only chance. It now drives through `settle`. A loop parked mid-arm never counts a
+  resume, so it still fails that defect.
+- **`jit_unrelated_rebind_test` "keeps rebinding"** read `rebinds` 0: the rebinder had not run
+  before the arm settled, so the trickle never happened. The rebinder now signals before
+  `settle` starts.
+
+`lazy_load_wait_parks` (6 dirty-blocked waiters) and `a_parked_process_costs_no_more_than_the_floor`
+failed only in the two runs that carried `c38b5bc2`, which admitted small call-mediated arms
+such as the waiters' `child` to native code, and in none of the four without it. Its revert
+(`f37fcdf7`) is their fix. Run here: each touched test file once (`nest test FILE`), the
+strict checker over each, and `nest format --check`. The suites run in CI.
