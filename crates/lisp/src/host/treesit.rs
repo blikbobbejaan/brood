@@ -420,6 +420,9 @@ trait SpanText {
     fn byte_of(&self, ch: usize) -> usize;
     /// Does the text in `[start, end)` begin with a letter? (the keyword rule)
     fn starts_alphabetic(&self, start: usize, end: usize) -> bool;
+    /// The text in bytes `[start, end)` — borrowed whenever it lies in one piece, which is
+    /// what a selector's `:text` compares against (ADR-487).
+    fn text_in(&self, start: usize, end: usize) -> std::borrow::Cow<'_, str>;
 }
 
 #[cfg(feature = "treesit")]
@@ -442,6 +445,9 @@ impl SpanText for FlatText<'_> {
             .next()
             .is_some_and(char::is_alphabetic)
     }
+    fn text_in(&self, start: usize, end: usize) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.src[start..end])
+    }
 }
 
 #[cfg(feature = "treesit")]
@@ -457,66 +463,213 @@ impl SpanText for ropey::Rope {
             && start < self.len_bytes()
             && self.char(self.byte_to_char(start)).is_alphabetic()
     }
+    fn text_in(&self, start: usize, end: usize) -> std::borrow::Cow<'_, str> {
+        let slice = self.byte_slice(start.min(self.len_bytes())..end.min(self.len_bytes()));
+        match slice.as_str() {
+            Some(piece) => std::borrow::Cow::Borrowed(piece),
+            None => std::borrow::Cow::Owned(slice.to_string()),
+        }
+    }
 }
 
-/// One entry of a face table, as the span walk matches it (ADR-486): the node's own KIND, and
-/// optionally its CONTEXT — the kind of its parent, the FIELD it occupies in that parent
-/// (tree-sitter's field names: `function`, `name`, `body`), and its position among the
-/// parent's NAMED children. Every constraint present must hold; an absent one is free. A
-/// table keyword `:string` is the rule with a kind alone.
-///
-/// `reported` is what a span for this rule carries back — the table's value (a face name),
-/// copied through untouched, so which face it means stays the caller's policy.
+/// How many selector MAPS one face-table key may nest through `:parent` — the key itself, its
+/// parent's map and its grandparent's (ADR-487). Three reaches a method call's receiver
+/// (`identifier` in `field_expression` in `call_expression`) with room to spare, and a bound
+/// keeps a selector's specificity a fixed-size value.
+pub const MAX_SELECTOR_DEPTH: usize = 3;
+
+/// The node SOURCE TEXT a selector requires (ADR-487): one of these strings, exactly. Sorted,
+/// for a binary search, with the shortest and longest lengths kept so most nodes are refused
+/// on their byte length without reading a byte of text.
 #[derive(Clone, Debug)]
 #[cfg_attr(not(feature = "treesit"), allow(dead_code))]
-pub struct SpanRule {
-    pub kind: Option<String>,
-    pub parent: Option<String>,
-    pub field: Option<String>,
-    pub nth: Option<usize>,
-    pub reported: crate::core::value::Value,
+pub struct TextMatch {
+    texts: Vec<String>,
+    shortest: usize,
+    longest: usize,
 }
 
 #[cfg_attr(not(feature = "treesit"), allow(dead_code))]
-impl SpanRule {
-    /// How specific the rule is — the higher wins when several match one node. Each
-    /// constraint is a distinct power of two, so two different constraint sets never tie and
-    /// the winner never depends on the table's (hash) order: a field beats a parent beats a
-    /// position beats the kind, and any context beats the kind alone.
-    fn weight(&self) -> u8 {
+impl TextMatch {
+    /// The match for any of `texts` (at least one).
+    pub fn new(mut texts: Vec<String>) -> TextMatch {
+        texts.sort();
+        texts.dedup();
+        let shortest = texts.iter().map(String::len).min().unwrap_or(0);
+        let longest = texts.iter().map(String::len).max().unwrap_or(0);
+        TextMatch {
+            texts,
+            shortest,
+            longest,
+        }
+    }
+
+    #[cfg(feature = "treesit")]
+    fn holds<T: SpanText>(&self, node: tree_sitter::Node, text: &T) -> bool {
+        let (start, end) = (node.start_byte(), node.end_byte());
+        let length = end - start;
+        length >= self.shortest
+            && length <= self.longest
+            && self
+                .texts
+                .binary_search_by(|candidate| candidate.as_str().cmp(&*text.text_in(start, end)))
+                .is_ok()
+    }
+}
+
+/// What a face-table key asks of a node (ADR-486, ADR-487): its own KIND, and optionally its
+/// CONTEXT — the FIELD it occupies in its parent (tree-sitter's field names: `function`,
+/// `name`, `body`), its position among the parent's NAMED children, its exact source TEXT,
+/// and a selector its PARENT must satisfy in turn (a plain `:parent :call` is the parent
+/// selector with a kind alone). Every constraint present must hold; an absent one is free.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(not(feature = "treesit"), allow(dead_code))]
+pub struct Selector {
+    pub kind: Option<String>,
+    pub parent: Option<Box<Selector>>,
+    pub field: Option<String>,
+    pub nth: Option<usize>,
+    pub text: Option<TextMatch>,
+}
+
+#[cfg_attr(not(feature = "treesit"), allow(dead_code))]
+impl Selector {
+    /// The selector naming a kind alone — a table keyword `:string`, or `:parent :call`.
+    pub fn of_kind(kind: String) -> Selector {
+        Selector {
+            kind: Some(kind),
+            ..Selector::default()
+        }
+    }
+
+    /// Does it constrain anything? An empty selector would colour every node.
+    pub fn is_empty(&self) -> bool {
+        self.kind.is_none()
+            && self.parent.is_none()
+            && self.field.is_none()
+            && self.nth.is_none()
+            && self.text.is_none()
+    }
+
+    /// How many selector levels deep it reaches: 1 for a map with no parent selector.
+    pub fn depth(&self) -> usize {
+        1 + self.parent.as_ref().map_or(0, |parent| parent.depth())
+    }
+
+    /// The selector's own constraints as distinct powers of two — text 16, field 8, parent
+    /// 4, nth 2, kind 1 — so two different constraint sets at one level never tie.
+    fn level_weight(&self) -> u8 {
         u8::from(self.kind.is_some())
             | (u8::from(self.nth.is_some()) << 1)
             | (u8::from(self.parent.is_some()) << 2)
             | (u8::from(self.field.is_some()) << 3)
+            | (u8::from(self.text.is_some()) << 4)
     }
 
+    /// The level weights from the node outward: the node's own constraints, then its parent
+    /// selector's, then the grandparent's. Compared lexicographically, so the node's own
+    /// constraints decide first and an ancestor's only break a tie.
+    fn specificity(&self) -> [u8; MAX_SELECTOR_DEPTH + 1] {
+        let mut weights = [0; MAX_SELECTOR_DEPTH + 1];
+        let mut level = Some(self);
+        for weight in &mut weights {
+            let Some(selector) = level else { break };
+            *weight = selector.level_weight();
+            level = selector.parent.as_deref();
+        }
+        weights
+    }
+
+    /// How many strings its `:text` sets accept, at every level — the narrower wins a tie.
+    fn breadth(&self) -> usize {
+        self.text.as_ref().map_or(0, |text| text.texts.len())
+            + self.parent.as_ref().map_or(0, |parent| parent.breadth())
+    }
+
+    /// Does `node`, sitting at `context`, satisfy the selector? The cheap checks first — a
+    /// kind, field and position are a comparison each, a parent selector recurses up the
+    /// context chain — and the source text, the only one that reads the document, last.
     #[cfg(feature = "treesit")]
-    fn holds(&self, context: &NodeContext) -> bool {
-        (self.parent.is_none() || self.parent.as_deref() == context.parent)
+    fn holds<T: SpanText>(&self, node: tree_sitter::Node, context: &NodeContext, text: &T) -> bool {
+        self.kind.as_deref().is_none_or(|kind| kind == node.kind())
             && (self.field.is_none() || self.field.as_deref() == context.field)
             && (self.nth.is_none() || self.nth == context.nth)
+            && match (&self.parent, context.parent) {
+                (None, _) => true,
+                (Some(_), None) => false,
+                (Some(parent), Some(parent_node)) => parent.holds(
+                    parent_node,
+                    context.outer.unwrap_or(&NodeContext::ROOT),
+                    text,
+                ),
+            }
+            && self
+                .text
+                .as_ref()
+                .is_none_or(|wanted| wanted.holds(node, text))
+    }
+}
+
+/// One entry of a face table, as the span walk matches it: its selector, and `reported`,
+/// what a span for it carries back — the table's value (a face name), copied through
+/// untouched, so which face it means stays the caller's policy.
+#[derive(Clone, Debug)]
+#[cfg_attr(not(feature = "treesit"), allow(dead_code))]
+pub struct SpanRule {
+    pub selector: Selector,
+    pub reported: crate::core::value::Value,
+}
+
+/// Where a rule stands when several match one node — the greater wins. Specificity first (the
+/// node's own constraints, then each ancestor selector's), then the narrower `:text` sets,
+/// then, for two entries that differ only in which strings they accept, the face name that
+/// sorts first. Computed once per table, so the winner never depends on the map's (hash)
+/// order and the walk takes the first rule that holds.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(not(feature = "treesit"), allow(dead_code))]
+struct RuleRank {
+    specificity: [u8; MAX_SELECTOR_DEPTH + 1],
+    narrowness: std::cmp::Reverse<usize>,
+    name: std::cmp::Reverse<String>,
+}
+
+#[cfg_attr(not(feature = "treesit"), allow(dead_code))]
+impl SpanRule {
+    fn rank(&self) -> RuleRank {
+        let name = match self.reported {
+            crate::core::value::Value::Keyword(symbol) => crate::core::value::symbol_name(symbol),
+            _ => String::new(),
+        };
+        RuleRank {
+            specificity: self.selector.specificity(),
+            narrowness: std::cmp::Reverse(self.selector.breadth()),
+            name: std::cmp::Reverse(name),
+        }
     }
 }
 
 /// A face table compiled for the span walk: the rules indexed by kind, and the few that name
-/// no kind (`{:field :function}` — whatever fills that field). One hash lookup per node, then
-/// a scan of that kind's handful of rules; a table of plain kinds is exactly the kind set the
-/// walk always took.
+/// no kind (`{:field :function}` — whatever fills that field), each list most specific
+/// first. One hash lookup per node, then the first rule of that kind's handful that holds; a
+/// table of plain kinds is exactly the kind set the walk always took. Each rule carries its
+/// place in the whole table's order (0 the most specific), which is how a kinded and an
+/// unkinded rule that both hold are compared without re-ranking them per node.
 #[derive(Default, Debug)]
 #[cfg_attr(not(feature = "treesit"), allow(dead_code))]
 pub struct SpanTable {
-    by_kind: std::collections::HashMap<String, Vec<SpanRule>>,
-    any_kind: Vec<SpanRule>,
+    by_kind: std::collections::HashMap<String, Vec<(usize, SpanRule)>>,
+    any_kind: Vec<(usize, SpanRule)>,
 }
 
 #[cfg_attr(not(feature = "treesit"), allow(dead_code))]
 impl SpanTable {
-    pub fn new(rules: Vec<SpanRule>) -> SpanTable {
+    pub fn new(mut rules: Vec<SpanRule>) -> SpanTable {
+        rules.sort_by_cached_key(|rule| std::cmp::Reverse(rule.rank()));
         let mut table = SpanTable::default();
-        for rule in rules {
-            match rule.kind.clone() {
-                Some(kind) => table.by_kind.entry(kind).or_default().push(rule),
-                None => table.any_kind.push(rule),
+        for (place, rule) in rules.into_iter().enumerate() {
+            match rule.selector.kind.clone() {
+                Some(kind) => table.by_kind.entry(kind).or_default().push((place, rule)),
+                None => table.any_kind.push((place, rule)),
             }
         }
         table
@@ -530,37 +683,75 @@ impl SpanTable {
                 .into_iter()
                 .map(|kind| SpanRule {
                     reported: crate::core::value::Value::keyword(crate::core::value::intern(&kind)),
-                    kind: Some(kind),
-                    parent: None,
-                    field: None,
-                    nth: None,
+                    selector: Selector::of_kind(kind),
                 })
                 .collect(),
         )
     }
 
-    /// The most specific rule that colours a node of `kind` in `context`, or None.
+    /// The most specific rule that colours `node` in `context`, or None: the first that holds
+    /// in each of the two lists, the better ranked of those two.
     #[cfg(feature = "treesit")]
-    fn rule_for(&self, kind: &str, context: &NodeContext) -> Option<&SpanRule> {
-        let kinded = self.by_kind.get(kind).map(Vec::as_slice).unwrap_or(&[]);
-        kinded
-            .iter()
-            .chain(self.any_kind.iter())
-            .filter(|rule| rule.holds(context))
-            .max_by_key(|rule| rule.weight())
+    fn rule_for<T: SpanText>(
+        &self,
+        node: tree_sitter::Node,
+        context: &NodeContext,
+        text: &T,
+    ) -> Option<&SpanRule> {
+        fn first_holding<'rules, T: SpanText>(
+            rules: &'rules [(usize, SpanRule)],
+            node: tree_sitter::Node,
+            context: &NodeContext,
+            text: &T,
+        ) -> Option<&'rules (usize, SpanRule)> {
+            rules
+                .iter()
+                .find(|(_, rule)| rule.selector.holds(node, context, text))
+        }
+        let kinded = self
+            .by_kind
+            .get(node.kind())
+            .and_then(|rules| first_holding(rules, node, context, text));
+        let best = if self.any_kind.is_empty() {
+            kinded
+        } else {
+            match (kinded, first_holding(&self.any_kind, node, context, text)) {
+                (Some(kinded), Some(unkinded)) => Some(if unkinded.0 < kinded.0 {
+                    unkinded
+                } else {
+                    kinded
+                }),
+                (kinded, unkinded) => kinded.or(unkinded),
+            }
+        };
+        best.map(|(_, rule)| rule)
     }
 }
 
-/// Where a node sits, as the walk reaches it: its parent's kind, the field it fills there
-/// (None when the grammar names none), and its index among the parent's named children (None
-/// for an anonymous token, which has no place in that count). Read off the cursor that is
-/// already walking the parent's children, so it costs nothing a plain-kind table did not.
+/// Where a node sits, as the walk reaches it: its parent node, the field it fills there (None
+/// when the grammar names none), its index among the parent's named children (None for an
+/// anonymous token, which has no place in that count), and the PARENT's own context — the
+/// chain a nested `:parent` selector climbs (ADR-487). Read off the cursor that is already
+/// walking the parent's children, and kept on the walk's own stack, so it costs nothing a
+/// plain-kind table did not.
 #[cfg(feature = "treesit")]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 struct NodeContext<'a> {
-    parent: Option<&'a str>,
+    parent: Option<tree_sitter::Node<'a>>,
     field: Option<&'a str>,
     nth: Option<usize>,
+    outer: Option<&'a NodeContext<'a>>,
+}
+
+#[cfg(feature = "treesit")]
+impl NodeContext<'_> {
+    /// The root's context: no parent, so no parent selector holds there.
+    const ROOT: NodeContext<'static> = NodeContext {
+        parent: None,
+        field: None,
+        nth: None,
+        outer: None,
+    };
 }
 
 /// What one span walk is asked for: the face table, the keyword flag, and the byte window
@@ -594,18 +785,17 @@ impl SpanQuery<'_> {
 fn spans_into<T: SpanText>(
     heap: &mut Heap,
     node: tree_sitter::Node,
-    context: NodeContext,
+    context: &NodeContext,
     text: &T,
     query: &SpanQuery,
     out: &mut Vec<Value>,
 ) {
-    let kind = node.kind();
     // An anonymous token whose text starts with a letter is a language keyword — the
     // cross-language rule, so a table need only name the handful of NAMED nodes it
     // colours. Reported as `:__keyword__` so the caller maps it like any other.
     let reported = query
         .table
-        .rule_for(kind, &context)
+        .rule_for(node, context, text)
         .map(|rule| rule.reported)
         .or_else(|| {
             (query.keywords
@@ -643,15 +833,16 @@ fn spans_into<T: SpanText>(
             break; // children are in source order: nothing after this reaches the window
         }
         let child_context = NodeContext {
-            parent: Some(kind),
+            parent: Some(node),
             field: cursor.field_name(),
             nth: child.is_named().then_some(named_index),
+            outer: Some(context),
         };
         if child.is_named() {
             named_index += 1;
         }
         if query.touches(&child) {
-            spans_into(heap, child, child_context, text, query, out);
+            spans_into(heap, child, &child_context, text, query, out);
         }
         if !cursor.goto_next_sibling() {
             break;
@@ -698,7 +889,7 @@ pub fn spans(
     let mut out: Vec<Value> = Vec::new();
     let text = FlatText { src, b2c: &b2c };
     let root = tree.root_node();
-    spans_into(heap, root, NodeContext::default(), &text, &query, &mut out);
+    spans_into(heap, root, &NodeContext::ROOT, &text, &query, &mut out);
     Ok(heap.alloc_vector(out))
 }
 
@@ -1120,7 +1311,7 @@ pub fn tree_spans(
     spans_into(
         heap,
         root,
-        NodeContext::default(),
+        &NodeContext::ROOT,
         &entry.text,
         &query,
         &mut out,

@@ -75,7 +75,33 @@ load with the list rather than at the keypress that needed it.
 ;; is a frame, not a load. Checking it here lets a registration refuse it where
 ;; `missing-services` refuses a missing service.
 
-(def- selector-constraints #{:kind :parent :field :nth})
+(def- selector-constraints #{:kind :parent :field :nth :text})
+
+;; how many selector MAPS one key may nest through `:parent` — the kernel's bound (ADR-487)
+(def- selector-depth-max 3)
+
+(defn- text-constraint-ok? (text)
+  ;; a string, or a non-empty set of strings
+  (or (string? text) (and (set? text) (not (empty? text)) (every? text string?))))
+
+(defn- selector-shape-problem (selector depth)
+  ;; what is wrong with the selector map `selector`, `depth` maps deep, or nil
+  (let (parent (get selector :parent))
+    (cond
+      (empty? selector) "an empty selector {} would colour every node"
+      (not (every? (keys selector) (fn (k) (contains? selector-constraints k))))
+        (str (pr-str selector) " names a constraint other than :kind :parent :field :nth :text")
+      (not (every? [:kind :field] (fn (k) (or (nil? (get selector k)) (keyword? (get selector k))))))
+        (str (pr-str selector) ": :kind and :field are keywords")
+      (let (n (get selector :nth)) (not (or (nil? n) (and (int? n) (>= n 0)))))
+        (str (pr-str selector) ": :nth is a non-negative int")
+      (not (or (nil? (get selector :text)) (text-constraint-ok? (get selector :text))))
+        (str (pr-str selector) ": :text is a string or a non-empty set of strings")
+      (or (nil? parent) (keyword? parent)) nil
+      (not (map? parent)) (str (pr-str selector) ": :parent is a kind keyword or a selector map")
+      (>= depth selector-depth-max)
+        (str (pr-str selector) ": :parent maps nest at most " selector-depth-max " deep")
+      else (selector-shape-problem parent (inc depth)))))
 
 (defn- selector-problem (selector face-name)
   ;; what is wrong with one face-table entry, or nil
@@ -83,24 +109,18 @@ load with the list rather than at the keypress that needed it.
     (not (keyword? face-name)) (str "face name for " (pr-str selector) " is not a keyword")
     (keyword? selector) nil
     (not (map? selector)) (str (pr-str selector) " is neither a node kind nor a selector map")
-    (empty? selector) "an empty selector {} would colour every node"
-    (not (every? (keys selector) (fn (k) (contains? selector-constraints k))))
-      (str (pr-str selector) " names a constraint other than :kind :parent :field :nth")
-    (not (every? [:kind :parent :field]
-           (fn (k) (or (nil? (get selector k)) (keyword? (get selector k))))))
-      (str (pr-str selector) ": :kind, :parent and :field are keywords")
-    (let (n (get selector :nth)) (not (or (nil? n) (and (int? n) (>= n 0)))))
-      (str (pr-str selector) ": :nth is a non-negative int")
-    else nil))
+    else (selector-shape-problem selector 1)))
 
 (defn face-table-problems (table:any -> list)
   "What is malformed in the face table `table` — one message per bad entry, `()` when every
-key is a node kind or a context selector (`{:kind :parent :field :nth}`, ADR-486) and every
+key is a node kind or a context selector (`{:kind :parent :field :nth :text}`, ADR-486,
+ADR-487 — a `:parent` itself a kind or a selector map, at most three maps deep) and every
 value a face-name keyword. What a registration checks beside `missing-services`, so a
 misspelt selector fails at load rather than at the first frame drawn.
 
     (editor/treesit/face-table-problems {:string :syntax/string {:field :function} :syntax/function})   → ()
-    (count (editor/treesit/face-table-problems {{:feild :name} :syntax/function}))   → 1"
+    (count (editor/treesit/face-table-problems {{:feild :name} :syntax/function}))   → 1
+    (editor/treesit/face-table-problems {{:kind :identifier :text #{\"def\" \"if\"} :parent {:kind :call}} :syntax/keyword})   → ()"
   (seq/keep (%map-pairs table) (fn ([selector face-name]) (selector-problem selector face-name))))
 
 ;; ---- is this text finished? -------------------------------------------------
@@ -259,12 +279,25 @@ the tree-sitter parse it walks."
 ;;   {:field :function :kind :identifier}        an identifier filling its parent's `function` field
 ;;   {:field :name}                              whatever fills a `name` field, of any kind
 ;;
-;; `:kind`, `:parent` and `:field` are keywords (tree-sitter's node and field names), `:nth`
-;; an index among the parent's NAMED children; every one given must hold. When several
-;; entries match a node the most specific wins — a field over a parent over a position over
-;; the kind — so any context entry beats the plain kind, and the answer never depends on
-;; the map's order. A coloured node is coloured whole, context or not, so an entry can only
-;; reach a node whose ancestors the table leaves uncoloured.
+;; Two more reach what position alone cannot (ADR-487):
+;;
+;;   {:kind :identifier :parent :call :field :target :text #{"def" "if" "case"}}
+;;                                               Elixir's `def`/`if`/`case`, which its grammar
+;;                                               parses as calls — told from `foo(x)` by TEXT
+;;   {:kind :field_identifier :parent {:kind :field_expression :field :function}}
+;;                                               Rust's `s.bar()`, not the read `p.x`: the
+;;                                               PARENT must satisfy a selector of its own
+;;
+;; `:kind` and `:field` are keywords (tree-sitter's node and field names), `:nth` an index
+;; among the parent's NAMED children, `:text` the node's exact source text (a string or a
+;; set of strings), `:parent` a kind or a selector map the parent satisfies in turn — its
+;; own `:field` and `:nth` placing it in the grandparent — at most three maps deep. Every
+;; one given must hold. When several entries match a node the most specific wins: the
+;; node's own constraints decide first — text over field over parent over position over
+;; kind — then the parent selector's by the same rule, then the grandparent's, then the
+;; narrower `:text` set. So any context entry beats the plain kind, and the answer never
+;; depends on the map's order. A coloured node is coloured whole, context or not, so an
+;; entry can only reach a node whose ancestors the table leaves uncoloured.
 ;;
 ;; The kernel walk matches the selectors itself (it is standing on the parent when it
 ;; reaches the child), so a context costs the walk nothing and no Brood runs per node.

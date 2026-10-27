@@ -53,7 +53,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(4),
         Sig::new(vec![string, kw, list_ty.union(vec_ty).union(map_ty), any], vec_ty),
         &["source", "lang", "table", "keywords?"],
-        "The fontify query: [start end reported] for the OUTERMOST nodes the face `table` colours, in source order, not descending into one that matched. `table` is a list/vector of kind keywords (each reported as itself), or a map from SELECTOR to what a span reports: a selector is a kind keyword, or a context map {:kind :parent :field :nth} — the node's kind, its parent's kind, the field it fills in the parent (tree-sitter's field name) and its index among the parent's named children — whose given constraints must all hold. When several match, the most specific wins (:field over :parent over :nth over :kind), so any context entry beats the plain kind (ADR-486). With keywords? true, an anonymous token beginning with a letter is also reported, as kind :__keyword__ — the cross-language keyword rule, which no grammar names. Which kinds get which face stays with the caller; what this avoids is projecting every node into a map to read its kind and discard the rest, which is what a windowed fontify did on every keystroke.",
+        "The fontify query: [start end reported] for the OUTERMOST nodes the face `table` colours, in source order, not descending into one that matched. `table` is a list/vector of kind keywords (each reported as itself), or a map from SELECTOR to what a span reports: a selector is a kind keyword, or a context map {:kind :parent :field :nth :text} — the node's kind, its parent (a kind, or a selector map the parent must satisfy in turn, at most 3 maps deep), the field it fills in the parent (tree-sitter's field name), its index among the parent's named children and its exact source text (a string or a set of strings) — whose given constraints must all hold. When several match, the most specific wins: the node's own constraints first (:text over :field over :parent over :nth over :kind), then each ancestor selector's, then the narrower :text set, so any context entry beats the plain kind (ADR-486, ADR-487). With keywords? true, an anonymous token beginning with a letter is also reported, as kind :__keyword__ — the cross-language keyword rule, which no grammar names. Which kinds get which face stays with the caller; what this avoids is projecting every node into a map to read its kind and discard the rest, which is what a windowed fontify did on every keystroke.",
         tree_sitter_spans);
     // Tree HANDLES (ADR-443): a whole document's parse tree, held across edits and
     // reparsed incrementally, queried over a range — what an editor's view keeps per
@@ -238,66 +238,60 @@ fn ts_kinds(heap: &Heap, who: &'static str, v: Value) -> Result<Vec<String>, Lis
     Ok(kinds)
 }
 
-/// A span query's face table (ADR-486): a sequence of kind keywords (each reported as
-/// itself), or a map whose keys are SELECTORS and whose values are what a span reports. A
+/// A span query's face table (ADR-486, ADR-487): a sequence of kind keywords (each reported
+/// as itself), or a map whose keys are SELECTORS and whose values are what a span reports. A
 /// selector is a kind keyword, or a map naming the node's context:
 ///
 /// ```text
 /// {:kind :identifier :parent :block :nth 0}   ; the identifier first among a block's named children
 /// {:field :function}                          ; whatever fills a parent's `function` field
+/// {:kind :identifier :text #{"def" "if"}}     ; an identifier spelt `def` or `if`
+/// {:kind :field_identifier
+///  :parent {:kind :field_expression :field :function}}   ; a method call's name
 /// ```
 ///
-/// `:kind`, `:parent` and `:field` are keywords, `:nth` a non-negative int; at least one is
-/// given, and nothing else is accepted, so a misspelt constraint fails at the call rather
-/// than quietly matching everything.
+/// `:kind` and `:field` are keywords, `:nth` a non-negative int, `:text` a string or a
+/// non-empty set of strings, and `:parent` a kind keyword or a selector map the parent must
+/// satisfy, nested at most [`MAX_SELECTOR_DEPTH`](crate::host::treesit::MAX_SELECTOR_DEPTH)
+/// maps deep. At least one constraint is given, and nothing else is accepted, so a misspelt
+/// constraint fails at the call rather than quietly matching everything.
 fn ts_table(
     heap: &Heap,
     who: &'static str,
     v: Value,
 ) -> Result<crate::host::treesit::SpanTable, LispError> {
-    use crate::host::treesit::{SpanRule, SpanTable};
+    use crate::host::treesit::{Selector, SpanRule, SpanTable};
     let Value::Map(id) = v else {
         return Ok(SpanTable::of_kinds(ts_kinds(heap, who, v)?));
     };
     let mut rules = Vec::new();
     for (selector, reported) in heap.map_entries(id) {
-        let rule = match selector {
-            Value::Keyword(kind) => SpanRule {
-                kind: Some(value::symbol_name(kind)),
-                parent: None,
-                field: None,
-                nth: None,
-                reported,
-            },
-            Value::Map(selector_id) => ts_selector(heap, who, selector_id, reported)?,
+        let selector = match selector {
+            Value::Keyword(kind) => Selector::of_kind(value::symbol_name(kind)),
+            Value::Map(selector_id) => ts_selector(heap, who, selector_id, 1)?,
             other => {
                 return Err(LispError::wrong_type(
                     heap,
                     who,
-                    "a node kind keyword or a {:kind :parent :field :nth} selector map",
+                    "a node kind keyword or a {:kind :parent :field :nth :text} selector map",
                     other,
                 ));
             }
         };
-        rules.push(rule);
+        rules.push(SpanRule { selector, reported });
     }
     Ok(SpanTable::new(rules))
 }
 
-/// One context selector of a face table, as a rule reporting `reported`.
+/// One context selector of a face table, `depth` maps deep (the key itself is 1).
 fn ts_selector(
     heap: &Heap,
     who: &'static str,
-    selector: value::MapId,
-    reported: Value,
-) -> Result<crate::host::treesit::SpanRule, LispError> {
-    let mut rule = crate::host::treesit::SpanRule {
-        kind: None,
-        parent: None,
-        field: None,
-        nth: None,
-        reported,
-    };
+    selector_map: value::MapId,
+    depth: usize,
+) -> Result<crate::host::treesit::Selector, LispError> {
+    use crate::host::treesit::{MAX_SELECTOR_DEPTH, Selector, TextMatch};
+    let mut selector = Selector::default();
     let named = |constraint: &str, v: Value| match v {
         Value::Keyword(name) => Ok(value::symbol_name(name)),
         other => Err(LispError::wrong_type(
@@ -307,36 +301,89 @@ fn ts_selector(
             other,
         )),
     };
-    for (key, v) in heap.map_entries(selector) {
+    for (key, v) in heap.map_entries(selector_map) {
         let constraint = match key {
             Value::Keyword(k) => value::symbol_name(k),
             other => return Err(LispError::wrong_type(heap, who, "a selector key", other)),
         };
         match constraint.as_str() {
-            "kind" => rule.kind = Some(named(":kind", v)?),
-            "parent" => rule.parent = Some(named(":parent", v)?),
-            "field" => rule.field = Some(named(":field", v)?),
+            "kind" => selector.kind = Some(named(":kind", v)?),
+            "field" => selector.field = Some(named(":field", v)?),
+            "parent" => {
+                let parent = match v {
+                    Value::Keyword(kind) => Selector::of_kind(value::symbol_name(kind)),
+                    Value::Map(parent_map) if depth < MAX_SELECTOR_DEPTH => {
+                        ts_selector(heap, who, parent_map, depth + 1)?
+                    }
+                    Value::Map(_) => {
+                        return Err(LispError::runtime(format!(
+                            "{who}: a face-table selector nests :parent maps at most {MAX_SELECTOR_DEPTH} deep"
+                        )));
+                    }
+                    other => {
+                        return Err(LispError::wrong_type(
+                            heap,
+                            who,
+                            "a kind keyword or a selector map for selector :parent",
+                            other,
+                        ));
+                    }
+                };
+                selector.parent = Some(Box::new(parent));
+            }
             "nth" => {
                 let n = expect_int(heap, who, v)?;
-                rule.nth = Some(usize::try_from(n).map_err(|_| {
+                selector.nth = Some(usize::try_from(n).map_err(|_| {
                     LispError::runtime(format!(
                         "{who}: a selector's :nth is never negative, got {n}"
                     ))
                 })?);
             }
+            "text" => {
+                let texts = match v {
+                    Value::Str(_) => vec![expect_string(heap, who, v)?],
+                    Value::Set(set_id) => heap
+                        .set_elems(set_id)
+                        .into_iter()
+                        .map(|element| match element {
+                            Value::Str(_) => expect_string(heap, who, element),
+                            other => Err(LispError::wrong_type(
+                                heap,
+                                who,
+                                "a string in selector :text",
+                                other,
+                            )),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                    other => {
+                        return Err(LispError::wrong_type(
+                            heap,
+                            who,
+                            "a string or a set of strings for selector :text",
+                            other,
+                        ));
+                    }
+                };
+                if texts.is_empty() {
+                    return Err(LispError::runtime(format!(
+                        "{who}: a selector's :text set #{{}} would match no node"
+                    )));
+                }
+                selector.text = Some(TextMatch::new(texts));
+            }
             other => {
                 return Err(LispError::runtime(format!(
-                    "{who}: a face-table selector takes :kind :parent :field :nth, not :{other}"
+                    "{who}: a face-table selector takes :kind :parent :field :nth :text, not :{other}"
                 )));
             }
         }
     }
-    if rule.kind.is_none() && rule.parent.is_none() && rule.field.is_none() && rule.nth.is_none() {
+    if selector.is_empty() {
         return Err(LispError::runtime(format!(
             "{who}: an empty face-table selector {{}} would colour every node"
         )));
     }
-    Ok(rule)
+    Ok(selector)
 }
 
 /// A document's text as a rope: a rope as itself (a reference count, no copy), a string

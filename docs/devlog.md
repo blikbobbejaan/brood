@@ -4174,3 +4174,17 @@ and `%reverse-acc` together, named by a temporary trace since removed. Reproduce
 second process rebinding a global to fresh closures (integer rebinds never trigger it). The arm
 re-tiers after, and `settle` covers both paths. Filed as KI-306 for the record, with the counter's
 coarseness noted: nothing measured asks for a per-arm check yet.
+
+2026-10-27 (ADR-487, face-table `:text` and nested `:parent`): two cases ADR-486's selectors
+could not reach. Elixir parses `def`/`if`/`case` as calls with an identifier target, the same
+shape as `foo(x)`; a selector's `:text` (a string or a set of strings) tells them apart,
+checked last and refused on byte length first. A method call's name (Rust `s.bar()`, Go,
+JS/TS, Python, C) differs from a field read only by where its PARENT sits; `:parent` may now
+be a selector map, at most three deep, matched up the context chain the walk already keeps
+on its stack. Specificity is a per-level weight vector from the node outward (text 16 > field
+8 > parent 4 > nth 2 > kind 1), compared lexicographically, then the narrower text set, then
+the face name; the table is sorted once per call and the walk takes the first rule that holds.
+`face-table-problems` validates both. Run here: `treesit_module_test` (60, Ruby/Elixir plus
+installed HCL/Rust/Go), `doc_examples`, `audit`, `nest check --strict` on
+`std/editor/treesit.blsp`, `cargo test -p brood --lib treesit` (treesit-grammars), `cargo
+check --no-default-features`, clippy (gui, treesit-grammars).
