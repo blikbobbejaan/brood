@@ -193,7 +193,12 @@ fn mtime_stamp(path: &str) -> String {
 /// declared-sig value hash (which can change independently, in another file).
 fn fact_of_sym(heap: &Heap, sym: Symbol) -> String {
     let base = match heap.def_site(sym) {
-        Some(loc) => format!("D{}@{}", loc.file, mtime_stamp(&loc.file)),
+        // The DEFINITION's content where it can be read (ADR-485), the defining file's
+        // mtime where it cannot.
+        Some(loc) => match definition_digest(heap, sym) {
+            Some(digest) => format!("D{}#{digest:016x}", loc.file),
+            None => format!("D{}@{}", loc.file, mtime_stamp(&loc.file)),
+        },
         None => match heap.env_get(heap.global(), sym) {
             Some(Value::Native(_)) => "N".to_string(),
             Some(Value::Fn(_)) => "F".to_string(),
@@ -215,6 +220,241 @@ fn fact_of_sym(heap: &Heap, sym: Symbol) -> String {
             fnv1a(&crate::syntax::printer::print(heap, v))
         ),
         None => base,
+    }
+}
+
+// ── a definition's content digest (ADR-485) ──────────────────────────────────
+//
+// A user global's fact used to be its defining FILE's mtime, which is the right answer
+// at the wrong grain: a check that observed one function of a module was stale the moment
+// ANY line of that module moved. On bedit (204 files) touching one module re-checked 158
+// files, 42 s, because inference walks callee bodies and so nearly every file observes
+// something in nearly every module. The fact is now what the checker can actually SEE of
+// the definition:
+//
+//   - a closure or macro: its name and every arm's parameters, optionals and body forms —
+//     the very values `infer_sig`, `infer_overload_of`, `arity_of` and `param_names_of`
+//     read. A body edit changes the digest; an edit elsewhere in the file does not;
+//   - a primitive bound under a user name: the primitive's name (its signature is the
+//     build's, and the cache is stamped with the build id);
+//   - any other value: its KIND — all `global_value_ty` takes from it, the literal being
+//     deliberately ignored there (`(def- dev? (env/dev?))`), so a value computed at load
+//     (`(def started (os/now))`) keeps one fact across runs — and for a dynamic or
+//     earmuffed global, which is never typed, not even that.
+//
+// The declared sig, the registries, the export sets and known namespaces are separate
+// facts, as before. Anything the walk cannot render process-independently (a function
+// value spliced into a body, a pid, a rope) gives `None`, and the fact falls back to the
+// file's mtime: never less sound than before.
+//
+// Process-independent by construction: symbols by NAME (interned ids differ per process),
+// a gensym by its first-appearance index within the definition (the counter differs per
+// process and per load order — an imaged start and a source load mint different numbers
+// for the same expansion), maps and sets order-independently.
+
+thread_local! {
+    /// Digests of closures already walked, keyed by the closure's move-stable identity
+    /// and its arms allocation — a closure is immutable, so one walk serves the process.
+    /// Thread-local because a worker heap's closures are its own; a fingerprint pass asks
+    /// for the same few thousand globals once per file, which is what this saves.
+    static CLOSURE_DIGESTS: std::cell::RefCell<std::collections::HashMap<(u64, usize), Option<u64>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// See the section comment. `None` when the definition cannot be digested.
+fn definition_digest(heap: &Heap, sym: Symbol) -> Option<u64> {
+    let mut digest = Digest::new();
+    let bound = heap.env_get(heap.global(), sym)?;
+    match bound {
+        Value::Fn(cid) | Value::Macro(cid) => {
+            let closure = heap.closure(cid);
+            let key = (
+                closure.identity,
+                std::sync::Arc::as_ptr(&closure.arms) as *const () as usize,
+            );
+            let known = CLOSURE_DIGESTS.with(|memo| memo.borrow().get(&key).copied());
+            let computed = match known {
+                Some(known) => known,
+                None => {
+                    let computed = closure_digest(heap, closure);
+                    CLOSURE_DIGESTS.with(|memo| memo.borrow_mut().insert(key, computed));
+                    computed
+                }
+            };
+            // A function and a macro read differently (`resolves_to_macro`,
+            // `evaluates_args`), so the kind is part of the fact.
+            digest.text(if matches!(bound, Value::Macro(_)) {
+                "M"
+            } else {
+                "F"
+            });
+            digest.number(computed?);
+        }
+        Value::Native(id) => {
+            digest.text("N");
+            digest.text(&heap.native(id).name);
+        }
+        // A dynamic or earmuffed global's value is never typed (`global_value_ty` stops
+        // before reading it), and it is exactly the kind of global a process sets for
+        // itself — `*image-path*` is nil in a source-loaded process and a string in an
+        // imaged one — so its fact is only that it is bound.
+        _ if heap.is_dynamic(sym) || super::infer::is_earmuffed(sym) => digest.text("V*"),
+        other => {
+            digest.text("V");
+            digest.text(&format!("{:?}", value::tag(other)));
+        }
+    }
+    Some(digest.finish())
+}
+
+/// A closure's digest: its name, then each arm's parameters, optionals, rest and body.
+fn closure_digest(heap: &Heap, closure: &value::Closure) -> Option<u64> {
+    let mut digest = Digest::new();
+    let mut gensyms = std::collections::HashMap::new();
+    digest.text(&closure.name.map(value::symbol_name).unwrap_or_default());
+    for arm in closure.arms.iter() {
+        digest.text("arm");
+        for &param in &arm.params {
+            digest.symbol(param, &mut gensyms);
+        }
+        digest.text("&optional");
+        for &(name, default) in &arm.optionals {
+            digest.symbol(name, &mut gensyms);
+            digest.form(heap, default, &mut gensyms)?;
+        }
+        digest.text("&rest");
+        if let Some(rest) = arm.rest {
+            digest.symbol(rest, &mut gensyms);
+        }
+        digest.text("body");
+        for &form in &arm.body {
+            digest.form(heap, form, &mut gensyms)?;
+        }
+    }
+    Some(digest.finish())
+}
+
+/// FNV-1a over a self-delimiting stream: every item is tagged and length-prefixed, so
+/// `("ab" "c")` and `("a" "bc")` cannot meet.
+struct Digest(u64);
+
+impl Digest {
+    fn new() -> Self {
+        Digest(0xcbf2_9ce4_8422_2325)
+    }
+    fn byte(&mut self, byte: u8) {
+        self.0 ^= byte as u64;
+        self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    fn number(&mut self, number: u64) {
+        for byte in number.to_le_bytes() {
+            self.byte(byte);
+        }
+    }
+    fn text(&mut self, text: &str) {
+        self.number(text.len() as u64);
+        for &byte in text.as_bytes() {
+            self.byte(byte);
+        }
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    /// A symbol by name, a gensym by its first-appearance index in this definition.
+    fn symbol(&mut self, symbol: Symbol, gensyms: &mut std::collections::HashMap<Symbol, u64>) {
+        if value::is_gensym(symbol) {
+            let next = gensyms.len() as u64;
+            let index = *gensyms.entry(symbol).or_insert(next);
+            self.byte(b'g');
+            self.number(index);
+        } else {
+            self.byte(b's');
+            self.text(&value::symbol_name(symbol));
+        }
+    }
+    /// A code or data form. `None` for anything without a process-independent rendering.
+    fn form(
+        &mut self,
+        heap: &Heap,
+        form: Value,
+        gensyms: &mut std::collections::HashMap<Symbol, u64>,
+    ) -> Option<()> {
+        crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
+            match form {
+                Value::Nil => self.byte(b'n'),
+                Value::Bool(flag) => {
+                    self.byte(b'b');
+                    self.byte(u8::from(flag));
+                }
+                Value::Int(number) => {
+                    self.byte(b'i');
+                    self.number(number as u64);
+                }
+                Value::Float(number) => {
+                    self.byte(b'f');
+                    self.number(number.to_bits());
+                }
+                Value::BigInt(_) | Value::Decimal(_) | Value::Ratio(_) => {
+                    self.byte(b'#');
+                    self.text(&crate::syntax::printer::print(heap, form));
+                }
+                Value::Str(id) => {
+                    self.byte(b'"');
+                    self.text(heap.string(id));
+                }
+                Value::Sym(symbol) => self.symbol(symbol, gensyms),
+                Value::Keyword(symbol) => {
+                    self.byte(b':');
+                    self.text(&value::symbol_name(symbol));
+                }
+                Value::Native(id) => {
+                    self.byte(b'N');
+                    self.text(&heap.native(id).name);
+                }
+                Value::Pair(_) => {
+                    self.byte(b'(');
+                    let mut rest = form;
+                    while let Value::Pair(cell) = rest {
+                        self.form(heap, heap.car(cell), gensyms)?;
+                        rest = heap.cdr(cell);
+                    }
+                    // the tail: nil for a proper list, the atom of a dotted one
+                    self.byte(b'.');
+                    self.form(heap, rest, gensyms)?;
+                }
+                Value::Vector(id) => {
+                    self.byte(b'[');
+                    let items = heap.vector(id);
+                    self.number(items.len() as u64);
+                    for &item in items.iter() {
+                        self.form(heap, item, gensyms)?;
+                    }
+                }
+                Value::Map(id) | Value::Set(id) => {
+                    // Order-independent: a CHAMP map iterates in hash order, and a symbol
+                    // hashes by its interned id. Each entry is digested on its own (its
+                    // gensyms numbered within it) and the entry digests summed.
+                    self.byte(if matches!(form, Value::Set(_)) {
+                        b'#'
+                    } else {
+                        b'{'
+                    });
+                    let mut sum: u64 = 0;
+                    let entries = heap.map_entries(id);
+                    for (key, entry) in &entries {
+                        let mut part = Digest::new();
+                        let mut local = std::collections::HashMap::new();
+                        part.form(heap, *key, &mut local)?;
+                        part.form(heap, *entry, &mut local)?;
+                        sum = sum.wrapping_add(part.finish());
+                    }
+                    self.number(entries.len() as u64);
+                    self.number(sum);
+                }
+                _ => return None,
+            }
+            Some(())
+        })
     }
 }
 

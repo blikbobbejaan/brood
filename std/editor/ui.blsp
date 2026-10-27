@@ -509,8 +509,11 @@ snapshotted into the startup image (ADR-218) and the env var never consulted aga
   (= (os/env "BROOD_UI_TRACE") "1"))
 
 (defn- ui-cost-snapshot ()
-  ;; `[cpu-us gc-pause-us gc-collections]` for this process — read only when tracing
-  (let (gc (%gc-stats))
+  ;; `[cpu-us gc-pause-us gc-collections]` for this process — read only when tracing.
+  ;; `%gc-stats` is a dev-tools builtin a lean release runtime does not register (ADR-038),
+  ;; and calling it bare made `BROOD_UI_TRACE=1` kill a released app at its first frame;
+  ;; there the GC figures read as zero and the CPU time is still reported.
+  (let (gc (reflect/call-if-bound '%gc-stats {}))
     [(:cpu-us (%process-info (self)) 0) (:pause-total-us gc 0) (:collections gc 0)]))
 
 (defn- ui-timed (thunk)

@@ -25,7 +25,7 @@ fn write_app(
         .iter()
         .map(|(n, s)| (n.to_string(), s.to_string()))
         .collect();
-    let archive = brood::bundle::serialize(manifest, &owned);
+    let archive = brood::bundle::serialize(manifest, &owned, None);
 
     let dir = std::env::temp_dir().join(format!("brood-release-{}-{}", tag, std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -98,28 +98,26 @@ fn bundled_deps_with_same_module_name_coexist_rooted() {
     // is embedded under its ROOTED key, and `main` calls both — proving neither clobbered
     // the other and that each `parser`'s intra-package `(:use util)` rooted to its OWN
     // `util` (alpha→"A", beta→"B"), not the other dep's.
-    let (app, cwd) = write_app(
-        "same-name-deps",
-        "(project :name \"t\" :version \"0\" :dependencies [[alpha :path \"a\"] [beta :path \"b\"]])",
-        &[
-            (
-                "main",
-                "(defmodule main)\n(defn main () (io/puts (str (alpha/parser/tag) \"|\" (beta/parser/tag))))",
-            ),
-            // `parser` in each dep uses its OWN `util` via a bare intra-package `(:use util)`,
-            // which must root to `alpha/util` / `beta/util` under each dep's package context.
-            (
-                "alpha/parser",
-                "(defmodule parser (:use util))\n(defn tag () (str \"alpha:\" (util-tag)))",
-            ),
-            ("alpha/util", "(defmodule util)\n(defn util-tag () \"A\")"),
-            (
-                "beta/parser",
-                "(defmodule parser (:use util))\n(defn tag () (str \"beta:\" (util-tag)))",
-            ),
-            ("beta/util", "(defmodule util)\n(defn util-tag () \"B\")"),
-        ],
-    );
+    let manifest = "(project :name \"t\" :version \"0\" :dependencies [[alpha :path \"a\"] [beta :path \"b\"]])";
+    let modules: &[(&str, &str)] = &[
+        (
+            "main",
+            "(defmodule main)\n(defn main () (io/puts (str (alpha/parser/tag) \"|\" (beta/parser/tag))))",
+        ),
+        // `parser` in each dep uses its OWN `util` via a bare intra-package `(:use util)`,
+        // which must root to `alpha/util` / `beta/util` under each dep's package context.
+        (
+            "alpha/parser",
+            "(defmodule parser (:use util))\n(defn tag () (str \"alpha:\" (util-tag)))",
+        ),
+        ("alpha/util", "(defmodule util)\n(defn util-tag () \"A\")"),
+        (
+            "beta/parser",
+            "(defmodule parser (:use util))\n(defn tag () (str \"beta:\" (util-tag)))",
+        ),
+        ("beta/util", "(defmodule util)\n(defn util-tag () \"B\")"),
+    ];
+    let (app, cwd) = write_app("same-name-deps", manifest, modules);
     let mut cmd = Command::new(&app);
     cmd.current_dir(&cwd);
     support::dies_with_parent(&mut cmd);
@@ -134,6 +132,12 @@ fn bundled_deps_with_same_module_name_coexist_rooted() {
         String::from_utf8_lossy(&out.stdout).trim(),
         "alpha:A|beta:B"
     );
+    // The same bundle with its startup image (ADR-484): the rooted dependency modules are
+    // sectioned under their rooted names and stay apart when materialised.
+    embed_image(&app, &cwd, manifest, manifest, modules);
+    assert_eq!(run_ok(&app, &cwd, &[], false).trim(), "alpha:A|beta:B");
+    let check = run_ok(&app, &cwd, &[brood::bundle::BUNDLE_BOOT_CHECK_ARG], false);
+    assert!(check.contains("from the startup image"), "{check}");
     let _ = std::fs::remove_dir_all(app.parent().unwrap());
 }
 
@@ -242,6 +246,7 @@ fn a_release_replaces_a_running_binary() {
             "app".to_string(),
             "(defmodule app \"\")\n(defn main () (io/puts \"v2\"))".to_string(),
         )],
+        None,
     );
     brood::bundle::write_release(&base, &archive, &app)
         .expect("a release must replace a running binary");
@@ -271,7 +276,7 @@ fn a_bundle_with_a_corrupt_archive_is_refused_not_run_as_plain_brood() {
     // `brood` would start the REPL (or run argv as a file) in place of the app.
     let brood = env!("CARGO_BIN_EXE_brood");
     let base = std::fs::read(brood).expect("read brood binary");
-    let mut archive = brood::bundle::serialize("(project :name \"t\")", &[]);
+    let mut archive = brood::bundle::serialize("(project :name \"t\")", &[], None);
     archive[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
     let dir = std::env::temp_dir().join(format!("brood-release-corrupt-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -339,5 +344,167 @@ fn bundled_boot_check_resolves_an_application_without_starting_it() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "STARTED");
+    let _ = std::fs::remove_dir_all(app.parent().unwrap());
+}
+
+/// What `nest release` does after writing a bundle (ADR-484): run it with
+/// `--brood-build-image`, then rewrite it with the image it wrote after its modules. The
+/// image is built for `image_manifest`'s archive, which is `manifest`'s unless a test is
+/// building a mismatched one on purpose. Returns what the build run printed.
+fn embed_image(
+    app: &std::path::Path,
+    cwd: &std::path::Path,
+    manifest: &str,
+    image_manifest: &str,
+    modules: &[(&str, &str)],
+) -> String {
+    let owned: Vec<(String, String)> = modules
+        .iter()
+        .map(|(n, s)| (n.to_string(), s.to_string()))
+        .collect();
+    let base = std::fs::read(env!("CARGO_BIN_EXE_brood")).expect("read brood binary");
+    let image_path = app.with_file_name("app.image");
+    if image_manifest != manifest {
+        let archive = brood::bundle::serialize(image_manifest, &owned, None);
+        brood::bundle::write_release(&base, &archive, app).expect("write release binary");
+    }
+    let mut cmd = Command::new(app);
+    cmd.arg(brood::bundle::BUNDLE_BUILD_IMAGE_ARG)
+        .arg(&image_path)
+        .current_dir(cwd);
+    support::dies_with_parent(&mut cmd);
+    let out = run_bundle(&mut cmd);
+    assert!(
+        out.status.success(),
+        "the image build failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let image = std::fs::read(&image_path).expect("the build wrote the image");
+    let archive = brood::bundle::serialize(manifest, &owned, Some(&image));
+    brood::bundle::write_release(&base, &archive, app).expect("write imaged release binary");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Run `app` (with `args`, and `BROOD_NO_BUNDLE_IMAGE` when `without_image`), asserting it
+/// exits 0, and answer its stdout.
+fn run_ok(
+    app: &std::path::Path,
+    cwd: &std::path::Path,
+    args: &[&str],
+    without_image: bool,
+) -> String {
+    let mut cmd = Command::new(app);
+    cmd.args(args).current_dir(cwd);
+    if without_image {
+        cmd.env("BROOD_NO_BUNDLE_IMAGE", "1");
+    }
+    support::dies_with_parent(&mut cmd);
+    let out = run_bundle(&mut cmd);
+    assert!(
+        out.status.success(),
+        "exit: {:?}\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// A bundle's modules, each announcing at load time that its SOURCE was evaluated — a
+/// module materialised from the image evaluates nothing, so its line is missing. `lib`
+/// carries registrations (a record, an ability and its impl) that `main` dispatches through;
+/// `store/repo` is a dependency module reached by its bare name; `other.blsp` declares a
+/// module of a different name, so the image has no section under the name it is required
+/// by and it must load from source.
+const IMAGED_APP: &[(&str, &str)] = &[
+    (
+        "main",
+        "(defmodule main (:use lib) (:alias repo))\n\
+         (defn main () (io/puts (str \"area:\" (area (square 3)) \" repo:\" (repo/tag) \" other:\" (different/tag))))",
+    ),
+    (
+        "lib",
+        "(defmodule lib)\n\
+         (io/puts \"evaluated: lib\")\n\
+         (defrecord square (side))\n\
+         (defability Shape (area [self]))\n\
+         (impl Shape lib/square (area [s] (* (get s :side) (get s :side))))",
+    ),
+    (
+        "store/repo",
+        "(defmodule repo)\n(io/puts \"evaluated: repo\")\n(defn tag () \"dep\")",
+    ),
+    (
+        "other",
+        "(defmodule different)\n(io/puts \"evaluated: other\")\n(defn tag () \"fallback\")",
+    ),
+];
+
+const IMAGED_MANIFEST: &str =
+    "(project :name \"t\" :version \"0\" :bundled-packages [\"store\"] :built-at 1)";
+
+/// ADR-484: a bundle carrying its startup image materialises its modules — the project's
+/// own and a dependency's — instead of evaluating their source; their registrations arrive
+/// with them (the ability dispatch on the record works); a module the image has no section
+/// for falls back to its source; and the boot check exercises the same image path.
+#[test]
+fn an_imaged_bundle_materialises_its_modules_instead_of_evaluating_them() {
+    let (app, cwd) = write_app("imaged", IMAGED_MANIFEST, IMAGED_APP);
+    let built = embed_image(&app, &cwd, IMAGED_MANIFEST, IMAGED_MANIFEST, IMAGED_APP);
+    assert!(
+        built.contains("evaluated: lib"),
+        "the build loads from source: {built}"
+    );
+
+    let out = run_ok(&app, &cwd, &[], false);
+    assert!(
+        out.contains("area:9 repo:dep other:fallback"),
+        "the imaged app runs: {out}"
+    );
+    assert!(
+        !out.contains("evaluated: lib"),
+        "lib came from source: {out}"
+    );
+    assert!(
+        !out.contains("evaluated: repo"),
+        "the dep came from source: {out}"
+    );
+    assert!(
+        out.contains("evaluated: other"),
+        "a module with no section must load from its source: {out}"
+    );
+
+    let check = run_ok(&app, &cwd, &[brood::bundle::BUNDLE_BOOT_CHECK_ARG], false);
+    assert!(
+        check.contains("from the startup image"),
+        "the boot check takes the image path: {check}"
+    );
+    assert!(!check.contains("evaluated: lib"), "{check}");
+
+    // The same binary with the image turned off is the source boot, line for line.
+    let source = run_ok(&app, &cwd, &[], true);
+    assert!(
+        source.contains("evaluated: lib") && source.contains("evaluated: repo"),
+        "{source}"
+    );
+    assert!(
+        source.contains("area:9 repo:dep other:fallback"),
+        "{source}"
+    );
+    let _ = std::fs::remove_dir_all(app.parent().unwrap());
+}
+
+/// An image stamped for another release (here: another manifest) is never installed — the
+/// bundle loads every module from source and runs as before, rather than materialising
+/// bindings built from different code.
+#[test]
+fn a_bundle_image_built_for_another_release_is_ignored() {
+    let (app, cwd) = write_app("imaged-stale", IMAGED_MANIFEST, IMAGED_APP);
+    let other = "(project :name \"t\" :version \"0\" :bundled-packages [\"store\"] :built-at 2)";
+    embed_image(&app, &cwd, IMAGED_MANIFEST, other, IMAGED_APP);
+    let out = run_ok(&app, &cwd, &[], false);
+    assert!(out.contains("evaluated: lib"), "{out}");
+    assert!(out.contains("area:9 repo:dep other:fallback"), "{out}");
+    let check = run_ok(&app, &cwd, &[brood::bundle::BUNDLE_BOOT_CHECK_ARG], false);
+    assert!(check.contains("from source"), "{check}");
     let _ = std::fs::remove_dir_all(app.parent().unwrap());
 }

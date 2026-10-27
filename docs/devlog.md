@@ -4059,12 +4059,118 @@ helpers on a parked process's path now native). A size rule cannot see that a sh
 through a callee, which is what the old gate fenced off by accident (compute-frontier §7.1:
 "the latch is LATENT on the shipped tree"). Reverted; the measurement stands — `regex` −6% is
 there for an admission rule that knows which arms can reach a receive.
+2026-10-27 (ADR-480, a contract check costs what changed): `type-matches?` remembers verdicts
+about compound values by the identity of type and value (`core/heap/type_verdicts.rs`, per
+heap; pruned by minor/major collections and `reset_local_to`, cleared by a stamp of the
+global version, declared sigs, RUNTIME relocation/free and the resolving namespace), and the
+kernel decides tags, `?A`, arrows, `or`s and one level of record/vector over decided parts
+without the walk. The shim templates ask `%contract-args-known?` with their arguments and
+`%type-verdict` on their result before any Brood runs; the record branch no longer
+`partition`s; `%type-names-record?` replaces a per-check scan of `*record-ids*`. bedit's
+typed character armed 7.7 → 1.8 ms (1.3 unarmed). Guard: three `gc::tests` verdict tests,
+`tests/contract_memo_test.blsp`; run here with `contract`, `ability`, `typed_params`,
+`sig_adoption`, `doc_examples`, `doctest`, `audit`, `std_check` and eight bedit test files,
+plus `type_grammar_agreement`, `contract_error_position`, `process_wide_statics`; the suites
+run in CI.
+2026-10-27 (ADR-481, a grammar declared by path, loaded at its first use):
+`%tree-sitter-declare-grammar path lang` records the library and opens nothing; the first
+parse, query or tree naming the language loads it, once (the table's lock is held across the
+dlopen). A re-declaration is a reload at the next use; a failed load is kept as a failure
+(`%tree-sitter-grammar-status`) and not retried, and a language that still has a grammar keeps
+parsing with it. The text-keyed parse and `tree-reparse` now resolve the grammar before the
+cache and the epoch. `std/editor/treesit` wraps both (`declare-grammar`, `grammar-status`).
+Guard: `declared_grammar_tests`, `tests/tree_sitter_test.blsp`, run here; the suites run in CI.
+2026-10-27 (ADR-483, a lean line cache; treesit queries over a rope): two costs bedit found
+adopting ADR-471. The line cache kept every line's text and copied its vector around each
+edit. It now keeps no text and holds its entries in a treap whose keys are relative to their
+parents', so an edit re-bases one subtree. Spans are kept only near the last three windows,
+with a state checkpoint every 32 lines elsewhere. After an edit, the old lines past it are
+one tentative chain that the next walk confirms at the first agreeing state. Separately,
+`editor/treesit/indent-column` and the `point-*` motions take a rope, so RET stops building
+the whole buffer's string. Run here: `tests/highlight_test.blsp` (seven new cases, counting
+lexer calls), `tests/treesit_module_test.blsp` (rope against string, with and without a
+tree), `lexer`, `doc_examples`, `audit`, and `nest check --strict` on both files.
 
-2026-10-27 (KI-306: two intermittent JIT tier tests, both test races): `receive_loop_jit_test`'s
-lonely loop read `:untried` when a runtime collection that moves shared code landed in the last
-~128 of its 400 round trips — `code_relocations` resets every native arm, and the loop re-tiers
-after, so the test now gives it up to five more batches. `jit_unrelated_rebind_test`'s rebinder
-could first run after the arm settled; the test now waits for its first rebind. Reproduced the
-first on demand (a process rebinding a global to fresh closures) and named the cause with a
-temporary trace in `native_still_valid`, since removed. Not run on this machine: the suites run
-in CI.
+2026-10-27 (main's red, attributed and cleared): four reds across the morning's CI runs, each
+traced to its cause.
+- **The strict checker gate** flagged `tests/highlight_test.blsp`'s edit script. It mixed
+  `[:insert line text …]` and `[:delete from to …]` in one vector, so the checker typed the
+  third slot `int | string`. Each step now carries its edit as a function (`lc-insert-at`,
+  `lc-delete-lines`): one shape, and nothing was widened.
+- **bedit's `testrun_test.blsp:307`** destructured a `ui-memo` marker with ADR-470's old
+  arity. bedit's HEAD already reads it by index. `BEDIT_REF` moved to `e48287f5`, after bedit's
+  `nest check`, `--check-boot` and that test file passed here. bedit's whole suite runs in CI:
+  the smoke target is refused on this machine.
+- **`receive_loop_jit_test` "parks on EVERY message"** read `:untried` in 3 of 5 runs. A full
+  compile queue resets a hot arm to untried with its count at zero, and one 400-message burst
+  was its only chance. It now drives through `settle`. A loop parked mid-arm never counts a
+  resume, so it still fails that defect.
+- **`jit_unrelated_rebind_test` "keeps rebinding"** read `rebinds` 0: the rebinder had not run
+  before the arm settled, so the trickle never happened. The rebinder now signals before
+  `settle` starts.
+
+`lazy_load_wait_parks` (6 dirty-blocked waiters) and `a_parked_process_costs_no_more_than_the_floor`
+failed only in the two runs that carried `c38b5bc2`, which admitted small call-mediated arms
+such as the waiters' `child` to native code, and in none of the four without it. Its revert
+(`f37fcdf7`) is their fix. Run here: each touched test file once (`nest test FILE`), the
+strict checker over each, and `nest format --check`. The suites run in CI.
+2026-10-27 (ADR-484, a release bundle starts from its own startup image): `nest release` runs
+the binary it wrote with `--brood-build-image`, so the shipped runtime loads its own sources
+once and writes ADR-218's sectioned image, then appends the image to the archive (an optional
+`BRDIMG01` tail; the bundle format version is unchanged). At mount the runtime holds the bytes
+as `mem:bundle-image`; `run-bundle` installs them against a stamp of the stdlib id, contract
+mode and manifest (`system/build-id` holds the mtime, which a copy changes), and materialises
+each module, falling back to source for one without a section. `project-image`'s section
+writer, registration prune and installer take the carried-module predicate and the path. bedit's
+bundle: first frame ~750 → ~185 ms, +5.3 MB. Run here: `release_bundle` (9, two new),
+`bundle::tests`, `startup_image`, `image`, `image_section_decode`, `project`; bedit bundled,
+booted and boot-checked twice.
+2026-10-27 (ADR-485, `nest check` re-checks what an edit reached): bedit's strict ratchet
+test spent 55 s re-checking 158 of 204 files after any edit, one at a time. Three causes. A
+user global's fingerprint fact was its defining file's mtime. The reuse test ran before
+`project-preload!` while the stamp was taken after it, so a lazily loaded std global read
+`U` against a stamped `F`. And 4.5 MB of expensive files stayed under the pool's 7 MB
+threshold. Now a closure's fact is a process-independent digest of its arms (symbols by
+name, gensyms by first appearance, maps order-free); a non-function contributes its kind,
+and a dynamic or earmuffed global only that it is bound. The expander records each macro
+it expands. `nest check` preloads every closure before the reuse test. The pool engages at
+1 MB, with chunks dealt by size. A replay prints the lines as printed, in order. bedit:
+touch 53.5 → 3.3 s (1 re-checked), a one-function edit 5.5 s (3), a hub edit 7.7 s (123),
+cold re-check 42 → 4.7 s. Verdicts byte-identical to the old binary's. Run here:
+`types::check::tests` (574, with the new digest test), `check_preload`, `project`,
+`checker_pass_agreement`, `checker_follows_live_image`, `nest check --strict` on
+`project-check.blsp`, and clippy. Not run here: `check_incremental.rs` and the suites, left
+to CI.
+
+2026-10-27 (the downstream smoke's 2 GB red was a quadratic render in bedit): bedit's suite peak
+went from 1.5 GB to past `nest test`'s 2 GB default soft limit. The cause was no leak: on CI's
+fresh checkout, `web_fuzz_session_test` opens the root commit, whose diff is every file (~95 000
+lines). bedit's `sectionbuf` rewrite built that render with a vector `conj` per line and per span,
+O(lines²), past 6 GB. It was found by measuring each changed test file in both trees, then
+reproducing in an identical single-commit repo. bedit `e3dde585` builds in one pass, with a
+guard that hits the limit on the old builders. `BEDIT_REF` moved there.
+
+2026-10-27 (ADR-486, context faces and verbatim indent): two gaps found adding Terraform/HCL
+to bedit. In HCL every name is an `identifier`, so a face table keyed on kind alone could not
+tell a block's type from an attribute's name from a called function, and Rust/Go/Python could
+not colour a call's function. A face-table key may now be a selector map `{:kind :parent
+:field :nth}`, matched in the native span walk from the cursor it already holds (parent kind,
+`field_name`, named-child index). The most specific entry wins, weighted field > parent > nth
+> kind. `%tree-sitter-spans` / `%tree-sitter-tree-spans` take the table and report its value
+(the face name). `face-table-problems` validates a table. The indent spec's new `:verbatim`
+names node kinds whose interior lines keep their indentation (a blank one continues the
+previous line's), so TAB in a heredoc no longer rewrites its content. Run here:
+`treesit_module_test` (54, with Ruby, plus HCL / Rust / Go from the installed grammars),
+`tree_sitter_test`, `doc_examples`, `doctest`, `audit`, `nest check --strict` on
+`std/editor/treesit.blsp`, `cargo test -p brood --lib tree_handle_tests`, and clippy
+(gui, treesit-grammars).
+
+2026-10-27 (KI-306: a second way a native arm resets, filed with the tier tests' fix): the two
+intermittent tier tests were fixed upstream in `dc94e5f4` (above), attributed to a full compile
+queue resetting a hot arm with its count at zero. There is a second path to the same `:untried`,
+found while reproducing it: a runtime collection that moves shared code bumps `code_relocations`,
+and `native_still_valid` then resets EVERY native arm in the runtime — `lonely-loop`, `inc`, `dec`
+and `%reverse-acc` together, named by a temporary trace since removed. Reproduced on demand with a
+second process rebinding a global to fresh closures (integer rebinds never trigger it). The arm
+re-tiers after, and `settle` covers both paths. Filed as KI-306 for the record, with the counter's
+coarseness noted: nothing measured asks for a per-arm check yet.

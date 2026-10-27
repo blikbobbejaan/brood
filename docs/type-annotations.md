@@ -407,6 +407,14 @@ Design decisions, as built:
   moved out from under its own macros the same shim cost ~600 µs (`type-matches?` was
   tree-walked; see contracts.blsp's header). The principled next step, not taken: a
   contract as a MODULE BOUNDARY, with a module's calls to its own functions unchecked.
+  (Since taken, ADR-383.) **2026-10-27, ADR-480:** a check costs what CHANGED. Verdicts
+  about compound values are remembered by the identity of type and value (values are
+  immutable, so an unchanged sub-value is the same object next time), and the kernel
+  vouches for an argument list or a result in one call when every part is decided by its
+  type's tag, a decidable form (`?A`, an arrow, an `or`), or a remembered verdict — the
+  Brood walk runs only over what changed. `string/char-at` armed: 2.05 → 0.65 µs a call
+  (0.24 unarmed); a re-check of an unchanged record: 40 → 0.4 µs; bedit's typed character
+  7.7 → 1.8 ms (1.3 unarmed). `(%type-verdict-counts)` reports the memo's hits.
 
 Verified by `tests/contract_test.blsp`: a correct call passes; a bad argument,
 a bad *result* (a fn that lies about its return type), and a union-type

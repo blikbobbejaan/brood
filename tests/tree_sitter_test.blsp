@@ -188,3 +188,56 @@
             b (%tree-sitter-load-grammar tsd-so :elixir))
         (assert= a b)
         (assert= (:kind (%tree-sitter-parse "x = 1\n" :elixir)) :source)))))
+
+;; ---- grammars declared, loaded at first use (ADR-481) -----------------------
+;; A declaration names the library and opens nothing; the first parse, query or tree that
+;; names the language loads it, once. Each test declares a language of its own: the table is
+;; the runtime's, shared by every test in the run.
+
+(describe "tree-sitter-declare-grammar: declared, not loaded"
+  (test "declaring opens nothing, and the language is one the runtime can parse"
+    (assert= (%tree-sitter-declare-grammar "/nonexistent/libtree-sitter-tsdeclared.so" :tsdeclared)
+      true)
+    (assert= (%tree-sitter-grammar-status :tsdeclared) :declared)
+    (is (includes? (%tree-sitter-languages) :tsdeclared)))
+
+  (test "a library that does not load is a failure value, and every use says why"
+    (%tree-sitter-declare-grammar "/nonexistent/libtree-sitter-tsbroken.so" :tsbroken)
+    (let (e (check-allow :discarded-catch
+              (try (%tree-sitter-parse "x" :tsbroken) (catch e (error-message e)))))
+      (is (includes? e "did not load"))
+      (is (includes? e "/nonexistent/libtree-sitter-tsbroken.so")))
+    (let (status (%tree-sitter-grammar-status :tsbroken))
+      (is (failure? status))
+      (is (includes? (error-message status) "did not load")))
+    ;; a tree handle and a structural query name the language the same way
+    (is (string? (check-allow :discarded-catch
+                   (try (%tree-sitter-tree "x" :tsbroken) (catch e (error-message e))))))
+    (is (string? (check-allow :discarded-catch
+                   (try (%tree-sitter-chain "x" :tsbroken 0) (catch e (error-message e))))))
+    (refute (includes? (%tree-sitter-languages) :tsbroken)))
+
+  (test "declaring again is a new attempt"
+    (%tree-sitter-declare-grammar "/nonexistent/libtree-sitter-tsagain.so" :tsagain)
+    (check-allow :discarded-catch (try (%tree-sitter-parse "x" :tsagain) (catch _ nil)))
+    (is (failure? (%tree-sitter-grammar-status :tsagain)))
+    (%tree-sitter-declare-grammar "/nonexistent/libtree-sitter-tsagain.so" :tsagain)
+    (assert= (%tree-sitter-grammar-status :tsagain) :declared))
+
+  (test "a language nobody declared has no status"
+    (assert= (%tree-sitter-grammar-status :tsnobody) nil)))
+
+(when (file/exists? tsd-so)
+  (describe "a declared grammar loads at its first use"
+    (test "the first parse loads it; a declaration of a loaded language reloads it"
+      (%tree-sitter-declare-grammar tsd-so :elixir)
+      (assert= (%tree-sitter-grammar-status :elixir) :declared)
+      (assert= (:kind (%tree-sitter-parse "x = 1\n" :elixir)) :source)
+      (assert= (%tree-sitter-grammar-status :elixir) :loaded)
+      ;; the live swap: the library replaced on disk, declared again, used through a held tree
+      (%tree-sitter-declare-grammar tsd-so :elixir)
+      (assert= (%tree-sitter-grammar-status :elixir) :declared)
+      (let (tree (%tree-sitter-tree "defmodule A do\nend\n" :elixir))
+        (is (ref? tree))
+        (assert= (%tree-sitter-grammar-status :elixir) :loaded)
+        (%tree-sitter-tree-free tree)))))

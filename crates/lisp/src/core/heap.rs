@@ -755,6 +755,12 @@ pub struct Heap {
     /// Boxed at its first use: only a process running contracts ever reads it, and inline
     /// it was 64 bytes on every process.
     type_alias_cache: std::cell::OnceCell<Box<TypeAliasCache>>,
+    /// The runtime contract's verdict memo (ADR-480): `(type, value) → verdict` by the
+    /// identity of both, so an armed `sig` re-checking an unchanged value pays one lookup.
+    /// Cleared or pruned by everything that can make a handle name another object — see
+    /// `type_verdicts.rs`. Boxed at its first use, like `type_alias_cache`: only a process
+    /// running contracts reads it.
+    type_verdicts: std::cell::OnceCell<Box<RefCell<TypeVerdictCache>>>,
     /// This process's global scope. For a real runtime this is [`EnvId::GLOBAL`]
     /// (routing to `runtime.globals`); for the prelude *builder* it's a real
     /// local root frame (so the prelude can be evaluated, then frozen).
@@ -1476,6 +1482,8 @@ use self::slabs::{
 };
 pub(crate) use self::slabs::{INLINE_VEC_CAP, VecStore};
 pub(crate) use self::small_map::SmallMap;
+mod type_verdicts;
+pub(crate) use self::type_verdicts::{KnownVerdict, TypeVerdictCache};
 mod vm_cache;
 /// The per-process compiled-body cache's type — see [`Heap::vm_cache`].
 pub(crate) type VmCache = SmallMap<
@@ -1766,6 +1774,7 @@ impl Heap {
             closure_const_cache: RefCell::new(ConstClosureMap::default()),
             closure_const_ver: Cell::new(u64::MAX),
             type_alias_cache: std::cell::OnceCell::new(),
+            type_verdicts: std::cell::OnceCell::new(),
             prelude,
             runtime,
             global: EnvId::local(0),
@@ -2003,6 +2012,9 @@ impl Heap {
                 .form_pos
                 .retain(|&key, _| (key >> 32) != 0 || (key as u32 as usize) < checkpoint.pairs);
         }
+        // The truncated slots are minted again at the same epoch, so a verdict about one
+        // would answer for whatever is allocated there next (ADR-480).
+        self.type_verdicts_forget_nursery();
         // The threshold is relative to live count; reclamation here is so cheap
         // that we let the next `gc_due` check recompute against the smaller heap.
     }

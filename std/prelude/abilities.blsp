@@ -621,7 +621,9 @@ reports a *statically* visible violation already; this catches the ones it canno
 an impl whose body only yields the wrong type for some inputs, and an impl registered at
 run time from a value the checker never read. Returns `value` so it can wrap a body. The
 error is a `:blame :callee` contract error, like a function's own result mismatch."
-  (if (type-matches? ret value)
+  ;; The kernel first: a base type or a remembered verdict answers without the
+  ;; `type-matches?` frame, which is most results (ADR-480).
+  (if (or (%eq (%type-verdict ret value) true) (type-matches? ret value))
     value
     (%contract-raise {:kind :contract
                       :message (str aname

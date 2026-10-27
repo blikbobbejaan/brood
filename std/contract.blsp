@@ -116,6 +116,12 @@ type; `i` is the position of the first rest argument."
       (%le 0 amp) [(take ptypes amp) nil (first (drop ptypes (inc amp))) ret]
       else [ptypes nil nil ret])))
 
+;; Every argument against its declared type: the full check, which walks, remembers and
+;; blames. A template reaches it only when `%contract-args-known?` — one kernel call over
+;; the arguments themselves — could not vouch for them all by a type's tag or a remembered
+;; verdict (ADR-480). That is the uncommon case: an unchanged value is the same object as
+;; on the last call, and this check, written over `count` and `drop`, is a handful of
+;; contracted calls of its own.
 (defn- %contract-args! (%contract-name spec args)
   (%contract-check-args %contract-name (first spec) args 1)
   (let (n (count (first spec)))
@@ -137,109 +143,140 @@ type; `i` is the position of the first rest argument."
 ;; Racket's contract system collapses them (ADR-396). Arguments are still checked on
 ;; every call. The collapsed check names the OUTERMOST function of the chain when it
 ;; fails — every function in it returned the same value.
+;;
+;; Both checks ask the kernel before any Brood runs (ADR-480): `%contract-args-known?` over
+;; the arguments themselves, `%type-verdict` over the result. Each answers from a base
+;; type's tag, a type form it can decide (`?A`, an arrow, an `or`), or a remembered
+;; verdict — so an unchanged value costs a lookup — and only what it cannot vouch for
+;; reaches `%contract-args!` / `%contract-check-ret`, which walk, remember and blame.
 (defn- %contract-shim-0 (%contract-name %contract-orig %contract-spec %contract-ret)
   (fn ()
     (if (or (%eq %contract-ret 'any) (%contract-tail? %contract-ret))
       (%contract-orig)
-      (%contract-check-ret %contract-name
-        %contract-ret
-        (%contract-await %contract-ret (%contract-orig))))))
+      (let (%contract-result (%contract-await %contract-ret (%contract-orig)))
+        (if (%eq (%type-verdict %contract-ret %contract-result) true)
+          %contract-result
+          (%contract-check-ret %contract-name %contract-ret %contract-result))))))
 (defn- %contract-shim-1 (%contract-name %contract-orig %contract-spec %contract-ret)
   (fn (a)
-    (%contract-args! %contract-name %contract-spec (list a))
+    (unless (%contract-args-known? %contract-spec a)
+      (%contract-args! %contract-name %contract-spec (list a)))
     (if (or (%eq %contract-ret 'any) (%contract-tail? %contract-ret))
       (%contract-orig a)
-      (%contract-check-ret %contract-name
-        %contract-ret
-        (%contract-await %contract-ret (%contract-orig a))))))
+      (let (%contract-result (%contract-await %contract-ret (%contract-orig a)))
+        (if (%eq (%type-verdict %contract-ret %contract-result) true)
+          %contract-result
+          (%contract-check-ret %contract-name %contract-ret %contract-result))))))
 (defn- %contract-shim-2 (%contract-name %contract-orig %contract-spec %contract-ret)
   (fn (a b)
-    (%contract-args! %contract-name %contract-spec (list a b))
+    (unless (%contract-args-known? %contract-spec a b)
+      (%contract-args! %contract-name %contract-spec (list a b)))
     (if (or (%eq %contract-ret 'any) (%contract-tail? %contract-ret))
       (%contract-orig a b)
-      (%contract-check-ret %contract-name
-        %contract-ret
-        (%contract-await %contract-ret (%contract-orig a b))))))
+      (let (%contract-result (%contract-await %contract-ret (%contract-orig a b)))
+        (if (%eq (%type-verdict %contract-ret %contract-result) true)
+          %contract-result
+          (%contract-check-ret %contract-name %contract-ret %contract-result))))))
 (defn- %contract-shim-3 (%contract-name %contract-orig %contract-spec %contract-ret)
   (fn (a b c)
-    (%contract-args! %contract-name %contract-spec (list a b c))
+    (unless (%contract-args-known? %contract-spec a b c)
+      (%contract-args! %contract-name %contract-spec (list a b c)))
     (if (or (%eq %contract-ret 'any) (%contract-tail? %contract-ret))
       (%contract-orig a b c)
-      (%contract-check-ret %contract-name
-        %contract-ret
-        (%contract-await %contract-ret (%contract-orig a b c))))))
+      (let (%contract-result (%contract-await %contract-ret (%contract-orig a b c)))
+        (if (%eq (%type-verdict %contract-ret %contract-result) true)
+          %contract-result
+          (%contract-check-ret %contract-name %contract-ret %contract-result))))))
 (defn- %contract-shim-4 (%contract-name %contract-orig %contract-spec %contract-ret)
   (fn (a b c d)
-    (%contract-args! %contract-name %contract-spec (list a b c d))
+    (unless (%contract-args-known? %contract-spec a b c d)
+      (%contract-args! %contract-name %contract-spec (list a b c d)))
     (if (or (%eq %contract-ret 'any) (%contract-tail? %contract-ret))
       (%contract-orig a b c d)
-      (%contract-check-ret %contract-name
-        %contract-ret
-        (%contract-await %contract-ret (%contract-orig a b c d))))))
+      (let (%contract-result (%contract-await %contract-ret (%contract-orig a b c d)))
+        (if (%eq (%type-verdict %contract-ret %contract-result) true)
+          %contract-result
+          (%contract-check-ret %contract-name %contract-ret %contract-result))))))
 (defn- %contract-shim-5 (%contract-name %contract-orig %contract-spec %contract-ret)
   (fn (a b c d e)
-    (%contract-args! %contract-name %contract-spec (list a b c d e))
+    (unless (%contract-args-known? %contract-spec a b c d e)
+      (%contract-args! %contract-name %contract-spec (list a b c d e)))
     (if (or (%eq %contract-ret 'any) (%contract-tail? %contract-ret))
       (%contract-orig a b c d e)
-      (%contract-check-ret %contract-name
-        %contract-ret
-        (%contract-await %contract-ret (%contract-orig a b c d e))))))
+      (let (%contract-result (%contract-await %contract-ret (%contract-orig a b c d e)))
+        (if (%eq (%type-verdict %contract-ret %contract-result) true)
+          %contract-result
+          (%contract-check-ret %contract-name %contract-ret %contract-result))))))
 (defn- %contract-shim-6 (%contract-name %contract-orig %contract-spec %contract-ret)
   (fn (a b c d e f)
-    (%contract-args! %contract-name %contract-spec (list a b c d e f))
+    (unless (%contract-args-known? %contract-spec a b c d e f)
+      (%contract-args! %contract-name %contract-spec (list a b c d e f)))
     (if (or (%eq %contract-ret 'any) (%contract-tail? %contract-ret))
       (%contract-orig a b c d e f)
-      (%contract-check-ret %contract-name
-        %contract-ret
-        (%contract-await %contract-ret (%contract-orig a b c d e f))))))
+      (let (%contract-result (%contract-await %contract-ret (%contract-orig a b c d e f)))
+        (if (%eq (%type-verdict %contract-ret %contract-result) true)
+          %contract-result
+          (%contract-check-ret %contract-name %contract-ret %contract-result))))))
 (defn- %contract-shim-7 (%contract-name %contract-orig %contract-spec %contract-ret)
   (fn (a b c d e f g)
-    (%contract-args! %contract-name %contract-spec (list a b c d e f g))
+    (unless (%contract-args-known? %contract-spec a b c d e f g)
+      (%contract-args! %contract-name %contract-spec (list a b c d e f g)))
     (if (or (%eq %contract-ret 'any) (%contract-tail? %contract-ret))
       (%contract-orig a b c d e f g)
-      (%contract-check-ret %contract-name
-        %contract-ret
-        (%contract-await %contract-ret (%contract-orig a b c d e f g))))))
+      (let (%contract-result (%contract-await %contract-ret (%contract-orig a b c d e f g)))
+        (if (%eq (%type-verdict %contract-ret %contract-result) true)
+          %contract-result
+          (%contract-check-ret %contract-name %contract-ret %contract-result))))))
 (defn- %contract-shim-8 (%contract-name %contract-orig %contract-spec %contract-ret)
   (fn (a b c d e f g h)
-    (%contract-args! %contract-name %contract-spec (list a b c d e f g h))
+    (unless (%contract-args-known? %contract-spec a b c d e f g h)
+      (%contract-args! %contract-name %contract-spec (list a b c d e f g h)))
     (if (or (%eq %contract-ret 'any) (%contract-tail? %contract-ret))
       (%contract-orig a b c d e f g h)
-      (%contract-check-ret %contract-name
-        %contract-ret
-        (%contract-await %contract-ret (%contract-orig a b c d e f g h))))))
+      (let (%contract-result (%contract-await %contract-ret (%contract-orig a b c d e f g h)))
+        (if (%eq (%type-verdict %contract-ret %contract-result) true)
+          %contract-result
+          (%contract-check-ret %contract-name %contract-ret %contract-result))))))
 (defn- %contract-shim-rest-0 (%contract-name %contract-orig %contract-spec %contract-ret)
   (fn (& more)
-    (%contract-args! %contract-name %contract-spec more)
+    (unless (apply %contract-args-known? %contract-spec more)
+      (%contract-args! %contract-name %contract-spec more))
     (if (or (%eq %contract-ret 'any) (%contract-tail? %contract-ret))
       (apply %contract-orig more)
-      (%contract-check-ret %contract-name
-        %contract-ret
-        (%contract-await %contract-ret (apply %contract-orig more))))))
+      (let (%contract-result (%contract-await %contract-ret (apply %contract-orig more)))
+        (if (%eq (%type-verdict %contract-ret %contract-result) true)
+          %contract-result
+          (%contract-check-ret %contract-name %contract-ret %contract-result))))))
 (defn- %contract-shim-rest-1 (%contract-name %contract-orig %contract-spec %contract-ret)
   (fn (a & more)
-    (%contract-args! %contract-name %contract-spec (cons a more))
+    (unless (apply %contract-args-known? %contract-spec a more)
+      (%contract-args! %contract-name %contract-spec (cons a more)))
     (if (or (%eq %contract-ret 'any) (%contract-tail? %contract-ret))
       (apply %contract-orig a more)
-      (%contract-check-ret %contract-name
-        %contract-ret
-        (%contract-await %contract-ret (apply %contract-orig a more))))))
+      (let (%contract-result (%contract-await %contract-ret (apply %contract-orig a more)))
+        (if (%eq (%type-verdict %contract-ret %contract-result) true)
+          %contract-result
+          (%contract-check-ret %contract-name %contract-ret %contract-result))))))
 (defn- %contract-shim-rest-2 (%contract-name %contract-orig %contract-spec %contract-ret)
   (fn (a b & more)
-    (%contract-args! %contract-name %contract-spec (cons a (cons b more)))
+    (unless (apply %contract-args-known? %contract-spec a b more)
+      (%contract-args! %contract-name %contract-spec (cons a (cons b more))))
     (if (or (%eq %contract-ret 'any) (%contract-tail? %contract-ret))
       (apply %contract-orig a b more)
-      (%contract-check-ret %contract-name
-        %contract-ret
-        (%contract-await %contract-ret (apply %contract-orig a b more))))))
+      (let (%contract-result (%contract-await %contract-ret (apply %contract-orig a b more)))
+        (if (%eq (%type-verdict %contract-ret %contract-result) true)
+          %contract-result
+          (%contract-check-ret %contract-name %contract-ret %contract-result))))))
 (defn- %contract-shim-rest-3 (%contract-name %contract-orig %contract-spec %contract-ret)
   (fn (a b c & more)
-    (%contract-args! %contract-name %contract-spec (cons a (cons b (cons c more))))
+    (unless (apply %contract-args-known? %contract-spec a b c more)
+      (%contract-args! %contract-name %contract-spec (cons a (cons b (cons c more)))))
     (if (or (%eq %contract-ret 'any) (%contract-tail? %contract-ret))
       (apply %contract-orig a b c more)
-      (%contract-check-ret %contract-name
-        %contract-ret
-        (%contract-await %contract-ret (apply %contract-orig a b c more))))))
+      (let (%contract-result (%contract-await %contract-ret (apply %contract-orig a b c more)))
+        (if (%eq (%type-verdict %contract-ret %contract-result) true)
+          %contract-result
+          (%contract-check-ret %contract-name %contract-ret %contract-result))))))
 
 ;; `get`, not `nth`, to read the spec: `nth` is a contracted prelude name, and a template
 ;; that reached it through its own shim would recurse without end.

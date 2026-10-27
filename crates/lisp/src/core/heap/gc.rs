@@ -249,6 +249,8 @@ impl Heap {
         let before_young = self.local_live_count();
         let old_before = self.old_live_count();
         self.local_epoch = self.local_epoch.wrapping_add(1);
+        // Every nursery handle is about to name something else (ADR-480).
+        self.type_verdicts_forget_nursery();
         let mut young = std::mem::take(&mut self.local);
         // Tenure: append survivors to the old gen (take it out, append, put back).
         // Flip: survivors go to a fresh nursery that becomes the new `local`.
@@ -412,6 +414,8 @@ impl Heap {
     fn major_collect(&mut self, value_roots: &mut [Value], env_roots: &mut [EnvId]) {
         let before_old = self.old_live_count();
         self.old_epoch = self.old_epoch.wrapping_add(1);
+        // Every old-generation handle is about to name something else (ADR-480).
+        self.type_verdicts_forget_local();
         let mut old_src = self.old.take().map(|b| *b).unwrap_or_default();
         let mut dest = Slabs::default();
         let mut forward = FlushForward::for_source(&old_src);

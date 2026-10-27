@@ -9,7 +9,13 @@
 //! footer (20 bytes): magic b"BRDBNDL1" (8) | format-version u32-LE (4) | archive-len u64-LE (8)
 //! archive:           u32-LE manifest-len, manifest bytes,
 //!                    u32-LE module-count, then per module: u32-LE name-len, name, u32-LE src-len, src
+//!                    [optional] magic b"BRDIMG01" (8) | u64-LE image-len | image bytes
 //! ```
+//!
+//! The optional tail is the project's startup image (ADR-484): the sections `nest release`
+//! had the bundle itself write, so a launch materialises its modules instead of compiling
+//! their source. A runtime from before the tail stops reading after the modules and never
+//! sees it, which is why it needs no format version of its own.
 //!
 //! The footer's archive-len is `u64` while every internal length (manifest,
 //! module count, name, src) is `u32`: a single archive could in principle exceed
@@ -20,14 +26,14 @@
 //! Appended trailing bytes don't disturb the ELF/PE/Mach-O loader (the classic
 //! self-extracting-archive trick). The footer is read last-bytes-first; its
 //! magic disambiguates a release binary from a plain `brood`. Everything is
-//! code-only — the manifest plus each module's source — no runtime asset files
+//! code-only — the manifest, each module's source and the image built from it — no asset files
 //! (decision recorded with ADR-038's implementation).
 
 use std::path::Path;
 use std::sync::OnceLock;
 
 /// The `--brood-` argument namespace is **reserved by the runtime**: a bundle honours
-/// the two names below as its first argument and hands every other argument, including
+/// the three names below as its first argument and hands every other argument, including
 /// any other `--brood-…`, straight to the app's `:main`.
 ///
 /// Reserving a prefix rather than the bare `--build-info` / `--boot-check` is the whole
@@ -43,17 +49,22 @@ pub const BUNDLE_BUILD_INFO_ARG: &str = "--brood-build-info";
 /// Load the bundle's embedded modules, resolve `:main`, run **nothing**, exit 0/1 — the
 /// boot check `nest release` runs against each binary it writes, by default (KI-66).
 pub const BUNDLE_BOOT_CHECK_ARG: &str = "--brood-boot-check";
+/// Load the bundle's modules from their source and write the startup image they make to
+/// the path that follows, exit 0/1 — how `nest release` gets an image the shipped runtime
+/// itself wrote, so it is valid for that runtime by construction (ADR-484).
+pub const BUNDLE_BUILD_IMAGE_ARG: &str = "--brood-build-image";
 
 /// Which reserved command, if any, `args` (a bundle's argv minus argv[0]) asks for.
 ///
 /// The whole contract in one testable place: recognized **only as the first argument**,
-/// and **only** these two spellings. Anywhere else — second position, or any other
+/// and **only** these three spellings. Anywhere else — second position, or any other
 /// `--brood-…` name — the argument belongs to the app and is passed through untouched,
 /// so a bundle can neither swallow an app's argument nor grow a second meaning for one.
 pub fn reserved_command(args: &[String]) -> Option<&'static str> {
     match args.first().map(String::as_str) {
         Some(BUNDLE_BUILD_INFO_ARG) => Some(BUNDLE_BUILD_INFO_ARG),
         Some(BUNDLE_BOOT_CHECK_ARG) => Some(BUNDLE_BOOT_CHECK_ARG),
+        Some(BUNDLE_BUILD_IMAGE_ARG) => Some(BUNDLE_BUILD_IMAGE_ARG),
         _ => None,
     }
 }
@@ -65,12 +76,22 @@ const FORMAT_VERSION: u32 = 1;
 /// magic(8) + version(4) + archive_len(8).
 const FOOTER_LEN: usize = 8 + 4 + 8;
 
+/// Tags the optional startup-image tail of the archive (ADR-484).
+const IMAGE_MAGIC: &[u8; 8] = b"BRDIMG01";
+
+/// The `mem:` path a mounted bundle's startup image is held under, for `%image-index` and
+/// `%image-load-section` to read as they read a file (`project-release/bundle-boot-load`
+/// installs it).
+pub const BUNDLE_IMAGE_PATH: &str = "mem:bundle-image";
+
 /// The sources embedded in a release binary: the project manifest plus every
-/// module keyed by filename stem (e.g. `"main"`). Code-only.
+/// module keyed by filename stem (e.g. `"main"`), and the startup image the release built
+/// from them, when it built one.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Bundle {
     pub manifest: String,
     pub modules: Vec<(String, String)>,
+    pub image: Option<Vec<u8>>,
 }
 
 impl Bundle {
@@ -88,14 +109,20 @@ impl Bundle {
     }
 }
 
-/// Serialize the archive body (no footer) — the inverse of [`parse_archive`].
-pub fn serialize(manifest: &str, modules: &[(String, String)]) -> Vec<u8> {
+/// Serialize the archive body (no footer) — the inverse of [`parse_archive`]. `image` is
+/// the startup image to carry after the modules, if any.
+pub fn serialize(manifest: &str, modules: &[(String, String)], image: Option<&[u8]>) -> Vec<u8> {
     let mut out = Vec::new();
     put_lp(&mut out, manifest.as_bytes());
     out.extend_from_slice(&(modules.len() as u32).to_le_bytes());
     for (name, src) in modules {
         put_lp(&mut out, name.as_bytes());
         put_lp(&mut out, src.as_bytes());
+    }
+    if let Some(image) = image {
+        out.extend_from_slice(IMAGE_MAGIC);
+        out.extend_from_slice(&(image.len() as u64).to_le_bytes());
+        out.extend_from_slice(image);
     }
     out
 }
@@ -148,7 +175,35 @@ fn parse_archive(bytes: &[u8]) -> Option<Bundle> {
         let src = String::from_utf8(c.take_lp()?.to_vec()).ok()?;
         modules.push((name, src));
     }
-    Some(Bundle { manifest, modules })
+    // Nothing after the modules, or exactly one image tail: any other trailing bytes are
+    // a corrupt archive, not an image to guess at.
+    let rest = bytes.get(c.pos..)?;
+    let image = if rest.is_empty() {
+        None
+    } else {
+        let tail = rest.strip_prefix(IMAGE_MAGIC.as_slice())?;
+        let length = usize::try_from(u64::from_le_bytes(tail.get(..8)?.try_into().ok()?)).ok()?;
+        let image = tail.get(8..)?;
+        if image.len() != length {
+            return None;
+        }
+        Some(image.to_vec())
+    };
+    Some(Bundle {
+        manifest,
+        modules,
+        image,
+    })
+}
+
+/// Hand a bundle's startup image to the image reader under [`BUNDLE_IMAGE_PATH`], keeping
+/// the sources: the bytes are needed once, by whoever installs the image, and holding them
+/// in the `Bundle` too would keep a second copy for the life of the process.
+fn provide_image(mut bundle: Bundle) -> Bundle {
+    if let Some(image) = bundle.image.take() {
+        crate::boot::provide_memory_image(BUNDLE_IMAGE_PATH, image);
+    }
+    bundle
 }
 
 /// Decode the 20 footer bytes: check magic + format version, return the archive
@@ -255,7 +310,7 @@ static MOUNTED: OnceLock<Result<Option<Bundle>, String>> = OnceLock::new();
 
 fn mounted_state() -> &'static Result<Option<Bundle>, String> {
     MOUNTED.get_or_init(|| match std::env::current_exe() {
-        Ok(executable) => read_bundle(&executable),
+        Ok(executable) => read_bundle(&executable).map(|bundle| bundle.map(provide_image)),
         Err(_) => Ok(None),
     })
 }
@@ -275,7 +330,7 @@ pub fn parse_bytes(bytes: &[u8]) -> Result<Bundle, String> {
 pub fn mount_bytes(bytes: &[u8]) -> Result<(), String> {
     let bundle = parse_bytes(bytes)?;
     MOUNTED
-        .set(Ok(Some(bundle)))
+        .set(Ok(Some(provide_image(bundle))))
         .map_err(|_| "a bundle is already mounted".to_string())
 }
 
@@ -361,7 +416,7 @@ mod tests {
     /// Build a fake `[base][archive][footer]` image in memory, the way
     /// `write_release` lays it out, without touching the filesystem.
     fn fake_release(base: &[u8], manifest: &str, modules: &[(String, String)]) -> Vec<u8> {
-        let archive = serialize(manifest, modules);
+        let archive = serialize(manifest, modules, None);
         let mut file = base.to_vec();
         file.extend_from_slice(&archive);
         file.extend_from_slice(MAGIC);
@@ -398,6 +453,28 @@ mod tests {
         );
     }
 
+    /// The image tail round-trips, an archive without one parses as before, and bytes
+    /// after the modules that are not a whole image tail make the archive corrupt.
+    #[test]
+    fn an_archive_carries_its_startup_image_after_the_modules() {
+        let modules = vec![("app".to_string(), "(defn main () 1)".to_string())];
+        let with_image = serialize("(project)", &modules, Some(b"IMAGE-BYTES"));
+        let parsed = parse_archive(&with_image).expect("parses");
+        assert_eq!(parsed.modules, modules);
+        assert_eq!(parsed.image.as_deref(), Some(b"IMAGE-BYTES".as_slice()));
+        let without = parse_archive(&serialize("(project)", &modules, None)).expect("parses");
+        assert_eq!(without.image, None);
+        let mut cut = with_image.clone();
+        cut.pop();
+        assert!(parse_archive(&cut).is_none(), "a truncated image tail");
+        let mut stray = serialize("(project)", &modules, None);
+        stray.extend_from_slice(b"junk");
+        assert!(
+            parse_archive(&stray).is_none(),
+            "bytes that are not an image tail"
+        );
+    }
+
     #[test]
     fn bytes_that_are_not_a_bundle_are_refused_and_mount_nothing() {
         assert!(parse_bytes(b"(defn main () 1)").is_err());
@@ -421,6 +498,10 @@ mod tests {
         assert_eq!(
             reserved_command(&argv(&[BUNDLE_BOOT_CHECK_ARG, "ignored"])),
             Some(BUNDLE_BOOT_CHECK_ARG)
+        );
+        assert_eq!(
+            reserved_command(&argv(&[BUNDLE_BUILD_IMAGE_ARG, "/tmp/image"])),
+            Some(BUNDLE_BUILD_IMAGE_ARG)
         );
 
         // Not first → the app's.

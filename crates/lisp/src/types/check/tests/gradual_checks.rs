@@ -262,6 +262,70 @@ fn cross_module_value_sig_dependency_is_captured_for_incremental_cache() {
 }
 
 #[test]
+fn a_definitions_fact_is_its_content_not_its_files_mtime() {
+    // ADR-485: a user global's fact is what the checker can see of its definition, so a
+    // reload of an unchanged definition (what touching or editing ANOTHER part of its
+    // file amounts to) leaves a dependent's fingerprint alone, and a body edit moves it.
+    // The callee's macro mints a gensym, which a reload numbers differently — the digest
+    // must not see that.
+    let mut interp = crate::Interp::new();
+    let callee = "(defmacro digest-test-hold (e) (let (t (gensym \"t\")) `(let (~t ~e) ~t)))
+                  (defn digest-test-callee (x) (digest-test-hold (+ x 1)))";
+    let site = |interp: &mut crate::Interp| {
+        for name in ["digest-test-callee", "digest-test-hold"] {
+            interp.heap.set_def_site(
+                crate::core::value::intern(name),
+                crate::core::heap::SourceLoc {
+                    file: "/nonexistent/digest-test.blsp".to_string(),
+                    pos: crate::error::Pos { line: 1, col: 1 },
+                },
+            );
+        }
+    };
+    interp.eval_str(callee).expect("callee loads");
+    site(&mut interp);
+    let forms = reader::read_all(
+        &mut interp.heap,
+        "(defn digest-test-user () (digest-test-callee (digest-test-hold 1)))",
+    )
+    .expect("parse");
+    let (_, dep_keys) = check_file_with_deps(&mut interp.heap, &forms);
+    let before = deps_fingerprint(&interp.heap, dep_keys);
+
+    interp.eval_str(callee).expect("callee reloads");
+    site(&mut interp);
+    assert_eq!(
+        before,
+        deps_fingerprint(&interp.heap, dep_keys),
+        "reloading an unchanged definition must not move a dependent's fingerprint"
+    );
+
+    // The user file EXPANDS the macro, and nothing in the expansion names it: the
+    // expander records it, or a macro edit would leave this verdict standing.
+    interp
+        .eval_str("(defmacro digest-test-hold (e) `(str ~e))")
+        .expect("macro edit loads");
+    site(&mut interp);
+    assert_ne!(
+        before,
+        deps_fingerprint(&interp.heap, dep_keys),
+        "a macro edit must move the fingerprint of a file that expands it"
+    );
+    interp.eval_str(callee).expect("callee reloads");
+    site(&mut interp);
+
+    interp
+        .eval_str("(defn digest-test-callee (x) (str x))")
+        .expect("callee edit loads");
+    site(&mut interp);
+    assert_ne!(
+        before,
+        deps_fingerprint(&interp.heap, dep_keys),
+        "a body edit must move a dependent's fingerprint"
+    );
+}
+
+#[test]
 fn declared_return_type_mismatch_is_flagged() {
     // Body yields an int (the integer-closed `+` rule: `int + int = int`),
     // declared return is string → disjoint → flagged.

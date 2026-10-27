@@ -1077,6 +1077,10 @@ not a header, or does not read: the load itself reports a malformed one."
           ;; rand/token` while this one is still replaying. The race is concurrency-only:
           ;; every affected file passes when run alone.
           (provide key)
+          ;; A bundled dependency module materialised by its bare name (`repo`, ADR-484) is
+          ;; also its rooted key (`store/repo`): mark both, as the source branch below does,
+          ;; so a later require of the other spelling does not load the module again.
+          (when (and load-key (not (= load-key key))) (provide load-key))
           key)
       ;; A dependency module (ADR-070): `key` is a rooted name (`"foo/b"`) the package
       ;; manager mapped to a file. Load it under `foo`'s package context so its

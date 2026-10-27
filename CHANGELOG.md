@@ -6,6 +6,17 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Added.**
+- `editor/treesit` face tables key on CONTEXT (ADR-486): a selector map `{:kind :parent
+  :field :nth}` colours a node by its parent's kind, the field it fills, or its place among
+  the parent's named children — HCL's block type, attribute name and function name, a Rust
+  or Go call's function. Matched in the kernel's span walk (`%tree-sitter-spans`,
+  `%tree-sitter-tree-spans`, which now take the face table itself); the most specific entry
+  wins. `face-table-problems` validates a table at registration.
+- `indent-column`'s spec takes `:verbatim` (ADR-486): node kinds whose interior lines are
+  content (a heredoc's body, a raw or triple-quoted string), answered with the indentation
+  they already have.
+
 ## v0.44.0 — WASI by grant, typed parameters, and the runtime's long week
 
 A wasm component can now be a real program: WASI preview 2 by explicit grant (never the

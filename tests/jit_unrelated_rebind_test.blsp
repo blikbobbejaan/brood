@@ -25,13 +25,10 @@
 
 (def ur-noise 0)
 
-(defn- ur-rebind (i stop me)
+(defn- ur-rebind (i stop)
   (if (table/get stop :done)
     i
-    (do
-      (def ur-noise i)
-      (when (= i 0) (send me :rebinding))
-      (ur-rebind (inc i) stop me))))
+    (do (def ur-noise i) (ur-rebind (inc i) stop))))
 
 (def ur-step (fn (x) (+ x 1)))
 (defn- ur-calls (n acc) (if (= n 0) acc (ur-calls (dec n) (ur-step acc))))
@@ -49,10 +46,11 @@
     (when (%native-tier?)
       (let (stop (table/new)
             me (self))
-        (spawn (send me [:rebinds (ur-rebind 0 stop me)]))
-        ;; Settle only once the rebinder has rebound: on a loaded runner a fresh process can
-        ;; first run after the arm has settled, and the test then saw no rebind at all (KI-306).
-        (receive (:rebinding nil) (after 20000 nil))
+        ;; The rebinder says it is running before the arm settles: left to the scheduler it
+        ;; sometimes had not run once by the time `settle` finished, the case read
+        ;; `rebinds` 0, and the trickle it exists to test never happened (CI, 2026-10-27).
+        (spawn (do (def ur-noise -1) (send me :rebinding) (send me [:rebinds (ur-rebind 1 stop)])))
+        (assert= :rebinding (receive (:rebinding :rebinding) (after 20000 :timeout)))
         (let (st (settle ur-trickle-loop 2 (fn () (ur-trickle-loop 500 0)) 200))
           (assert= 1000 (ur-trickle-loop 500 0))
           (table/put stop :done true)

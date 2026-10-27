@@ -145,6 +145,9 @@ const PROCESS_WIDE: &[(&str, &str, Reason)] = &[
     ("boot/image.rs", "MEMORY_IMAGES", OneMachine),
     ("host/clipboard.rs", "CLIPBOARD", OneMachine),
     ("host/treesit.rs", "DYNAMIC", OneMachine),
+    // Grammars declared and not yet loaded (ADR-481): the same machine-wide table as
+    // DYNAMIC, one step earlier.
+    ("host/treesit.rs", "DECLARED", OneMachine),
     // Facts of the binary: the std sources baked into it, and the signatures derived from
     // them (the stdlib id is a build constant).
     ("types/check.rs", "STD_REQUIRES", FactOfTheBinary),

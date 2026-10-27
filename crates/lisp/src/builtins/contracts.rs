@@ -123,6 +123,48 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "",
         contract_tail_p,
     );
+    // The verdict memo under `type-matches?` (ADR-480): the lookup, the record, and the
+    // counters a test reads to tell a remembered verdict from a walked one.
+    primitives.def(
+        "%type-verdict",
+        Arity::exact(2),
+        Sig::new(vec![any, any], bool_ty.union(nil_ty)),
+        &["type", "value"],
+        "Whether `value` inhabits `type` when the kernel can say without the Brood walk — by the value's tag (a base name, a literal), by the type's form (`?A`, an arrow, an `or` of decided parts), one level into a record or vector over decided parts, or by a verdict remembered under the IDENTITY of both (an unchanged sub-value of an immutable value is the same object) — else nil. Backs `type-matches?` and every contract shim (ADR-480).",
+        type_verdict_prim,
+    );
+    primitives.def(
+        "%type-verdict!",
+        Arity::exact(3),
+        Sig::new(vec![any, any, bool_ty], bool_ty),
+        &["type", "value", "verdict"],
+        "Remember `verdict` for `(type value)` — when the pair is worth remembering — and return it. Backs `type-matches?` (ADR-480).",
+        record_type_verdict_prim,
+    );
+    primitives.def(
+        "%type-verdict-counts",
+        Arity::exact(0),
+        Sig::new(vec![], map_ty),
+        &[],
+        "This process's verdict memo as `{:hits :misses :entries :clears}` — what a test reads to tell a remembered verdict from a walked one (ADR-480).",
+        type_verdict_counts_prim,
+    );
+    primitives.def(
+        "%contract-args-known?",
+        Arity::at_least(1),
+        Sig::variadic(any, bool_ty),
+        &["spec", "&", "args"],
+        "Whether every argument of a contracted call is already known to pass its declared type — by a base type's tag or a remembered verdict — so the shim can skip its full check (ADR-480).",
+        contract_args_known_p,
+    );
+    primitives.def(
+        "%type-names-record?",
+        Arity::exact(1),
+        Sig::new(vec![sym], bool_ty),
+        &["name"],
+        "Whether some registered record id is named `name` as a `sig` spells a record type — bare (the record's name) or qualified (the id's trailing path). Remembered per name until the registry or a declaration moves; backs `type-matches?` on a type name that is neither base nor alias (ADR-480).",
+        type_names_record_p,
+    );
 }
 
 /// `(%contract-raise m)` — raise the contract policy's error map `m` as a contract violation
@@ -150,6 +192,96 @@ fn contract_await_prim(args: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
 /// call through `apply` — the answer is `false`, which is always sound: the shim checks.
 fn contract_tail_p(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
     Ok(Value::boolean(false))
+}
+
+/// `(%type-verdict type value)` — the memo's answer: the verdict, or nil (ADR-480).
+fn type_verdict_prim(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    use crate::core::heap::KnownVerdict;
+    Ok(match heap.type_verdict(arg(args, 0), arg(args, 1)) {
+        KnownVerdict::Known(verdict) => Value::boolean(verdict),
+        KnownVerdict::Unknown | KnownVerdict::Unkept => Value::nil(),
+    })
+}
+
+/// `(%type-verdict! type value verdict)` → `verdict`, remembered (ADR-480).
+fn record_type_verdict_prim(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let verdict = crate::eval::truthy(arg(args, 2));
+    heap.record_type_verdict(arg(args, 0), arg(args, 1), verdict);
+    Ok(Value::boolean(verdict))
+}
+
+/// `(%type-verdict-counts)` → `{:hits :misses :entries :clears :asks :vouched}` (ADR-480).
+fn type_verdict_counts_prim(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let counts = heap.type_verdict_counts();
+    let count = |n: u64| Value::int(i64::try_from(n).unwrap_or(i64::MAX));
+    Ok(heap.map_from_pairs(vec![
+        (value::kw("hits"), count(counts.hits)),
+        (value::kw("misses"), count(counts.misses)),
+        (value::kw("entries"), count(counts.entries)),
+        (value::kw("clears"), count(counts.clears)),
+        (value::kw("asks"), count(counts.asks)),
+        (value::kw("vouched"), count(counts.vouched)),
+    ]))
+}
+
+/// `(%type-names-record? name)` — see `Heap::type_names_record` (ADR-480).
+fn type_names_record_p(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let name = expect_symbol(heap, "%type-names-record?", arg(args, 0))?;
+    Ok(Value::boolean(heap.type_names_record(name)))
+}
+
+/// `(%contract-args-known? spec arg …)` — whether every argument a shim is about to check
+/// is ALREADY known to pass: answered by a base type's tag or by a remembered verdict
+/// (ADR-480). `spec` is the shim's parsed `[fixed optional rest ret]`; the arguments follow
+/// it directly, so a fixed-arity shim builds no list to ask. They are paired exactly as
+/// `%contract-args!` pairs them. True lets the shim skip its Brood check outright — which,
+/// written over `count`, `drop` and friends, costs several contracted calls of its own;
+/// false (anything unknown, or anything failing) sends it down that check, which walks,
+/// remembers, and blames. Walks the spec's lists in place: this runs on every contracted
+/// call, and an allocation here was a third of what it saved.
+fn contract_args_known_p(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    use crate::core::heap::KnownVerdict;
+    let ValueRef::Vector(spec_id) = arg(args, 0).unpack() else {
+        return Ok(Value::boolean(false));
+    };
+    let (fixed, optional, rest) = {
+        let spec = heap.vector(spec_id);
+        let at = |index: usize| spec.get(index).copied().unwrap_or(Value::nil());
+        (at(0), at(1), at(2))
+    };
+    let passes = |heap: &Heap, type_expression: Value, value: Value| {
+        matches!(
+            heap.type_verdict(type_expression, value),
+            KnownVerdict::Known(true)
+        )
+    };
+    // Each declared type of a list against the next argument, pairwise over the overlap.
+    let pairwise = |heap: &Heap, mut types: Value, call_args: &mut std::slice::Iter<Value>| {
+        while let Value::Pair(id) = types {
+            let Some(&value) = call_args.next() else {
+                return true;
+            };
+            let (type_expression, tail) = heap.pair(id);
+            if !passes(heap, type_expression, value) {
+                return false;
+            }
+            types = tail;
+        }
+        true
+    };
+    let mut call_args = args.get(1..).unwrap_or(&[]).iter();
+    let known = pairwise(heap, fixed, &mut call_args) && {
+        // The optional and rest types both start after the fixed ones; a spec has at most
+        // one of them.
+        let after_fixed = call_args.clone();
+        pairwise(heap, optional, &mut call_args)
+            && (matches!(rest, Value::Nil)
+                || after_fixed
+                    .into_iter()
+                    .all(|&value| passes(heap, rest, value)))
+    };
+    heap.note_contract_ask(known);
+    Ok(Value::boolean(known))
 }
 
 /// Whether `BROOD_CONTRACTS=1` armed runtime contracts for this process. Cached: the

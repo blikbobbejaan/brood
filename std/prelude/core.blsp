@@ -903,19 +903,60 @@ no-op; the marker is read only by the type checker (`nest check`).
         (cond
           members (if (includes? members (%identity-of v)) true false)
           (and id (%record-id-named? id t)) true
-          (any? (keys *record-ids*) (fn (known) (%record-id-named? known t))) false
+          ;; Does ANY record carry this name? The kernel answers that once per name and
+          ;; remembers it (ADR-480): asked here per checked value, the scan of every id
+          ;; through `->string` cost ~240 µs a check in an editor with 67 records.
+          (%type-names-record? t) false
           else true)))))
 
+;; A record type's field list — `k1 T1 k2 T2 …` — walked two at a time against `v`. A field
+;; typed `(optional T)` may be absent or nil; every other field is required, and needs no
+;; presence check of its own: `(get v k)` on a missing key is nil, which the bare field type
+;; refuses unless it admits nil. Walked in place rather than `partition`ed, which built and
+;; reversed a list per field on every check of every record — the `reverse` half of an armed
+;; editor's keystroke (ADR-480). A dangling odd key is ignored, as `partition` dropped it.
+(defn- %record-fields-match? (fields v)
+  (if (pair? (rest fields))
+    (let (field-type (second fields)
+          field-value (get v (first fields)))
+      (and (if (and (pair? field-type) (%eq (first field-type) 'optional))
+             (or (nil? field-value) (type-matches? (second field-type) field-value))
+             (type-matches? field-type field-value))
+        (%record-fields-match? (rest (rest fields)) v)))
+    true))
+
+;; Whether the record field list `fields` declares the key `k`.
+(defn- %record-declares? (fields k)
+  (cond
+    (not (pair? (rest fields))) false
+    (%eq (first fields) k) true
+    else (%record-declares? (rest (rest fields)) k)))
+
 ; unknown base name → accept
-(defn type-matches? (t v &optional seen)
+(defn type-matches? (t v)
   "True if value `v` inhabits the (sig …) type-expression `t`. Unknown type
 names accept anything, so a contract never throws on a type it can't interpret.
 
     (type-matches? 'int 5)      → true
     (type-matches? 'string 5)   → false
 
-`seen` is internal: the `deftype` aliases already being expanded on this path, so a
-cyclic alias (`(deftype a b)` `(deftype b a)`) stops instead of looping."
+A verdict about a compound value is REMEMBERED by the identity of the type and the value
+(ADR-480): a value is immutable, so an unchanged sub-value is the same object on the next
+check and its verdict still holds. An armed `sig` re-checking an editor's whole model per
+call therefore walks only what changed since the last check — the rest is one lookup each."
+  (let (known (%type-verdict t v))
+    (if (nil? known)
+      (%type-verdict! t v (%type-match t v nil))
+      known)))
+
+;; The walk itself, under `type-matches?`'s memo. Every descent into an element, a field or
+;; a position goes back through `type-matches?`, so an unchanged part answers from the memo;
+;; a re-ask about the SAME value (`or`, `and`, `not`, `len`, `rec`, an alias) stays here,
+;; since the memo already holds the answer it will produce under the outer type.
+;;
+;; `seen`: the `deftype` aliases already being expanded on this path, so a cyclic alias
+;; (`(deftype a b)` `(deftype b a)`) stops instead of looping.
+(defn- %type-match (t v seen)
   (cond
     (nil? t) (nil? v)
     ; the `nil` type reads as the nil literal
@@ -931,9 +972,9 @@ cyclic alias (`(deftype a b)` `(deftype b a)`) stops instead of looping."
           ;; `(is T)` — a type guard's result (ADR-301): the VALUE is a bool; what it
           ;; proves about the argument is the checker's business, not the contract's.
           (%eq h 'is) (bool? v)
-          (%eq h 'or) (any? (rest t) (fn (s) (type-matches? s v seen)))
-          (%eq h 'and) (every? (rest t) (fn (s) (type-matches? s v seen)))
-          (%eq h 'not) (if (any? (rest t) (fn (s) (type-matches? s v seen))) false true)
+          (%eq h 'or) (any? (rest t) (fn (s) (%type-match s v seen)))
+          (%eq h 'and) (every? (rest t) (fn (s) (%type-match s v seen)))
+          (%eq h 'not) (if (any? (rest t) (fn (s) (%type-match s v seen))) false true)
           ;; `(int lo hi)` — an int within the interval, `_` an open end (ADR-350). Checked
           ;; here, not just the tag, so a declaration the checker trusts cannot lie at runtime.
           (%eq h 'int)
@@ -944,11 +985,11 @@ cyclic alias (`(deftype a b)` `(deftype b a)`) stops instead of looping."
           (%eq h 'len)
             (and (or (nil? v) (list? v) (vector? v) (map? v) (set? v) (string? v) (bytes? v))
               (%interval-admits? (third t) (nth t 3) (count v))
-              (type-matches? (second t) v seen))
+              (%type-match (second t) v seen))
           ;; `(rec X body)` — a recursive type (ADR-349): `X` inside `body` is the whole,
           ;; so the body is matched with `X` standing for this very form — one level of
           ;; unrolling per level of the value, an inner `(rec X …)` closing its own name.
-          (%eq h 'rec) (type-matches? (%rec-unroll (third t) (second t) t) v seen)
+          (%eq h 'rec) (%type-match (%rec-unroll (third t) (second t) t) v seen)
           ;; `(list T)` is the uniform list; `(list T U …)` — two or more types — a
           ;; positional SHAPE, the list sibling of `tuple`: exact arity, each position
           ;; against its own type. What the checker means by `(list a b)`'s type.
@@ -999,11 +1040,8 @@ cyclic alias (`(deftype a b)` `(deftype b a)`) stops instead of looping."
                       (and (type-matches? ktype (first kv))
                         (type-matches? vtype (second kv))))))))
           (%eq h 'record)
-          ;; A field's type may be wrapped `(optional T)` — allowed to
-          ;; be absent/nil. Every other field is required: `(get v k)`
-          ;; on a missing key is nil, so `type-matches?` on the bare
-          ;; field type naturally fails unless that type accepts nil —
-          ;; no separate presence check needed.
+          ;; A field's type may be wrapped `(optional T)` — allowed to be absent/nil; every
+          ;; other field is required (`%record-fields-match?`).
           ;;
           ;; A record is **closed** unless it opens with `&open` (ADR-264):
           ;; a key it does not declare must be absent. That is what makes a
@@ -1012,19 +1050,11 @@ cyclic alias (`(deftype a b)` `(deftype b a)`) stops instead of looping."
           ;; about it or `sig!` and `nest check` would disagree on the same
           ;; declaration.
             (let (open? (%eq (second t) '&open)
-                  flds (partition (if open? (rest (rest t)) (rest t)) 2))
+                  fields (if open? (rest (rest t)) (rest t)))
               (and (map? v)
-                (every? flds
-                  (fn (field)
-                    (let (k (first field)
-                          ftype (second field))
-                      (if (and (pair? ftype) (%eq (first ftype) 'optional))
-                        (or (nil? (get v k))
-                          (type-matches? (second ftype) (get v k)))
-                        (type-matches? ftype (get v k))))))
+                (%record-fields-match? fields v)
                 (or open?
-                  (every? (%map-pairs v)
-                    (fn (kv) (any? flds (fn (field) (%eq (first field) (first kv)))))))))
+                  (every? (%map-pairs v) (fn (kv) (%record-declares? fields (first kv)))))))
           (%eq h
             'tuple)
           ;; A fixed-arity positional vector shape (ADR-128): exact
@@ -1099,7 +1129,7 @@ cyclic alias (`(deftype a b)` `(deftype b a)`) stops instead of looping."
         (cond
           (nil? expansion) (%nominal-type-matches? t v)
           (includes? (or seen []) t) true
-          else (type-matches? expansion v (conj (or seen []) t))))
+          else (%type-match expansion v (conj (or seen []) t))))
     else true))
 
 (defn- %sig-pos (xs x n)

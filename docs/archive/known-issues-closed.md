@@ -15482,10 +15482,11 @@ steady churn the loop stays `:native` across eight batches of 400, and after a r
 **Cause, the second.** The rebinder is a fresh process; on a loaded runner it could first run
 after the arm had settled and `stop` was set, and return 0.
 
-**Fix.** The first test reads the tier through `lonely-tier`, which gives the loop up to five
-more batches of 200 one-at-a-time messages; a loop parked mid-arm (the bug the test guards)
-never gets hot, so it still reads `:untried` after every batch. The second test waits for the
-rebinder's first rebind before settling.
+**Fix (`dc94e5f4`, landed upstream while this was being reproduced).** The loop test drives
+through `settle` instead of one 400-message burst; a loop parked mid-arm (the bug the test
+guards) never counts a resume, so it still fails. The rebinder signals before `settle` starts.
+That commit attributes the reset to a full compile queue (`jit_tier` resets a hot arm with its
+count at zero) — a second path to the same `:untried`; `settle` covers both.
 
 **Left as an observation:** `code_relocations` is coarse — one collection resets every native arm
 in the runtime, whether or not anything it baked moved. A per-arm check would spare the
