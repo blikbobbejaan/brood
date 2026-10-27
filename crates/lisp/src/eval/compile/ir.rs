@@ -1332,6 +1332,19 @@ pub(crate) enum ChunkExit {
     /// already past the instruction: the driver replaces `ret` with the answer and
     /// re-enters this same frame.
     ContractProbe,
+    /// `(proc/interruptible ceiling thunk)` with a VM thunk (ADR-491): the driver opens an
+    /// interrupt REGION ([`crate::core::heap::HandlerKind::Region`]) in this frame and
+    /// pushes the thunk's frame — `Call`'s frame push, no arguments — so the thunk runs on
+    /// the driver's own frame stack and a `receive` in it parks instead of blocking the
+    /// worker. The call's operands are already dropped (at `drop_base`, where the answer
+    /// lands); `tail`: the call was in tail position, so the answer returns from this frame.
+    Interruptible {
+        ceiling: Option<u64>,
+        arm: Arc<ArmHandle>,
+        genv: EnvId,
+        bases: (u32, u32),
+        tail: bool,
+    },
     /// Reduction budget exhausted at the inline `SelfCall` safepoint (capture mode). The
     /// frame is already reset (ip=0, new args in slots); the driver captures as usual.
     Preempt,

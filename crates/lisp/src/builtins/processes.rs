@@ -430,14 +430,28 @@ fn optional_ms(heap: &Heap, who: &str, value: Value) -> Result<Option<u64>, Lisp
     }
 }
 
+/// `proc/interruptible`'s ceiling argument: a non-negative number of ms, or nil for none.
+/// Shared with the bytecode driver, which reads it when it runs the call as a region.
+pub(crate) fn interrupt_ceiling(heap: &Heap, value: Value) -> Result<Option<u64>, LispError> {
+    optional_ms(heap, "proc/interruptible", value)
+}
+
 /// `(proc/interruptible ceiling-ms thunk)` — run thunk in an interrupt window (ADR-491).
 ///
-/// The window is opened and closed HERE, in Rust, around the thunk, and the interrupt is
-/// caught here too — so there is no Brood code between a raise and the window closing for a
-/// sticky re-raise to land in. A window already open makes this a plain call: the outer one
-/// owns the interrupt, which propagates to it.
+/// The bytecode driver never calls this for a VM thunk: it runs the call as an interrupt
+/// REGION on its own frame stack (`ChunkExit::Interruptible`), so a `receive` in the thunk
+/// parks the process. This is every other path — the tree-walker, `apply`, a native or
+/// tree-walked thunk — where the thunk runs nested under this frame, and a `receive` in it
+/// blocks the worker as any native-nested receive does. Both open and close the window and
+/// catch the interrupt with no Brood code between a raise and the close for a sticky
+/// re-raise to land in. A window already open makes this a plain call: the outer one owns
+/// the interrupt, which propagates to it.
+///
+/// A `receive` under this frame never SUSPENDS (which would close the window here and re-run
+/// the thunk on the replay, as a nested `%try` would): the thunk runs in a nested driver, and
+/// a nested receive blocks instead of capturing (`capture_top_level`).
 pub(super) fn interruptible(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
-    let ceiling = optional_ms(heap, "proc/interruptible", arg(args, 0))?;
+    let ceiling = interrupt_ceiling(heap, arg(args, 0))?;
     let thunk = arg(args, 1);
     let ok = value::kw("ok");
     if crate::process::current_interrupt_window_open() {

@@ -483,9 +483,14 @@ pub(super) fn chunk_in_jit_subset(code: &[Inst]) -> bool {
     // park leaves native code as a re-run from ip 0, which the driver takes on the VM.
     let receive_sym = crate::core::value::intern("%receive");
     let receive_ok = receive_at_head(code);
+    // `proc/interruptible` too (ADR-491): the driver runs the call as an interrupt region on its
+    // own frame stack, so a `receive` in the thunk parks; called from native code it would run
+    // the thunk nested under the builtin, where a `receive` blocks the worker.
+    let interruptible_sym = crate::core::value::intern("proc/interruptible");
     code.iter().all(|inst| match inst {
         Inst::Const(_) => true,
         Inst::Call { head: Some(h), .. } if *h == receive_sym => receive_ok,
+        Inst::Call { head: Some(h), .. } if *h == interruptible_sym => false,
         // A contract shim (KI-216): `%contract-tail?` reads the VM's frame stack, which a
         // native frame does not keep, and the mark `%contract-await` leaves only means
         // something to a frame the driver suspended. Both keep the chunk on the VM.

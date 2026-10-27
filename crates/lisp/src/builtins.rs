@@ -91,6 +91,7 @@ pub(crate) use build_info::{build_id_string, stdlib_id_string};
 
 pub(crate) use io::warn_line;
 pub use io::{begin_stdout_capture, take_captured_stdout};
+pub(crate) use processes::interrupt_ceiling;
 // The checker specializes `(string/->number "1")` to the literal `1`, and may only do so by
 // deciding parseability exactly as the runtime does — so it calls the runtime's own
 // classifier rather than growing a second one that could drift (`types::check::infer`).
@@ -142,6 +143,7 @@ impl Primitives<'_> {
             params,
             doc,
             is_apply: name == "apply",
+            is_interruptible: name == "proc/interruptible",
         });
         self.heap.env_define(self.root, value::intern(name), v);
     }

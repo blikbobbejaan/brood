@@ -203,6 +203,34 @@ fn lazy_call(
     }))
 }
 
+/// A call to `proc/interruptible` the driver can run as an interrupt REGION (ADR-491): its
+/// ceiling and the thunk's arm, captured env and IC block — when `callee` is that builtin,
+/// with two arguments, and the thunk is a closure with a VM arm for no arguments. Anything
+/// else (`None`) is an ordinary native call, which runs the thunk nested and reports a bad
+/// argument itself. A bad ceiling is raised here, as the builtin would.
+fn interruptible_region(
+    heap: &mut Heap,
+    callee: Value,
+    argv: &[Value],
+) -> Result<Option<(Option<u64>, Arc<ArmHandle>, EnvId, (u32, u32))>, LispError> {
+    let ValueRef::Native(id) = callee.unpack() else {
+        return Ok(None);
+    };
+    if !heap.native(id).is_interruptible || argv.len() != 2 {
+        return Ok(None);
+    }
+    let ValueRef::Fn(thunk) = argv[1].unpack() else {
+        return Ok(None);
+    };
+    let Some(arm) = compiled_arm_for(heap, thunk, 0) else {
+        return Ok(None);
+    };
+    let ceiling = crate::builtins::interrupt_ceiling(heap, argv[0])?;
+    let genv = heap.closure(thunk).env.unwrap_or_else(|| heap.global());
+    let bases = heap.vm_arm_block(&arm);
+    Ok(Some((ceiling, arm, genv, bases)))
+}
+
 /// The module the contract shim templates live in (ADR-385) — the one module whose code
 /// positions the error-position rule in [`attach_vm_trace`] never reports (KI-184).
 pub(crate) const CONTRACT_MODULE: &str = "contract";
@@ -1144,6 +1172,21 @@ pub(crate) fn exec_chunk(
                 for k in 0..argc {
                     argv.push(heap.root_at(n - argc + k));
                 }
+                // `proc/interruptible` over a VM thunk opens a region in this driver rather
+                // than running the thunk nested under the builtin (ADR-491).
+                if fast.is_none()
+                    && let Some((ceiling, arm, genv, bases)) =
+                        interruptible_region(heap, callee, &argv).map_err(|e| tag_pos(e, pos))?
+                {
+                    heap.truncate_roots(drop_base);
+                    return Ok(ChunkExit::Interruptible {
+                        ceiling,
+                        arm,
+                        genv,
+                        bases,
+                        tail: *tail,
+                    });
+                }
                 // IC hit with a VM arm → skip `dispatch` entirely; else resolve with
                 // `tail = true` so a VM-closure callee comes back as `Step::Tail` (the
                 // resolved arm + args + env, **un-run**) and a native / tree-walked
@@ -1435,6 +1478,7 @@ pub(crate) fn exec_chunk(
             // driver's (`vm_run_bc`), which owns the frame stack an error unwinds.
             Inst::TryEnter { handler, bind_slot } => {
                 heap.vm_handlers.push(crate::core::heap::VmHandler {
+                    kind: crate::core::heap::HandlerKind::Try,
                     base,
                     sp: heap.roots_len(),
                     env_len: heap.env_roots_len(),
@@ -1442,12 +1486,15 @@ pub(crate) fn exec_chunk(
                     ip: *handler,
                     bind: base + *bind_slot,
                     dyn_len: heap.dynamics_len(),
+                    caller: 0,
                 });
             }
             Inst::TryExit => {
                 let closed = heap.vm_handlers.pop();
                 debug_assert!(
-                    closed.is_some_and(|h| h.base == base),
+                    closed.is_some_and(
+                        |h| h.base == base && h.kind == crate::core::heap::HandlerKind::Try
+                    ),
                     "TryExit closed a handler this frame did not open (ADR-400): {closed:?} at base {base}"
                 );
             }

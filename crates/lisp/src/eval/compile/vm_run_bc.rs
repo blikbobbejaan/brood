@@ -556,27 +556,34 @@ fn settle_native_frame(
     Some((ra, rip))
 }
 
-/// Rebuild the native activations a preempt unwound through (ADR-401) as interpreter
-/// frames: the thread's unwind record ([`take_unwound`]) holds them innermost first, each frame still where it ran in
-/// `roots`. The callers — every one but the innermost — are appended to `frames`, outermost
-/// first, each paused just after the call it made, its operand stack restored from the
-/// in-call journal it wrote on the way out; the innermost is returned as the current frame,
-/// settled exactly as the frame path settles a preempt.
-///
-/// A native callee's frame starts where its caller's native frame ended, but an interpreter
-/// callee's frame starts above the caller's operand stack, so every frame moves: the whole
-/// region is copied out and laid back down in interpreter order. Nothing in between
-/// allocates, so no collection can run while the values are off the root stack.
+/// Where a caught error resumes the driver ([`catch_in_driver`]).
+struct Caught {
+    /// The catching frame when it is a caller, to install as the current frame (`None` when
+    /// it is the current one).
+    frame: Option<BcFrame>,
+    /// The ip to resume at in that frame.
+    ip: usize,
+    /// An interrupt region in tail position caught it (ADR-491): its answer, on top of the
+    /// operand stack, is the frame's own return value, so the driver returns it instead of
+    /// resuming at `ip`.
+    returns: bool,
+}
+
 /// The catch half of the driver's `raise!` (ADR-400), for an error that is not a control
-/// signal while this driver has an open `try`: unwind to the frame that opened the innermost
-/// one, bind the caught value and hand back where to resume — the `try`'s frame when it is a
-/// caller (`Some`, to install as the current frame; `None` when it is the current one) and
-/// its handler's ip. What the caught error carries is what the nested evaluation of the
-/// body used to give it: the trace names exactly the frames the catch pops (that
-/// evaluation's own driver), and the call in the `try`'s frame that led to the error
-/// supplies a missing position and file — the evaluator's call tagging — so a caught
-/// error's `:trace`, `:line` and `:file` are unchanged. `Err` hands the error back when the
-/// open `try` is not on this driver's stack.
+/// signal while this driver has an open `try` or interrupt region: unwind to the frame that
+/// opened the innermost handler that takes it, bind the caught value and hand back where to
+/// resume. What the caught error carries is what the nested evaluation of the body used to
+/// give it: the trace names exactly the frames the catch pops (that evaluation's own
+/// driver), and the call in the handler's frame that led to the error supplies a missing
+/// position and file — the evaluator's call tagging — so a caught error's `:trace`, `:line`
+/// and `:file` are unchanged. `Err` hands the error back when no open handler above `floor`
+/// takes it.
+///
+/// An interrupt REGION (ADR-491) takes only the interrupt, and only when it owns the
+/// window: it closes the window BEFORE the catch is noted, so the sticky re-raise is not
+/// armed, and pushes `[:interrupted e]` where the call's value goes. Any other error — or
+/// any error at a region inside an outer window — passes it: the region is dropped (closing
+/// a window it owns) and the next handler down is asked.
 #[cold]
 #[inline(never)]
 fn catch_in_driver(
@@ -586,18 +593,39 @@ fn catch_in_driver(
     cur_base: usize,
     mut e: crate::error::LispError,
     callers_only: bool,
-) -> Result<(Option<BcFrame>, usize), crate::error::LispError> {
-    let Some(h) = heap.vm_handlers.last().copied() else {
-        return Err(e);
+    floor: usize,
+) -> Result<Caught, crate::error::LispError> {
+    use crate::core::heap::HandlerKind;
+    let h = loop {
+        if heap.vm_handlers.len() <= floor {
+            return Err(e);
+        }
+        let h = *heap.vm_handlers.last().expect("above the floor");
+        match h.kind {
+            HandlerKind::Try => break h,
+            HandlerKind::Region { owner: true, .. }
+                if e.kind == crate::error::ErrorKind::Interrupted =>
+            {
+                break h;
+            }
+            HandlerKind::Region { owner, .. } => {
+                heap.vm_handlers.pop();
+                if owner {
+                    crate::process::set_interrupt_window(None);
+                }
+            }
+        }
     };
-    let depth = if h.base == cur_base {
+    let depth = if let HandlerKind::Region { .. } = h.kind {
+        Some(h.caller).filter(|&caller| caller < frames.len())
+    } else if h.base == cur_base {
         Some(frames.len())
     } else {
         frames.iter().rposition(|f| f.base == h.base)
     };
     debug_assert!(
         depth.is_some(),
-        "an open try's frame is not on this driver's stack (ADR-400): {h:?}"
+        "an open handler's frame is not on this driver's stack (ADR-400): {h:?}"
     );
     let Some(d) = depth else {
         return Err(e);
@@ -616,14 +644,25 @@ fn catch_in_driver(
             e = e.or_file(f.to_string());
         }
         frames.truncate(d + 1);
-        Some(frames.pop().expect("the try's frame is below the error"))
+        Some(
+            frames
+                .pop()
+                .expect("the handler's frame is below the error"),
+        )
     } else {
-        // Raised by an instruction of the `try`'s own frame: it tagged the position
+        // Raised by an instruction of the handler's own frame: it tagged the position
         // (`tag_pos`); the file is this arm's.
         if let Some(f) = cur_arm.src_file.as_deref() {
             e = e.or_file(f.to_string());
         }
         None
+    };
+    let region_tail = match h.kind {
+        HandlerKind::Region { tail, .. } => {
+            crate::process::set_interrupt_window(None);
+            Some(tail)
+        }
+        HandlerKind::Try => None,
     };
     let caught = e.caught_value(heap);
     heap.note_caught(e, caught);
@@ -632,10 +671,54 @@ fn catch_in_driver(
     heap.live_arm_truncate(h.arms_len);
     heap.truncate_dynamics(h.dyn_len);
     heap.vm_handlers.pop();
-    heap.set_root_at(h.bind, caught);
-    Ok((frame, h.ip))
+    match region_tail {
+        None => {
+            heap.set_root_at(h.bind, caught);
+            Ok(Caught {
+                frame,
+                ip: h.ip,
+                returns: false,
+            })
+        }
+        Some(tail) => {
+            // Nothing allocated since `caught` was made, so it is still where it was.
+            let answer = heap.alloc_vector2(value::kw("interrupted"), caught);
+            heap.push_root(answer);
+            Ok(Caught {
+                frame,
+                ip: h.ip,
+                returns: tail,
+            })
+        }
+    }
 }
 
+/// Drop this process's open handlers above `floor` (ADR-400) as a driver is left by an
+/// error none of them caught, or a kill. A REGION among them that owns the interrupt window
+/// closes it (ADR-491): the window must not outlive the call that opened it.
+fn truncate_handlers(heap: &mut Heap, floor: usize) {
+    use crate::core::heap::HandlerKind;
+    if heap.vm_handlers.len() > floor
+        && heap.vm_handlers[floor..]
+            .iter()
+            .any(|h| matches!(h.kind, HandlerKind::Region { owner: true, .. }))
+    {
+        crate::process::set_interrupt_window(None);
+    }
+    heap.vm_handlers.truncate(floor);
+}
+
+/// Rebuild the native activations a preempt unwound through (ADR-401) as interpreter
+/// frames: the thread's unwind record ([`take_unwound`]) holds them innermost first, each frame still where it ran in
+/// `roots`. The callers — every one but the innermost — are appended to `frames`, outermost
+/// first, each paused just after the call it made, its operand stack restored from the
+/// in-call journal it wrote on the way out; the innermost is returned as the current frame,
+/// settled exactly as the frame path settles a preempt.
+///
+/// A native callee's frame starts where its caller's native frame ended, but an interpreter
+/// callee's frame starts above the caller's operand stack, so every frame moves: the whole
+/// region is copied out and laid back down in interpreter order. Nothing in between
+/// allocates, so no collection can run while the values are off the root stack.
 #[cfg(feature = "jit")]
 fn rebuild_unwound_frames(heap: &mut Heap, frames: &mut Vec<BcFrame>) -> BcFrame {
     let mut unwound = take_unwound();
@@ -863,7 +946,7 @@ pub(crate) fn vm_run_bc(
         heap.truncate_roots(entry_roots);
         heap.truncate_env_roots(entry_env);
         heap.live_arm_truncate(entry_arms);
-        heap.vm_handlers.truncate(handler_floor as usize);
+        truncate_handlers(heap, handler_floor as usize);
         heap.truncate_dynamics(dyn_floor as usize);
     };
 
@@ -910,6 +993,11 @@ pub(crate) fn vm_run_bc(
     // either is pending. A reduction is charged per call, not per return.
     let mut returned_to_caller = false;
 
+    // Set when an interrupt region in TAIL position ended (ADR-491): its answer is on top of
+    // the operand stack and is the current frame's return value, so the next turn of the
+    // loop retires the frame with it instead of running more of its code.
+    let mut return_top = false;
+
     // Raise `e` from the current frame: if one of THIS driver's open `try`s can take it,
     // resume at its handler (`continue` the loop, `catch_in_driver`); otherwise unwind the
     // whole driver and return the error, as before (ADR-400).
@@ -927,10 +1015,18 @@ pub(crate) fn vm_run_bc(
             let caught = if e.is_control() || heap.vm_handlers.len() <= handler_floor as usize {
                 Err(e)
             } else {
-                catch_in_driver(heap, &mut frames, &cur_arm, cur_base, e, $callers_only)
+                catch_in_driver(
+                    heap,
+                    &mut frames,
+                    &cur_arm,
+                    cur_base,
+                    e,
+                    $callers_only,
+                    handler_floor as usize,
+                )
             };
             match caught {
-                Ok((frame, ip)) => {
+                Ok(Caught { frame, ip, returns }) => {
                     if let Some(f) = frame {
                         cur_arm = f.arm;
                         cur_base = f.base;
@@ -950,6 +1046,7 @@ pub(crate) fn vm_run_bc(
                         try_jit = false;
                     }
                     returned_to_caller = false;
+                    return_top = returns;
                     continue $l;
                 }
                 Err(mut e) => {
@@ -1112,8 +1209,12 @@ pub(crate) fn vm_run_bc(
         }
 
         // Either run the arm natively (if it's flagged for a tier check) or interpret it.
-        // Both yield a `Result<ChunkExit, _>` handled uniformly below.
-        let exit = {
+        // Both yield a `Result<ChunkExit, _>` handled uniformly below. A tail-position
+        // interrupt region that ended returns its answer from this frame (ADR-491).
+        let exit = if std::mem::take(&mut return_top) {
+            let n = heap.roots_len();
+            Ok(ChunkExit::Done(heap.root_at(n - 1)))
+        } else {
             #[cfg(feature = "jit")]
             {
                 // `jit_tier_declines`: an arm the JIT refused (or a drain forcing the VM) would
@@ -1356,6 +1457,28 @@ pub(crate) fn vm_run_bc(
                             // iterations accumulate correctly across non-tail calls.
                             cur_back_edges = caller.back_edges;
                         }
+                        // The thunk of an interrupt region returned to the frame that
+                        // opened it (ADR-491): the region ends — its window closes — and
+                        // the call's value is `[:ok v]`. Only the thunk's frame returns to
+                        // that frame while the region is the innermost handler: it is the
+                        // frame at the index the region recorded.
+                        let v = match heap.vm_handlers.last() {
+                            Some(&crate::core::heap::VmHandler {
+                                kind: crate::core::heap::HandlerKind::Region { owner, tail },
+                                caller,
+                                ..
+                            }) if caller == frames.len()
+                                && heap.vm_handlers.len() > handler_floor as usize =>
+                            {
+                                heap.vm_handlers.pop();
+                                if owner {
+                                    crate::process::set_interrupt_window(None);
+                                }
+                                return_top = tail;
+                                heap.alloc_vector2(value::kw("ok"), v)
+                            }
+                            _ => v,
+                        };
                         // The result lands where the caller pushed the callee — its
                         // operand stack continues seamlessly past the call site.
                         heap.push_root(v);
@@ -1399,6 +1522,59 @@ pub(crate) fn vm_run_bc(
                 {
                     try_jit = true;
                     cur_back_edges = 0; // fresh counter for the callee's frame
+                }
+            }
+            // `(proc/interruptible ceiling thunk)` (ADR-491): open a region in this frame and
+            // push the thunk's frame, as `Call` does. The thunk runs on this driver's own
+            // stack, so a `receive` in it parks the process, and a preempt or migration
+            // carries the region with it (`vm_handlers` is the process's). Its `Done` back
+            // into this frame closes the region; the catch path ends it on an error.
+            Ok(ChunkExit::Interruptible {
+                ceiling,
+                arm,
+                genv,
+                bases,
+                tail,
+            }) => {
+                if frames.len() + 1 > MAX_BC_FRAMES {
+                    raise!('drive, crate::eval::bc_frame_depth_error(frames.len()));
+                }
+                // A window already open is the outer call's: this region owns nothing.
+                let owner = !crate::process::current_interrupt_window_open();
+                heap.vm_handlers.push(crate::core::heap::VmHandler {
+                    kind: crate::core::heap::HandlerKind::Region { owner, tail },
+                    base: cur_base,
+                    sp: heap.roots_len(),
+                    env_len: heap.env_roots_len(),
+                    arms_len: heap.live_arm_len(),
+                    ip: cur_ip,
+                    bind: usize::MAX,
+                    dyn_len: heap.dynamics_len(),
+                    caller: frames.len(),
+                });
+                if owner {
+                    crate::process::set_interrupt_window(Some(ceiling));
+                }
+                let caller_arm = std::mem::replace(&mut cur_arm, arm);
+                frames.push(current_frame!(caller_arm));
+                heap.set_ic_bases(bases);
+                cur_env_base = heap.env_roots_len();
+                cur_env = heap.root_env(genv);
+                cur_base = heap.roots_len();
+                cur_arm_slot = if cur_arm.has_runtime_handles {
+                    heap.live_arm_push(cur_arm.clone())
+                } else {
+                    usize::MAX
+                };
+                if let Err(e) = push_frame(heap, &cur_arm, &[], cur_env) {
+                    raise!('drive, e);
+                }
+                cur_ip = 0;
+                cur_entry_epoch = SELF_UNCHECKED_EPOCH;
+                #[cfg(feature = "jit")]
+                {
+                    try_jit = true;
+                    cur_back_edges = 0;
                 }
             }
             // `Call` minus the argument round trip: the callee's `argc` args are already the

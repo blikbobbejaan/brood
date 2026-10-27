@@ -1515,6 +1515,9 @@ pub struct NativeFn {
     /// registered: both dispatchers unfold `(apply f … xs)` inline instead of calling
     /// it, and asking per call compared the name as a string on every native callee.
     pub is_apply: bool,
+    /// Is this `proc/interruptible`? The bytecode driver runs a call of it over a VM thunk
+    /// as an interrupt region on its own frame stack (ADR-491) instead of calling it.
+    pub is_interruptible: bool,
 }
 
 // ----- handle-free constructors (interned; no heap needed) -----

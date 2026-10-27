@@ -273,3 +273,102 @@ fn hashing_is_interrupted_inside() {
         "(%pbkdf2-sha256-bytes big big 100000000 32)",
     );
 }
+
+#[test]
+fn a_region_in_tail_position_answers_and_closes() {
+    // The driver runs `proc/interruptible` over a VM thunk as a region on its own frame
+    // stack; in tail position its answer is the caller's return value, both ways it ends.
+    let src = r#"
+        (defn spin (n) (spin (inc n)))
+        (defn finishes () (proc/interruptible nil (fn () 7)))
+        (defn stopped () (proc/interruptible 0 (fn () (spin 0))))
+        [(finishes) (first (stopped)) (proc/interrupt (self))]
+    "#;
+    for tier in [Tier::Bytecode, Tier::Native] {
+        assert_eq!(
+            run_at(tier, src.into()),
+            "[[:ok 7] :interrupted false]",
+            "{tier:?}"
+        );
+    }
+}
+
+#[test]
+fn an_error_passes_through_a_region_and_closes_its_window() {
+    let src = r#"
+        (defn count-to (n limit) (if (= n limit) n (count-to (inc n) limit)))
+        [(try (proc/interruptible nil (fn () (raise :boom))) (catch e :caught))
+         (proc/interrupt (self))
+         (count-to 0 100000)]
+    "#;
+    assert_eq!(run_at(Tier::Bytecode, src.into()), "[:caught false 100000]");
+}
+
+#[test]
+fn a_region_inside_an_open_window_leaves_the_interrupt_to_the_outer() {
+    let src = r#"
+        (defn spin (n) (spin (inc n)))
+        (first (proc/interruptible 0
+                 (fn () [:inner (proc/interruptible nil (fn () (spin 0)))])))
+    "#;
+    assert_eq!(run_at(Tier::Bytecode, src.into()), ":interrupted");
+}
+
+#[test]
+fn a_receive_inside_a_region_parks_and_an_interrupt_lands_after_it_resumes() {
+    // More processes than any machine has workers, each parked in a `receive` inside an
+    // interrupt region. Run nested under the builtin, each would block its worker thread —
+    // the dirty count would climb and, with every worker held, nothing else would run. As a
+    // region on the driver's own stack, each parks like any receive.
+    let dirty = brood::process::dirty_receive_block_count();
+    let src = r#"
+        (def root (self))
+        (defn spin (n) (spin (inc n)))
+        (defn gather (k acc)
+          (if (= k 0) acc
+              (gather (dec k) (conj acc (receive ([:done r] r) (after 10000 :lost))))))
+        (defn start (k acc)
+          (if (= k 0) acc
+              (start (dec k)
+                     (conj acc (spawn (send root [:done (proc/interruptible nil
+                                                           (fn () (receive (:go :went))))]))))))
+        (defn release (ws) (when (not (empty? ws)) (do (send (first ws) :go) (release (rest ws)))))
+        (def waiters (start 256 []))
+        (sleep 200)
+        (spawn (send root :ran))
+        (def ran (receive (:ran :ran) (after 10000 :starved)))
+        (release waiters)
+        (def answers (gather 256 []))
+        ;; Parked inside a region past its ceiling, then woken into an endless loop: the
+        ;; ceiling is checked once it runs, and the interrupt lands.
+        (def late (spawn (send root [:late (first (proc/interruptible 50
+                                                   (fn () (do (receive (:go nil)) (spin 0)))))])))
+        (sleep 150)
+        (send late :go)
+        ;; Woken from a region with no ceiling, then interrupted from outside.
+        (def woken (spawn (send root [:woken (first (proc/interruptible nil
+                                                     (fn () (do (receive (:go nil)) (spin 0)))))])))
+        (sleep 100)
+        (defn interrupt-until (pid tries)
+          (cond (proc/interrupt pid) :landed
+                (= tries 0) :never
+                :else (do (sleep 10) (interrupt-until pid (dec tries)))))
+        (send woken :go)
+        [ran
+         (= answers (vec (repeat 256 [:ok :went])))
+         (receive ([:late r] r) (after 10000 :late-lost))
+         (interrupt-until woken 500)
+         (receive ([:woken r] r) (after 10000 :woken-lost))]
+    "#;
+    let mut interp = brood::Interp::new();
+    let printed = match interp.eval_str(src) {
+        Ok(value) => interp.print(value),
+        Err(error) => format!("error: {}", error.message),
+    };
+    assert_eq!(printed, "[:ran true :interrupted :landed :interrupted]");
+    assert_eq!(
+        brood::process::dirty_receive_block_count(),
+        dirty,
+        "a receive inside a region blocked its worker"
+    );
+}

@@ -182,6 +182,7 @@ fn vm_run_bc_captures_and_resumes_a_suspend() {
         doc: "",
         sig: Sig::any(),
         is_apply: false,
+        is_interruptible: false,
     });
 
     // Body `(slot0)`: push the native from slot 0, then a non-tail 0-ary call.

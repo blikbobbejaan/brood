@@ -647,10 +647,29 @@ impl Heap {
     }
 }
 
-/// One open inline `try` (ADR-400) — see [`Heap::vm_handlers`]. Everything the bytecode
-/// driver needs to unwind to the frame that opened it and run its handler there.
+/// What an entry of [`Heap::vm_handlers`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HandlerKind {
+    /// An inline `try` (ADR-400): catches every error that is not a control signal.
+    Try,
+    /// An interrupt REGION (ADR-491): a `(proc/interruptible ceiling thunk)` call the
+    /// driver runs as a frame of its own rather than a native call that runs the thunk
+    /// nested, so a `receive` in the thunk parks the process instead of blocking its worker.
+    /// The thunk's frame returning to `base` closes it and answers `[:ok value]`.
+    /// `owner`: this region opened the process's interrupt window — it closes the window
+    /// however it ends, and it alone catches the interrupt, answering `[:interrupted e]` at
+    /// `ip` with the value pushed at `sp`; any other error passes through it. A region
+    /// opened inside an open window owns nothing, as the builtin's nested call did. `tail`:
+    /// the call was in tail position, so its answer RETURNS from the `base` frame.
+    Region { owner: bool, tail: bool },
+}
+
+/// One open inline `try` (ADR-400) or interrupt region (ADR-491) — see
+/// [`Heap::vm_handlers`]. Everything the bytecode driver needs to unwind to the frame that
+/// opened it and run its handler there.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct VmHandler {
+    pub(crate) kind: HandlerKind,
     /// The `roots` index of the frame that executed the `TryEnter`. Frames above it in the
     /// same driver have strictly larger bases, so this names the frame uniquely.
     pub(crate) base: usize,
@@ -666,6 +685,10 @@ pub(crate) struct VmHandler {
     /// The dynamic stack's length at the `TryEnter`: a `binding` the error skipped the exit
     /// of is undone by truncating back to it (ADR-402).
     pub(crate) dyn_len: usize,
+    /// A REGION only: the index in its driver's frame stack of the frame that opened it — the
+    /// frame the thunk returns to. Bases cannot say it: a frame with no slots and an empty
+    /// operand stack has the same base as the frame it calls.
+    pub(crate) caller: usize,
 }
 
 pub struct Heap {
