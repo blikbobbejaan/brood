@@ -2216,6 +2216,12 @@ convention work to beat. On the rows: `make ab --floor` pinned `pfib` −5.3%
 interleaved bintree −2.8%, nqueens −3.2%, json −2.1%, collatz −2.2%, nbody −2.0%, base64
 −2.0%, nothing the other way.
 
+> **Re-measured 2026-10-27 — admission reopened for SHORT arms.** With the gate bypassed on
+> `9e5866f3`, elapsed was flat on every row but `regex` (−5%), and the only cost was `matmul`'s
+> compiler thread compiling big setup-only prelude arms (+5–10% CPU). The gate now admits a
+> call-mediated arm of at most 24 bytecode instructions (`CALL_MEDIATED_ADMIT_MAX_INSTS`):
+> `regex` −6% elapsed, `matmul` flat. Devlog 2026-10-27.
+
 **Hot admission, re-tested at 218 instructions per call — §7.1's verdict holds.** The
 gate's cost model was measured when a native call cost 640 instructions plus KI-133's
 preemption churn; with both gone the question deserved one env var: `BROOD_XADMIT=1`

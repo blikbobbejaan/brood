@@ -1,0 +1,50 @@
+;;; A short named function whose work is calls goes native; a long one still does not.
+;;;
+;;; The JIT's profitability gate refused every named function with a non-tail call and no
+;;; inline vector or self loop (`call-mediated-boxed`). Re-measured on 2026-10-27, the refusal
+;;; held only for big arms (compiling them cost `matmul` 10% CPU) and cost `regex` 5% on
+;;; small ones (`regex/matches?`, four instructions). The gate now admits an arm of at most
+;;; 24 bytecode instructions. Sabotage: on the 9e5866f3 binary `cma-small` is refused
+;;; (`call-mediated-boxed`) exactly as `cma-big` is.
+
+(defmodule jit-small-call-arm-test (:use test) (:use suite-helpers))
+
+;; Four instructions: `Local Const Call Prim1`.
+(defn cma-small (x) (count (str x "!")))
+
+;; ~40 instructions of branches, each with a non-tail call.
+(defn cma-big (x)
+  (cond
+    (= x 0) (count (str "a" x))
+    (= x 1) (count (str "bb" x))
+    (= x 2) (count (str "ccc" x))
+    (= x 3) (count (str "dddd" x))
+    (= x 4) (count (str "eeeee" x))
+    else (count (str x))))
+
+(defn- cma-drive (f n acc) (if (= n 0) acc (cma-drive f (dec n) (+ acc (f (math/rem n 6))))))
+
+(describe "the call-mediated gate"
+  (test "a short call arm answers the same on every tier"
+    (assert= 12 (cma-drive cma-small 6 0))
+    (assert= 2400 (cma-drive cma-small 1200 0)))
+
+  (test "a long call arm answers the same on every tier"
+    (assert= 21 (cma-drive cma-big 6 0))
+    (assert= 4200 (cma-drive cma-big 1200 0)))
+
+  (test "admits a short arm to the native tier"
+    (when (%native-tier?)
+      (assert= :native (settle cma-small 1 (fn () (cma-drive cma-small 400 0)) 40))))
+
+  (test "still refuses a long one"
+    (when (%native-tier?)
+      (assert= :bailed (settle cma-big 1 (fn () (cma-drive cma-big 400 0)) 40))
+      (assert= 'call-mediated-boxed (get (%jit-arm-state cma-big 1) :reason))))
+
+  :isolated (test "across processes, both answer the same in eight workers"
+    (let (me (self))
+      (dotimes (i 8)
+        (spawn (send me [:r (+ (cma-drive cma-small 300 0) (cma-drive cma-big 300 0))])))
+      (assert= (* 8 1650)
+        (fold (map (range 8) (fn (_) (receive ([:r v] v) (after 20000 0)))) 0 +)))))
