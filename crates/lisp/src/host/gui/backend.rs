@@ -4,6 +4,8 @@
 //! subscribing process. Input translation, text rendering and frame painting are the
 //! child modules.
 
+#[cfg(all(test, feature = "gui-gpu"))]
+mod gpu_replay;
 mod input;
 mod keyboard;
 mod paint;

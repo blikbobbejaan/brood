@@ -701,9 +701,10 @@ impl InstanceBuffer {
         queue: &wgpu::Queue,
         label: &str,
         words: &[u32],
+        reuse: bool,
     ) -> usize {
         self.reserve(device, label, std::mem::size_of_val(words) as u64);
-        let span = if reuse_enabled() {
+        let span = if reuse {
             changed_span(&self.shadow, words)
         } else {
             (!words.is_empty()).then_some(0..words.len())
@@ -2118,13 +2119,25 @@ enum LcdText {
     PerChannel([wgpu::RenderPipeline; 3]),
 }
 
+/// Where a `GpuWindow`'s frames are drawn: the window's swapchain, or — for the headless
+/// harness that checks the GPU path on a real device with no window on anyone's screen —
+/// one texture of the size and format a window would have. Field order matters: the
+/// surface was created from the window's raw handles, so it must drop before the window —
+/// Rust drops fields in declaration order.
+enum Target {
+    Window {
+        surface: wgpu::Surface<'static>,
+        window: Rc<Window>,
+    },
+    #[cfg(test)]
+    Offscreen { texture: wgpu::Texture },
+}
+
 /// One open window's GPU state: the wgpu surface + device, the two instanced-quad
-/// pipelines, the glyph atlas and the app's textures. Lives on the GUI thread. Field
-/// order matters: the surface was created from the window's raw handles, so it must
-/// drop before the window — Rust drops fields in declaration order.
+/// pipelines, the glyph atlas and the app's textures. Lives on the GUI thread. The target
+/// comes first: it must drop before the device it was configured on.
 pub struct GpuWindow {
-    surface: wgpu::Surface<'static>,
-    window: Rc<Window>,
+    target: Target,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -2165,6 +2178,18 @@ pub struct GpuWindow {
     /// Bumped by every texture upload and free: a fragment holding a sprite draws
     /// according to which textures exist, so it is part of the fragment key.
     texture_generation: u64,
+    /// Whether the run cache, the fragment cache and the partial instance upload are on —
+    /// `BROOD_GUI_DAMAGE` (`reuse_enabled`), per window so the headless harness can draw
+    /// one sequence both ways in one process.
+    reuse: bool,
+    /// Whether an unchanged fragment's quads are replayed (`expand_fragment`) — on with
+    /// `reuse`; the harness turns it off alone, to compare replay against expansion with
+    /// everything else the same.
+    replay_fragments: bool,
+    /// The last frame's fragment hits and misses (`FragmentCache`), read by the harness
+    /// to see that a sequence it compares replayed anything at all.
+    #[cfg(test)]
+    last_fragments: (u32, u32),
 }
 
 /// Whether a quad at `(x, y)` sized `w x h` could put any pixel inside a `fw x fh`
@@ -2311,22 +2336,7 @@ impl GpuWindow {
         {
             return Err(format!("only a software adapter ({})", info.name));
         }
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("brood gui"),
-            // Dual-source blending where the adapter has it: subpixel text in one pass
-            // (`LCD_SRC`) rather than three (`LcdText`). `BROOD_GUI_NO_DUAL_SOURCE=1` declines
-            // it, to see the three-pass path on an adapter that has the feature.
-            required_features: if std::env::var("BROOD_GUI_NO_DUAL_SOURCE").as_deref() == Ok("1") {
-                wgpu::Features::empty()
-            } else {
-                adapter.features() & wgpu::Features::DUAL_SOURCE_BLENDING
-            },
-            required_limits: wgpu::Limits::default(),
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            memory_hints: wgpu::MemoryHints::default(),
-            trace: wgpu::Trace::Off,
-        }))
-        .map_err(|e| format!("gpu device: {e}"))?;
+        let (device, queue) = request_device(&adapter)?;
         // The driver is loaded now: shut the GUI thread's gate before its exit handler runs.
         crate::host::gui::backend::close_at_exit();
 
@@ -2366,12 +2376,60 @@ impl GpuWindow {
             view_formats: linear_format.into_iter().collect(),
         };
         surface.configure(&device, &config);
+        Ok(GpuWindow::assemble(
+            Target::Window { surface, window },
+            device,
+            queue,
+            config,
+            linear_format,
+        ))
+    }
 
+    /// A target with no window: the frames are drawn into one `w`×`h` texture of the
+    /// format a window on this platform is drawn in, its sRGB sibling viewable as the
+    /// window's swapchain is where the surface allows it — the same pipelines, batches and
+    /// passes, read back with `read_pixels`. What the headless harness checks the GPU path
+    /// with on a real device, on nobody's screen.
+    #[cfg(test)]
+    pub(crate) fn offscreen(adapter: &wgpu::Adapter, w: u32, h: u32) -> Result<GpuWindow, String> {
+        let (device, queue) = request_device(adapter)?;
+        let format = wgpu::TextureFormat::Bgra8Unorm;
+        let linear_format = linear_view_format(format, true);
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            format,
+            color_space: wgpu::SurfaceColorSpace::Auto,
+            width: w.max(1),
+            height: h.max(1),
+            present_mode: wgpu::PresentMode::Fifo,
+            desired_maximum_frame_latency: 1,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: linear_format.into_iter().collect(),
+        };
+        let texture = offscreen_texture(&device, &config);
+        Ok(GpuWindow::assemble(
+            Target::Offscreen { texture },
+            device,
+            queue,
+            config,
+            linear_format,
+        ))
+    }
+
+    /// The pipelines, buffers and caches over a device whose target is ready.
+    fn assemble(
+        target: Target,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        config: wgpu::SurfaceConfiguration,
+        linear_format: Option<wgpu::TextureFormat>,
+    ) -> GpuWindow {
+        let format = config.format;
+        let (w, h) = (config.width, config.height);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("brood gui quads"),
             source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
         });
-
         let viewport_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("viewport"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -2585,9 +2643,8 @@ impl GpuWindow {
         let solid_instances = InstanceBuffer::new(&device, "solid instances", 64 * 1024);
         let tex_instances = InstanceBuffer::new(&device, "textured instances", 64 * 1024);
 
-        Ok(GpuWindow {
-            surface,
-            window,
+        GpuWindow {
+            target,
             device,
             queue,
             config,
@@ -2612,18 +2669,154 @@ impl GpuWindow {
             runs: RunCache::default(),
             fragments: FragmentCache::default(),
             texture_generation: 0,
-        })
+            reuse: reuse_enabled(),
+            replay_fragments: reuse_enabled(),
+            #[cfg(test)]
+            last_fragments: (0, 0),
+        }
     }
+}
 
-    /// Match the swapchain to the current window size (called before each paint).
+/// Every hardware adapter on this machine — the software ones (llvmpipe, lavapipe) left
+/// out, as `GpuWindow::new` leaves them out. Empty on a machine without a GPU (CI).
+#[cfg(test)]
+pub(crate) fn hardware_adapters() -> Vec<wgpu::Adapter> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()))
+        .into_iter()
+        .filter(|adapter| adapter.get_info().device_type != wgpu::DeviceType::Cpu)
+        .collect()
+}
+
+/// The device and queue on `adapter`: dual-source blending where it has it.
+fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue), String> {
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("brood gui"),
+        // Dual-source blending where the adapter has it: subpixel text in one pass
+        // (`LCD_SRC`) rather than three (`LcdText`). `BROOD_GUI_NO_DUAL_SOURCE=1` declines
+        // it, to see the three-pass path on an adapter that has the feature.
+        required_features: if std::env::var("BROOD_GUI_NO_DUAL_SOURCE").as_deref() == Ok("1") {
+            wgpu::Features::empty()
+        } else {
+            adapter.features() & wgpu::Features::DUAL_SOURCE_BLENDING
+        },
+        required_limits: wgpu::Limits::default(),
+        experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        memory_hints: wgpu::MemoryHints::default(),
+        trace: wgpu::Trace::Off,
+    }))
+    .map_err(|e| format!("gpu device: {e}"))
+}
+
+/// The texture an offscreen target draws into: the window's size and format, drawable
+/// through its sRGB view as a swapchain image is, and copyable for the readback.
+#[cfg(test)]
+fn offscreen_texture(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("offscreen frame"),
+        size: wgpu::Extent3d {
+            width: config.width,
+            height: config.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: config.format,
+        usage: config.usage,
+        view_formats: &config.view_formats,
+    })
+}
+
+impl GpuWindow {
+    /// Match the target to the current window size (called before each paint).
     pub fn resize(&mut self, w: u32, h: u32) {
         let (w, h) = (w.max(1), h.max(1));
         if self.configured != (w, h) {
             self.config.width = w;
             self.config.height = h;
-            self.surface.configure(&self.device, &self.config);
+            match &mut self.target {
+                Target::Window { surface, .. } => surface.configure(&self.device, &self.config),
+                #[cfg(test)]
+                Target::Offscreen { texture } => {
+                    *texture = offscreen_texture(&self.device, &self.config)
+                }
+            }
             self.configured = (w, h);
         }
+    }
+
+    /// The size the next frame is drawn at: the window's, or the offscreen texture's.
+    fn target_size(&self) -> (u32, u32) {
+        match &self.target {
+            Target::Window { window, .. } => {
+                let size = window.inner_size();
+                (size.width.max(1), size.height.max(1))
+            }
+            #[cfg(test)]
+            Target::Offscreen { .. } => self.configured,
+        }
+    }
+
+    /// The image to draw this frame into, and the swapchain image to present after —
+    /// `None` for an offscreen target, which presents nothing. `None` altogether when the
+    /// swapchain has no image to give (the frame is skipped).
+    fn acquire(&self) -> Option<(wgpu::Texture, Option<wgpu::SurfaceTexture>)> {
+        let surface = match &self.target {
+            Target::Window { surface, .. } => surface,
+            #[cfg(test)]
+            Target::Offscreen { texture } => return Some((texture.clone(), None)),
+        };
+        let frame_texture = match surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
+                // The swapchain went stale (a resize the OS has not told winit about yet,
+                // a display change): reconfigure and try once more — nothing asks for
+                // another paint, so a frame skipped here would leave the old image up.
+                surface.configure(&self.device, &self.config);
+                match surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(t)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+                    _ => return None,
+                }
+            }
+            wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Occluded
+            | wgpu::CurrentSurfaceTexture::Validation => return None,
+        };
+        Some((frame_texture.texture.clone(), Some(frame_texture)))
+    }
+
+    /// The offscreen target's last frame as RGB bytes, row by row (`read_frame`).
+    #[cfg(test)]
+    pub(crate) fn read_pixels(&self) -> Vec<u8> {
+        let Target::Offscreen { texture } = &self.target else {
+            panic!("read_pixels reads an offscreen target");
+        };
+        let (w, h) = self.configured;
+        read_frame(&self.device, &self.queue, texture, self.config.format, w, h)
+            .expect("the offscreen frame reads back")
+    }
+
+    /// Turn the reuse (`reuse_enabled`) on or off for this target alone — fragment
+    /// replay with it.
+    #[cfg(test)]
+    pub(crate) fn set_reuse(&mut self, on: bool) {
+        self.reuse = on;
+        self.replay_fragments = on;
+    }
+
+    /// Turn fragment replay alone on or off, the run cache and partial upload as they are.
+    #[cfg(test)]
+    pub(crate) fn set_replay_fragments(&mut self, on: bool) {
+        self.replay_fragments = on;
+    }
+
+    /// The last frame's fragment cache hits and misses.
+    #[cfg(test)]
+    pub(crate) fn last_fragments(&self) -> (u32, u32) {
+        self.last_fragments
     }
 
     /// An empty `w`×`h` RGBA8 texture on the device, with the bind group the textured
@@ -2836,7 +3029,7 @@ impl GpuWindow {
                 self.lcd_order(renderer),
             ),
         };
-        let reuse = reuse_enabled();
+        let reuse = self.reuse;
         let hash = run_hash(s, face, &context);
         if reuse {
             // an enclosing fragment's entry carries the runs it drew (`FragmentCache::record`)
@@ -3056,7 +3249,7 @@ impl GpuWindow {
         ops: &std::sync::Arc<[Op]>,
         g: Grid,
     ) {
-        if !reuse_enabled() {
+        if !self.replay_fragments {
             self.expand(fb, renderer, ops, g);
             return;
         }
@@ -3396,8 +3589,7 @@ impl GpuWindow {
         let trace = paint_stall_ms();
         let t0 = std::time::Instant::now();
         let (cw, ch) = (renderer.cell_w.max(1), renderer.cell_h.max(1));
-        let size = self.window.inner_size();
-        let (fw, fh) = (size.width.max(1), size.height.max(1));
+        let (fw, fh) = self.target_size();
         self.resize(fw, fh);
 
         let (fwf, fhf) = (fw as f32, fh as f32);
@@ -3413,6 +3605,10 @@ impl GpuWindow {
         self.expand(&mut fb, renderer, frame, grid);
         let (run_hits, run_misses) = (self.runs.hits, self.runs.misses);
         let (fragment_hits, fragment_misses) = (self.fragments.hits, self.fragments.misses);
+        #[cfg(test)]
+        {
+            self.last_fragments = (fragment_hits, fragment_misses);
+        }
         self.runs.end_frame();
         self.fragments.end_frame();
         // The particles step once per paint, as the CPU painter's do; an emitter the frame
@@ -3439,11 +3635,13 @@ impl GpuWindow {
             &self.queue,
             "solid instances",
             as_words(&fb.solids),
+            self.reuse,
         ) + self.tex_instances.upload_changed(
             &self.device,
             &self.queue,
             "textured instances",
             &fb.texs,
+            self.reuse,
         );
         if !steps.is_empty() {
             let format = self.config.format;
@@ -3458,37 +3656,16 @@ impl GpuWindow {
         }
         let t_upload = std::time::Instant::now();
 
-        let frame_texture = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
-                // The swapchain went stale (a resize the OS has not told winit about yet,
-                // a display change): reconfigure and try once more — nothing asks for
-                // another paint, so a frame skipped here would leave the old image up.
-                self.surface.configure(&self.device, &self.config);
-                match self.surface.get_current_texture() {
-                    wgpu::CurrentSurfaceTexture::Success(t)
-                    | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-                    _ => return None,
-                }
-            }
-            wgpu::CurrentSurfaceTexture::Timeout
-            | wgpu::CurrentSurfaceTexture::Occluded
-            | wgpu::CurrentSurfaceTexture::Validation => return None,
-        };
+        let (frame_texture, surface_texture) = self.acquire()?;
         // acquiring the next swapchain image is where a vsync'd present waits for the display
         let t_acquire = std::time::Instant::now();
-        let view = frame_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let view = frame_texture.create_view(&wgpu::TextureViewDescriptor::default());
         // The same image viewed as sRGB, for the geometry that blends in linear light.
         let linear_view = self.linear_format.map(|format| {
-            frame_texture
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor {
-                    format: Some(format),
-                    ..Default::default()
-                })
+            frame_texture.create_view(&wgpu::TextureViewDescriptor {
+                format: Some(format),
+                ..Default::default()
+            })
         });
         let bg = renderer.bg();
         let background = wgpu::Color {
@@ -3601,14 +3778,16 @@ impl GpuWindow {
             dump_frame(
                 &self.device,
                 &self.queue,
-                &frame_texture.texture,
+                &frame_texture,
                 self.config.format,
                 fw,
                 fh,
                 path,
             );
         }
-        self.queue.present(frame_texture);
+        if let Some(surface_texture) = surface_texture {
+            self.queue.present(surface_texture);
+        }
         let t_present = std::time::Instant::now();
         let micros =
             |a: std::time::Instant, b: std::time::Instant| b.duration_since(a).as_micros() as u64;
@@ -3937,9 +4116,7 @@ fn dump_path() -> Option<&'static str> {
         .as_deref()
 }
 
-/// Copy `texture` (the frame just drawn, `w`×`h`, `format`) into a mapped buffer and
-/// write it to `path` as a PPM. Rows are padded to wgpu's 256-byte copy alignment and
-/// unpadded on the way out; a BGRA surface is swizzled to RGB.
+/// Write `texture` (the frame just drawn, `w`×`h`, `format`) to `path` as a PPM.
 fn dump_frame(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -3949,6 +4126,27 @@ fn dump_frame(
     h: u32,
     path: &str,
 ) {
+    let Some(rgb) = read_frame(device, queue, texture, format, w, h) else {
+        return;
+    };
+    let mut out = Vec::with_capacity(rgb.len() + 32);
+    out.extend_from_slice(format!("P6\n{w} {h}\n255\n").as_bytes());
+    out.extend_from_slice(&rgb);
+    let _ = std::fs::write(path, out);
+}
+
+/// Copy `texture` (`w`×`h`, `format`) into a mapped buffer and return its pixels as RGB
+/// bytes, row by row. Rows are padded to wgpu's 256-byte copy alignment and unpadded on
+/// the way out; a BGRA surface is swizzled to RGB. `None` when the device could not wait
+/// for the copy or map the buffer.
+fn read_frame(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    format: wgpu::TextureFormat,
+    w: u32,
+    h: u32,
+) -> Option<Vec<u8>> {
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let padded_row = (4 * w).div_ceil(align) * align;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -3985,17 +4183,16 @@ fn dump_frame(
     let slice = buffer.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
     if device.poll(wgpu::PollType::wait_indefinitely()).is_err() {
-        return;
+        return None;
     }
     let bgra = matches!(
         format,
         wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
     );
     let Ok(data) = slice.get_mapped_range() else {
-        return;
+        return None;
     };
-    let mut out = Vec::with_capacity((w * h * 3) as usize + 32);
-    out.extend_from_slice(format!("P6\n{w} {h}\n255\n").as_bytes());
+    let mut out = Vec::with_capacity((w * h * 3) as usize);
     for row in data.chunks(padded_row as usize).take(h as usize) {
         for px in row[..(4 * w) as usize].chunks(4) {
             if bgra {
@@ -4007,7 +4204,7 @@ fn dump_frame(
     }
     drop(data);
     buffer.unmap();
-    let _ = std::fs::write(path, out);
+    Some(out)
 }
 
 #[cfg(test)]
