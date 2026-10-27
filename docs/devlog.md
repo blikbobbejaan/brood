@@ -3933,3 +3933,12 @@ its shape run as a script reads 3 at tier 2 on 8b7fddaa with the arm `:native`, 
 `:bailed` after. The first push's guard also asked the arm to go native again once the predicate
 was restored, which the latch never allows; CI went red on it, and on the KI having no archive
 section. Not run on this machine: the suites run in CI.
+
+2026-10-27 (a gate for the 2026-08-06 naming scrub): `scripts/banned-names.sh`, run by CI's
+rustfmt job and the pre-push hook, fails when a forward-facing file names another runtime; the
+scrub had only a memory note behind it. History (the devlog, decisions, archive, changelog and
+research notes) is out of scope. Four names are banned outright; the fifth is also a language the
+editor edits through tree-sitter, so it is allowed as an identifier anywhere and as prose only in
+the editor's language-support files, plus one paper title in `docs/types.md`. Two lines that read
+as prose were respelled as identifiers (a `known-issues.md` row, a `package-ci.yml` comment).
+Sabotaged: a banned word and a prose use in README each fail it, and an identifier use passes.
