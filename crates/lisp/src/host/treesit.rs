@@ -288,16 +288,34 @@ fn chain_in<T: SpanText>(
 /// that is a container". Same reason as [`chain`]: those motions were each projecting
 /// the whole tree to read one list.
 #[cfg(feature = "treesit")]
-pub fn kids(heap: &mut Heap, src: &str, lang: &str, offset: i64) -> LispResult {
+pub fn kids(heap: &mut Heap, src: &str, lang: &str, offset: i64, all: bool) -> LispResult {
     let tree = parse_cached(src, lang)?;
     let b2c = byte_to_char_offsets(src);
-    Ok(kids_in(heap, &tree, &FlatText { src, b2c: &b2c }, offset))
+    Ok(kids_in(
+        heap,
+        &tree,
+        &FlatText { src, b2c: &b2c },
+        offset,
+        all,
+    ))
 }
 
 /// The kids walk itself, over a flat string ([`kids`]) or a held tree's rope
 /// ([`tree_kids`]).
+///
+/// `all` adds the ANONYMOUS children — the parent's own tokens (`{`, `(`, `do`, `end`), each
+/// with `:named false` and the token's text as its kind — in source order among the named
+/// ones. A bracket matcher reads a delimiter pair in the middle of its parent from that
+/// list (an HCL block's braces after its labels) instead of scanning the text between the
+/// named children.
 #[cfg(feature = "treesit")]
-fn kids_in<T: SpanText>(heap: &mut Heap, tree: &tree_sitter::Tree, text: &T, offset: i64) -> Value {
+fn kids_in<T: SpanText>(
+    heap: &mut Heap,
+    tree: &tree_sitter::Tree,
+    text: &T,
+    offset: i64,
+    all: bool,
+) -> Value {
     let byte = text.byte_of(offset.max(0) as usize);
     // STRICTLY containing, so a point sitting exactly at a node's start belongs to that
     // node's parent — which is what makes `forward-sexp` step OVER the form at point
@@ -314,7 +332,11 @@ fn kids_in<T: SpanText>(heap: &mut Heap, tree: &tree_sitter::Tree, text: &T, off
         }
     }
     let mut cursor = node.walk();
-    let out: Vec<tree_sitter::Node> = node.named_children(&mut cursor).collect();
+    let out: Vec<tree_sitter::Node> = if all {
+        node.children(&mut cursor).collect()
+    } else {
+        node.named_children(&mut cursor).collect()
+    };
     let vals: Vec<Value> = out
         .into_iter()
         .map(|c| node_shallow(heap, c, text))
@@ -2019,11 +2041,11 @@ pub fn tree_chain(heap: &mut Heap, handle: u64, offset: i64) -> LispResult {
 /// `(%tree-sitter-tree-kids tree offset)` — [`kids`] over a held tree. `Nil` for a gone
 /// handle.
 #[cfg(feature = "treesit")]
-pub fn tree_kids(heap: &mut Heap, handle: u64, offset: i64) -> LispResult {
+pub fn tree_kids(heap: &mut Heap, handle: u64, offset: i64, all: bool) -> LispResult {
     let Some(entry) = tree_entry(handle) else {
         return Ok(Value::Nil);
     };
-    Ok(kids_in(heap, &entry.tree, &entry.text, offset))
+    Ok(kids_in(heap, &entry.tree, &entry.text, offset, all))
 }
 
 /// `(%tree-sitter-tree-alive? tree)` — is the handle still held? Marks it used, as every
@@ -2097,7 +2119,12 @@ pub fn tree_chain(_heap: &mut crate::core::heap::Heap, _handle: u64, _offset: i6
 }
 
 #[cfg(not(feature = "treesit"))]
-pub fn tree_kids(_heap: &mut crate::core::heap::Heap, _handle: u64, _offset: i64) -> LispResult {
+pub fn tree_kids(
+    _heap: &mut crate::core::heap::Heap,
+    _handle: u64,
+    _offset: i64,
+    _all: bool,
+) -> LispResult {
     Err(without_treesit("%tree-sitter-tree-kids"))
 }
 
@@ -2586,7 +2613,13 @@ pub fn chain(heap: &mut crate::core::heap::Heap, src: &str, lang: &str, _o: i64)
 }
 
 #[cfg(not(feature = "treesit"))]
-pub fn kids(heap: &mut crate::core::heap::Heap, src: &str, lang: &str, _o: i64) -> LispResult {
+pub fn kids(
+    heap: &mut crate::core::heap::Heap,
+    src: &str,
+    lang: &str,
+    _o: i64,
+    _all: bool,
+) -> LispResult {
     parse(heap, src, lang)
 }
 

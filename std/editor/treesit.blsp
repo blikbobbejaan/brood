@@ -580,9 +580,26 @@ ends)."
   ;; the held tree's chain when there is one alive, else the text's
   (or (when tree (%tree-sitter-tree-chain tree at)) (%tree-sitter-chain (ts-string text) lang at)))
 
+(defn node-children (text lang offset &optional (all? false) (tree nil))
+  "The children of the deepest node STRICTLY containing char `offset` of `text` (a string or a
+rope) parsed as `lang`, each `{:kind :start :end :named :container}` without its own
+children, in source order — the named ones, or with `all?` the parent's ANONYMOUS tokens
+too, each `:named false` with the token's text as its `:kind` (`:{`, `:do`). `tree`, the
+held tree of exactly `text`, is read instead of parsing it; a gone handle falls back to the
+text. Strict containment makes a point at a node's start belong to its parent.
+
+`all?` is what a bracket matcher wants: a delimiter pair in the middle of its parent — an
+HCL block's braces after its labels, bash's `name()` — sits in this list beside the named
+children, so the pair is read from it rather than found by scanning the text between them.
+
+    (editor/treesit/node-children \"f(a, b)\\n\" :elixir 2 true)   ;=> [{:kind :( …} {:kind :identifier …} {:kind :, …} {:kind :identifier …} {:kind :) …}] — with the :elixir grammar
+    (fn? editor/treesit/node-children)   → true"
+  (or (when tree (%tree-sitter-tree-kids tree offset all?))
+    (%tree-sitter-kids (ts-string text) lang offset all?)))
+
 (defn- ts-kids-at (text lang at tree)
   ;; the held tree's sibling list when there is one alive, else the text's
-  (or (when tree (%tree-sitter-tree-kids tree at)) (%tree-sitter-kids (ts-string text) lang at)))
+  (node-children text lang at false tree))
 
 ;; ---- where a windowed fontify may restart -------------------------------------
 

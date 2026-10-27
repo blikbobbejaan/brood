@@ -902,3 +902,40 @@
             [38 41 :str]])
         (assert= (%tree-sitter-tree-spans tree host true 0 (string/length src) injections) spans)
         (editor/treesit/free-tree tree)))))
+
+;; ---- a node's anonymous children: the parent's own tokens --------------------------------
+
+(when tsm-grammars?
+  (describe "node-children with all?"
+    (test "the parent's tokens come with its named children, in source order"
+      (let (src "f(a, b)\n"
+            shape (fn (kids)
+                    (map kids (fn (k) [(->string (:kind k)) (:start k) (:end k) (:named k)])))
+            tree (editor/treesit/open-tree src :elixir))
+        (assert= (shape (editor/treesit/node-children src :elixir 2 true))
+          '(["(" 1 2 false] ["identifier" 2 3 true]
+             ["," 3 4 false]
+             ["identifier" 5 6 true]
+             [")" 6 7 false]))
+        ;; without all? only the named ones, as the motions have always had them
+        (assert= (shape (editor/treesit/node-children src :elixir 2))
+          '(["identifier" 2 3 true] ["identifier" 5 6 true]))
+        ;; the held tree answers alike, through the wrapper and the primitive
+        (assert= (editor/treesit/node-children src :elixir 2 true tree)
+          (editor/treesit/node-children src :elixir 2 true))
+        (assert= (%tree-sitter-tree-kids tree 2 true) (%tree-sitter-kids src :elixir 2 true))
+        (editor/treesit/free-tree tree)))))
+
+(when (tsm-installed? :hcl)
+  (describe "node-children with all?: an HCL block's braces"
+    (test "the braces after a block's labels are in the block's children"
+      ;; HCL wraps each brace in a named one-character node (`block_start`, `block_end`):
+      ;; a matcher compares a child's extent with the brace token's, as it lifts a wrapper
+      (let (src "resource \"a\" \"b\" {\n  x = 1\n}\n"
+            kids (%tree-sitter-kids src :hcl 18 true))
+        (assert= (map kids (fn (k) [(:kind k) (:start k) (:end k)]))
+          '([:identifier 0 8] [:string_lit 9 12]
+             [:string_lit 13 16]
+             [:block_start 17 18]
+             [:body 21 26]
+             [:block_end 27 28]))))))

@@ -4239,3 +4239,16 @@ HCL/Python/Rust/Go), `doc_examples`, `audit`, `nest check --strict` on `std/edit
 `cargo test -p brood --lib treesit` (gui, treesit-grammars), and clippy (gui, treesit-grammars;
 and with treesit off). Three guards were sabotaged red: one document per piece, a walk stopping
 at the window, and a pooled parser keeping its ranges. Nothing was measured.
+
+2026-10-27 (a node's anonymous children, beside ADR-489): `%tree-sitter-kids` and
+`%tree-sitter-tree-kids` take an optional `all?`. With it they also answer the parent's
+ANONYMOUS tokens, in source order among the named children, each `:named false` with the
+token's text as its `:kind` (`:{`, `:do`). The std wrapper is `node-children` (`text lang offset
+&optional all? tree`, the held tree first), which the motions' private `ts-kids-at` now calls.
+bedit's tree-sitter bracket matcher was finding a pair in the middle of its parent by scanning
+the text between named children. It can read the pair from this list instead. HCL wraps each
+brace in a named one-character `block_start` / `block_end`, which the list returns as such.
+Guards: `treesit_module_test` (Elixir `f(a, b)` with and without `all?`, held tree equals text;
+the installed HCL block's children). Sabotaged red by ignoring the flag. Run here:
+`treesit_module_test` (78), `doc_examples`, `audit`, `tree_sitter_test`, `nest check --strict`,
+and clippy.

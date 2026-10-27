@@ -36,10 +36,10 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         tree_sitter_chain);
     primitives.def(
         "%tree-sitter-kids",
-        Arity::exact(3),
-        Sig::new(vec![string, kw, int], vec_ty),
-        &["source", "lang", "offset"],
-        "The named children of the deepest node STRICTLY containing char `offset`, each as {:kind :start :end :named :container} without its own children — the sibling list every structural motion needs (forward-sexp is the next one starting at or after point). Strict containment is what makes a point at a node's start belong to its parent, so forward-sexp steps over the form at point rather than into it. Same grammar rules and errors as %tree-sitter-parse.",
+        Arity::range(3, 4),
+        Sig::with_optional(vec![string, kw, int], vec![any], vec_ty),
+        &["source", "lang", "offset", "&optional", "all?"],
+        "The named children of the deepest node STRICTLY containing char `offset`, each as {:kind :start :end :named :container} without its own children — the sibling list every structural motion needs (forward-sexp is the next one starting at or after point). Strict containment is what makes a point at a node's start belong to its parent, so forward-sexp steps over the form at point rather than into it. With all? true, the ANONYMOUS children too — the parent's own tokens, in source order among the named ones, each :named false with the token's text as its :kind (`:{`, `:do`) — so a bracket matcher reads a delimiter pair in the middle of its parent (an HCL block's braces after its labels) from the list instead of scanning the text between named children. Same grammar rules and errors as %tree-sitter-parse.",
         tree_sitter_kids);
     primitives.def(
         "%tree-sitter-errors",
@@ -128,10 +128,10 @@ pub(super) fn register_tree_queries(primitives: &mut super::Primitives) {
     );
     primitives.def(
         "%tree-sitter-tree-kids",
-        Arity::exact(2),
-        Sig::new(vec![ref_ty, int], vec_or_nil),
-        &["tree", "offset"],
-        "%tree-sitter-kids over a held tree: the named children of the deepest node STRICTLY containing char offset, each without its own children. Parses nothing. nil when the handle is gone.",
+        Arity::range(2, 3),
+        Sig::with_optional(vec![ref_ty, int], vec![any], vec_or_nil),
+        &["tree", "offset", "&optional", "all?"],
+        "%tree-sitter-kids over a held tree: the named children of the deepest node STRICTLY containing char offset, each without its own children — with all? true, its anonymous token children too, as in %tree-sitter-kids. Parses nothing. nil when the handle is gone.",
         tree_sitter_tree_kids,
     );
     primitives.def(
@@ -188,7 +188,8 @@ pub(super) fn tree_sitter_kids(args: &[Value], _: EnvId, heap: &mut Heap) -> Lis
     let src = expect_string(heap, "%tree-sitter-kids", arg(args, 0))?;
     let lang = ts_lang(heap, "%tree-sitter-kids", arg(args, 1))?;
     let offset = expect_int(heap, "%tree-sitter-kids", arg(args, 2))?;
-    crate::host::treesit::kids(heap, &src, &lang, offset)
+    let all = !matches!(arg(args, 3), Value::Nil | Value::Bool(false));
+    crate::host::treesit::kids(heap, &src, &lang, offset, all)
 }
 
 pub(super) fn tree_sitter_errors(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
@@ -510,7 +511,8 @@ pub(super) fn tree_sitter_tree_kids(args: &[Value], _: EnvId, heap: &mut Heap) -
     let who = "%tree-sitter-tree-kids";
     let handle = ts_handle(heap, who, arg(args, 0))?;
     let offset = expect_int(heap, who, arg(args, 1))?;
-    crate::host::treesit::tree_kids(heap, handle, offset)
+    let all = !matches!(arg(args, 2), Value::Nil | Value::Bool(false));
+    crate::host::treesit::tree_kids(heap, handle, offset, all)
 }
 
 pub(super) fn tree_sitter_tree_alive(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
