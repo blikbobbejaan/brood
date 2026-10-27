@@ -328,6 +328,15 @@
       (assert= (editor/ui/ui-coalesce-motion [:mouse :move nil 5 5 []])
         [:mouse :move nil 7 7 []])
       (assert= (receive (m m) (after 200 :none)) :tick)))
+  ;; a window adds the pointer's fractional position after a nil 7th slot
+  (test "a window's motion, with its {:at …} position, collapses too"
+    (let (me (self))
+      (send me [:mouse :drag :left 6 6 [] nil {:at [6.5 6.5]}])
+      (send me [:mouse :drag :left 7 7 [] nil {:at [7.5 7.5]}])
+      (send me "k")
+      (assert= (editor/ui/ui-coalesce-motion [:mouse :drag :left 5 5 [] nil {:at [5.5 5.5]}])
+        [:mouse :drag :left 7 7 [] nil {:at [7.5 7.5]}])
+      (assert= (receive (m m) (after 200 :none)) "k")))
   (test "a move never swallows a drag, nor a drag a move — a press between them matters"
     (let (me (self))
       (send me [:mouse :drag :left 6 6 []])

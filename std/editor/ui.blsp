@@ -74,8 +74,17 @@ replies / the other kind untouched — and return the last. A `:move` never swal
         (= (nth msg 0) :mouse)
         (or (= (nth msg 1) :drag) (= (nth msg 1) :move)))
     (let (kind (nth msg 1))
+      ;; every shape motion comes in: a window adds the pointer's fractional position
+      ;; as `{:at …}` after a nil 7th slot, and a 6-element-only pattern never matched
+      ;; one, so a window's drag was folded and rendered cell by cell (ADR-490)
       (receive
         ([:mouse ^kind button row col mods] (ui-coalesce-motion [:mouse kind button row col mods]))
+        ([:mouse ^kind button row col mods extra] (ui-coalesce-motion [:mouse
+                                                                        kind button row col mods
+                                                                        extra]))
+        ([:mouse ^kind button row col mods extra at] (ui-coalesce-motion [:mouse
+                                                                           kind button row col mods
+                                                                           extra at]))
         (after 0 msg)))
     msg))
 
