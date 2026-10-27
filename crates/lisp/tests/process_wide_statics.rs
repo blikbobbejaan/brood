@@ -123,7 +123,11 @@ const PROCESS_WIDE: &[(&str, &str, Reason)] = &[
     // The parsed memo fragments of each window (ADR-470), by window id — an id the one GUI
     // event loop hands out — and stamped with the pid that drew them: a draw from any other
     // process, of this runtime or another, finds no entry and parses afresh.
-    ("builtins/terminal/native/fragments.rs", "CACHES", ProcessUniqueKeys),
+    (
+        "builtins/terminal/native/fragments.rs",
+        "CACHES",
+        ProcessUniqueKeys,
+    ),
     // The terminal keyboard: the kitty flags pushed, the input read ahead and the keys down.
     // A process has one controlling terminal, whichever runtime polls it.
     (
