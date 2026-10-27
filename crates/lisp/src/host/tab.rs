@@ -45,7 +45,8 @@ pub fn deliver_input(text: &str) -> bool {
     match SUBSCRIBER.load(Ordering::Acquire) {
         0 => false,
         pid => {
-            crate::process::deliver(pid, crate::process::Message::Str(text.to_string()));
+            // the user's input: the priority lane, ahead of a background backlog (ADR-490)
+            crate::process::deliver_priority(pid, crate::process::Message::Str(text.to_string()));
             true
         }
     }

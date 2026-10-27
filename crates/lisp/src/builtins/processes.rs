@@ -54,6 +54,30 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["target", "msg"],
         "Copy msg into target's mailbox; target is a pid, a registered name (a keyword — the local node's `{:name :node}`), or a {:name :node} address. Routes locally or over a node link. Returns nil.\n\n    (do (send (self) :doc-hello) (receive (:doc-hello :got-it)))   → :got-it",
         send);
+    // Mailbox lanes (ADR-490): a message a receiver takes AHEAD of its backlog, and one a
+    // newer message with the same key replaces while it is still queued. Both are `send`
+    // to a live local pid and an ordinary `send` to anything else.
+    primitives.def(
+        "proc/send-priority",
+        Arity::exact(2),
+        Sig::new(vec![pid_ty.union(map_ty).union(kw), any], nil_ty),
+        &["target", "msg"],
+        "Send msg to target on its mailbox's PRIORITY lane: `proc/take-priority` in the receiver takes it ahead of every ordinary message queued before it, oldest priority message first. What a window delivers as the user's keys and mouse is on this lane, so a UI loop serves input before a flood of background replies (ADR-490). An ordinary `receive` ignores the lane and sees it in arrival order. A remote, named or dead target gets a plain `send`. Returns nil.\n\n    (do (send (self) :background) (proc/send-priority (self) :key) [(proc/take-priority) (receive (m m))])   → [[:key] :background]",
+        send_priority);
+    primitives.def(
+        "proc/take-priority",
+        Arity::exact(0),
+        Sig::nullary(vec_ty.union(nil_ty)),
+        &[],
+        "Take the calling process's oldest PRIORITY-lane message (`proc/send-priority`, a window's input) out of its mailbox, as `[msg]` — or nil at once when none is queued. Never waits and never looks at an ordinary message, so it costs nothing in a mailbox thousands of background messages deep: the input-first half of a UI loop's poll (ADR-490).\n\n    (do (send (self) :background) (proc/take-priority))   → nil",
+        take_priority);
+    primitives.def(
+        "proc/send-latest",
+        Arity::exact(3),
+        Sig::new(vec![pid_ty.union(map_ty).union(kw), any, any], nil_ty),
+        &["target", "key", "msg"],
+        "Send msg to target, REPLACING any message sent with the same key that target has not received yet — for state that only matters at its newest value (a file's diagnostics, a progress figure, a status chip), so a fast producer cannot bury a slow receiver in stale copies (ADR-490). The replacement queues at the back, in its own arrival order; a message already received is never touched. key is compared by its printed form: a keyword, string, number or a vector of them. Messages without a key are never replaced. A remote, named or dead target gets a plain `send`. Returns nil.\n\n    (do (proc/send-latest (self) :progress 1) (send (self) :other) (proc/send-latest (self) :progress 2) [(receive (m m)) (receive (m m)) (receive (m m) (after 0 :empty))])   → [:other 2 :empty]",
+        send_latest);
     // Arg shape: (matcher: callable|spec vector, timeout: int|nil, tags: vector|nil). The
     // `receive` macro in `std/prelude.blsp` expands to exactly this. The matcher
     // answers `[idx var…]` for the clause that matched (nil = no match) — a closure, or
@@ -342,6 +366,23 @@ pub(super) fn spawn_named(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
 pub(super) fn send(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     crate::process::send(heap, arg(args, 0), arg(args, 1))?;
     Ok(Value::nil())
+}
+
+/// `(proc/send-priority target msg)` — `send` on the priority lane (ADR-490).
+pub(super) fn send_priority(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    crate::process::send_in_lane(heap, arg(args, 0), arg(args, 1), None)?;
+    Ok(Value::nil())
+}
+
+/// `(proc/send-latest target key msg)` — `send`, superseding a queued message with `key`.
+pub(super) fn send_latest(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    crate::process::send_in_lane(heap, arg(args, 0), arg(args, 2), Some(arg(args, 1)))?;
+    Ok(Value::nil())
+}
+
+/// `(proc/take-priority)` — the oldest priority-lane message as `[msg]`, or nil.
+pub(super) fn take_priority(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    crate::process::take_priority(heap)
 }
 
 /// `(exit pid reason)` — send an exit signal to a local green process.

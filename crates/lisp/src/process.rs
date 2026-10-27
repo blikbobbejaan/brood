@@ -97,7 +97,8 @@ pub use timer::pending_timer_count;
 
 pub use mailbox::{
     deactivate_alias, list_local_pids, mailbox_len, max_mailbox, process_cpu_ns, process_gc_runs,
-    process_mem, process_reductions, process_status, receive_match, send, set_max_mailbox,
+    process_mem, process_reductions, process_status, receive_match, send, send_in_lane,
+    set_max_mailbox, take_priority,
 };
 pub use message::{ClosureArmMsg, ClosureMsg, Message, from_message, to_message};
 pub(crate) use message::{chunk_flush, chunk_payload, error_reason};
@@ -165,11 +166,13 @@ pub(crate) use scheduler::set_reduction_budget_for_test;
 #[cfg(all(test, feature = "jit"))]
 pub(crate) use scheduler::test_work_waiting;
 
-pub(crate) use mailbox::{deliver, is_alive, read_name_address};
+pub(crate) use mailbox::{deliver, deliver_priority, is_alive, read_name_address};
 // Inbound flow control (socket backpressure): a credit rides in the envelope and is
 // returned to its source when the message leaves the mailbox. Used by `host::net` and
 // `host::subprocess`.
-pub(crate) use mailbox::{CreditSource, DeliveryCredit, deliver_credited};
+pub(crate) use mailbox::{
+    CreditSource, DeliveryCredit, deliver_credited, deliver_priority_credited,
+};
 pub(crate) use monitor::{
     Watcher, add_monitor, deliver_remote_down, demonitor_remote_fanout, drop_monitor,
     drop_pending_remote, fire_noconnection_if_pending, handle_node_down, record_pending_remote,

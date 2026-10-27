@@ -89,21 +89,35 @@ consumes them), leaving a served app deaf to everything but keys.
      :sound (fn (snd pcm rate channels) (send client [:sound-data snd pcm rate channels]))
      :sound-free (fn (snd) (send client [:sound-free snd]))
      :configure (fn (o) (send client [:window o]))
+     ;; The client's input is what it ships: its keys, its detach, its death. Taken
+     ;; ahead of the session's background messages (ADR-490) — every clause is
+     ;; tag-led, so the scan passes a backlog without rebuilding any of it.
+     :poll-input (fn () (remote-take-input client held))
+     ;; the oldest message of any kind; the client's input means what it does above
      :poll (fn (ms)
              (receive
                ([:key k held?] (do (table/put held :held? held?) k))
-               ; a client that does not say
                ([:key k] k)
                ([:detach] :close)
-               ;; only THE CLIENT's death closes the session — the session process may
-               ;; monitor other things (a collab app monitors every hosted buffer process,
-               ;; whose [:down …] must reach its update as app input for rehost/reshare,
-               ;; not tear the session down)
-               ; client process died / link net-split
                ([:down _ ^client _] :close)
                ; anything else is async app input — the event bus, as local displays deliver it
                (m m)
                (after ms nil)))}))
+
+(defn- remote-take-input (client held)
+  "The next input `client` shipped this session — a key (noting whether one is held in
+`held`), or `:close` for a detach or the client's death — without waiting; nil when
+none came. Only THE CLIENT's death closes the session: the session process may monitor
+other things (a collab app monitors every hosted buffer process, whose `[:down …]` must
+reach its update as app input for rehost/reshare, not tear the session down)."
+  (receive
+    ([:key k held?] (do (table/put held :held? held?) k))
+    ; a client that does not say
+    ([:key k] k)
+    ([:detach] :close)
+    ; client process died / link net-split
+    ([:down _ ^client _] :close)
+    (after 0 nil)))
 ;; ---- daemon side -------------------------------------------------------------
 
 (defn- serve-session (client cols rows opts make-model view update)
@@ -413,10 +427,10 @@ which is dropped (a nil ⇒ tick) rather than leaked to the app."
    :leave (fn () (send hub [:shutdown]))
    :size (fn () (shared-hub-size hub))
    :draw (fn (f) (send hub [:frame f]))
+   ;; any client's key, ahead of the session's background messages (ADR-490)
+   :poll-input (fn () (shared-take-key))
    :poll (fn (ms)
            (receive
-             ;; any client's key; whether a key is down is per client, and one shared
-             ;; model has no client to ask, so a shared session keeps its idle timers
              ([:key k _held?] k)
              ([:key k] k)
              ; a :size reply past its 200ms window — drop, tick
@@ -424,6 +438,12 @@ which is dropped (a nil ⇒ tick) rather than leaked to the app."
              ; anything else is async app input — the event bus
              (m m)
              (after ms nil)))})
+
+(defn- shared-take-key ()
+  "The next key any client of a shared session shipped, without waiting; nil when none
+came. Whether a key is down is per client, and one shared model has no client to ask, so
+a shared session keeps its idle timers."
+  (receive ([:key k _held?] k) ([:key k] k) (after 0 nil)))
 
 (defn- serve-shared-manager (session hub)
   "The session manager for a SHARED session: every client attaches to the SAME running

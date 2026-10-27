@@ -886,6 +886,14 @@ code paints to a terminal or a GUI window unchanged.
   `ui-run: view=4.71ms 236 ops`, `draw=`, `update=… <input>` — the Brood side of a
   keystroke; `BROOD_GUI_TRACE=1` is the window's paint, the other half, plus
   `[gui-latency] input->present` per answered input (`gui/latency id` returns them, ADR-440).
+- **Input before background** (ADR-490) = a display's `:poll-input` answers queued USER
+  input without waiting (a window delivers it on the mailbox's priority lane,
+  `proc/send-priority` / `proc/take-priority`); the loop asks it before `:poll`, and a
+  `:coalesce-input? true` app folds background only `*ui-fold-budget-ms*` (8) per turn
+  before rendering. State that matters only at its newest value goes out with
+  `(proc/send-latest pid key msg)`: a queued older message with that key is replaced. An
+  `update`/`view` slower than `*ui-slow-ms*` (50) is reported with the input's tag — to the
+  model's `:on-slow` `(fn (report) …)`, else stderr.
 - **A fragment that need not re-render** = `(ui-memo key deps thunk)` (ADR-336): inside
   a running loop the previous turn's ops are reused while `deps` are `=` — a buffer
   line of its rope and spans, a status bar of its segments — else `(thunk)` runs. Name

@@ -346,26 +346,36 @@
   (defn- di-display (me)
     {:poll (fn (ms) (receive (m m) (after 0 nil)))})
   (defn- di-count (m i c r) (update m :acc (fn (a) (conj a i))))
+  ;; a drain with a budget no test outlasts, starting a turn whose first fold was background
+  (defn- di-drain (model me fuel)
+    (editor/ui/ui-drain-input model
+      di-count
+      (di-display me)
+      80
+      24
+      fuel
+      (+ (os/now-ns) 60000000000)
+      :budget))
   (test "folds the whole queued backlog, then stops at the empty poll (no pending)"
     (let (me (self)
           _ (do (send me [:input :a]) (send me [:input :b]) (send me [:input :c]))
-          result (editor/ui/ui-drain-input {:acc []} di-count (di-display me) 80 24 1024))
+          result (di-drain {:acc []} me 1024))
       (assert= (:acc (first result)) [[:input :a] [:input :b] [:input :c]]) ; all three folded
       (is (nil? (second result))))) ; queue drained clean
   (test "an empty queue folds nothing — the model passes through unchanged"
     (let (me (self))
-      (assert= (editor/ui/ui-drain-input {:acc [:x]} di-count (di-display me) 80 24 1024)
+      (assert= (di-drain {:acc [:x]} me 1024)
         [{:acc [:x]} nil])))
   (test "a :close pulled mid-drain comes back as pending (the loop acts on it, not update)"
     (let (me (self)
           _ (do (send me [:input :a]) (send me :close) (send me [:input :b]))
-          result (editor/ui/ui-drain-input {:acc []} di-count (di-display me) 80 24 1024))
+          result (di-drain {:acc []} me 1024))
       (assert= (:acc (first result)) [[:input :a]]) ; folded :a, then stopped at :close
       (assert= (second result) :close))) ; handed back (":b" stays queued)
   (test "fuel bounds a single batch — the rest drains on the next turn"
     (let (me (self)
           _ (do (send me [:input :a]) (send me [:input :b]) (send me [:input :c]))
-          result (editor/ui/ui-drain-input {:acc []} di-count (di-display me) 80 24 2))
+          result (di-drain {:acc []} me 2))
       (assert= (:acc (first result)) [[:input :a] [:input :b]]) ; only 2 folded (fuel = 2)
       (is (nil? (second result))))))
 
@@ -386,7 +396,7 @@
       (send me [:input :inc])
       (send me [:input :inc])
       (send me [:input :quit])
-      (ui-run {:n 0 :coalesce-input? true}
+      (ui-run {:n 0 :coalesce-input? true :fold-budget-ms 60000}
         (fn (m c r) (do (send me [:saw (get m :n)]) []))
         (fn (m input c r)
           (do
@@ -412,6 +422,189 @@
             else m))
         (ci-display me))
       (assert= (drain-saw []) (list 0 1 2))))) ; per-input frames: 0, 1, 2
+
+;; ---- input before background (ADR-490) ---------------------------------------
+;; The loop runs in a child process whose mailbox is filled before it starts, so the
+;; backlog is real: the display's `:poll` is that mailbox in arrival order and its
+;; `:poll-input` the priority lane, exactly as `gui-display` has them. `update` records
+;; what it folded, in order, and on `:quit` reports that to the test; `view` reports
+;; each render.
+(defn- lane-display ()
+  {:enter (fn () nil)
+   :leave (fn () nil)
+   :size (fn () [80 24])
+   :draw (fn (frame) nil)
+   :poll-input (fn ()
+                 (let (taken (proc/take-priority))
+                   (if (nil? taken) nil (first taken))))
+   :poll (fn (ms) (receive (message message) (after 0 nil)))})
+
+(defn- lane-tag (input)
+  (if (vector? input) (first input) input))
+
+(defn- lane-record (model input)
+  (update model :seen (fn (seen) (conj seen input))))
+
+(defn- lane-update (parent)
+  (fn (model input cols rows)
+    (cond
+      (= input :tick) model
+      (= input :quit)
+        (do (send parent [:seen (:seen (lane-record model input))]) (assoc model :done true))
+      else (lane-record model input))))
+
+(defn- lane-start (parent model step)
+  "The loop's process, parked until `:go` so the test can queue its backlog first."
+  (spawn (receive
+           (:go (ui-run (assoc model :seen [])
+                  (fn (model cols rows) (do (send parent [:rendered]) []))
+                  step
+                  (lane-display))))))
+
+(defn- lane-await-seen ()
+  (receive ([:seen seen] seen) (after 20000 :timed-out)))
+
+(defn- lane-count-renders (n)
+  (receive ([:rendered] (lane-count-renders (inc n))) (after 0 n)))
+
+(defn- lane-position (seen input)
+  (index-of seen input))
+
+(describe "ui-run — input before background (ADR-490)"
+  (test "a key sent AFTER 5000 background messages is folded before them (coalescing)"
+    (let (me (self)
+          loop (lane-start me {:coalesce-input? true} (lane-update me)))
+      (doseq (i (range 5000)) (send loop [:background i]))
+      (proc/send-priority loop "k")
+      (send loop :quit)
+      (send loop :go)
+      (let (seen (lane-await-seen))
+        (assert= (count seen) 5002)
+        (is (< (lane-position seen "k") 10))
+        ; and the background is all there, in its own order
+        (assert= (seq/filter seen vector?) (map (range 5000) (fn (i) [:background i]))))))
+  (test "the same key jumps the backlog in a non-coalescing app too"
+    (let (me (self)
+          loop (lane-start me {} (lane-update me)))
+      (doseq (i (range 500)) (send loop [:background i]))
+      (proc/send-priority loop "k")
+      (send loop :quit)
+      (send loop :go)
+      (let (seen (lane-await-seen))
+        (assert= (lane-position seen "k") 0)
+        (assert= (count seen) 502))))
+  (test "inputs keep their own order among themselves"
+    (let (me (self)
+          loop (lane-start me {:coalesce-input? true} (lane-update me)))
+      (send loop [:background 0])
+      (proc/send-priority loop "a")
+      (send loop [:background 1])
+      (proc/send-priority loop [:mouse :press :left 3 4 []])
+      (send loop [:background 2])
+      (proc/send-priority loop "b")
+      (proc/send-priority loop :up)
+      (send loop :quit)
+      (send loop :go)
+      (assert= (vec (seq/filter (lane-await-seen)
+                      (fn (input) (not (= (lane-tag input) :background)))))
+        ["a" [:mouse :press :left 3 4 []] "b" :up :quit])))
+  (test "background still moves while input never stops"
+    ;; every key folded queues the next one, so input is ALWAYS waiting: background
+    ;; progresses only through each turn's one arrival-order fold, and must still finish
+    (let (me (self)
+          step (fn (model input cols rows)
+                 (cond
+                   (= input :tick) model
+                   (= input "k") (do (proc/send-priority (self) "k") (update model :keys inc))
+                   (= (count (:background model)) 19)
+                     (do
+                       (send me [:seen [(:keys model) (conj (:background model) input)]])
+                       (assoc model :done true))
+                   else (update model :background (fn (seen) (conj seen input)))))
+          loop (lane-start me {:coalesce-input? true :fold-budget-ms 1 :keys 0 :background []} step))
+      (doseq (i (range 20)) (send loop [:background i]))
+      (proc/send-priority loop "k")
+      (send loop :go)
+      (let (report (lane-await-seen))
+        (exit loop :kill)
+        (is (not (= report :timed-out)))
+        (assert= (second report) (vec (map (range 20) (fn (i) [:background i]))))
+        (is (> (first report) 20)))))
+  (test "a flood renders between budget slices, not once at the end"
+    (let (me (self)
+          sliced (lane-start me {:coalesce-input? true :fold-budget-ms 0} (lane-update me)))
+      (doseq (i (range 50)) (send sliced [:background i]))
+      (send sliced :quit)
+      (send sliced :go)
+      (lane-await-seen)
+      ; every background fold spends the whole (zero) budget: a render after each
+      (is (>= (lane-count-renders 0) 50)))
+    (let (me (self)
+          whole (lane-start me {:coalesce-input? true :fold-budget-ms 60000} (lane-update me)))
+      (doseq (i (range 50)) (send whole [:background i]))
+      (send whole :quit)
+      (send whole :go)
+      (lane-await-seen)
+      ; the same flood inside one budget: the first frame, then one at the end
+      (is (<= (lane-count-renders 0) 2)))))
+
+(describe "proc/send-latest — newest-wins (ADR-490)"
+  (test "a queued message is replaced by a newer one with its key; unkeyed ones all arrive"
+    (let (me (self)
+          loop (lane-start me {:coalesce-input? true} (lane-update me)))
+      (doseq (i (range 100))
+        (proc/send-latest loop [:diagnostics "a.rs"] [:diagnostics "a.rs" i])
+        (send loop [:background i]))
+      (proc/send-latest loop [:diagnostics "b.rs"] [:diagnostics "b.rs" 0])
+      (proc/send-latest loop :progress [:progress 7])
+      (send loop :quit)
+      (send loop :go)
+      (let (seen (lane-await-seen))
+        (assert= (vec (seq/filter seen (fn (input) (= (lane-tag input) :diagnostics))))
+          [[:diagnostics "a.rs" 99] [:diagnostics "b.rs" 0]])
+        (assert= (vec (seq/filter seen (fn (input) (= (lane-tag input) :progress))))
+          [[:progress 7]])
+        (assert= (count (seq/filter seen (fn (input) (= (lane-tag input) :background)))) 100)))))
+
+(describe "ui-run — the watchdog (ADR-490)"
+  (test "a slow update is reported once, naming the input's tag"
+    (let (me (self)
+          step (fn (model input cols rows)
+                 (cond
+                   (= input :quit) (assoc model :done true)
+                   (= (lane-tag input) :sleepy) (do (sleep 30) model)
+                   else model))
+          loop (lane-start me
+                 {:slow-ms 10 :on-slow (fn (report) (send me [:slow report]))}
+                 step))
+      (send loop [:quick 1])
+      (send loop [:sleepy "a large payload the report must not print"])
+      (send loop :quit)
+      (send loop :go)
+      (let (report (receive ([:slow report] report) (after 5000 :none)))
+        (assert= (:phase report) "update")
+        (assert= (:tag report) :sleepy)
+        (is (>= (:ms report) 10)))
+      (assert= (receive ([:slow report] report) (after 100 :none)) :none)))
+  (test "a slow view is reported, at most once per quiet period"
+    (let (me (self)
+          loop (spawn (receive
+                        (:go (ui-run {:n 0
+                                      :slow-ms 10
+                                      :on-slow (fn (report) (send me [:slow report]))}
+                               (fn (model cols rows) (do (sleep 20) []))
+                               (fn (model input cols rows)
+                                 (if (= input :quit) (assoc model :done true) (update model :n inc)))
+                               (lane-display))))))
+      (send loop [:a])
+      (send loop [:b])
+      (send loop :quit)
+      (send loop :go)
+      (let (report (receive ([:slow report] report) (after 5000 :none)))
+        (assert= (:phase report) "view")
+        (assert= (:tag report) :view))
+      ; three slow frames, one report
+      (assert= (receive ([:slow report] report) (after 300 :none)) :none))))
 
 ;; ADR-444: a turn whose model comes back `=` to the one on screen renders nothing.
 (describe "ui-run — a turn that changes nothing draws nothing"

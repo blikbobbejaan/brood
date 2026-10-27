@@ -4252,3 +4252,17 @@ Guards: `treesit_module_test` (Elixir `f(a, b)` with and without `all?`, held tr
 the installed HCL block's children). Sabotaged red by ignoring the flag. Run here:
 `treesit_module_test` (78), `doc_examples`, `audit`, `tree_sitter_test`, `nest check --strict`,
 and clippy.
+
+2026-10-27 (ADR-490, input before background): bedit froze while a language server flooded
+its loop with messages, because a key and every background message shared one FIFO mailbox
+and a coalescing drain folded up to 1024 of them per render. The kernel's mailbox has lanes
+now: `proc/send-priority` / `proc/take-priority` (a window and a tab deliver all their input
+on that lane) and `proc/send-latest` (a newer message with the key replaces the queued one).
+A display gains `:poll-input`, the one definition of user input per frontend, which `ui-run`
+asks before `:poll`. A coalescing turn folds background for `*ui-fold-budget-ms*` (8) and
+renders, always takes input first, and makes one arrival-order fold per turn so background
+cannot starve. A watchdog reports an `update` or `view` over `*ui-slow-ms*` (50) by the
+input's tag, to the model's `:on-slow` or stderr. Run here: `ui_test` (77), `serve_test`,
+`display_test`, `observer_test`, `gui_test`, `sse_test`, `doc_examples`, `audit`, `nest check
+--strict` on `ui.blsp` and `serve.blsp`, `cargo test -p brood --lib mailbox::tests`, and
+clippy (gui, treesit-grammars). Nothing was measured.

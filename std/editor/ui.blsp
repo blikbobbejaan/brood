@@ -52,6 +52,9 @@ beat. The observer and the editor are both `ui-run` clients — see
    :size term/size
    :draw term/draw
    :poll term/poll
+   ;; the terminal's keys never share the mailbox with background messages: the
+   ;; keyboard IS the input source, asked without waiting (ADR-490)
+   :poll-input (fn () (term/poll 0))
    :key-held? (fn () (not (nil? (term/held-key))))})
 
 (defn- ui-coalesce-motion (msg)
@@ -75,6 +78,39 @@ replies / the other kind untouched — and return the last. A `:move` never swal
         ([:mouse ^kind button row col mods] (ui-coalesce-motion [:mouse kind button row col mods]))
         (after 0 msg)))
     msg))
+
+;; ---- what counts as input (ADR-490) -----------------------------------------
+;; A loop's mailbox carries two kinds of message: the USER's input — a key, a mouse
+;; event, typed or composed text, a resize, the close button, focus in or out — and
+;; everything else, the background: task replies, a language server's diagnostics, a
+;; test stream, collab deltas. Folded in arrival order, a flood of background puts the
+;; user's next key behind all of it, and the editor stops answering for as long as the
+;; flood lasts. So input is told apart where it is MADE, not by its shape: a window and a
+;; browser tab deliver everything they send on the mailbox's priority lane
+;; (`proc/send-priority`), the terminal's keys come from the terminal itself, and a
+;; served session's from its thin client's `[:key …]` messages. Each display says which
+;; through ONE entry, `:poll-input` — a 0-arg fn answering the next queued input or nil,
+;; at once, never touching anything else. `:poll` stays what it was, the OLDEST message of
+;; any kind: the loop asks `display-poll-input` first and `:poll` after, so it serves input
+;; before background whatever the display, and still has an arrival-order slot to keep
+;; background moving while input never stops (`ui-drain-input`).
+
+(defn- ui-take-input ()
+  "The oldest input a window delivered to this process's mailbox — its priority lane
+(`proc/take-priority`) — with pointer motion coalesced to its latest (`ui-coalesce-motion`);
+nil when no input is queued, however much else is."
+  (let (taken (proc/take-priority))
+    (if (nil? taken) nil (ui-coalesce-motion (first taken)))))
+
+(defn display-poll-input (display)
+  "The next user input queued for `display`, or nil — at once, and ahead of any
+background message queued before it (ADR-490): its `:poll-input`. A display without one
+answers nil, so the loop folds what its `:poll` returns in arrival order, as before.
+
+    (editor/ui/display-poll-input {:poll-input (fn () \"x\")})   → \"x\"
+    (editor/ui/display-poll-input {})   → nil"
+  (let (poll-input (get display :poll-input))
+    (if poll-input (poll-input) nil)))
 
 (defn- display-configure-window (id o)
   "Apply the runtime-switchable window options in `o` to window `id`: `:input`
@@ -168,7 +204,10 @@ their input. Both are deferred trade-offs (ADR-059), fine for the observer.
      ;; Input arrives as mailbox messages (gui/open delivers to this process), so
      ;; `:poll` is a `receive` that parks the process — it holds no scheduler worker
      ;; while waiting (ADR-059), unlike a blocking poll. Returns the next key/mouse
-     ;; message, or nil after `ms` (the live-refresh tick).
+     ;; message, or nil after `ms` (the live-refresh tick) — the OLDEST message, of any
+     ;; kind. The window delivers on the priority lane, so `:poll-input` takes its input
+     ;; ahead of a background backlog (ADR-490).
+     :poll-input ui-take-input
      :poll (fn (ms) (ui-coalesce-motion (receive (m m) (after ms nil))))
      ;; Raise this window to the front + focus it (un-minimising) — `ui-run` calls
      ;; this when a `:focus` control message lands in the mailbox, so another process
@@ -204,6 +243,13 @@ screen (a larger frontend just shows it in its top-left)."
     (let (k ((get (first displays) :poll) slice))
       (if (nil? k) (display-poll-loop (rest displays) slice) k))))
 
+(defn- display-poll-input-any (displays)
+  "The first input any frontend has queued (`display-poll-input`), or nil."
+  (if (empty? displays)
+    nil
+    (let (input (display-poll-input (first displays)))
+      (if (nil? input) (display-poll-input-any (rest displays)) input))))
+
 (defn- display-poll-any (displays ms)
   "Poll each frontend for a slice of `ms` in turn, returning the first key seen
 (or nil) — so a keystroke from *any* attached frontend reaches the loop."
@@ -223,6 +269,7 @@ fits everywhere. Pure Brood over the `term-*`/`gui-*` mechanism.
    :draw (fn (f) (doseq (d displays) ((get d :draw) f)))
    :settle (fn () (doseq (d displays) (when (get d :settle) ((get d :settle)))))
    :key-held? (fn () (any? displays display-key-held?))
+   :poll-input (fn () (display-poll-input-any displays))
    :poll (fn (ms) (display-poll-any displays ms))})
 
 (defn with-events (display)
@@ -231,8 +278,9 @@ fits everywhere. Pure Brood over the `term-*`/`gui-*` mechanism.
 process), else polls `display` as usual. So `ui-run` sees server-pushed events as loop *input* on BOTH the
 terminal (where the raw `:poll` reads only the keyboard) and the GUI — `update` folds
 an `[:sse ev]` in like any other input. The other display ops pass through unchanged.
-A flood of events can starve the keyboard poll; fine for occasional pushes (a daemon's
-event feed). Needs the `sse` module on the producing side (loaded by referencing `sse/…`).
+The display's `:poll-input` passes through too, so `ui-run` still takes a queued key
+ahead of a flood of pushes (ADR-490). Needs the `sse` module on the producing side
+(loaded by referencing `sse/…`).
 
     (editor/ui/with-events *term-display*)   ;=> the display, its :poll also yielding [:sse ev] messages"
   (assoc display
@@ -280,6 +328,27 @@ synthesized back-compat timer below and any app that hasn't moved to named timer
 ;; app has a backlog (see below) — a ceiling so a self-feeding source (an `update`
 ;; that re-enqueues to itself) can't starve the render forever; hitting it just renders
 ;; and the next iteration drains the rest.
+
+(def *ui-fold-budget-ms* 8)
+;; How long one turn of a `:coalesce-input?` app may spend folding BACKGROUND messages
+;; before it renders and looks for input again (ADR-490); a model's `:fold-budget-ms`
+;; overrides it. Half a 60 Hz frame: a flood of any size then shows its progress at
+;; least every frame or two, and a key typed into it waits about this long plus one
+;; fold, where it used to wait for the whole backlog. Much smaller and a turn renders
+;; after only a few folds, so a burst costs many frames — the cost coalescing exists to
+;; avoid; much larger and typing during a flood is visibly late.
+
+(def *ui-slow-ms* 50)
+;; The watchdog's line (ADR-490): an `update` fold or a `view` slower than this is
+;; reported, naming what it was folding (`ui-input-tag`). Three frames — past it a
+;; stall is something a user sees, and below it the report would be noise from GC
+;; pauses and a busy machine. A model's `:slow-ms` overrides it.
+
+(def *ui-slow-view-quiet-ms* 5000)
+;; At most one slow-VIEW report per this many ms. A view has no input to name and is
+;; slow for as long as what it draws is big, so a report per frame would be a flood of
+;; its own — and an app that logs the report into its model makes the next frame, which
+;; is slow again: rate-limiting is what keeps that from feeding itself.
 
 (defn- ui-now (model)
   "The current wall-clock in ms — `(os/now)`, unless the model carries a `:now-fn` (a
@@ -567,29 +636,149 @@ throwing `update` is logged (`ui-log-error`) and drops that one input, returning
     ;; every input to throw it away cost O(its size) per event — a paste, a git status
     ;; reply, a diagnostics batch — with tracing off.
     (when (not (nil? cost)) (ui-trace "update" ms (ui-abbrev (pr-str input)) cost))
+    (when (> ms (ui-slow-ms model)) (ui-report-slow model "update" (ui-input-tag input) ms))
     next))
 
-(defn- ui-drain-input (model update display cols rows fuel)
-  "Fold every input ALREADY queued into `model` WITHOUT rendering between them, returning
+;; ---- the watchdog (ADR-490) ---------------------------------------------------
+;; A stall is reported as it happens, naming its cause, so the next one does not have to
+;; be reproduced under a profiler to be found: which input's fold, or the view, took how
+;; long. Always on, and cheap — the fold is timed anyway, and the report names the input by
+;; its TAG, never by printing it (a diagnostics batch or a paste would cost what it reports).
+
+(defn- ui-slow-ms (model)
+  "The watchdog's line for `model`: its `:slow-ms`, else `*ui-slow-ms*`."
+  (or (get model :slow-ms) *ui-slow-ms*))
+
+(defn ui-input-tag (input)
+  "What a slow-fold report calls `input`, small whatever `input` is: a key or keyword as
+itself, a vector by its leading keyword — and its second, when that is one too (`[:timer
+:idle]`, `[:mouse :press]`) — a record by its id, anything else by its type. A long string
+(a paste) is `:string`.
+
+    (editor/ui/ui-input-tag [:timer :idle])   → [:timer :idle]
+    (editor/ui/ui-input-tag [:lsp-diagnostics \"a.rs\" [1 2 3]])   → :lsp-diagnostics
+    (editor/ui/ui-input-tag \"x\")   → \"x\""
+  (cond
+    (keyword? input) input
+    (string? input) (if (> (string/length input) 16) :string input)
+    (record? input) (record-id input)
+    (and (vector? input) (not (empty? input)) (keyword? (first input)))
+      (if (and (> (count input) 1) (keyword? (second input)))
+        [(first input) (second input)]
+        (first input))
+    else (type-of input)))
+
+(defn- ui-report-slow (model phase tag ms)
+  "Report one slow `phase` (\"update\" / \"view\") of `ms` on `tag`: to the model's
+`:on-slow` hook — `(fn (report) …)`, `report` a `{:phase :tag :ms}` map, its result
+ignored — or, without one, a line on stderr. A hook is how an app puts the report where
+its user looks (an editor's *Messages*); one that throws is logged and dropped, since the
+watchdog must not become a crash of its own. nil."
+  (let (hook (get model :on-slow)
+        report {:phase phase :tag tag :ms ms})
+    (if (nil? hook)
+      (io/puts (string/format "ui-run: slow %s %.1fms on %s" phase ms (pr-str tag)) :to *err*)
+      (try (hook report) (catch e (ui-log-error "on-slow" e))))
+    nil))
+
+(defn- ui-watch-view (model clock ms)
+  "The watchdog on a `view` of `ms`: report it when it is slow and no view report was
+made in the last `*ui-slow-view-quiet-ms*` (wall clock, `os/now`), stamping the report
+time on `clock` (`:slow-view-at`). The clock, unchanged when nothing was reported."
+  (let (now (os/now)
+        last (get clock :slow-view-at))
+    (if (and (> ms (ui-slow-ms model)) (or (nil? last) (>= (- now last) *ui-slow-view-quiet-ms*)))
+      (do (ui-report-slow model "view" :view ms) (assoc clock :slow-view-at now))
+      clock)))
+
+(defn- ui-fold-budget-ns (model)
+  "The background fold budget of one turn (`*ui-fold-budget-ms*`, or the model's
+`:fold-budget-ms`), in ns — the unit `os/now-ns` deadlines are in."
+  (* 1000000 (or (get model :fold-budget-ms) *ui-fold-budget-ms*)))
+
+(defn- ui-pending? (model raw)
+  "Whether `raw` is a control message the LOOP acts on (`:close` it owns, `:focus`), which
+a drain hands back instead of folding."
+  (or (ui-close-quits? model raw) (focus-request? raw)))
+
+;; A turn's drain moves through four states (ADR-490), a keyword threaded by
+;; `ui-drain-input`:
+;;   :open    nothing folded yet in arrival order, no input taken
+;;   :owed    an input was folded, and the turn still owes its ONE arrival-order fold
+;;   :budget  the arrival-order fold is paid; background folds on until the deadline
+;;   :closed  an input was folded AND the arrival-order fold is paid: inputs only now
+;; The arrival-order fold is `:poll 0` — the oldest message of any kind — and every turn
+;; makes one when anything is queued. That is the fairness: input is always served
+;; first, but a background message cannot wait more than a turn per queued message ahead
+;; of it, however fast input arrives.
+
+(defn- ui-after-input (state)
+  "The drain state once a user input is folded: a turn that has not made its
+arrival-order fold yet owes it (`:owed`); one that has takes only input now (`:closed`)."
+  (if (or (= state :open) (= state :owed)) :owed :closed))
+
+(defn- ui-drain-step (model update display cols rows fuel deadline state raw)
+  "Fold `raw`, which the drain pulled in `state`, and drain on — or hand back a control
+message `raw` is (`ui-pending?`) as `pending`."
+  (if (ui-pending? model raw)
+    [model raw]
+    (ui-drain-input (ui-fold update model raw cols rows)
+      update
+      display
+      cols
+      rows
+      (dec fuel)
+      deadline
+      state)))
+
+(defn- ui-drain-input (model update display cols rows fuel deadline state)
+  "Fold what is ALREADY queued into `model` WITHOUT rendering between them, returning
 `[model' pending]`. The render, not the fold, is the per-input cost, so a burst of async
 events (a streaming test / run / collab feed, a paste) that would otherwise force one full
-frame *each* collapses to a single render at the settled model. Non-blocking — a `(:poll 0)`
-that returns nil means the queue is empty, so we stop and let the caller render. `pending`
-is a control message (`:close` / `:focus`) pulled mid-drain that the caller must act on
-structurally rather than fold; nil when the queue drained clean. `fuel` bounds one batch
-(`*ui-input-batch*`) and `:done` stops it early. Opt-in per app via the model's
-`:coalesce-input?` flag — off by default, so a non-coalescing app renders once per input
-exactly as before."
+frame *each* collapses to a single render. Non-blocking — a `(:poll 0)` that returns nil
+means the queue is empty, so we stop and let the caller render. `pending` is a control
+message (`:close` / `:focus`) pulled mid-drain that the caller must act on structurally
+rather than fold; nil otherwise. Opt-in per app via the model's `:coalesce-input?` flag —
+off by default, so a non-coalescing app renders once per input exactly as before.
+
+**Input first, background on a budget (ADR-490).** Queued USER input
+(`display-poll-input`) is taken before anything else, and background (`:poll 0`) only
+until the turn's `deadline` — an `os/now-ns` time, the fold budget — so a flood of any
+size renders every budget and looks for input between every fold. Once an input is
+folded the turn folds no more background, so its frame is drawn behind no more than the
+fold already running — except the ONE arrival-order fold every turn makes (`state`, see
+above), which keeps background moving while input never stops. Past the deadline even
+input waits for the render, and is the first thing the next turn takes. `fuel`
+(`*ui-input-batch*`) is the ceiling on any one turn, and `:done` stops it early."
   (if (or (<= fuel 0) (get model :done))
     [model nil]
-    (let (raw ((get display :poll) 0))
-      (cond
-        (nil? raw) [model nil] ; queue empty — render the settled model
-        (ui-close-quits? model raw) [model raw] ; a close/focus control message: hand it back
-        (focus-request? raw) [model raw] ; (the loop, not update, owns these)
-        else
-          (let (next (ui-fold update model raw cols rows))
-            (ui-drain-input next update display cols rows (dec fuel)))))))
+    (let (in-time (< (os/now-ns) deadline))
+      (if (= state :owed)
+        ;; the turn's arrival-order fold, owed since an input jumped the queue
+        (let (raw ((get display :poll) 0))
+          (if (nil? raw)
+            [model nil]
+            (ui-drain-step model update display cols rows fuel deadline :closed raw)))
+        (let (input (if (or in-time (= state :open)) (display-poll-input display) nil))
+          (cond
+            (not (nil? input))
+              (ui-drain-step model
+                update
+                display
+                cols
+                rows
+                fuel
+                deadline
+                (ui-after-input state)
+                input)
+            ;; background: the first arrival-order fold, then the budget
+            (or (= state :open) (and (= state :budget) in-time))
+              (let (raw ((get display :poll) 0))
+                (if (nil? raw)
+                  ; queue empty — render the settled model
+                  [model nil]
+                  (ui-drain-step model update display cols rows fuel deadline :budget raw)))
+            else [model nil]))))))
 
 (defn- ui-loop (model last-good clock view update display)
   "The inner recursion of `ui-run` (own function so each turn is a proper tail call —
@@ -630,7 +819,7 @@ re-raises, surfacing a genuine startup bug instead of spinning."
           ;; means `view` threw (already logged) and we must fall back to `last-good`,
           ;; `[:unchanged …]` means there is nothing new to draw.
           rendered (if unchanged
-                     [:unchanged nil nil]
+                     [:unchanged nil nil 0.0]
                      (try
                        ;; the previous turn's memoised fragments are in scope for `ui-memo`
                        ;; (ADR-336) — nil outside a loop, `{}` on the first turn
@@ -644,7 +833,7 @@ re-raises, surfacing a genuine startup bug instead of spinning."
                              ms
                              (str (count flat) " ops, " (count table) " memo")
                              cost)
-                           [:frame flat table]))
+                           [:frame flat table ms]))
                        (catch e
                          (if (nil? last-good)
                            ; first render failed — a real startup bug, not a wedge
@@ -657,9 +846,11 @@ re-raises, surfacing a genuine startup bug instead of spinning."
         (let (
               ;; this turn's fragments become next turn's memo table — loop bookkeeping
               ;; on `clock`, like the timers: never rolled back with the model
-              clock (if unchanged
-                      clock
-                      (assoc clock :memo (nth rendered 2) :shown [model cols rows])))
+              clock0 (if unchanged
+                       clock
+                       (assoc clock :memo (nth rendered 2) :shown [model cols rows]))
+              ;; the watchdog on the view: rate-limited, its last report on the clock
+              clock (if unchanged clock0 (ui-watch-view model clock0 (nth rendered 3))))
           (do
             (if unchanged
               ;; nothing to draw, but a display that paces on its frames (the GUI's
@@ -682,7 +873,10 @@ re-raises, surfacing a genuine startup bug instead of spinning."
                            (assoc (ui-clock-init clock timers now1)
                              :key-held? (display-key-held? display)))
                   poll-ms (if (nil? timers) (ui-tick-ms model) (ui-poll-ms timers clock1 now1))
-                  raw ((get display :poll) poll-ms))
+                  ;; queued user input first, ahead of any background backlog (ADR-490);
+                  ;; then park for whatever comes
+                  input (display-poll-input display)
+                  raw (if (nil? input) ((get display :poll) poll-ms) input))
               (cond
                 ;; the window's close button always quits; `ui-run` then runs `:leave`
                 (ui-close-quits? model raw) nil
@@ -713,14 +907,24 @@ re-raises, surfacing a genuine startup bug instead of spinning."
                   (let (clock2 (if (nil? timers)
                                  clock1
                                  (assoc clock1 :last-input (ui-now model)))
+                        ;; the turn's background budget runs from its first fold
+                        deadline (+ (os/now-ns) (ui-fold-budget-ns model))
                         next0 (ui-fold update model raw cols rows)
-                        ;; a `:coalesce-input?` app also drains any inputs ALREADY queued
-                        ;; into this same fold, so a burst renders once instead of once
-                        ;; per event (`ui-drain-input`); a control message pulled mid-drain
-                        ;; comes back as `pending` for the loop to act on. Default apps skip
-                        ;; the drain and render per input exactly as before.
+                        ;; a `:coalesce-input?` app also drains what is ALREADY queued into
+                        ;; this same turn, so a burst renders once instead of once per event
+                        ;; (`ui-drain-input`): input first, background on the budget. A
+                        ;; control message pulled mid-drain comes back as `pending` for the
+                        ;; loop to act on. Default apps skip the drain and render per input
+                        ;; exactly as before.
                         drained (if (get model :coalesce-input?)
-                                  (ui-drain-input next0 update display cols rows *ui-input-batch*)
+                                  (ui-drain-input next0
+                                    update
+                                    display
+                                    cols
+                                    rows
+                                    *ui-input-batch*
+                                    deadline
+                                    (if (nil? input) :budget :owed))
                                   [next0 nil])
                         next1 (first drained)
                         pending (second drained)
@@ -779,6 +983,22 @@ instead of over seconds of frames. Intermediate frames within a burst are never 
 anyway; a throwing `update` still drops just its one input, and a `:close`/`:focus` pulled
 mid-burst is still honoured. Off leaves the per-input behaviour (and every existing app)
 exactly as before.
+
+**Input before background (ADR-490).** Every turn takes the user's queued input first —
+the display's `:poll-input` (`display-poll-input`): what a window delivers on the
+mailbox's priority lane, the terminal's keyboard, a thin client's keys — so a key is never
+queued behind a language server's diagnostics or a test stream. A coalescing app folds
+background only for `*ui-fold-budget-ms*` per turn (the model's `:fold-budget-ms`), then
+renders and looks again: a flood of any size delays a keystroke by about one budget plus
+one fold. Every turn still makes one arrival-order fold, so background keeps moving while
+input never stops, and a due timer fires on every turn. A producer whose message only
+matters at its newest value sends it with `proc/send-latest`, so a newer one replaces it
+while it waits.
+
+**The watchdog (ADR-490).** An `update` fold or a `view` slower than `*ui-slow-ms*` (the
+model's `:slow-ms`) is reported, naming the input it folded by its tag (`ui-input-tag`) —
+to the model's `:on-slow` hook, `(fn (report) …)` with `report` a `{:phase :tag :ms}` map,
+or as a line on stderr. A slow view is reported at most every `*ui-slow-view-quiet-ms*`.
 
 **A turn that changes nothing renders nothing (ADR-444).** When the model after a turn
 is `=` to the one last drawn, at the same grid, the loop skips `view` and `:draw` and goes

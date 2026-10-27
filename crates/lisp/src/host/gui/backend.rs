@@ -32,7 +32,11 @@ use super::{
 use crate::core::sync::lock;
 use crate::core::value;
 
-use crate::process::{Message, deliver, deliver_credited};
+// Everything a window delivers is the user's input, so all of it rides the mailbox's
+// PRIORITY lane (ADR-490): a UI loop takes it ahead of any background backlog.
+use crate::process::{
+    Message, deliver_priority as deliver, deliver_priority_credited as deliver_credited,
+};
 
 use std::cell::RefCell;
 
