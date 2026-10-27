@@ -26,8 +26,10 @@
 //! shader, and translucent geometry blends in linear light through an sRGB view of the frame.
 //!
 //! A frame is re-walked, but not re-shaped: a text run's quads are kept and replayed
-//! while it repeats (`RunCache`), and the instance buffers are written only where they
-//! changed (`changed_span`) — the GPU's answer to the CPU painter's row diff.
+//! while it repeats (`RunCache`), an unchanged memoised fragment's instances are pushed
+//! whole without walking its ops (`FragmentCache`, ADR-482), and the instance buffers are
+//! written only where they changed (`changed_span`) — the GPU's answer to the CPU
+//! painter's row diff.
 //!
 //! This module is MECHANISM only. It knows a quad, a texture, a UV rect, a tint and an
 //! angle; what a sprite sheet is, how a line is a thin quad at an angle, which frame an
@@ -47,8 +49,8 @@ use winit::window::Window;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::host::gui::backend::{
-    CURSOR_FG, Renderer, cursor_rim, luma, paint_stall_ms, snap_hairline, text_px_width,
-    text_units, unit_cells,
+    CURSOR_FG, Renderer, cursor_rim, holds_blinking_caret, luma, paint_stall_ms, snap_hairline,
+    text_px_width, text_units, unit_cells,
 };
 use crate::host::gui::effects::{EmitterStep, FrameEffects};
 use crate::host::gui::{Align, CursorStyle, Face, MAX_PARTICLES, Op};
@@ -609,7 +611,7 @@ const ATLAS_SIZE: u32 = 2048;
 
 /// Which texture a run of textured quads samples: a glyph-atlas page, or a texture the
 /// app uploaded for its sprites.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum TexKey {
     Atlas(usize),
     User(u32),
@@ -769,6 +771,7 @@ fn changed_span(old: &[u32], new: &[u32]) -> Option<std::ops::Range<usize>> {
 
 /// A run of consecutive quads drawn with one pipeline state: `count` instances starting
 /// at `first` in that pipeline's instance buffer.
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Batch {
     /// `linear`: some quad in the run is translucent, so the run is drawn through the
     /// sRGB view and blends in linear light (`segments`). A run of opaque fills — their
@@ -905,6 +908,59 @@ impl FrameBuilder {
     /// Whether a quad may join the last batch: not when that batch ends the scene.
     fn can_merge(&self) -> bool {
         self.overlay_at.is_none_or(|at| at < self.batches.len())
+    }
+
+    /// Solid instances recorded earlier (`FragmentCache::record`), already culled and
+    /// clipped: they join the open solid batch as the first of them would have
+    /// (`solid`), and the rest follow it — `linear` when any of them is translucent.
+    fn push_solids(&mut self, instances: &[f32], linear: bool) {
+        let count = (instances.len() / SOLID_FLOATS) as u32;
+        if count == 0 {
+            return;
+        }
+        let first = (self.solids.len() / SOLID_FLOATS) as u32;
+        self.solids.extend_from_slice(instances);
+        let merge = self.can_merge();
+        match self.batches.last_mut() {
+            Some(Batch::Solid {
+                count: open,
+                linear: open_linear,
+                ..
+            }) if merge => {
+                *open += count;
+                *open_linear |= linear;
+            }
+            _ => self.batches.push(Batch::Solid {
+                first,
+                count,
+                linear,
+            }),
+        }
+    }
+
+    /// Textured instances recorded earlier, sampling `key`: `push_solids`' twin.
+    fn push_texs(&mut self, key: TexKey, lcd: bool, instances: &[u32]) {
+        let count = (instances.len() / TEX_WORDS) as u32;
+        if count == 0 {
+            return;
+        }
+        let first = (self.texs.len() / TEX_WORDS) as u32;
+        self.texs.extend_from_slice(instances);
+        let merge = self.can_merge();
+        match self.batches.last_mut() {
+            Some(Batch::Tex {
+                key: open_key,
+                count: open,
+                lcd: open_lcd,
+                ..
+            }) if *open_key == key && *open_lcd == lcd && merge => *open += count,
+            _ => self.batches.push(Batch::Tex {
+                key,
+                first,
+                count,
+                lcd,
+            }),
+        }
     }
 
     /// A plain opaque solid — the common cell-aligned fill.
@@ -1085,6 +1141,16 @@ impl RunCache {
         self.current.get(&hash).map(|run| run.quads.as_slice())
     }
 
+    /// Keep a run the last frame drew for the next one without replaying it — a run inside a
+    /// fragment whose instances were pushed whole (`FragmentCache`).
+    fn keep(&mut self, hash: u64) {
+        if !self.current.contains_key(&hash)
+            && let Some(run) = self.previous.remove(&hash)
+        {
+            self.current.insert(hash, run);
+        }
+    }
+
     /// Remember a run this frame shaped.
     fn put(&mut self, hash: u64, run: TextRun) {
         self.misses += 1;
@@ -1190,6 +1256,289 @@ fn replay(fb: &mut FrameBuilder, quads: &[RunQuad], anchor_x: f32, anchor_y: f32
                 mode,
                 0.0,
             ),
+        }
+    }
+}
+
+// ---- the fragment cache: an unchanged fragment's quads replayed (ADR-482) ----------
+//
+// The run cache spares re-SHAPING an unchanged line, but every frame still walks every
+// op: each text op hashes its string and face, looks its run up and replays its quads one
+// by one through the builder. A memoised view fragment (ADR-470) arrives as the very
+// allocation it arrived as last frame when nothing it depends on changed, so the window
+// can know, by one pointer, that a whole pane body is what it drew last frame — and push
+// the instance data it produced then, as a block, without looking inside.
+//
+// What a fragment's quads depend on besides its ops is the CONTEXT it is expanded in: the
+// grid (origin, cell size, scroll shift), the clip band and the viewport (which quads were
+// culled), the renderer's metrics, font, ground and subpixel order (what its runs shaped
+// to), the scale factor (hairline snapping), which app textures exist (a sprite of a
+// missing one draws nothing) and — for a fragment holding a blinking caret — the blink
+// phase. All of it is the key (`FragmentContext`); any change misses and the fragment is
+// expanded as before, so a theme, font, size or scroll change can never replay stale
+// quads. Like the run cache it keeps exactly the fragments the last frame drew: an entry
+// the next frame does not use is dropped when that frame ends.
+
+/// Everything a fragment's quads depend on besides its ops — compared whole on a lookup.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct FragmentContext {
+    /// the grid it is expanded on (`Grid`: origin, cell size, scroll shift), as bits
+    grid: [u32; 5],
+    /// the clip band in effect and the viewport, which decide what was culled
+    clip: [u32; 4],
+    viewport: [u32; 2],
+    /// the renderer's metrics (cell width, cell height, font px bits) and line height
+    /// bits — a cell region inside derives its own metrics from these
+    metrics: [u32; 4],
+    /// the resolved default family, and the window background (the ground a run's
+    /// contrast lift is judged against)
+    family: u32,
+    ground: [u8; 3],
+    /// the font registration, ligatures and subpixel order (`RunContext::fonts`)
+    fonts: (u64, bool, u8),
+    /// the scale factor's bits: a hairline snaps to whole device pixels by it
+    scale: u64,
+    /// how many times the app's textures were uploaded or freed
+    textures: u64,
+    /// the blink phase — compared only for a fragment that holds a blinking caret
+    caret_hidden: bool,
+}
+
+/// A run of one fragment's instances drawn with one pipeline state, as `Batch` holds it
+/// minus where the run starts (that is wherever the fragment lands next frame).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Segment {
+    Solid { count: u32, linear: bool },
+    Tex { key: TexKey, count: u32, lcd: bool },
+    Particles { id: u32 },
+}
+
+/// One fragment's expansion: its instances in op order and the segments they batch into,
+/// the text runs and nested fragments it used (carried forward with it on a hit, so a
+/// later frame that changes the fragment still finds its unchanged lines shaped), and
+/// the ops themselves — held so the allocation, whose address is the key, cannot be freed
+/// and reused by another fragment while the entry lives.
+struct FragmentQuads {
+    ops: std::sync::Arc<[Op]>,
+    context: FragmentContext,
+    blinks: bool,
+    solids: Vec<f32>,
+    texs: Vec<u32>,
+    segments: Vec<Segment>,
+    runs: Vec<u64>,
+    nested: Vec<(usize, FragmentContext)>,
+}
+
+impl FragmentQuads {
+    /// Whether this entry is the expansion of `ops` in `context`.
+    fn matches(&self, ops: &std::sync::Arc<[Op]>, context: &FragmentContext) -> bool {
+        std::sync::Arc::ptr_eq(&self.ops, ops)
+            && FragmentContext {
+                caret_hidden: if self.blinks {
+                    context.caret_hidden
+                } else {
+                    self.context.caret_hidden
+                },
+                ..*context
+            } == self.context
+    }
+}
+
+/// Where a fragment's expansion starts in the frame being built: what `record` cuts the
+/// fragment's instances, segments, runs and nested fragments out of when it ends.
+struct FragmentMark {
+    solids: usize,
+    texs: usize,
+    batches: usize,
+    /// the instance count of the batch the fragment's first quads may merge into
+    open_count: u32,
+    overlay_at: Option<usize>,
+    runs: usize,
+    nested: usize,
+}
+
+/// The fragments of the last frame and of the one being built, by the address of their
+/// ops (a fragment drawn at two places has an entry per context), plus this frame's log
+/// of the runs and fragments used — what an enclosing fragment's entry records.
+#[derive(Default)]
+struct FragmentCache {
+    current: HashMap<usize, Vec<FragmentQuads>>,
+    previous: HashMap<usize, Vec<FragmentQuads>>,
+    runs_used: Vec<u64>,
+    fragments_used: Vec<(usize, FragmentContext)>,
+    /// this frame's fragments replayed / expanded, for the trace
+    hits: u32,
+    misses: u32,
+}
+
+fn fragment_address(ops: &std::sync::Arc<[Op]>) -> usize {
+    ops.as_ptr() as *const () as usize
+}
+
+impl FragmentCache {
+    /// The entry for `ops` in `context`, out of this frame's (a fragment drawn twice) or the
+    /// last frame's; the caller replays it and hands it back (`restore`).
+    fn take(
+        &mut self,
+        ops: &std::sync::Arc<[Op]>,
+        context: &FragmentContext,
+    ) -> Option<FragmentQuads> {
+        let address = fragment_address(ops);
+        for generation in [&mut self.current, &mut self.previous] {
+            if let Some(entries) = generation.get_mut(&address)
+                && let Some(at) = entries.iter().position(|e| e.matches(ops, context))
+            {
+                return Some(entries.swap_remove(at));
+            }
+        }
+        None
+    }
+
+    /// Keep `entry` for the next frame.
+    fn restore(&mut self, entry: FragmentQuads) {
+        let address = fragment_address(&entry.ops);
+        self.current.entry(address).or_default().push(entry);
+    }
+
+    /// Carry entry `(address, context)` from the last frame into this one without
+    /// replaying it — a fragment nested in one that was replayed whole.
+    fn carry(&mut self, address: usize, context: &FragmentContext) {
+        let in_current = self
+            .current
+            .get(&address)
+            .is_some_and(|entries| entries.iter().any(|e| e.context == *context));
+        if in_current {
+            return;
+        }
+        if let Some(entries) = self.previous.get_mut(&address)
+            && let Some(at) = entries.iter().position(|e| e.context == *context)
+        {
+            let entry = entries.remove(at);
+            self.current.entry(address).or_default().push(entry);
+        }
+    }
+
+    /// Start recording a fragment's expansion into `fb`.
+    fn mark(&self, fb: &FrameBuilder) -> FragmentMark {
+        let open_count = match fb.batches.last() {
+            Some(Batch::Solid { count, .. }) | Some(Batch::Tex { count, .. }) => *count,
+            _ => 0,
+        };
+        FragmentMark {
+            solids: fb.solids.len(),
+            texs: fb.texs.len(),
+            batches: fb.batches.len(),
+            open_count,
+            overlay_at: fb.overlay_at,
+            runs: self.runs_used.len(),
+            nested: self.fragments_used.len(),
+        }
+    }
+
+    /// Finish recording: cut what the fragment pushed since `mark` out of `fb` and the
+    /// logs into this frame's entry for `ops` in `context`. A fragment that set the frame's
+    /// overlay point is not kept (its replay could not set it again); the expanders splice
+    /// such a fragment anyway (`fragments::frame_global`).
+    fn record(
+        &mut self,
+        fb: &FrameBuilder,
+        mark: FragmentMark,
+        ops: &std::sync::Arc<[Op]>,
+        context: FragmentContext,
+        blinks: bool,
+    ) {
+        if fb.overlay_at != mark.overlay_at {
+            return;
+        }
+        let solids = fb.solids[mark.solids..].to_vec();
+        let texs = fb.texs[mark.texs..].to_vec();
+        // A solid run is linear when any of its quads is translucent — read off the
+        // instances, since the batch it merged into may have been linear already.
+        let translucent = |from: usize, count: u32| {
+            solids[from * SOLID_FLOATS..(from + count as usize) * SOLID_FLOATS]
+                .chunks(SOLID_FLOATS)
+                .any(|quad| quad[7] < 1.0)
+        };
+        let mut segments = Vec::new();
+        let mut solid_at = 0usize;
+        let mut push = |batch: Batch, count: u32| match batch {
+            Batch::Solid { .. } => {
+                segments.push(Segment::Solid {
+                    count,
+                    linear: translucent(solid_at, count),
+                });
+                solid_at += count as usize;
+            }
+            Batch::Tex { key, lcd, .. } => segments.push(Segment::Tex { key, count, lcd }),
+            Batch::Particles { id } => segments.push(Segment::Particles { id }),
+        };
+        // the fragment's first quads may have joined the batch that was open
+        if mark.batches > 0 {
+            let open = &fb.batches[mark.batches - 1];
+            let grown = match open {
+                Batch::Solid { count, .. } | Batch::Tex { count, .. } => count - mark.open_count,
+                Batch::Particles { .. } => 0,
+            };
+            if grown > 0 {
+                push(*open, grown);
+            }
+        }
+        for batch in &fb.batches[mark.batches..] {
+            let count = match batch {
+                Batch::Solid { count, .. } | Batch::Tex { count, .. } => *count,
+                Batch::Particles { .. } => 0,
+            };
+            push(*batch, count);
+        }
+        let entry = FragmentQuads {
+            ops: ops.clone(),
+            context,
+            blinks,
+            solids,
+            texs,
+            segments,
+            runs: self.runs_used[mark.runs..].to_vec(),
+            nested: self.fragments_used[mark.nested..].to_vec(),
+        };
+        let address = fragment_address(ops);
+        self.fragments_used.push((address, context));
+        let entries = self.current.entry(address).or_default();
+        entries.retain(|e| e.context != context);
+        entries.push(entry);
+    }
+
+    /// The frame is drawn: what it used is the next frame's to reuse, and nothing else.
+    fn end_frame(&mut self) {
+        std::mem::swap(&mut self.previous, &mut self.current);
+        self.current.clear();
+        self.runs_used.clear();
+        self.fragments_used.clear();
+        self.hits = 0;
+        self.misses = 0;
+    }
+}
+
+/// Push a recorded fragment's instances onto the frame: each segment joins the open
+/// batch when one quad of it would have (`FrameBuilder::push_solids` / `push_texs`), so
+/// the batches are what expanding the fragment's ops here would have built.
+fn replay_fragment(fb: &mut FrameBuilder, entry: &FragmentQuads) {
+    let (mut solid_at, mut tex_at) = (0usize, 0usize);
+    for segment in &entry.segments {
+        match *segment {
+            Segment::Solid { count, linear } => {
+                let end = solid_at + count as usize;
+                fb.push_solids(
+                    &entry.solids[solid_at * SOLID_FLOATS..end * SOLID_FLOATS],
+                    linear,
+                );
+                solid_at = end;
+            }
+            Segment::Tex { key, count, lcd } => {
+                let end = tex_at + count as usize;
+                fb.push_texs(key, lcd, &entry.texs[tex_at * TEX_WORDS..end * TEX_WORDS]);
+                tex_at = end;
+            }
+            Segment::Particles { id } => fb.batches.push(Batch::Particles { id }),
         }
     }
 }
@@ -1810,6 +2159,12 @@ pub struct GpuWindow {
     /// Every text run the last frame drew, as quads — what a frame that repeats a run
     /// reuses instead of re-shaping it (`RunCache`, ADR-440).
     runs: RunCache,
+    /// Every memoised fragment the last frame drew, as instances — what a frame that
+    /// repeats one pushes whole instead of expanding it (`FragmentCache`, ADR-482).
+    fragments: FragmentCache,
+    /// Bumped by every texture upload and free: a fragment holding a sprite draws
+    /// according to which textures exist, so it is part of the fragment key.
+    texture_generation: u64,
 }
 
 /// Whether a quad at `(x, y)` sized `w x h` could put any pixel inside a `fw x fh`
@@ -2255,6 +2610,8 @@ impl GpuWindow {
             effects: None,
             particles: None,
             runs: RunCache::default(),
+            fragments: FragmentCache::default(),
+            texture_generation: 0,
         })
     }
 
@@ -2337,11 +2694,13 @@ impl GpuWindow {
         let (texture, bind_group) = self.create_texture(w, h);
         self.write_rgba(&texture, 0, 0, rgba, w, h);
         self.textures.insert(tex, GpuTexture { bind_group });
+        self.texture_generation += 1;
     }
 
     /// `gui-texture-free`: drop texture `tex` (a later `:sprite` naming it draws nothing).
     pub fn free_texture(&mut self, tex: u32) {
         self.textures.remove(&tex);
+        self.texture_generation += 1;
     }
 
     /// Pack a rasterised `w`×`h` cluster into the atlas, opening a new shelf or page as
@@ -2479,6 +2838,10 @@ impl GpuWindow {
         };
         let reuse = reuse_enabled();
         let hash = run_hash(s, face, &context);
+        if reuse {
+            // an enclosing fragment's entry carries the runs it drew (`FragmentCache::record`)
+            self.fragments.runs_used.push(hash);
+        }
         if reuse && let Some(quads) = self.runs.take(hash, s, face, &context) {
             replay(fb, quads, anchor_x, anchor_y);
             return;
@@ -2651,6 +3014,80 @@ impl GpuWindow {
         quads
     }
 
+    /// What a fragment expanded on `fb` at grid `g` depends on besides its ops.
+    fn fragment_context(&self, fb: &FrameBuilder, renderer: &Renderer, g: Grid) -> FragmentContext {
+        let metrics = renderer.metrics();
+        FragmentContext {
+            grid: [
+                g.ox.to_bits(),
+                g.oy.to_bits(),
+                g.cw.to_bits(),
+                g.ch.to_bits(),
+                g.scroll_dy.to_bits(),
+            ],
+            clip: fb.clip.map(f32::to_bits),
+            viewport: [fb.fw.to_bits(), fb.fh.to_bits()],
+            metrics: [
+                metrics.cell_w as u32,
+                metrics.cell_h as u32,
+                metrics.px.to_bits(),
+                renderer.line_height().to_bits(),
+            ],
+            family: renderer.default_family(),
+            ground: renderer.bg(),
+            fonts: (
+                renderer.font_generation(),
+                renderer.ligatures(),
+                self.lcd_order(renderer),
+            ),
+            scale: renderer.scale().to_bits(),
+            textures: self.texture_generation,
+            caret_hidden: renderer.caret_hidden,
+        }
+    }
+
+    /// Expand a memoised fragment (ADR-470): push the instances it produced last frame
+    /// when it is the same allocation in the same context (`FragmentCache`), carrying its
+    /// runs and nested fragments forward; expand its ops and record them when it is not.
+    fn expand_fragment(
+        &mut self,
+        fb: &mut FrameBuilder,
+        renderer: &mut Renderer,
+        ops: &std::sync::Arc<[Op]>,
+        g: Grid,
+    ) {
+        if !reuse_enabled() {
+            self.expand(fb, renderer, ops, g);
+            return;
+        }
+        let context = self.fragment_context(fb, renderer, g);
+        if let Some(entry) = self.fragments.take(ops, &context) {
+            replay_fragment(fb, &entry);
+            for &hash in &entry.runs {
+                self.runs.keep(hash);
+            }
+            for (address, nested) in &entry.nested {
+                self.fragments.carry(*address, nested);
+            }
+            // an enclosing fragment being recorded holds this one, and what it holds
+            self.fragments.runs_used.extend_from_slice(&entry.runs);
+            self.fragments
+                .fragments_used
+                .extend_from_slice(&entry.nested);
+            self.fragments
+                .fragments_used
+                .push((fragment_address(ops), entry.context));
+            self.fragments.hits += 1;
+            self.fragments.restore(entry);
+            return;
+        }
+        let mark = self.fragments.mark(fb);
+        self.expand(fb, renderer, ops, g);
+        let blinks = ops.iter().any(holds_blinking_caret);
+        self.fragments.record(fb, mark, ops, context, blinks);
+        self.fragments.misses += 1;
+    }
+
     /// Expand `ops` into quads on `fb`, in order, on grid `g` — the CPU painter's
     /// `render_ops`, arm for arm. Recursion is the two region ops: a scroll region
     /// re-enters with its shift (and clips at the grid top, as the CPU path clips every
@@ -2663,7 +3100,7 @@ impl GpuWindow {
                 // The frame was cleared to the background before any op.
                 Op::Clear => {}
                 // A memoised fragment is its ops in place (ADR-470), in the same grid.
-                Op::Fragment(fragment) => self.expand(fb, renderer, &fragment.0, g),
+                Op::Fragment(fragment) => self.expand_fragment(fb, renderer, &fragment.0, g),
                 Op::ScrollRegion { dy_frac, ops } => {
                     let saved_clip = fb.clip;
                     // A shifted op is clipped at the grid origin, never painted into the
@@ -2975,7 +3412,9 @@ impl GpuWindow {
         };
         self.expand(&mut fb, renderer, frame, grid);
         let (run_hits, run_misses) = (self.runs.hits, self.runs.misses);
+        let (fragment_hits, fragment_misses) = (self.fragments.hits, self.fragments.misses);
         self.runs.end_frame();
+        self.fragments.end_frame();
         // The particles step once per paint, as the CPU painter's do; an emitter the frame
         // no longer carries still draws its last particles, at the end of the scene.
         let steps = renderer.emitters.step(frame);
@@ -3183,7 +3622,7 @@ impl GpuWindow {
         if let Some(ms) = trace
             && t_present.duration_since(t0).as_millis() >= ms
         {
-            // runs: text runs replayed / shaped; up: instance bytes written (a frame that
+            // runs: text runs replayed / shaped; frags: memoised fragments pushed whole / expanded; up: instance bytes written (a frame that
             // changed one line writes that line's tail, not the page); passes: render
             // passes (more than one only where translucent geometry and text interleave); lcd:
             // how this device draws subpixel text (`LcdText`).
@@ -3194,12 +3633,13 @@ impl GpuWindow {
             };
             eprintln!(
                 "[gui-paint-gpu] {}us: fb={fw}x{fh} ops={} batches={} passes={passes} \
-                 runs={run_hits}/{} up={uploaded}B lcd={lcd} | encode={}us upload={}us acquire={}us \
-                 submit={}us present={}us",
+                 runs={run_hits}/{} frags={fragment_hits}/{} up={uploaded}B lcd={lcd} | encode={}us \
+                 upload={}us acquire={}us submit={}us present={}us",
                 micros(t0, t_present),
                 frame.len(),
                 fb.batches.len(),
                 run_hits + run_misses,
+                fragment_hits + fragment_misses,
                 times.encode_us,
                 times.upload_us,
                 times.acquire_us,
@@ -3971,6 +4411,223 @@ mod reuse_tests {
         let quads = run("a", context(0)).quads;
         replay(&mut fb, &quads, 100.0, 200.0);
         assert_eq!(&fb.solids[..4], &[101.0, 202.0, 3.0, 4.0]);
+    }
+
+    // ---- the fragment cache (ADR-482) ----
+
+    const FW: f32 = 800.0;
+    const FH: f32 = 600.0;
+
+    fn fragment_context() -> FragmentContext {
+        FragmentContext {
+            grid: [
+                0.0f32.to_bits(),
+                0.0f32.to_bits(),
+                8.0f32.to_bits(),
+                16.0f32.to_bits(),
+                0,
+            ],
+            clip: [0.0f32, 0.0, FW, FH].map(f32::to_bits),
+            viewport: [FW.to_bits(), FH.to_bits()],
+            metrics: [8, 16, 13.0f32.to_bits(), 1.2f32.to_bits()],
+            family: 1,
+            ground: [12, 12, 16],
+            fonts: (0, false, 0),
+            scale: 1.0f64.to_bits(),
+            textures: 0,
+            caret_hidden: false,
+        }
+    }
+
+    fn ops(text: &str) -> std::sync::Arc<[Op]> {
+        vec![Op::Text {
+            row: 0,
+            col: 0,
+            s: text.into(),
+            face: Face::default(),
+        }]
+        .into()
+    }
+
+    /// What expanding a fragment pushes, standing in for `expand`: a cell background, two
+    /// glyphs off one atlas page, a translucent overlay, a glyph off another page.
+    fn push_fragment_quads(fb: &mut FrameBuilder) {
+        fb.fill(0.0, 0.0, 16.0, 16.0, [40, 40, 40]);
+        let glyph = |fb: &mut FrameBuilder, page: usize, x: f32| {
+            fb.textured(
+                TexKey::Atlas(page),
+                x,
+                0.0,
+                8.0,
+                16.0,
+                [0.0; 4],
+                [255; 4],
+                1,
+                0.0,
+            )
+        };
+        glyph(fb, 0, 0.0);
+        glyph(fb, 0, 8.0);
+        fb.solid(0.0, 0.0, 16.0, 16.0, [255, 0, 0, 100], 0.0, Edge::Plain);
+        glyph(fb, 1, 16.0);
+    }
+
+    /// Record `push_fragment_quads` as the expansion of `fragment` in `context`, after
+    /// `before` set the frame up.
+    fn record_fragment(
+        cache: &mut FragmentCache,
+        fragment: &std::sync::Arc<[Op]>,
+        context: FragmentContext,
+        before: impl Fn(&mut FrameBuilder),
+    ) {
+        let mut fb = FrameBuilder::new(FW, FH);
+        before(&mut fb);
+        let mark = cache.mark(&fb);
+        push_fragment_quads(&mut fb);
+        cache.record(&fb, mark, fragment, context, false);
+    }
+
+    #[test]
+    fn a_replayed_fragment_builds_what_expanding_it_would() {
+        let fragment = ops("ab");
+        // recorded after an opaque fill, so its first quad merged into that batch
+        let mut cache = FragmentCache::default();
+        record_fragment(&mut cache, &fragment, fragment_context(), |fb| {
+            fb.fill(100.0, 100.0, 4.0, 4.0, [1, 2, 3])
+        });
+        cache.end_frame();
+        let entry = cache
+            .take(&fragment, &fragment_context())
+            .expect("the same fragment in the same context");
+        // replayed after different ground — a glyph of page 0 open, then nothing at all —
+        // the batches are what pushing its quads one by one builds there
+        let preludes: [&dyn Fn(&mut FrameBuilder); 3] = [
+            &|fb| {
+                fb.textured(
+                    TexKey::Atlas(0),
+                    50.0,
+                    50.0,
+                    8.0,
+                    16.0,
+                    [0.0; 4],
+                    [255; 4],
+                    1,
+                    0.0,
+                )
+            },
+            &|_| {},
+            &|fb| fb.solid(200.0, 0.0, 4.0, 4.0, [0, 0, 0, 10], 0.0, Edge::Plain),
+        ];
+        for prelude in preludes {
+            let mut replayed = FrameBuilder::new(FW, FH);
+            prelude(&mut replayed);
+            replay_fragment(&mut replayed, &entry);
+            let mut expanded = FrameBuilder::new(FW, FH);
+            prelude(&mut expanded);
+            push_fragment_quads(&mut expanded);
+            assert_eq!(replayed.solids, expanded.solids);
+            assert_eq!(replayed.texs, expanded.texs);
+            assert_eq!(replayed.batches, expanded.batches);
+        }
+        // the translucent quad keeps its segment linear though it joined a linear batch
+        assert!(entry.segments.contains(&Segment::Solid {
+            count: 1,
+            linear: true
+        }));
+    }
+
+    #[test]
+    fn a_fragment_is_replayed_only_in_the_context_it_was_expanded_in() {
+        let fragment = ops("ab");
+        let found = |change: &dyn Fn(&mut FragmentContext), blinks: bool| {
+            let mut cache = FragmentCache::default();
+            let mut fb = FrameBuilder::new(FW, FH);
+            let mark = cache.mark(&fb);
+            push_fragment_quads(&mut fb);
+            cache.record(&fb, mark, &fragment, fragment_context(), blinks);
+            cache.end_frame();
+            let mut context = fragment_context();
+            change(&mut context);
+            cache.take(&fragment, &context).is_some()
+        };
+        assert!(found(&|_| {}, false));
+        // a theme's background, a font size, a font (re)registration, ligatures, the
+        // subpixel order, a scroll, a moved clip, a resize, a scale factor, a texture
+        // upload: each is a different picture, so each misses
+        let misses: [&dyn Fn(&mut FragmentContext); 11] = [
+            &|c| c.ground = [250, 250, 250],
+            &|c| c.metrics[2] = 15.0f32.to_bits(),
+            &|c| c.metrics = [9, 18, c.metrics[2], c.metrics[3]],
+            &|c| c.fonts.0 += 1,
+            &|c| c.fonts.1 = true,
+            &|c| c.fonts.2 = 1,
+            &|c| c.grid[4] = 3.0f32.to_bits(),
+            &|c| c.clip[3] = 300.0f32.to_bits(),
+            &|c| c.viewport[0] = 1024.0f32.to_bits(),
+            &|c| c.scale = 2.0f64.to_bits(),
+            &|c| c.textures += 1,
+        ];
+        for (n, change) in misses.iter().enumerate() {
+            assert!(
+                !found(change, false),
+                "change {n} replayed a stale fragment"
+            );
+        }
+        // the blink phase matters only to a fragment holding a blinking caret
+        assert!(found(&|c| c.caret_hidden = true, false));
+        assert!(!found(&|c| c.caret_hidden = true, true));
+        // and the key is the allocation: equal ops in another one are a miss
+        let mut cache = FragmentCache::default();
+        record_fragment(&mut cache, &fragment, fragment_context(), |_| {});
+        cache.end_frame();
+        assert!(cache.take(&ops("ab"), &fragment_context()).is_none());
+    }
+
+    #[test]
+    fn a_fragment_unused_for_a_frame_is_dropped_and_a_replay_carries_what_it_holds() {
+        let (outer, inner) = (ops("outer"), ops("inner"));
+        let where_drawn = fragment_context();
+        let mut cache = FragmentCache::default();
+        let mut runs = RunCache::default();
+        // frame 1: the outer fragment expanded, the inner one (and a run) inside it
+        runs.put(7, run("line", context(0)));
+        let mut fb = FrameBuilder::new(FW, FH);
+        let outer_mark = cache.mark(&fb);
+        let inner_mark = cache.mark(&fb);
+        cache.runs_used.push(7);
+        push_fragment_quads(&mut fb);
+        cache.record(&fb, inner_mark, &inner, where_drawn, false);
+        cache.record(&fb, outer_mark, &outer, where_drawn, false);
+        let entry = cache
+            .take(&outer, &where_drawn)
+            .expect("recorded this frame");
+        assert_eq!(entry.runs, vec![7]);
+        assert_eq!(entry.nested, vec![(fragment_address(&inner), where_drawn)]);
+        cache.restore(entry);
+        cache.end_frame();
+        runs.end_frame();
+        // frame 2: the outer one replayed whole; what it holds is carried, not replayed
+        let entry = cache.take(&outer, &where_drawn).expect("drawn last frame");
+        for &hash in &entry.runs {
+            runs.keep(hash);
+        }
+        for (address, nested) in &entry.nested {
+            cache.carry(*address, nested);
+        }
+        cache.restore(entry);
+        cache.end_frame();
+        runs.end_frame();
+        // frame 3: the outer one changed; its inner fragment and run are still there
+        assert!(cache.take(&inner, &where_drawn).is_some());
+        assert!(
+            runs.take(7, "line", &Face::default(), &context(0))
+                .is_some()
+        );
+        // frame 4: nothing drawn the frame before — nothing kept
+        cache.end_frame();
+        cache.end_frame();
+        assert!(cache.take(&outer, &where_drawn).is_none());
+        assert!(cache.previous.is_empty() && cache.current.is_empty());
     }
 
     #[test]

@@ -4188,3 +4188,17 @@ the face name; the table is sorted once per call and the walk takes the first ru
 installed HCL/Rust/Go), `doc_examples`, `audit`, `nest check --strict` on
 `std/editor/treesit.blsp`, `cargo test -p brood --lib treesit` (treesit-grammars), `cargo
 check --no-default-features`, clippy (gui, treesit-grammars).
+
+2026-10-27 (ADR-482, fragment replay on the GPU and column damage on the CPU): the GPU target
+keeps each memoised fragment's instances and batch segments (`gpu::FragmentCache`), keyed by
+the fragment's `Arc` and everything its quads depend on — grid, clip, viewport, metrics, line
+height, family, ground, font generation, ligatures, subpixel order, scale, a texture
+generation, and the blink phase for a fragment holding a blinking caret — and pushes them whole
+on a hit, carrying the runs and nested fragments it holds. The CPU painter re-rasterises a
+dirty row only in the columns its differing leaves can paint (`paint::strip_columns`; `Canvas`
+gained column bounds every primitive clips to) and presents rects; `BROOD_GUI_COLUMNS=0` is the
+escape hatch. Guard: `gpu::reuse_tests` (replay equals expansion; every context change misses;
+carry and drop), `paint::strip_diff_tests` (typing repaints its cells; every op kind matches a
+full raster; a rect-confined raster is exact inside and untouched outside). Run here: the
+filtered `cargo test -p brood --lib host::gui` (128) and `debug_flags`, headless; two guards
+sabotaged red. Not covered: `GpuWindow::expand_fragment` against a device; nothing measured.

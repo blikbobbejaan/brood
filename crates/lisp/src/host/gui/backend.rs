@@ -18,8 +18,8 @@ use render::*;
 // The GPU render target (`gpu.rs`) paints with the same text metric and hairline snap.
 #[cfg(feature = "gui-gpu")]
 pub(crate) use {
-    paint::paint_stall_ms, paint::text_px_width, render::cursor_rim, render::luma,
-    render::snap_hairline, render::text_units, render::unit_cells,
+    paint::holds_blinking_caret, paint::paint_stall_ms, paint::text_px_width, render::cursor_rim,
+    render::luma, render::snap_hairline, render::text_units, render::unit_cells,
 };
 
 use super::{

@@ -60,14 +60,17 @@ impl ClusterKey {
     }
 }
 
-/// The raster target: a `w`×`h` framebuffer plus the half-open pixel-row band
-/// `[y0, y1)` the primitives may touch. Pixels outside the band are left exactly as
-/// they were — that is what lets a paint re-rasterise only the cell rows whose ops
-/// changed (`paint::strip_diff`) and trust the rest of the retained canvas.
+/// The raster target: a `w`×`h` framebuffer plus the half-open pixel rect
+/// `[x0, x1) × [y0, y1)` the primitives may touch. Pixels outside it are left exactly
+/// as they were — that is what lets a paint re-rasterise only the cell rows whose ops
+/// changed (`paint::strip_diff`), or only the columns of a row a change reached
+/// (`paint::strip_columns`), and trust the rest of the retained canvas.
 pub(super) struct Canvas<'a> {
     pub(super) buf: &'a mut [u32],
     pub(super) w: usize,
     pub(super) h: usize,
+    pub(super) x0: usize,
+    pub(super) x1: usize,
     pub(super) y0: usize,
     pub(super) y1: usize,
 }
@@ -76,23 +79,45 @@ impl<'a> Canvas<'a> {
     /// The whole framebuffer (the fuzz tests' target; a paint always goes by band).
     #[cfg(test)]
     pub(super) fn full(buf: &'a mut [u32], w: usize, h: usize) -> Self {
-        Canvas {
-            buf,
-            w,
-            h,
-            y0: 0,
-            y1: h,
-        }
+        Canvas::band(buf, w, h, 0, h)
     }
 
     /// The framebuffer with painting confined to rows `[y0, y1)` (clamped to it).
     pub(super) fn band(buf: &'a mut [u32], w: usize, h: usize, y0: usize, y1: usize) -> Self {
+        Canvas::rect(buf, w, h, (0, y0), (w, y1))
+    }
+
+    /// The framebuffer with painting confined to the rect from `(x0, y0)` to `(x1, y1)`
+    /// (clamped to it).
+    pub(super) fn rect(
+        buf: &'a mut [u32],
+        w: usize,
+        h: usize,
+        (x0, y0): (usize, usize),
+        (x1, y1): (usize, usize),
+    ) -> Self {
         Canvas {
             buf,
             w,
             h,
+            x0: x0.min(w),
+            x1: x1.min(w),
             y0: y0.min(h),
             y1: y1.min(h),
+        }
+    }
+
+    /// The same columns, with painting further confined to rows `[y0, y1)` — a cell
+    /// region's band inside whatever rect the paint is confined to.
+    pub(super) fn narrowed(&mut self, y0: usize, y1: usize) -> Canvas<'_> {
+        Canvas {
+            buf: self.buf,
+            w: self.w,
+            h: self.h,
+            x0: self.x0,
+            x1: self.x1,
+            y0: y0.max(self.y0).min(self.y1),
+            y1: y1.min(self.y1),
         }
     }
 
@@ -105,11 +130,20 @@ impl<'a> Canvas<'a> {
         lo..hi.max(lo)
     }
 
-    /// Fill rows `[top, top + h)` of the band with `color` — the clear.
+    /// The columns of `[left, left + w)` that fall inside the rect — `rows`' twin.
+    #[inline]
+    pub(super) fn cols(&self, left: usize, w: usize) -> std::ops::Range<usize> {
+        let lo = left.max(self.x0);
+        let hi = left.saturating_add(w).min(self.x1);
+        lo..hi.max(lo)
+    }
+
+    /// Fill rows `[top, top + h)` of the rect with `color` — the clear.
     pub(super) fn fill_rows(&mut self, top: usize, h: usize, color: u32) {
         let w = self.w;
+        let (x0, x1) = (self.x0, self.x1.max(self.x0));
         for y in self.rows(top, h) {
-            self.buf[y * w..(y + 1) * w].fill(color);
+            self.buf[y * w + x0..y * w + x1].fill(color);
         }
     }
 }
@@ -630,7 +664,7 @@ pub(crate) struct Renderer {
     // The retained frame (see `paint`): `canvas` holds the pixels of the last frame
     // rasterised, `prev_ops` the ops that produced it. A new frame is diffed against
     // `prev_ops` per cell row and only the rows that changed are re-rasterised into
-    // `canvas`; `damage_ring` is the per-frame list of changed pixel bands of recent
+    // `canvas`; `damage_ring` is the per-frame list of changed pixel rects of recent
     // frames (oldest→newest), so a present can cover the last `buffer.age()` frames.
     pub(super) canvas: Vec<u32>,
     /// `canvas`'s `(width, height)` — compared as a pair, not a length: a rotation of
@@ -1003,6 +1037,13 @@ impl Renderer {
         self.ligatures
     }
 
+    /// The cell height as a multiple of the font px (`gui-line-height!`) — part of the GPU
+    /// fragment key, since a cell region inside a fragment derives its cell from it.
+    #[cfg_attr(not(feature = "gui-gpu"), allow(dead_code))]
+    pub(crate) fn line_height(&self) -> f32 {
+        self.line_height
+    }
+
     /// The subpixel order text is rasterised in right now: 0 none (grey), 1 R-G-B, 2 B-G-R —
     /// part of the GPU atlas key, since `gui-text-aa!` changes how the same cluster is baked.
     #[cfg_attr(not(feature = "gui-gpu"), allow(dead_code))]
@@ -1186,8 +1227,9 @@ impl Renderer {
         let cg = &self.cache[&key];
         // `clip_skip` glyph rows from the top are above the clip boundary (the grid
         // origin); they're skipped and the remaining rows land at `top` onward. The
-        // canvas band clips the rest: rows outside `[y0, y1)` are not touched.
+        // canvas rect clips the rest: pixels outside `[x0, x1) × [y0, y1)` are not touched.
         let (fb_w, y0, y1) = (canvas.w, canvas.y0, canvas.y1);
+        let columns = canvas.cols(left, cg.width);
         // Contrast lift (`text_contrast`): applied to a monochrome glyph where its
         // colour is lighter than the pixel it lands on, and never to a colour glyph
         // (emoji). A taste knob now, not a correction: the text lerp is in sRGB space
@@ -1205,11 +1247,8 @@ impl Renderer {
                 continue;
             }
             let row = py * fb_w;
-            for rx in 0..cg.width {
-                let pxx = left + rx;
-                if pxx >= fb_w {
-                    break;
-                }
+            for pxx in columns.clone() {
+                let rx = pxx - left;
                 let i = (ry * cg.width + rx) * 4;
                 let a = cg.rgba[i + 3];
                 if a == 0 {
@@ -1683,13 +1722,13 @@ pub(super) fn fill_cell(
     color: u32,
 ) {
     let fb_w = canvas.w;
-    let x1 = left.saturating_add(w).min(fb_w);
-    if left >= x1 {
+    let columns = canvas.cols(left, w);
+    if columns.is_empty() {
         return;
     }
     for y in canvas.rows(top, h) {
         let row = y * fb_w;
-        canvas.buf[row + left..row + x1].fill(color);
+        canvas.buf[row + columns.start..row + columns.end].fill(color);
     }
 }
 
@@ -1728,9 +1767,11 @@ pub(super) fn fill_rrect(
     // The inner core the corners round around: the rect inset by `r` on each side.
     let (rx0, ry0) = (fx + r, fy + r);
     let (rx1, ry1) = (fx + fw - r, fy + fh - r);
-    let x0 = fx.floor().max(0.0) as usize;
+    let x0 = (fx.floor().max(0.0) as usize).max(canvas.x0);
     let y0 = (fy.floor().max(0.0) as usize).max(canvas.y0);
-    let x1 = ((fx + fw).ceil().max(0.0) as usize).min(fb_w);
+    let x1 = ((fx + fw).ceil().max(0.0) as usize)
+        .min(fb_w)
+        .min(canvas.x1);
     let y1 = ((fy + fh).ceil().max(0.0) as usize)
         .min(fb_h)
         .min(canvas.y1);
@@ -1832,6 +1873,10 @@ pub(super) fn cursor_cell(
     }
     let stroke = pack(color.unwrap_or(CURSOR_FG));
     let fb_w = canvas.w;
+    // Every span below is computed on the unclipped cell, then cut to the canvas rect, so a
+    // rect that holds half the caret paints exactly that half.
+    let (clip_x0, clip_x1) = (canvas.x0, canvas.x1);
+    let clip = |from: usize, to: usize| from.max(clip_x0)..to.min(clip_x1);
     match style {
         CursorStyle::Block | CursorStyle::Hollow => {
             let buf = &mut *canvas.buf;
@@ -1839,7 +1884,7 @@ pub(super) fn cursor_cell(
                 let wash = color.unwrap_or([0xff, 0xff, 0xff]);
                 for y in draw_top..draw_bottom {
                     let row = y * fb_w;
-                    for x in left..(left + w).min(fb_w) {
+                    for x in clip(left, (left + w).min(fb_w)) {
                         buf[row + x] = blend(buf[row + x], wash, 128);
                     }
                 }
@@ -1853,10 +1898,10 @@ pub(super) fn cursor_cell(
             let x1 = (left + w).min(fb_w);
             for y in draw_top..draw_bottom {
                 let row = y * fb_w;
-                for x in x0..(x0 + t).min(fb_w) {
+                for x in clip(x0, (x0 + t).min(fb_w)) {
                     buf[row + x] = stroke;
                 }
-                for x in x1.saturating_sub(t)..x1 {
+                for x in clip(x1.saturating_sub(t), x1) {
                     buf[row + x] = stroke;
                 }
             }
@@ -1869,7 +1914,7 @@ pub(super) fn cursor_cell(
                 let y1 = ey1.min(draw_bottom as isize).max(0) as usize;
                 for y in y0..y1 {
                     let row = y * fb_w;
-                    for x in x0..x1 {
+                    for x in clip(x0, x1) {
                         buf[row + x] = stroke;
                     }
                 }

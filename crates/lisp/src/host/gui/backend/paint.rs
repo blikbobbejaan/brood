@@ -1,8 +1,9 @@
 //! Painting a frame: turn a window's render ops into pixels — incrementally. The
 //! renderer retains the last frame (its ops and the canvas they rasterised to); a new
 //! frame is diffed against it per cell row (`strip_diff`), only the rows whose op
-//! sequence changed are re-rasterised, and only those rows are copied to the window.
-//! A keystroke re-rasterises the line it touched and the mode line, not the screen.
+//! sequence changed are re-rasterised — within a row, only the columns its changed ops can
+//! paint (`strip_columns`) — and only those rects are copied to the window. A keystroke
+//! re-rasterises the cells it touched and the mode line's, not the screen.
 //! Runs on the GUI thread, where a panic takes the event loop with it — so
 //! `render_ops` is fuzzed against wild inputs here.
 
@@ -49,6 +50,16 @@ impl DamageRect {
     fn is_empty(&self) -> bool {
         self.x1 <= self.x0 || self.y1 <= self.y0
     }
+
+    /// The whole `w`×`h` framebuffer.
+    pub(super) fn whole(w: usize, h: usize) -> DamageRect {
+        DamageRect {
+            x0: 0,
+            y0: 0,
+            x1: w,
+            y1: h,
+        }
+    }
 }
 
 /// Incremental (row-diffed) painting is **on by default**; `BROOD_GUI_DAMAGE=0` opts
@@ -58,6 +69,18 @@ pub(super) fn gui_damage_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
         std::env::var("BROOD_GUI_DAMAGE")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+    })
+}
+
+/// Column damage (`strip_columns`) is on by default; `BROOD_GUI_COLUMNS=0` re-rasterises a
+/// changed strip across the whole row, as before — the escape hatch if a leaf ever paints
+/// outside the columns `leaf_columns` gives it. Read once.
+pub(super) fn gui_columns_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("BROOD_GUI_COLUMNS")
             .map(|v| v != "0")
             .unwrap_or(true)
     })
@@ -203,8 +226,9 @@ struct Entry<'a> {
     caret: bool,
 }
 
-/// Whether `op` is a blinking caret or a block holding one.
-fn holds_blinking_caret(op: &Op) -> bool {
+/// Whether `op` is a blinking caret or a block holding one — a leaf (or, on the GPU target, a
+/// fragment) whose pixels depend on the blink phase.
+pub(crate) fn holds_blinking_caret(op: &Op) -> bool {
     match op {
         Op::Cursor { blink, .. } => blink.is_some(),
         Op::ScrollRegion { ops, .. } | Op::CellRegion { ops, .. } => {
@@ -344,14 +368,170 @@ fn strip_diff(new: &Leaves, old: &Leaves, strips: &Strips) -> Vec<bool> {
         .map(|k| {
             let (a, b) = (&new.per_strip[k], &old.per_strip[k]);
             a.len() != b.len()
-                || a.iter().zip(b).any(|(&i, &j)| {
-                    let (x, y) = (&new.leaves[i as usize], &old.leaves[j as usize]);
-                    x.dy != y.dy
-                        || (x.caret && new.caret_hidden != old.caret_hidden)
-                        || !(std::ptr::eq(x.op, y.op) || x.op == y.op)
-                })
+                || a.iter()
+                    .zip(b)
+                    .any(|(&i, &j)| !same_leaf(new, i as usize, old, j as usize))
         })
         .collect()
+}
+
+/// Whether leaf `i` of `new` paints exactly what leaf `j` of `old` painted: the same op
+/// (by pointer first, ADR-470) under the same shift, and not a blinking caret whose phase
+/// flipped in between (ADR-469).
+fn same_leaf(new: &Leaves, i: usize, old: &Leaves, j: usize) -> bool {
+    let (x, y) = (&new.leaves[i], &old.leaves[j]);
+    x.dy == y.dy
+        && !(x.caret && new.caret_hidden != old.caret_hidden)
+        && (std::ptr::eq(x.op, y.op) || x.op == y.op)
+}
+
+// ---- the column damage ----------------------------------------------------------
+//
+// A typed character changes one text op of one row; the strip diff dirties that row,
+// and re-rasterising the whole row repaints every pane beside the one typed in. The
+// strip's leaves say more: two strips whose covering leaves agree on a common prefix and
+// suffix differ only by the leaves in between, and pixels none of those leaves can reach
+// are painted by the shared leaves alone — the same ops, in the same order, over the same
+// cleared ground — so they are the pixels the canvas already holds. A strip is
+// re-rasterised in the columns its differing leaves can paint, old and new; the rest of
+// the row stays. Exact for the same reason the strip diff is: a leaf's columns
+// (`leaf_columns`) are conservative, and a leaf whose columns are not known narrower than
+// the window (a clear, a cell region, anything rotated or non-finite) widens the strip
+// back to the whole row.
+
+/// The base cell a cell-grid text op ends at: the `Text` arm of `render_ops`' walk,
+/// advancing over the units it draws — a raw tab to the next screen stop, a zero-width
+/// unit not at all, any other `unit_cells × scale`.
+fn text_end_cell(s: &str, col: usize, scale: usize, ligatures: bool) -> usize {
+    let mut cell = col;
+    for unit in text_units(s, ligatures) {
+        if unit == "\t" {
+            cell += cluster_cells_at(unit, cell, TAB_WIDTH);
+            continue;
+        }
+        cell += unit_cells(unit) * scale;
+    }
+    cell
+}
+
+/// The signed pixel columns `[left, right)` leaf `op` can paint on a grid at `ox` with
+/// cells `cw` wide — conservative, like `op_band` — or `None` when that is not known to
+/// be narrower than the window. A text unit's glyph canvas is exactly its cell block
+/// (`Renderer::build_cluster`), so a text op covers its cells and nothing beside them.
+fn leaf_columns(op: &Op, ox: usize, cw: usize, ligatures: bool) -> Option<(isize, isize)> {
+    let (ox, cw_i) = (ox as isize, cw as isize);
+    let cells = |from: usize, to: usize| {
+        Some((
+            ox.saturating_add((from as isize).saturating_mul(cw_i)),
+            ox.saturating_add((to as isize).saturating_mul(cw_i)),
+        ))
+    };
+    let pixels = |left: f32, right: f32| {
+        // a pixel-space op: its float extent widened past any rounding or hairline snap
+        (left.is_finite() && right.is_finite()).then(|| {
+            (
+                (left.floor() as isize).saturating_sub(4),
+                (right.ceil() as isize).saturating_add(4),
+            )
+        })
+    };
+    match op {
+        Op::Text { col, s, face, .. } => {
+            let col = *col as usize;
+            cells(
+                col,
+                text_end_cell(s, col, face.scale.max(1) as usize, ligatures),
+            )
+        }
+        Op::Cursor { col, .. } => cells(*col as usize, *col as usize + 1),
+        Op::Rect { col, w, .. } => cells(*col as usize, *col as usize + *w as usize),
+        Op::VSpans { col0, cols, .. } => cells(*col0 as usize, *col0 as usize + cols.len()),
+        Op::Cells {
+            col0, w, aspect, ..
+        }
+        | Op::CellsRgb {
+            col0, w, aspect, ..
+        } => cells(
+            *col0 as usize,
+            *col0 as usize + (*w).max(1) as usize * (*aspect).max(1) as usize,
+        ),
+        Op::FRect { x, w, .. } => {
+            pixels(ox as f32 + x * cw as f32, ox as f32 + (x + w) * cw as f32)
+        }
+        Op::Sprite { x, y, w, h, .. } | Op::Quad { x, y, w, h, .. } => {
+            // turned about its centre: the centre plus or minus half the diagonal
+            let (_, half) = quad_extent(*y, *w, *h);
+            pixels(x + w / 2.0 - half, x + w / 2.0 + half)
+        }
+        Op::TextPx {
+            x, s, face, align, ..
+        } => {
+            let width = text_px_width(s, cw, face.scale.max(1) as usize) as f32;
+            let left = match align {
+                crate::host::gui::Align::Left => *x,
+                crate::host::gui::Align::Center => *x - width / 2.0,
+                crate::host::gui::Align::Right => *x - width,
+            };
+            pixels(left, left + width)
+        }
+        _ => None,
+    }
+}
+
+/// The pixel columns `[x0, x1)` of strip `k` that can differ between `old`'s raster and
+/// `new`'s: the union of the columns of the leaves that differ — outside the strip's common
+/// prefix and suffix, and position by position when what is left is one length in both —
+/// in either frame, clamped to the `fb_w`-wide window. The whole row when any of those
+/// leaves has no known columns.
+fn strip_columns(
+    new: &Leaves,
+    old: &Leaves,
+    k: usize,
+    fb_w: usize,
+    ox: usize,
+    cw: usize,
+    ligatures: bool,
+) -> (usize, usize) {
+    let (a, b) = (&new.per_strip[k], &old.per_strip[k]);
+    let same = |p: usize, q: usize| same_leaf(new, a[p] as usize, old, b[q] as usize);
+    let shorter = a.len().min(b.len());
+    let prefix = (0..shorter).take_while(|&n| same(n, n)).count();
+    let suffix = (0..shorter - prefix)
+        .take_while(|&n| same(a.len() - 1 - n, b.len() - 1 - n))
+        .count();
+    let (middle_new, middle_old) = (prefix..a.len() - suffix, prefix..b.len() - suffix);
+    // Middles of one length pair up position by position (a typed character changes the
+    // line's text op and moves the caret, with the leaves between them alike): only the
+    // pairs that differ count, since a pixel no differing pair reaches is painted by the
+    // same ops in the same order in both frames. Otherwise the whole middle counts.
+    let mut differing: Vec<&Op> = Vec::new();
+    if middle_new.len() == middle_old.len() {
+        for (p, q) in middle_new.zip(middle_old) {
+            if !same(p, q) {
+                differing.push(new.leaves[a[p] as usize].op);
+                differing.push(old.leaves[b[q] as usize].op);
+            }
+        }
+    } else {
+        differing.extend(middle_new.map(|p| new.leaves[a[p] as usize].op));
+        differing.extend(middle_old.map(|q| old.leaves[b[q] as usize].op));
+    }
+    let (mut left, mut right) = (isize::MAX, isize::MIN);
+    for op in differing {
+        let Some((from, to)) = leaf_columns(op, ox, cw, ligatures) else {
+            return (0, fb_w);
+        };
+        left = left.min(from);
+        right = right.max(to);
+    }
+    let x0 = left.clamp(0, fb_w as isize) as usize;
+    let x1 = right.clamp(0, fb_w as isize) as usize;
+    if x1 <= x0 {
+        // nothing the differing leaves paint is on screen: the row whole, rather than a
+        // zero-width rect
+        return (0, fb_w);
+    }
+    (x0, x1)
 }
 
 // ---- the scroll blit ----------------------------------------------------------
@@ -705,23 +885,31 @@ fn strip_blits(
     blits
 }
 
-/// Merge runs of dirty strips into pixel bands `[y0, y1)` — one raster pass each.
-fn dirty_bands(dirty: &[bool], strips: &Strips) -> Vec<(usize, usize)> {
-    let mut bands: Vec<(usize, usize)> = Vec::new();
+/// Merge runs of dirty strips into damage rects — one raster pass each. Strip `k` spans
+/// the pixel columns `columns[k]`; a run of adjacent dirty strips becomes one rect over
+/// the union of their columns (re-rasterising more of a row than changed is exact too,
+/// and one pass over the frame per run is what the row diff always paid).
+fn dirty_rects(dirty: &[bool], columns: &[(usize, usize)], strips: &Strips) -> Vec<DamageRect> {
+    let mut rects: Vec<DamageRect> = Vec::new();
     for (k, &d) in dirty.iter().enumerate() {
         if !d {
             continue;
         }
         let (y0, y1) = strips.rows(k);
-        if y1 <= y0 {
+        let (x0, x1) = columns[k];
+        if y1 <= y0 || x1 <= x0 {
             continue;
         }
-        match bands.last_mut() {
-            Some(last) if last.1 == y0 => last.1 = y1,
-            _ => bands.push((y0, y1)),
+        match rects.last_mut() {
+            Some(last) if last.y1 == y0 => {
+                last.y1 = y1;
+                last.x0 = last.x0.min(x0);
+                last.x1 = last.x1.max(x1);
+            }
+            _ => rects.push(DamageRect { x0, y0, x1, y1 }),
         }
     }
-    bands
+    rects
 }
 
 // ---- the frame's cursor hot-zones --------------------------------------------------
@@ -907,8 +1095,7 @@ pub(super) fn render_ops(
                 let region_oy = top.max(0) as usize;
                 let saved = r.metrics();
                 r.set_metrics(region);
-                let (canvas_w, canvas_h) = (canvas.w, canvas.h);
-                let mut inner = Canvas::band(canvas.buf, canvas_w, canvas_h, y0, y1);
+                let mut inner = canvas.narrowed(y0, y1);
                 render_ops(
                     ops,
                     &mut inner,
@@ -1350,8 +1537,10 @@ fn each_quad_pixel(
     }
     let (cx, cy) = (x + w / 2.0, y + h / 2.0);
     let half = (w * w + h * h).sqrt() / 2.0;
-    let x0 = (cx - half).floor().max(0.0) as usize;
-    let x1 = ((cx + half).ceil().max(0.0) as usize).min(canvas.w);
+    let x0 = ((cx - half).floor().max(0.0) as usize).max(canvas.x0);
+    let x1 = ((cx + half).ceil().max(0.0) as usize)
+        .min(canvas.w)
+        .min(canvas.x1);
     let y0 = (cy - half).floor().max(0.0) as usize;
     let y1 = ((cy + half).ceil().max(0.0) as usize).min(canvas.h);
     let (s, c) = if rot == 0.0 {
@@ -1451,8 +1640,10 @@ fn paint_particles(canvas: &mut Canvas, r: &Renderer, id: u32) {
             continue;
         }
         let half = size / 2.0;
-        let x0 = (x - half).floor().max(0.0) as usize;
-        let x1 = ((x + half).ceil().max(0.0) as usize).min(fb_w);
+        let x0 = ((x - half).floor().max(0.0) as usize).max(canvas.x0);
+        let x1 = ((x + half).ceil().max(0.0) as usize)
+            .min(fb_w)
+            .min(canvas.x1);
         let y0 = ((y - half).floor().max(0.0) as usize).max(canvas.y0);
         let y1 = ((y + half).ceil().max(0.0) as usize).min(canvas.y1);
         for py in y0..y1 {
@@ -1537,7 +1728,7 @@ pub(super) fn raster_frame(
     fb_w: usize,
     fb_h: usize,
     force: bool,
-) -> Vec<(usize, usize)> {
+) -> Vec<DamageRect> {
     let (cw, ch) = (r.cell_w.max(1), r.cell_h.max(1));
     let (ox, oy) = r.grid_origin(fb_w, fb_h);
     let strips = Strips::new(oy, ch, fb_h);
@@ -1558,33 +1749,45 @@ pub(super) fn raster_frame(
         r.blit_rows = 0;
         // the next frame without effects starts from a full raster, not a diff
         r.prev_ops.clear();
-        return vec![(0, fb_h)];
+        return vec![DamageRect::whole(fb_w, fb_h)];
     }
     // `same`: nothing to raster — the frame is the one painted, and so is the blink phase
     // of its caret (a phase flip of an unchanged frame dirties just the caret's row).
     let same_ops = frame == r.prev_ops.as_slice();
     let same = same_ops && r.caret_hidden == r.prev_caret_hidden;
-    // `changed`: every band whose pixels differ after this raster (what the present
+    // `changed`: every rect whose pixels differ after this raster (what the present
     // ships); `raster`: the subset drawn; `blits`: the strips copied from old rows.
+    let whole = || vec![DamageRect::whole(fb_w, fb_h)];
     let (changed, raster, blits) =
         if fresh || force || r.prev_ops.is_empty() || !gui_damage_enabled() {
-            (vec![(0, fb_h)], vec![(0, fb_h)], Vec::new())
+            (whole(), whole(), Vec::new())
         } else if same {
             (Vec::new(), Vec::new(), Vec::new())
         } else {
             let new = Leaves::of(frame, &strips, oy, ch, r.caret_hidden);
             let old = Leaves::of(&r.prev_ops, &strips, oy, ch, r.prev_caret_hidden);
             let mut dirty = strip_diff(&new, &old, &strips);
-            let changed = dirty_bands(&dirty, &strips);
             let blits = if gui_blit_enabled() {
                 strip_blits(&new, &old, &dirty, &strips, fb_h, oy, cw, ch)
             } else {
                 Vec::new()
             };
+            // A blitted strip is copied whole; a drawn one only in its changed columns.
+            let mut columns = vec![(0, fb_w); strips.count];
+            if gui_columns_enabled() {
+                let ligatures = r.ligatures();
+                for k in (0..strips.count).filter(|&k| dirty[k]) {
+                    columns[k] = strip_columns(&new, &old, k, fb_w, ox, cw, ligatures);
+                }
+            }
+            for &(k, _) in &blits {
+                columns[k] = (0, fb_w);
+            }
+            let changed = dirty_rects(&dirty, &columns, &strips);
             for &(k, _) in &blits {
                 dirty[k] = false;
             }
-            (changed, dirty_bands(&dirty, &strips), blits)
+            (changed, dirty_rects(&dirty, &columns, &strips), blits)
         };
     let bg0 = pack(r.bg());
     // The canvas leaves the renderer for the duration of the raster (the primitives
@@ -1604,12 +1807,18 @@ pub(super) fn raster_frame(
                 .copy_from_slice(&sources[n * ch * fb_w..(n + 1) * ch * fb_w]);
         }
     }
-    for &(y0, y1) in &raster {
-        let mut canvas = Canvas::band(&mut pixels, fb_w, fb_h, y0, y1);
+    for rect in &raster {
+        let mut canvas = Canvas::rect(
+            &mut pixels,
+            fb_w,
+            fb_h,
+            (rect.x0, rect.y0),
+            (rect.x1, rect.y1),
+        );
         // The conventional frame opens with a full `:clear`; a frame that doesn't
         // still expects a clean background, and a strip repaint needs one either
-        // way (the strip's old pixels are exactly what changed).
-        canvas.fill_rows(y0, y1 - y0, bg0);
+        // way (the rect's old pixels are exactly what changed).
+        canvas.fill_rows(rect.y0, rect.y1 - rect.y0, bg0);
         render_ops(frame, &mut canvas, r, ox, oy, cw, ch, bg0, 0);
     }
     r.canvas = pixels;
@@ -1666,25 +1875,11 @@ pub(super) fn paint(
             return;
         }
     };
-    let full = DamageRect {
-        x0: 0,
-        y0: 0,
-        x1: fb_w,
-        y1: fb_h,
-    };
-    let this: Vec<DamageRect> = bands
-        .iter()
-        .map(|&(y0, y1)| DamageRect {
-            x0: 0,
-            y0,
-            x1: fb_w,
-            y1,
-        })
-        .collect();
+    let full = DamageRect::whole(fb_w, fb_h);
     if resized || !gui_damage_enabled() {
         r.damage_ring.clear();
     }
-    r.damage_ring.push(this);
+    r.damage_ring.push(bands.clone());
     if r.damage_ring.len() > DAMAGE_HISTORY {
         let drop = r.damage_ring.len() - DAMAGE_HISTORY;
         r.damage_ring.drain(0..drop);
@@ -1703,20 +1898,31 @@ pub(super) fn paint(
                 .copied()
                 .filter(|d| !d.is_empty())
                 .collect();
-            // Sort + merge overlapping bands so each row is copied once.
-            acc.sort_by_key(|d| d.y0);
+            // Sort + merge so each pixel is copied once: rects that share rows become their
+            // bounding box, and a rect that continues the one above over the same columns
+            // extends it (the canvas is the truth everywhere, so a larger copy is exact).
+            acc.sort_by_key(|d| (d.y0, d.x0));
             let mut merged: Vec<DamageRect> = Vec::new();
             for d in acc {
                 match merged.last_mut() {
-                    Some(last) if d.y0 <= last.y1 => last.y1 = last.y1.max(d.y1),
+                    Some(last)
+                        if d.y0 < last.y1
+                            || (d.y0 == last.y1 && d.x0 == last.x0 && d.x1 == last.x1) =>
+                    {
+                        last.x0 = last.x0.min(d.x0);
+                        last.x1 = last.x1.max(d.x1);
+                        last.y1 = last.y1.max(d.y1);
+                    }
                     _ => merged.push(d),
                 }
             }
             merged
         };
     for d in &rects {
-        let (a, b) = (d.y0 * fb_w, d.y1 * fb_w);
-        buf[a..b].copy_from_slice(&r.canvas[a..b]);
+        for y in d.y0..d.y1 {
+            let (a, b) = (y * fb_w + d.x0, y * fb_w + d.x1);
+            buf[a..b].copy_from_slice(&r.canvas[a..b]);
+        }
     }
     dump_canvas(&r.canvas, fb_w, fb_h);
     let whole = rects.len() == 1 && rects[0] == full;
@@ -1753,13 +1959,17 @@ pub(super) fn paint(
             let body_us = us(t_body.duration_since(t_setup));
             let present_us = us(t_body.elapsed());
             let blit = r.blit_rows;
-            // `rows` is what was drawn: the changed rows less the ones a blit copied
+            // `rows` is what was drawn: the changed rows less the ones a blit copied;
+            // `changed` and `shipped` are pixels — a typed character changes a few cells
+            // of one row (column damage, ADR-482), and the present copies only those
             let rows: usize = bands
                 .iter()
-                .map(|(a, b)| b - a)
+                .map(|d| d.y1 - d.y0)
                 .sum::<usize>()
                 .saturating_sub(blit);
-            let shipped: usize = rects.iter().map(|d| d.y1 - d.y0).sum();
+            let area = |d: &DamageRect| (d.x1 - d.x0) * (d.y1 - d.y0);
+            let changed: usize = bands.iter().map(area).sum();
+            let shipped: usize = rects.iter().map(area).sum();
             let aa = if r.subpixel_text() {
                 "subpixel"
             } else {
@@ -1767,7 +1977,7 @@ pub(super) fn paint(
             };
             eprintln!(
                 "[gui-paint] {}us: fb={fb_w}x{fb_h} ops={op_count} rows={rows}/{fb_h} blit={blit} \
-                 shipped={shipped} clusters={clusters} misses={misses} build={build_us}us \
+                 changed={changed}px shipped={shipped}px clusters={clusters} misses={misses} build={build_us}us \
                  aa={aa} | setup={setup_us}us body={body_us}us present={present_us}us",
                 us(el)
             );
@@ -2395,7 +2605,7 @@ mod strip_diff_tests {
         let mut r = Renderer::new(1.0, default_families(), 14.0);
         raster_frame(&mut r, &frame, 96, 80, false);
         let bands = raster_frame(&mut r, &frame, 80, 96, false);
-        assert_eq!(bands, vec![(0, 96)]);
+        assert_eq!(bands, vec![DamageRect::whole(80, 96)]);
         let mut full = Renderer::new(1.0, default_families(), 14.0);
         raster_frame(&mut full, &frame, 80, 96, true);
         assert!(r.canvas == full.canvas);
@@ -2445,9 +2655,9 @@ mod strip_diff_tests {
     }
 
     /// Paint `steps` — a frame and the blink phase it is painted in — incrementally,
-    /// checking each against a from-scratch raster in the same phase; returns the bands
+    /// checking each against a from-scratch raster in the same phase; returns the rects
     /// each step repainted.
-    fn blink_run(steps: &[(Vec<Op>, bool)], fb_w: usize, fb_h: usize) -> Vec<Vec<(usize, usize)>> {
+    fn blink_run(steps: &[(Vec<Op>, bool)], fb_w: usize, fb_h: usize) -> Vec<Vec<DamageRect>> {
         let mut incremental = Renderer::new(1.0, default_families(), 14.0);
         let mut repainted = Vec::new();
         for (i, (frame, hidden)) in steps.iter().enumerate() {
@@ -2465,7 +2675,7 @@ mod strip_diff_tests {
     }
 
     #[test]
-    fn a_blink_phase_flip_repaints_only_the_caret_row() {
+    fn a_blink_phase_flip_repaints_only_the_caret_cell() {
         let mut frame = editor_frame(&["alpha", "beta", "gamma"], 1);
         frame.pop();
         frame.push(blinking(1));
@@ -2480,8 +2690,15 @@ mod strip_diff_tests {
             96,
             80,
         );
-        let (_, oy) = Renderer::new(1.0, default_families(), 14.0).grid_origin(96, 80);
-        let caret_row = (oy + ch, oy + 2 * ch);
+        let renderer = Renderer::new(1.0, default_families(), 14.0);
+        let ((ox, oy), cw) = (renderer.grid_origin(96, 80), renderer.cell_w);
+        // the caret sits at column 2 of row 1, and its row holds nothing else that changed
+        let caret_row = DamageRect {
+            x0: ox + 2 * cw,
+            y0: oy + ch,
+            x1: ox + 3 * cw,
+            y1: oy + 2 * ch,
+        };
         assert_eq!(repainted[1], vec![caret_row]);
         assert!(repainted[2].is_empty(), "{:?}", repainted[2]);
         assert_eq!(repainted[3], vec![caret_row]);
@@ -2577,6 +2794,375 @@ mod strip_diff_tests {
         ];
         assert!(rebuilt == new);
         assert_eq!(dirty_rows(&rebuilt, &old, 0, 10, 60), vec![5]);
+    }
+
+    // ---- column damage (ADR-482) ----
+
+    fn text_at(row: u16, col: u16, s: &str, fg: [u8; 3]) -> Op {
+        Op::Text {
+            row,
+            col,
+            s: s.into(),
+            face: Face {
+                fg: Some(fg),
+                ..Face::default()
+            },
+        }
+    }
+
+    fn bar(row: u16, col: u16) -> Op {
+        Op::Cursor {
+            row,
+            col,
+            style: CursorStyle::Bar,
+            color: None,
+            blink: None,
+        }
+    }
+
+    /// Two panes side by side — a line in each, a divider between — and a mode line.
+    fn split_frame(left: &str, right: &str, caret: u16) -> Vec<Op> {
+        vec![
+            Op::Clear,
+            text_at(0, 0, left, [200, 200, 200]),
+            Op::Rect {
+                row: 0,
+                col: 15,
+                w: 1,
+                h: 3,
+                face: Face {
+                    bg: Some([60, 60, 60]),
+                    ..Face::default()
+                },
+                radius: 0.0,
+            },
+            text_at(0, 16, right, [180, 220, 180]),
+            bar(0, caret),
+            text_at(2, 0, "mode line", [90, 90, 90]),
+        ]
+    }
+
+    #[test]
+    fn typing_a_character_repaints_only_the_cells_it_changed() {
+        let renderer = Renderer::new(1.0, default_families(), 14.0);
+        let (cw, ch) = (renderer.cell_w, renderer.cell_h);
+        let (fb_w, fb_h) = (32 * cw, 4 * ch);
+        let (ox, oy) = renderer.grid_origin(fb_w, fb_h);
+        let repainted = blink_run(
+            &[
+                (split_frame("let x", "other pane", 5), false),
+                (split_frame("let x=", "other pane", 6), false),
+                (split_frame("let x=", "other pane!", 6), false),
+            ],
+            fb_w,
+            fb_h,
+        );
+        // the line's text grew a cell and the caret moved one: columns 0..7, not the
+        // divider or the pane beside it
+        assert_eq!(
+            repainted[1],
+            vec![DamageRect {
+                x0: ox,
+                y0: oy,
+                x1: ox + 7 * cw,
+                y1: oy + ch,
+            }]
+        );
+        // a change in the other pane is that pane's cells alone
+        assert_eq!(
+            repainted[2],
+            vec![DamageRect {
+                x0: ox + 16 * cw,
+                y0: oy,
+                x1: ox + 27 * cw,
+                y1: oy + ch,
+            }]
+        );
+    }
+
+    /// Every op kind that has columns, changed one at a time inside a row that keeps the
+    /// rest, paints what a full raster paints — tabs, wide clusters, scaled text, a
+    /// sub-cell rect, pixel text, a turned quad, bitboards and spans.
+    #[test]
+    fn column_damage_matches_a_full_raster_for_every_op_kind() {
+        let renderer = Renderer::new(1.0, default_families(), 14.0);
+        let (cw, ch) = (renderer.cell_w, renderer.cell_h);
+        let (fb_w, fb_h) = (40 * cw, 6 * ch);
+        let (_, oy) = renderer.grid_origin(fb_w, fb_h);
+        let band = Op::Rect {
+            row: 1,
+            col: 0,
+            w: 40,
+            h: 1,
+            face: Face {
+                bg: Some([30, 30, 50]),
+                ..Face::default()
+            },
+            radius: 0.0,
+        };
+        let base = |variant: usize| {
+            let pick = |n: usize| variant == n;
+            let mut ops = vec![
+                Op::Clear,
+                band.clone(),
+                text_at(
+                    1,
+                    2,
+                    if pick(1) { "a\tbc" } else { "a\tb" },
+                    [220, 220, 220],
+                ),
+                text_at(
+                    1,
+                    20,
+                    if pick(2) { "日本語" } else { "日本" },
+                    [200, 180, 160],
+                ),
+                Op::Text {
+                    row: 2,
+                    col: if pick(3) { 5 } else { 4 },
+                    s: "Ab".into(),
+                    face: Face {
+                        fg: Some([250, 250, 250]),
+                        bg: Some([10, 60, 10]),
+                        scale: 2,
+                        ..Face::default()
+                    },
+                },
+                Op::FRect {
+                    x: if pick(4) { 11.6 } else { 10.3 },
+                    y: 1.2,
+                    w: 3.5,
+                    h: 0.6,
+                    face: Face {
+                        bg: Some([200, 90, 90]),
+                        ..Face::default()
+                    },
+                    opacity: 0.5,
+                    radius: 0.2,
+                },
+                Op::TextPx {
+                    x: if pick(5) {
+                        31.5 * cw as f32
+                    } else {
+                        30.0 * cw as f32
+                    },
+                    y: (oy + ch) as f32 + 1.0,
+                    s: "px".into(),
+                    face: Face {
+                        fg: Some([90, 200, 250]),
+                        ..Face::default()
+                    },
+                    align: crate::host::gui::Align::Center,
+                },
+                Op::Quad {
+                    x: 36.0 * cw as f32,
+                    y: (oy + ch) as f32,
+                    w: cw as f32 * 2.0,
+                    h: ch as f32 * 0.5,
+                    color: [255, 255, 0, 200],
+                    rot: if pick(6) { 0.7 } else { 0.3 },
+                },
+                Op::Cells {
+                    row0: 4,
+                    col0: 3,
+                    w: 8,
+                    aspect: 2,
+                    bytes: vec![if pick(7) { 0b1010_0101 } else { 0b0101_1010 }],
+                    color: Some([120, 250, 120]),
+                },
+                Op::VSpans {
+                    row0: 4,
+                    col0: 25,
+                    cols: vec![vec![(1, Some([250, 120, 120]))], vec![(1, None)]]
+                        .into_iter()
+                        .map(|mut col| {
+                            if pick(8) {
+                                col[0].1 = Some([10, 10, 250]);
+                            }
+                            col
+                        })
+                        .collect(),
+                },
+                bar(1, if pick(9) { 9 } else { 8 }),
+                text_at(5, 0, "mode line", [90, 90, 90]),
+            ];
+            if pick(10) {
+                // an op added mid-row: the middles differ in length
+                ops.insert(3, text_at(1, 12, "new", [255, 255, 255]));
+            }
+            ops
+        };
+        let mut steps = Vec::new();
+        for variant in 0..=10 {
+            steps.push((base(0), false));
+            steps.push((base(variant), false));
+        }
+        let repainted = blink_run(&steps, fb_w, fb_h);
+        // every change but the cell-wide ones stayed inside its row's columns
+        let narrow = repainted
+            .iter()
+            .flatten()
+            .filter(|rect| rect.x1 - rect.x0 < fb_w)
+            .count();
+        assert!(narrow > 0, "{repainted:?}");
+    }
+
+    /// Rasterising into a rect touches nothing outside it and paints, inside it, what a
+    /// full raster paints — every primitive honours the column clip as it does the rows.
+    #[test]
+    fn a_raster_confined_to_a_rect_paints_only_inside_it_and_exactly_there() {
+        let mut renderer = Renderer::new(1.0, default_families(), 14.0);
+        let (cw, ch) = (renderer.cell_w, renderer.cell_h);
+        let (fb_w, fb_h) = (24 * cw, 6 * ch);
+        let (ox, oy) = renderer.grid_origin(fb_w, fb_h);
+        let frame = vec![
+            Op::Clear,
+            text_at(0, 0, "wide 日本 and text", [230, 230, 230]),
+            Op::Text {
+                row: 1,
+                col: 1,
+                s: "Big".into(),
+                face: Face {
+                    fg: Some([255, 255, 255]),
+                    bg: Some([50, 20, 20]),
+                    scale: 2,
+                    underline: true,
+                    ..Face::default()
+                },
+            },
+            Op::Rect {
+                row: 3,
+                col: 2,
+                w: 12,
+                h: 2,
+                face: Face {
+                    bg: Some([20, 60, 20]),
+                    ..Face::default()
+                },
+                radius: 0.4,
+            },
+            Op::FRect {
+                x: 3.3,
+                y: 0.4,
+                w: 9.0,
+                h: 4.2,
+                face: Face {
+                    bg: Some([90, 90, 200]),
+                    ..Face::default()
+                },
+                opacity: 0.6,
+                radius: 0.5,
+            },
+            Op::Quad {
+                x: 5.0 * cw as f32,
+                y: (oy + 2 * ch) as f32,
+                w: 6.0 * cw as f32,
+                h: ch as f32,
+                color: [250, 200, 0, 180],
+                rot: 0.5,
+            },
+            Op::Cursor {
+                row: 4,
+                col: 6,
+                style: CursorStyle::Block,
+                color: None,
+                blink: None,
+            },
+            Op::Cursor {
+                row: 2,
+                col: 9,
+                style: CursorStyle::Hollow,
+                color: None,
+                blink: None,
+            },
+            Op::Cursor {
+                row: 5,
+                col: 7,
+                style: CursorStyle::Underline,
+                color: None,
+                blink: None,
+            },
+            Op::CellRegion {
+                x: 14,
+                y: 2,
+                w: 8,
+                h: 3,
+                px: 20.0,
+                ops: vec![text_at(0, 0, "region", [200, 200, 100])],
+            },
+        ];
+        let mut full = vec![0u32; fb_w * fb_h];
+        let bg0 = pack(renderer.bg());
+        {
+            let mut canvas = Canvas::full(&mut full, fb_w, fb_h);
+            canvas.fill_rows(0, fb_h, bg0);
+            render_ops(&frame, &mut canvas, &mut renderer, ox, oy, cw, ch, bg0, 0);
+        }
+        const GARBAGE: u32 = 0x00de_ad42;
+        // rects that cut through glyphs, a scaled cell, rounded corners, the turned quad,
+        // each caret's rim and the cell region
+        for (x0, y0, x1, y1) in [
+            (ox + cw / 2, oy, ox + 9 * cw + 3, oy + ch),
+            (ox + 2 * cw + 1, oy + ch, ox + 5 * cw - 2, oy + 3 * ch),
+            (ox + 3 * cw, oy + 3 * ch, ox + 13 * cw + 5, oy + 5 * ch),
+            (ox + 6 * cw + 2, oy + 2 * ch, ox + 9 * cw + 7, oy + 3 * ch),
+            (ox + 15 * cw + 3, oy + 2 * ch, fb_w, oy + 4 * ch),
+            (0, 0, fb_w, fb_h),
+        ] {
+            let mut pixels = vec![GARBAGE; fb_w * fb_h];
+            {
+                let mut canvas = Canvas::rect(&mut pixels, fb_w, fb_h, (x0, y0), (x1, y1));
+                canvas.fill_rows(y0, y1 - y0, bg0);
+                render_ops(&frame, &mut canvas, &mut renderer, ox, oy, cw, ch, bg0, 0);
+            }
+            for y in 0..fb_h {
+                for x in 0..fb_w {
+                    let inside = (x0..x1).contains(&x) && (y0..y1).contains(&y);
+                    let expected = if inside { full[y * fb_w + x] } else { GARBAGE };
+                    assert_eq!(
+                        pixels[y * fb_w + x],
+                        expected,
+                        "pixel ({x}, {y}) for the rect {x0}..{x1} x {y0}..{y1}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_strip_whose_ops_have_no_known_columns_is_repainted_whole() {
+        let strips = Strips::new(0, 10, 40);
+        let columns = |new: &[Op], old: &[Op]| {
+            let (a, b) = (
+                Leaves::of(new, &strips, 0, 10, false),
+                Leaves::of(old, &strips, 0, 10, false),
+            );
+            strip_columns(&a, &b, 1, 200, 0, 8, false)
+        };
+        let row = |s: &str| vec![Op::Clear, text_at(0, 2, s, [200, 200, 200])];
+        assert_eq!(columns(&row("abcd"), &row("abc")), (16, 48));
+        // a clear that came or went reaches every column
+        let mut cleared = row("abcd");
+        cleared.remove(0);
+        assert_eq!(columns(&cleared, &row("abcd")), (0, 200));
+        // so does a cell region, whose width the painter does not clip
+        let region = |s: &str| {
+            vec![
+                Op::Clear,
+                Op::CellRegion {
+                    x: 2,
+                    y: 0,
+                    w: 4,
+                    h: 1,
+                    px: 14.0,
+                    ops: vec![text_at(0, 0, s, [200, 200, 200])],
+                },
+            ]
+        };
+        assert_eq!(columns(&region("b"), &region("a")), (0, 200));
+        // a change off the right edge is the row whole rather than an empty rect
+        let far = |s: &str| vec![Op::Clear, text_at(0, 400, s, [200, 200, 200])];
+        assert_eq!(columns(&far("b"), &far("a")), (0, 200));
     }
 }
 

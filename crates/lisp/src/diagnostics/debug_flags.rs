@@ -547,6 +547,11 @@ pub const FLAGS: &[DebugFlag] = &[
         "`=0`: rasterise every dirty strip instead of copying one that is a translation of old pixels (ADR-343) — the escape hatch if a blitted strip ever differs from a drawn one",
     ),
     f(
+        "BROOD_GUI_COLUMNS",
+        HOST,
+        "`=0`: re-rasterise a changed cell row across the whole window instead of only the columns its changed ops can paint (ADR-482) — the escape hatch if a leaf ever paints outside the columns it is given",
+    ),
+    f(
         "BROOD_GUI_TRACE",
         HOST,
         "`=1`: print every GUI paint's breakdown (rows repainted, clusters, timing) — BROOD_STALL_MS at threshold 0 without the per-native-call flood",
