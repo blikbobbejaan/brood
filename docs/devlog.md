@@ -3933,3 +3933,17 @@ its shape run as a script reads 3 at tier 2 on 8b7fddaa with the arm `:native`, 
 `:bailed` after. The first push's guard also asked the arm to go native again once the predicate
 was restored, which the latch never allows; CI went red on it, and on the KI having no archive
 section. Not run on this machine: the suites run in CI.
+
+2026-10-27 (a JIT-refusal sweep over every benchmark row finds no cheap lowering left): every
+row run with `BROOD_JIT_BAIL_TRACE=1` on `9e5866f3`, each refusal ranked by whether its arm is
+hot. None is the `nbody` kind (one call to a variadic native keeping a hot arm off the native
+tier). By class: (1) `MakeClosure` in the arm — `nqueens`' `solve` (its row ~20% in the VM
+loop), the spawn loops, `latency`'s `dispatch`, two `matmul` closures; the native callback was
+removed as a dead lever on 2026-10-12, and the profitability gate refuses `solve` anyway
+(`call-mediated-boxed`), so this class needs partial lowering (compute-frontier §2c). (2)
+`hosts-receive` — by design; the send-then-receive native loop measured slower (ADR-410's
+amendment). (3) `errors`' self-loop around `try` — the row's cost is the throw and unwind,
+which run in the runtime on either tier. (4) `call-mediated-boxed` on prelude and std arms —
+`seq`, `reverse`, `map`, `into`, `get`, the supervisor and regex internals run at setup, and
+`%match-count-sym` only during macro expansion; `json-slice` forwards to two natives, so
+lowering it moves nothing. (5) Zero-slot wrappers and `module-load-in-flight` retries.
