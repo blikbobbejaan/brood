@@ -1672,6 +1672,10 @@ impl Heap {
     /// the error: every catch is done with it here, so its trace moves rather than copies.
     #[inline]
     pub(crate) fn note_caught(&mut self, error: crate::error::LispError, caught: Value) {
+        // A swallowed interrupt is raised again at the next safepoint (ADR-491, sticky).
+        if error.kind == crate::error::ErrorKind::Interrupted {
+            crate::process::interrupt_caught();
+        }
         // A contract violation binds a map rebuilt from its payload, not the payload.
         let Some(payload) = error.payload else { return };
         // Only a payload this process minted: a literal or a `def`'d sentinel lives in a

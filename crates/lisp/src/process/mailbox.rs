@@ -1158,6 +1158,31 @@ pub(crate) fn take_current_interrupt() -> Option<bool> {
     super::scheduler::with_current_mailbox(|mailbox| mailbox.interrupt.take()).flatten()
 }
 
+/// Is the calling process inside an interrupt window (`proc/interruptible`)?
+pub(crate) fn current_interrupt_window_open() -> bool {
+    super::scheduler::with_current_mailbox(|mailbox| mailbox.interrupt.open_for_us().is_some())
+        .unwrap_or(false)
+}
+
+/// A `catch` inside the interrupted work bound an interrupt (ADR-491): it is sticky, so end
+/// the quantum — the next safepoint, the first after the handler, raises it again. Called
+/// for every caught `:interrupted`, so a catch-all cannot keep the process inside its window.
+pub(crate) fn interrupt_caught() {
+    if super::scheduler::with_current_mailbox(|mailbox| mailbox.interrupt.due()).unwrap_or(false) {
+        super::scheduler::expire_quantum();
+    }
+}
+
+/// How long `pid`'s interrupt window has been open, or None — a frontend's busy cursor
+/// asks it of the loop it delivers to (ADR-491). Dead or closed: None.
+pub(crate) fn interrupt_window_open_for(pid: u64) -> Option<std::time::Duration> {
+    let mailbox = REGISTRY.get(pid)?;
+    mailbox
+        .interrupt
+        .open_for_us()
+        .map(std::time::Duration::from_micros)
+}
+
 /// Is an interrupt due for the calling process? A peek for code that cannot raise where it
 /// stands — a native loop's poll, a long builtin's own loop, a parser's progress callback —
 /// and leaves it for the next safepoint (or raises [`take_current_interrupt`]'s itself).

@@ -695,23 +695,13 @@ collection, and the lever is what the process keeps alive, not the code that ran
   "`s` cut to 72 characters for a trace line (an input can carry a paste or a task reply)."
   (if (> (string/length s) 72) (str (string/substring s 0 72) "…") s))
 
-(defn- ui-interrupted? (e)
-  "Whether the caught `e` is an interrupt (ADR-491) rather than a failure."
-  (and (map? e) (= (get e :kind) :interrupted)))
-
 (defn- ui-interruptible (ceiling thunk)
-  "`(thunk)` inside an interrupt window (ADR-491, `proc/allow-interrupt`), with `ceiling`
-ms (nil: none) after which it interrupts itself, as `[:ok value]`, `[:interrupted e]` or
-`[:threw e]`. The window opens and closes INSIDE the `try`, so an interrupt can land only
-where this catches it — never in the loop's own glue."
-  (try
-    (do
-      (proc/allow-interrupt ceiling)
-      (let (value (thunk))
-        (do (proc/inhibit-interrupt) [:ok value])))
-    (catch e
-      (proc/inhibit-interrupt)
-      [(if (ui-interrupted? e) :interrupted :threw) e])))
+  "`(thunk)` inside an interrupt window (ADR-491, `proc/interruptible`), with `ceiling` ms
+(nil: none) after which it interrupts itself, as `[:ok value]`, `[:interrupted e]` or `[:threw
+e]`. The kernel opens, closes and catches the window around the thunk, so an interrupt can
+land only inside it — never in the loop's own glue — and a catch-all inside the thunk cannot
+swallow it (it is sticky)."
+  (try (proc/interruptible ceiling thunk) (catch e [:threw e])))
 
 (defn- ui-event-ceiling-ms (model)
   "How long the fold of a background message may run before the loop interrupts it: the
@@ -744,8 +734,9 @@ previous model, and is reported through the watchdog with `:interrupted true`."
       ;; reply, a diagnostics batch — with tracing off.
       (when (not (nil? cost)) (ui-trace "update" ms (ui-abbrev (pr-str input)) cost))
       (cond
-        (= how :interrupted) (ui-report-slow model "update" (ui-input-tag input) ms true)
-        (> ms (ui-slow-ms model)) (ui-report-slow model "update" (ui-input-tag input) ms false))
+        (= how :interrupted) (ui-report-slow model "update" (ui-input-tag input) ms true input?)
+        (> ms (ui-slow-ms model))
+          (ui-report-slow model "update" (ui-input-tag input) ms false input?))
       (if (= how :ok) value model))))
 
 ;; ---- the watchdog (ADR-490) ---------------------------------------------------
@@ -777,17 +768,22 @@ itself, a vector by its leading keyword — and its second, when that is one too
         (first input))
     else (type-of input)))
 
-(defn- ui-report-slow (model phase tag ms interrupted?)
+(defn- ui-report-slow (model phase tag ms interrupted? input?)
   "Report one slow `phase` (\"update\" / \"view\") of `ms` on `tag` — or one the loop
 INTERRUPTED (ADR-491, `interrupted?`): to the model's `:on-slow` hook — `(fn (report) …)`,
-`report` a `{:phase :tag :ms}` map, with `:interrupted true` for an interrupted one, its
-result ignored — or, without one, a line on stderr. A hook is how an app puts the report
-where its user looks (an editor's *Messages*, its echo area's \"Quit\"); one that throws is
-logged and dropped, since the watchdog must not become a crash of its own. nil."
+`report` a `{:phase :tag :ms :input}` map, with `:interrupted true` for an interrupted one,
+its result ignored — or, without one, a line on stderr. `:input` (`input?`) is true when
+the fold was the USER's input (a key, a click: what came on the priority lane, or what
+`:poll-tagged` called input) and false for a background message or a timer — an editor
+says \"Quit\" for an interrupted INPUT turn only, and a tag alone cannot tell `:up` from
+`:lsp-diagnostics`. A view's report is `:input true`: only the quit key, the user, stops a
+view. A hook is how an app puts the report where its user looks (an editor's *Messages*,
+its echo area); one that throws is logged and dropped, since the watchdog must not become a
+crash of its own. nil."
   (let (hook (get model :on-slow)
         report (if interrupted?
-                 {:phase phase :tag tag :ms ms :interrupted true}
-                 {:phase phase :tag tag :ms ms}))
+                 {:phase phase :tag tag :ms ms :input (if input? true false) :interrupted true}
+                 {:phase phase :tag tag :ms ms :input (if input? true false)}))
     (do
       (if (nil? hook)
         (io/puts (string/format "ui-run: %s %s %.1fms on %s"
@@ -806,7 +802,7 @@ time on `clock` (`:slow-view-at`). The clock, unchanged when nothing was reporte
   (let (now (os/now)
         last (get clock :slow-view-at))
     (if (and (> ms (ui-slow-ms model)) (or (nil? last) (>= (- now last) *ui-slow-view-quiet-ms*)))
-      (do (ui-report-slow model "view" :view ms false) (assoc clock :slow-view-at now))
+      (do (ui-report-slow model "view" :view ms false true) (assoc clock :slow-view-at now))
       clock)))
 
 (defn- ui-fold-budget-ns (model)
@@ -933,18 +929,21 @@ render), when the error re-raises; `[:interrupted nil nil ms]` when the quit key
 (ADR-491) — reported through the watchdog, and the screen keeps its last frame. The
 previous turn's memoised fragments are in scope for `ui-memo` (ADR-336) — nil outside a
 loop, `{}` on the first turn."
-  (let ([outcome ms cost] (ui-timed (fn ()
-                                      (ui-interruptible nil
-                                        (fn ()
-                                          (binding (*ui-memo* (or (get clock :memo) {}))
-                                            (view model cols rows))))))
+  (let ([outcome ms cost] (ui-timed
+                            (fn ()
+                              (ui-interruptible nil
+                                (fn ()
+                                  ;; the harvest walks every op too: inside the window
+                                  (ui-harvest (binding (*ui-memo* (or (get clock :memo) {}))
+                                                (view model cols rows))
+                                    (get display :fragments?))))))
         [how value] outcome)
     (if (= how :interrupted)
-      (do (ui-report-slow model "view" :view ms true) [:interrupted nil nil ms])
+      (do (ui-report-slow model "view" :view ms true true) [:interrupted nil nil ms])
       (try
         (if (= how :threw)
           (throw value)
-          (let ([flat table] (ui-harvest value (get display :fragments?)))
+          (let ([flat table] value)
             (do
               (ui-trace "view" ms (str (count flat) " ops, " (count table) " memo") cost)
               [:frame flat table ms])))
@@ -1168,11 +1167,11 @@ newest value sends it with `proc/send-latest`, so a newer one replaces it while 
 
 **The watchdog (ADR-490).** An `update` fold or a `view` slower than `*ui-slow-ms*` (the
 model's `:slow-ms`) is reported, naming the input it folded by its tag (`ui-input-tag`) —
-to the model's `:on-slow` hook, `(fn (report) …)` with `report` a `{:phase :tag :ms}` map,
+to the model's `:on-slow` hook, `(fn (report) …)` with `report` a `{:phase :tag :ms :input}` map (`:input` true for the user's own input),
 or as a line on stderr. A slow view is reported at most every `*ui-slow-view-quiet-ms*`.
 
 **Quit (ADR-491).** Each `update` and `view` runs in an interrupt window
-(`proc/allow-interrupt`), and the loop arms the kernel's quit key: the frontend's C-g
+(`proc/interruptible`), and the loop arms the kernel's quit key: the frontend's C-g
 (`*ui-quit-key*`, `:ctrl-g`; the model's `:quit-key`, nil for none) arriving while a turn
 has run past `*ui-quit-busy-ms*` (the model's `:quit-busy-ms`) STOPS it, wherever it is —
 deep in a loop, inside a tree-sitter parse. An interrupted `update` drops its input and

@@ -1079,6 +1079,45 @@ pub(crate) fn interrupted_error(by_ceiling: bool) -> LispError {
         .with_code(crate::error::error_codes::INTERRUPTED)
 }
 
+/// The interrupt poll of a builtin that iterates natively over a large input (ADR-491): the
+/// sort's chunks, a string split's parts, a regex's matches, a rope scan's characters, a JSON
+/// value's nodes, a diff's edit distance. `tick` once per item; every [`InterruptPoll::EVERY`]
+/// items it makes the safepoint's probe — one thread-local borrow and a relaxed load — and
+/// raises a due interrupt. Between probes it is a counter decrement, so the loop it sits in
+/// does not get measurably slower.
+pub(crate) struct InterruptPoll(u32);
+
+impl InterruptPoll {
+    /// Items between probes: a few microseconds of the cheapest per-item work, so an
+    /// interrupt lands within well under a millisecond of any of these loops.
+    pub(crate) const EVERY: u32 = 4096;
+
+    pub(crate) const fn new() -> Self {
+        InterruptPoll(Self::EVERY)
+    }
+
+    /// One item.
+    #[inline]
+    pub(crate) fn tick(&mut self) -> Result<(), LispError> {
+        self.advance(1)
+    }
+
+    /// `n` items at once — a byte count, a chunk.
+    #[inline]
+    pub(crate) fn advance(&mut self, n: u32) -> Result<(), LispError> {
+        match self.0.checked_sub(n) {
+            Some(left) if left > 0 => {
+                self.0 = left;
+                Ok(())
+            }
+            _ => {
+                self.0 = Self::EVERY;
+                check_interrupt()
+            }
+        }
+    }
+}
+
 /// Raise the calling process's due interrupt, if any — the probe every safepoint that can
 /// raise makes once per quantum (ADR-491).
 #[inline]

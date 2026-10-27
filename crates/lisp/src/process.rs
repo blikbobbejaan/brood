@@ -96,7 +96,10 @@ pub use timer::SchedDeadline;
 /// for `timer`'s lazy cancellation.
 pub use timer::pending_timer_count;
 
-pub(crate) use mailbox::{current_interrupt_due, set_quit_key, take_current_interrupt};
+pub(crate) use mailbox::{
+    current_interrupt_due, current_interrupt_window_open, interrupt_caught,
+    interrupt_window_open_for, set_quit_key, take_current_interrupt,
+};
 pub use mailbox::{
     deactivate_alias, list_local_pids, mailbox_len, max_mailbox, process_cpu_ns, process_gc_runs,
     process_mem, process_reductions, process_status, receive_lane, receive_match, send,

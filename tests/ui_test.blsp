@@ -1108,6 +1108,11 @@
   "A loop that never ends: only an interrupt stops it."
   (quit-spin (inc n)))
 
+(defn- quit-stubborn (swallowed)
+  "Work that catches EVERY error, an interrupt too, and goes on: Emacs's quit is not an
+error a catch-all sees, so the kernel keeps raising it (sticky) until the window closes."
+  (do (try (quit-spin 0) (catch e nil)) (quit-stubborn (inc swallowed))))
+
 (defn- quit-count-to (n limit)
   "Count to `limit` — a fold that runs a while and then finishes."
   (if (= n limit) n (quit-count-to (inc n) limit)))
@@ -1116,23 +1121,38 @@
   (receive ([^tag value] value) (after 20000 :timed-out)))
 
 (describe "proc/interrupt — the kernel's quit (ADR-491)"
-  (test "a running process in its window is stopped, and its try sees :interrupted"
+  (test "a running process in its window is stopped, and proc/interruptible says so"
     (let (me (self)
-          spinner (spawn (try
-                           (do (proc/allow-interrupt nil) (send me [:spinning true]) (quit-spin 0))
-                           (catch e (send me [:caught [(:kind e) (:code e)]])))))
+          spinner (spawn (let (r (proc/interruptible nil
+                                   (fn () (do (send me [:spinning true]) (quit-spin 0)))))
+                           (send me [:caught [(first r) (:kind (second r)) (:code (second r))]]))))
       (quit-await :spinning)
       (is (proc/interrupt spinner))
-      (assert= (quit-await :caught) [:interrupted "E0047"])))
+      (assert= (quit-await :caught) [:interrupted :interrupted "E0047"])))
+  (test "a try inside the window catches the interrupt like any error — and cannot keep it"
+    (let (me (self)
+          worker (spawn
+                   (let (r (proc/interruptible nil
+                             (fn ()
+                               (do
+                                 (send me [:spinning true])
+                                 (try (quit-spin 0) (catch e :swallowed))
+                                 ;; swallowed — but it is sticky: the first safepoint after
+                                 ;; the handler raises it again, long before this ends
+                                 (quit-count-to 0 1000000000)
+                                 :finished))))
+                     (send me [:outer [(first r) (:kind (second r))]]))))
+      (quit-await :spinning)
+      (is (proc/interrupt worker))
+      (assert= (quit-await :outer) [:interrupted :interrupted])))
   (test "a process blocked in receive is not interrupted, now or later"
     (let (me (self)
-          parked (spawn (try
-                          (do
-                            (proc/allow-interrupt nil)
-                            (send me [:parked true])
-                            (receive (:go (quit-count-to 0 100000)))
-                            (send me [:finished :ran-to-the-end]))
-                          (catch e (send me [:finished (:kind e)])))))
+          parked (spawn (let (r (proc/interruptible nil
+                                  (fn ()
+                                    (do
+                                      (send me [:parked true])
+                                      (receive (:go (quit-count-to 0 100000)))))))
+                          (send me [:finished r]))))
       (quit-await :parked)
       ; it may not have reached its receive yet: wait until it is parked there
       (letrec (wait (fn ()
@@ -1141,7 +1161,7 @@
         (wait))
       (is (not (proc/interrupt parked)))
       (send parked :go)
-      (assert= (quit-await :finished) :ran-to-the-end)))
+      (assert= (quit-await :finished) [:ok 100000])))
   (test "a closed window is never interrupted"
     (is (not (proc/interrupt (self))))))
 
@@ -1164,10 +1184,32 @@
       (let (report (quit-await :slow))
         (assert= (:phase report) "update")
         (assert= (:tag report) :spin)
+        (assert= (:input report) true)
         (is (:interrupted report)))
       (proc/send-priority loop :quit)
       ; the spin never reached the model; the C-g is still folded, as the app's own key
       (assert= (lane-await-seen) [:ctrl-g])))
+  (test "an update that catches everything in a loop is still stopped, and the loop runs on"
+    (let (me (self)
+          step (fn (model input cols rows)
+                 (cond
+                   (= input :quit) (do (send me [:seen (:seen model)]) (assoc model :done true))
+                   (= input :stubborn) (do (send me [:spinning true]) (quit-stubborn 0))
+                   (= input :tick) model
+                   else (lane-record model input)))
+          loop (lane-start me
+                 {:quit-busy-ms 0 :on-slow (fn (report) (send me [:slow report]))}
+                 step))
+      (proc/send-priority loop :stubborn)
+      (send loop :go)
+      (quit-await :spinning)
+      (proc/send-priority loop :ctrl-g)
+      (let (report (quit-await :slow))
+        (assert= (:tag report) :stubborn)
+        (is (:interrupted report)))
+      (proc/send-priority loop "after")
+      (proc/send-priority loop :quit)
+      (assert= (lane-await-seen) [:ctrl-g "after"])))
   (test "a background event past the ceiling is interrupted by the loop and reported"
     (let (me (self)
           step (fn (model input cols rows)
@@ -1186,6 +1228,7 @@
       (let (report (quit-await :slow))
         (assert= (:phase report) "update")
         (assert= (:tag report) :stuck)
+        (assert= (:input report) false)
         (is (:interrupted report))
         (is (>= (:ms report) 50)))
       (assert= (lane-await-seen) [[:after 1]])))
