@@ -549,6 +549,22 @@
       (is (<= (lane-count-renders 0) 2)))))
 
 (describe "proc/send-latest — newest-wins (ADR-490)"
+  ;; an app addresses its loop by name (bedit's `:editor`): the name is a local process,
+  ;; so the lane survives it — bare, and as a `{:name :node}` address naming this node
+  (test "a locally registered name keeps both lanes"
+    (let (me (self)
+          loop (lane-start me {:coalesce-input? true} (lane-update me))
+          address {:name :ui-test-lanes :node (node/name)})
+      (proc/register :ui-test-lanes loop)
+      (doseq (i (range 10)) (proc/send-latest :ui-test-lanes :progress [:progress i]))
+      (proc/send-latest address :progress [:progress 10])
+      (send loop [:background 0])
+      (proc/send-priority :ui-test-lanes "k")
+      (proc/send-priority address "j")
+      (send loop :quit)
+      (send loop :go)
+      ; one [:progress] survives; "j" waits behind the turn's one arrival-order fold
+      (assert= (lane-await-seen) ["k" [:progress 10] "j" [:background 0] :quit])))
   (test "a queued message is replaced by a newer one with its key; unkeyed ones all arrive"
     (let (me (self)
           loop (lane-start me {:coalesce-input? true} (lane-update me)))

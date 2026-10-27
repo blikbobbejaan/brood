@@ -983,7 +983,8 @@ pub(crate) fn deliver_priority_credited(pid: u64, msg: Message, credit: Delivery
 
 /// `(proc/send-priority target msg)` / `(proc/send-latest target key msg)`: `send` in
 /// another lane (ADR-490). A lane is a property of a queued envelope in THIS runtime, so
-/// a target that is not a live local pid — a remote pid, a name address, a dead pid —
+/// a target that is not a live local process — a remote pid or name, a dead pid, a name
+/// nobody holds —
 /// gets an ordinary `send`: the message arrives, without the lane. Never the L1 copy
 /// into a parked receiver's heap either: a lane must be on the envelope, and a LATEST
 /// one must stay a wire payload, which the delivery that supersedes it can drop without
@@ -994,10 +995,19 @@ pub fn send_in_lane(
     msg: Value,
     latest_key: Option<Value>,
 ) -> Result<(), LispError> {
-    let mailbox = match target {
-        Value::Pid { node, id } if crate::dist::is_local(node) => REGISTRY.get(id),
+    let local_id = match target {
+        Value::Pid { node, id } if crate::dist::is_local(node) => Some(id),
+        // A registered name — bare, or a `{:name :node}` address naming this node — is a
+        // local pid one lookup away, and keeps its lane: an app addresses its UI loop by
+        // name (`:editor`), and that is exactly the receiver lanes exist for.
+        Value::Keyword(name) => crate::dist::whereis(name),
+        Value::Map(mid) => match read_name_address(heap, mid) {
+            Ok((name, node)) if crate::dist::is_local(node) => crate::dist::whereis(name),
+            _ => None,
+        },
         _ => None,
     };
+    let mailbox = local_id.and_then(|id| REGISTRY.get(id));
     let Some(mailbox) = mailbox else {
         return send(heap, target, msg);
     };
