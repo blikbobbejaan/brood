@@ -302,6 +302,43 @@
                   (editor/treesit/indent-column ts-held-src :elixir bol spec tree)))))
         (editor/treesit/free-tree tree)))
 
+    ;; ADR-483: an editor holds a rope, and RET used to build the whole buffer's string to
+    ;; indent one line. A rope answers exactly what its string does — with the tree and
+    ;; without, on the multi-byte line, a comment, a blank and an aligned bracket.
+    (def ts-rope-src
+      "defmodule A do\n  # héllo — ünïcode\n\n  def f(x) do\n    g(x,\n      1)\n  end\nend\n")
+
+    (test "indent-column over a rope agrees with the string on every line"
+      (let (rope (text/from-string ts-rope-src)
+            tree (editor/treesit/open-tree rope :elixir)
+            spec {:width 2 :blocks #{:do_block :body} :dedent #{"end"} :brackets #{:arguments}}
+            starts (cons 0
+                     (seq/keep (range (string/length ts-rope-src))
+                       (fn (i) (when (= (string/char-at ts-rope-src i) "\n") (inc i))))))
+        (is (every? starts
+              (fn (bol)
+                (let (want (editor/treesit/indent-column ts-rope-src :elixir bol spec))
+                  (and (= want (editor/treesit/indent-column rope :elixir bol spec))
+                    (= want (editor/treesit/indent-column rope :elixir bol spec tree)))))))
+        (editor/treesit/free-tree tree)))
+
+    (test "every motion over a rope agrees with the string at every offset"
+      (let (rope (text/from-string ts-rope-src)
+            tree (editor/treesit/open-tree rope :elixir)
+            agrees? (fn (motion)
+                      (every? (range (inc (string/length ts-rope-src)))
+                        (fn (p)
+                          (let (want (motion ts-rope-src :elixir p))
+                            (and (= want (motion rope :elixir p))
+                              (= want (motion rope :elixir p tree))))))))
+        (is (agrees? editor/treesit/point-forward))
+        (is (agrees? editor/treesit/point-backward))
+        (is (agrees? editor/treesit/point-up))
+        (is (agrees? editor/treesit/point-down))
+        (is (agrees? editor/treesit/point-defun-start))
+        (is (agrees? editor/treesit/point-defun-end))
+        (editor/treesit/free-tree tree)))
+
     (test "the tree is what is read: an empty text with this tree still finds the def"
       (let (tree (editor/treesit/open-tree ts-held-src :elixir)
             inside (index-of ts-held-src "[x"))

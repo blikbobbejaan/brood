@@ -351,14 +351,46 @@ to make per event, where asking `tree-changes` would build a vector only to test
 ;; the one for exactly `text` — the query still reads `text` for what a node does not carry
 ;; (a line's indentation, an Elixir call's head word). A gone handle falls back to the
 ;; text, so passing one is never worse than not.
+;;
+;; The text may be a string or a ROPE (ADR-483). An editor holds its document as a rope,
+;; and building the whole-buffer string to indent one line was the cost of RET on a large
+;; file. With a held tree a rope query reads only the lines it inspects; without one, the
+;; parse needs the string anyway and the rope is converted for it.
+
+(defn- ts-source-length (src)
+  (if (rope? src) (text/length src) (string/length src)))
+
+(defn- ts-slice (src from:int to:int -> string)
+  "Characters `[from, to)` of `src`, a string or a rope, as a string."
+  (if (rope? src) (text/slice src from to) (string/substring src from to)))
+
+(defn- ts-line-start (src at)
+  "The offset of the start of the line containing `at` (a newline belongs to the line it
+ends)."
+  (if (rope? src)
+    (text/line->char src (text/char->line src at))
+    (inc (string/last-index-of src "\n" at))))
+
+(defn- ts-line-end (src at)
+  "The offset of the newline ending the line containing `at`, or the end of `src`."
+  (if (rope? src)
+    (let (line (text/char->line src at))
+      (if (< (inc line) (text/line-count src))
+        (dec (text/line->char src (inc line)))
+        (text/length src)))
+    (let (i (index-of src "\n" at)) (if (< i 0) (string/length src) i))))
+
+(defn- ts-string (src)
+  ;; the text-keyed kernel queries parse a string
+  (if (rope? src) (text/->string src) src))
 
 (defn- ts-chain-at (text lang at tree)
   ;; the held tree's chain when there is one alive, else the text's
-  (or (when tree (%tree-sitter-tree-chain tree at)) (%tree-sitter-chain text lang at)))
+  (or (when tree (%tree-sitter-tree-chain tree at)) (%tree-sitter-chain (ts-string text) lang at)))
 
 (defn- ts-kids-at (text lang at tree)
   ;; the held tree's sibling list when there is one alive, else the text's
-  (or (when tree (%tree-sitter-tree-kids tree at)) (%tree-sitter-kids text lang at)))
+  (or (when tree (%tree-sitter-tree-kids tree at)) (%tree-sitter-kids (ts-string text) lang at)))
 
 ;; ---- where a windowed fontify may restart -------------------------------------
 
@@ -443,15 +475,15 @@ restart is never wrong where the lead-in is right, and is right everywhere the l
 ;; is the one case no tree can answer — text that does not parse yet, which is the ordinary
 ;; state of a line being typed — and there the lexical fallback carries the previous line.
 
-(defn- ts-prev-nonblank (text:string bol:int -> (or nil (tuple int string)))
+(defn- ts-prev-nonblank (text: (or string rope) bol:int -> (or nil (tuple int string)))
   ;; `[indent last-token]` of the nearest non-blank line before `bol`, or nil when there is
   ;; none — what the indenter carries when no tree can answer.
   (if (<= bol 0)
     nil
-    (let (nl (string/last-index-of text "\n" bol)
+    (let (nl (dec (ts-line-start text bol))
           ls (if (< nl 0) 0 (ts-line-start text nl))
           le (if (< nl 0) (math/max 0 (dec bol)) nl)
-          l (string/substring text ls le))
+          l (ts-slice text ls le))
       (cond
         (and (< nl 0) (= (string/trim l) "")) nil
         (= (string/trim l) "") (ts-prev-nonblank text ls)
@@ -528,11 +560,7 @@ its `body_statement` while `ensure` is inside one — so it comes from the table
         (get dedent token)
         (get spec :dedent-levels 1)))))
 
-(defn- ts-line-start (text at)
-  "The offset of the start of the line containing `at`."
-  (inc (string/last-index-of text "\n" at)))
-
-(defn- ts-aligns? (text:string open:int -> bool)
+(defn- ts-aligns? (text: (or string rope) open:int -> bool)
   "Does the bracket at offset `open` have CONTENT after it on its own line?
 
 That is the whole distinction every formatter draws. A bracket that ends its line opens a
@@ -551,8 +579,8 @@ The second is not a level at all; it is a column, and it is why counting blocks 
 could never produce it. Roughly a quarter of the Python stdlib's lines and a tenth of
 Ruby's are aligned this way."
   (let (after (inc open)
-        eol (let (i (index-of text "\n" after)) (if (< i 0) (string/length text) i)))
-    (and (< after eol) (not (= (string/trim (string/substring text after eol)) "")))))
+        eol (ts-line-end text after))
+    (and (< after eol) (not (= (string/trim (ts-slice text after eol)) "")))))
 
 (defn- ts-align-column (text bol chain brackets)
   "The column a continuation line aligns to, or nil when it is not one.
@@ -566,7 +594,7 @@ align under."
                         (and (contains? brackets (get node :kind))
                           (< (ts-start node) bol)
                           (includes? "([{"
-                            (string/substring text
+                            (ts-slice text
                               (ts-start node)
                               (inc (ts-start node)))))))))
     (when (and inner (ts-aligns? text (get inner :start)))
@@ -580,16 +608,10 @@ block level — the very thing a comment above the first statement is trying not
 A comment, a blank, then the code it describes is the ordinary shape of a docstring-style
 comment in Python, and stopping at the blank put the comment in column 0."
   (letrec (scan (fn (from)
-                  (let (eol (let (i (index-of text "\n" from))
-                              (if (< i 0) (string/length text) i))
-                        next-bol (inc eol))
+                  (let (next-bol (inc (ts-line-end text from)))
                     (cond
-                      (>= next-bol (string/length text)) nil
-                      (= ""
-                        (string/trim (let (e (index-of text "\n" next-bol))
-                                       (string/substring text
-                                         next-bol
-                                         (if (< e 0) (string/length text) e)))))
+                      (>= next-bol (ts-source-length text)) nil
+                      (= "" (string/trim (ts-slice text next-bol (ts-line-end text next-bol))))
                         (scan next-bol)
                       else next-bol))))
     (scan bol)))
@@ -612,7 +634,9 @@ Ruby stdlib. Asking what the next code line does is right there and right everyw
 
 (defn indent-column (text lang bol spec &optional (tree nil))
   "The column the line beginning at offset `bol` should be indented to — a `:indent` service
-for a tree-sitter mode, given a per-language `spec`.
+for a tree-sitter mode, given a per-language `spec`. `text` is a string or a rope (ADR-483): an
+editor passes its buffer's rope and held `tree`, and only the lines the indenter inspects are
+read — RET in a large file builds no whole-buffer string.
 
     {:width 2                        ; columns per level
      :blocks #{:do_block :body}      ; node kinds that open one
@@ -643,8 +667,8 @@ shape `nest format` answers for Brood, and it is checked line-for-line against r
 
     (editor/treesit/indent-column \"def f do\\nx\\nend\" :elixir 9 spec)   ;=> 2 — with the :elixir grammar installed and the spec above"
   (let (width (get spec :width 2)
-        eol (let (i (index-of text "\n" bol)) (if (< i 0) (string/length text) i))
-        line (string/substring text bol eol)
+        eol (ts-line-end text bol)
+        line (ts-slice text bol eol)
         closing-token (ts-closing-token line (get spec :dedent #{}))
         closing (not (nil? closing-token))
         ;; an ordinary line measures at its first non-blank, a closing line at the line start
@@ -757,26 +781,27 @@ steps through, comments excluded (see [[*comment-kinds*]])."
 (defn- ts-start (node:ts-node -> int) (get node :start))
 (defn- ts-end (node:ts-node -> int) (get node :end))
 
-(defn point-forward (text:string lang:keyword point:any &optional (tree nil) -> any)
+(defn point-forward (text: (or string rope) lang:keyword point:any &optional (tree nil) -> any)
   "End of the next named node at or after `point` within the enclosing node;
 unchanged if none (the Emacs `forward-sexp`, over a tree-sitter tree).
 
 Every `point-*` motion and `indent-column` take an optional last `tree`: the held tree of
 exactly `text` (`open-tree` / `update-tree`), read instead of parsing `text`; a gone handle
-falls back to the text.
+falls back to the text. `text` may be a string or the rope an editor holds (ADR-483): with a
+held tree a rope is read only where the query needs a character, never copied whole.
 
     (editor/treesit/point-forward \"foo(1, 2)\" :elixir 0)   ;=> 9 — with the :elixir grammar installed"
   (let (nxt (seq/find (ts-siblings text lang point tree) (fn (f) (>= (get f :start) point))))
     (if (nil? nxt) point (get nxt :end))))
 
-(defn point-backward (text:string lang:keyword point:any &optional (tree nil) -> any)
+(defn point-backward (text: (or string rope) lang:keyword point:any &optional (tree nil) -> any)
   "Start of the previous named node ending at or before `point` (`backward-sexp`).
 
     (editor/treesit/point-backward \"foo(1, 2)\" :elixir 9)   ;=> 0 — with the :elixir grammar installed"
   (let (prev (last (seq/filter (ts-siblings text lang point tree) (fn (f) (<= (get f :end) point)))))
     (if (nil? prev) point (get prev :start))))
 
-(defn point-list-forward (text:string lang:keyword point:any &optional (tree nil) -> any)
+(defn point-list-forward (text: (or string rope) lang:keyword point:any &optional (tree nil) -> any)
   "End of the next child CONTAINER at or after `point` — leaf nodes are stepped over, not
 stopped at (Emacs `forward-list`); unchanged if none.
 
@@ -785,7 +810,8 @@ stopped at (Emacs `forward-list`); unchanged if none.
               (fn (f) (and (get f :container) (>= (get f :start) point)))))
     (if (nil? nxt) point (get nxt :end))))
 
-(defn point-list-backward (text:string lang:keyword point:any &optional (tree nil) -> any)
+(defn point-list-backward
+  (text: (or string rope) lang:keyword point:any &optional (tree nil) -> any)
   "Start of the previous child CONTAINER ending at or before `point` — leaves stepped over
 (Emacs `backward-list`); unchanged if none.
 
@@ -800,14 +826,14 @@ container on the chain that neither begins nor ends at `point` itself."
   (last (seq/filter (ts-chain-at text lang point tree)
           (fn (n) (and (get n :container) (< (get n :start) point) (< point (get n :end)))))))
 
-(defn point-up (text:string lang:keyword point:any &optional (tree nil) -> any)
+(defn point-up (text: (or string rope) lang:keyword point:any &optional (tree nil) -> any)
   "Start of the enclosing node (`backward-up-list`); unchanged at top level.
 
     (editor/treesit/point-up src :elixir 30)   ;=> …the start of the node enclosing offset 30…"
   (let (enc (ts-enclosing-node text lang point tree))
     (if (nil? enc) point (get enc :start))))
 
-(defn point-up-forward (text:string lang:keyword point:any &optional (tree nil) -> any)
+(defn point-up-forward (text: (or string rope) lang:keyword point:any &optional (tree nil) -> any)
   "End of the enclosing node — the forward counterpart of `point-up` (Emacs `up-list`);
 unchanged at top level.
 
@@ -815,7 +841,7 @@ unchanged at top level.
   (let (enc (ts-enclosing-node text lang point tree))
     (if (nil? enc) point (get enc :end))))
 
-(defn point-down (text:string lang:keyword point:any &optional (tree nil) -> any)
+(defn point-down (text: (or string rope) lang:keyword point:any &optional (tree nil) -> any)
   "INSIDE the next child container at or after `point` (`down-list`); unchanged if none.
 
 Emacs' `down-list` moves *into* one level (`|(a b)` → `(|a b)`). A tree has no delimiter
@@ -872,13 +898,14 @@ declaration for `lang`; returns `definitions`.
 children, so an Elixir `call`'s callee is taken lexically from its start rather than from
 a first child — which is the same token either way, and does not require the tree."
   (let (from (ts-start node)
-        limit (math/min (ts-end node) (+ from 32)))
+        head (ts-slice text from (math/min (ts-end node) (+ from 32)))
+        limit (string/length head))
     (letrec (scan (fn (i)
                     (if (or (>= i limit)
-                          (not (regex/matches? "[A-Za-z0-9_?!]" (string/char-at text i))))
-                      (string/substring text from i)
+                          (not (regex/matches? "[A-Za-z0-9_?!]" (string/char-at head i))))
+                      (string/substring head 0 i)
                       (scan (inc i)))))
-      (scan from))))
+      (scan 0))))
 
 (defn- ts-defun? (text definitions node)
   "Whether `node` is a definition for `beginning-of-defun`, as the language's `definitions`
@@ -888,7 +915,7 @@ whose callee is a defining one (Elixir, where `def`/`defmodule`/… are calls)."
     (or (contains? (get definitions :kinds #{}) k)
       (and (= k :call) (contains? (get definitions :calls #{}) (ts-head-word text node))))))
 
-(defn- ts-defun-edge (text:string lang:keyword point:any edge:any tree:any -> any)
+(defn- ts-defun-edge (text: (or string rope) lang:keyword point:any edge:any tree:any -> any)
   "The `edge` (`:start` / `:end`) of the enclosing **definition**: the deepest `def` /
 `class` / `module` / … containing `point`, falling back to the top-level form, then `point`.
 The shared body of `point-defun-start` / `point-defun-end`."

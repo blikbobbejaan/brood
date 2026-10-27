@@ -4080,3 +4080,13 @@ dlopen). A re-declaration is a reload at the next use; a failed load is kept as 
 parsing with it. The text-keyed parse and `tree-reparse` now resolve the grammar before the
 cache and the epoch. `std/editor/treesit` wraps both (`declare-grammar`, `grammar-status`).
 Guard: `declared_grammar_tests`, `tests/tree_sitter_test.blsp`, run here; the suites run in CI.
+2026-10-27 (ADR-483, a lean line cache; treesit queries over a rope): two costs bedit found
+adopting ADR-471. The line cache kept every line's text and copied its vector around each
+edit. It now keeps no text and holds its entries in a treap whose keys are relative to their
+parents', so an edit re-bases one subtree. Spans are kept only near the last three windows,
+with a state checkpoint every 32 lines elsewhere. After an edit, the old lines past it are
+one tentative chain that the next walk confirms at the first agreeing state. Separately,
+`editor/treesit/indent-column` and the `point-*` motions take a rope, so RET stops building
+the whole buffer's string. Run here: `tests/highlight_test.blsp` (seven new cases, counting
+lexer calls), `tests/treesit_module_test.blsp` (rope against string, with and without a
+tree), `lexer`, `doc_examples`, `audit`, and `nest check --strict` on both files.
