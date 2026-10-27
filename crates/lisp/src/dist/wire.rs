@@ -71,7 +71,9 @@ pub(super) enum Frame {
     /// before). Mismatch on either side aborts before the link enters `NODES`.
     Auth { mac: [u8; MAC_LEN] },
     /// Route `msg` to `target` on the receiving node, queued in `lane` (ADR-492): an
-    /// ordinary send, `proc/send-priority`'s priority lane, or `proc/send-latest`'s key.
+    /// ordinary send, `proc/send-priority`'s priority lane, or `proc/send-latest`'s key. A
+    /// normal one is written as the `FRAME_SEND` every version knows, the others as
+    /// `FRAME_SEND_LANE`, which only a v11 link carries.
     Send {
         target: Target,
         msg: Message,
@@ -170,6 +172,9 @@ const FRAME_EXIT: u8 = 9;
 const FRAME_PEERS: u8 = 10;
 const FRAME_DOWN: u8 = 11;
 const FRAME_MONITOR_NAME: u8 = 12;
+/// A `Send` in a lane other than the normal one (ADR-492): `FRAME_SEND`'s fields, then
+/// the lane. Only ever written on a v11 link; a normal send stays a `FRAME_SEND`.
+const FRAME_SEND_LANE: u8 = 13;
 const TARGET_PID: u8 = 0;
 const TARGET_NAME: u8 = 1;
 /// The lane a `Send` frame's message is queued in on arrival (ADR-492).
@@ -210,11 +215,15 @@ const MAX_GOSSIP_PEERS: usize = 4096;
 /// a duplicate — a v8 peer would fail the handshake on the trailing bytes, so the
 /// byte bumps; **v10** adds `M_DOTTED`, an improper list (KI-240) — to a v9 peer the
 /// new tag is a decode error that tears the link down on the first one sent, so the
-/// byte bumps; **v11** appends the message's mailbox lane to every `Send` (ADR-492) —
-/// `proc/send-priority` / `proc/send-latest` keep their meaning across a link — which a
-/// v10 peer would read as the next frame's first byte, so the byte bumps: a v10 and a
-/// v11 node refuse each other at the magic, before any frame, rather than mis-decode.
+/// byte bumps; **v11** adds `FRAME_SEND_LANE`, a `Send` that carries its message's mailbox
+/// lane (ADR-492). The first version a v11 node still links with the one before: a
+/// responder answers a v10 dialer in v10 and a dialer redials a v10 responder offering
+/// v10 (`handshake::agree_version`), and a v10 link never carries the new frame — a
+/// priority or latest send to its peer goes as the plain `Send` v10 knows, so the bytes
+/// on a v10 link are exactly v10's.
 pub(super) const PROTOCOL_MAGIC: [u8; 4] = *b"BRD\x0b";
+/// The version before lanes, which a v11 node still speaks to a v10 peer (ADR-492).
+pub(super) const PROTOCOL_MAGIC_V10: [u8; 4] = *b"BRD\x0a";
 pub(super) const NONCE_LEN: usize = 32;
 pub(super) const MAC_LEN: usize = 32;
 /// Length of an X25519 public key (the ephemeral DH key in `Hello`, ADR-089).
@@ -318,10 +327,16 @@ fn encode_frame(w: &mut Vec<u8>, frame: &Frame) -> io::Result<()> {
             w.extend_from_slice(mac);
         }
         Frame::Send { target, msg, lane } => {
-            w.push(FRAME_SEND);
-            encode_target(w, target);
-            encode_msg(w, msg)?;
-            encode_lane(w, lane);
+            if *lane == Lane::Normal {
+                w.push(FRAME_SEND);
+                encode_target(w, target);
+                encode_msg(w, msg)?;
+            } else {
+                w.push(FRAME_SEND_LANE);
+                encode_target(w, target);
+                encode_msg(w, msg)?;
+                encode_lane(w, lane);
+            }
         }
         Frame::Ping => w.push(FRAME_PING),
         Frame::Pong => w.push(FRAME_PONG),
@@ -414,6 +429,11 @@ pub(super) fn decode_frame(r: &mut Cursor<Vec<u8>>) -> io::Result<Frame> {
             mac: get_fixed::<MAC_LEN>(r)?,
         }),
         FRAME_SEND => Ok(Frame::Send {
+            target: decode_target(r)?,
+            msg: decode_msg(r)?,
+            lane: Lane::Normal,
+        }),
+        FRAME_SEND_LANE => Ok(Frame::Send {
             target: decode_target(r)?,
             msg: decode_msg(r)?,
             lane: decode_lane(r)?,

@@ -3055,38 +3055,78 @@ fn mailbox_lanes_cross_a_node_link() {
     );
 }
 
-/// A peer that speaks the protocol before lanes crossed the link (v10, ADR-492) is
-/// refused at the magic — before any frame, so neither side mis-decodes a `Send` — and
-/// the server keeps serving: an old peer cannot connect, and cannot crash it.
-#[test]
-fn a_v10_peer_is_refused_at_the_magic_and_the_node_stays_up() {
+/// A v10 node and a v11 node link, whichever dials, and exchange messages both ways
+/// (ADR-492). The old side runs under `BROOD_DIST_V10`, which speaks exactly the
+/// protocol from before lanes crossed a link: its magic written before it reads the
+/// peer's, nothing but v10 accepted, and plain `Send` frames only. Every message arrives,
+/// the plain, priority and latest sends alike, as the plain sends a v10 link carries.
+fn mixed_versions_exchange_messages(old_server: bool) {
     let _g = port_lock();
-    let dir = std::env::temp_dir().join(format!("brood-dist-v10-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "brood-dist-mixed-{}-{}",
+        old_server,
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let port_a = free_port();
+    let port_b = free_port();
     let server = format!(
         r#"
 (node/start :a "127.0.0.1:{port_a}" "secret-test-cookie-16+")
-(receive (after 30000 nil))
+(defn serve ()
+  (receive
+    ([:hi from n] (do (send from [:pong n])
+                      (proc/send-priority from [:urgent n])
+                      (proc/send-latest from n [:latest n])
+                      (serve)))
+    (_ (serve))))
+(proc/register :echo (spawn (serve)))
+(receive (:never :x))
 "#
     );
-    let mut a = spawn_brood(&dir, "server.blsp", &server);
+    let client = format!(
+        r#"
+(node/start :b "127.0.0.1:{port_b}" "secret-test-cookie-16+")
+(node/connect "a@127.0.0.1:{port_a}")
+(def echo {{:name :echo :node :a@127.0.0.1}})
+(send echo [:hi (self) 1])
+(proc/send-priority echo [:hi (self) 2])
+(proc/send-latest echo :hi [:hi (self) 3])
+(defn collect (acc) (if (= (count acc) 9) acc (receive (m (collect (conj acc m))) (after 30000 acc))))
+(def got (into #{{}} (collect [])))
+(def want (into #{{}} (mapcat [1 2 3] (fn (n) [[:pong n] [:urgent n] [:latest n]]))))
+(unless (= got want)
+  (throw (str "mixed versions lost messages: got " (pr-str got) ", want " (pr-str want))))
+(io/puts "MIXED-VERSIONS-OK")
+"#
+    );
+    let old: &[(&str, &str)] = &[("BROOD_DIST_V10", "1")];
+    let (server_env, client_env) = if old_server {
+        (old, &[][..])
+    } else {
+        (&[][..], old)
+    };
+    let mut a = spawn_brood_env(&dir, "server.blsp", &server, server_env);
     wait_until_listening(port_a);
-    let mut old = TcpStream::connect(("127.0.0.1", port_a)).expect("connect");
-    old.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    use std::io::Write as _;
-    let _ = old.write_all(b"BRD\x0a");
-    let mut buf = [0u8; 64];
-    let n = old.read(&mut buf).unwrap_or(0);
-    // The node is still up and still accepting.
-    let alive = TcpStream::connect(("127.0.0.1", port_a)).is_ok();
-    let still_running = a.try_wait().map(|s| s.is_none()).unwrap_or(false);
+    let b = spawn_brood_env(&dir, "client.blsp", &client, client_env);
+    let out = b.wait_with_output().expect("client finished");
     let _ = a.kill();
     let _ = a.wait();
     let _ = std::fs::remove_dir_all(&dir);
-    assert!(n < 8, "a v10 peer got past the magic: read {n} bytes");
+    let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        alive && still_running,
-        "the node went down after refusing a v10 peer"
+        out.status.success() && stdout.contains("MIXED-VERSIONS-OK"),
+        "a v10 and a v11 node did not link (old server: {old_server}).\n--- stdout ---\n{stdout}\n--- stderr ---\n{}",
+        String::from_utf8_lossy(&out.stderr)
     );
+}
+
+#[test]
+fn a_v11_node_dials_a_v10_node_and_they_exchange_messages() {
+    mixed_versions_exchange_messages(true);
+}
+
+#[test]
+fn a_v10_node_dials_a_v11_node_and_they_exchange_messages() {
+    mixed_versions_exchange_messages(false);
 }

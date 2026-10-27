@@ -527,6 +527,11 @@ pub const FLAGS: &[DebugFlag] = &[
     ),
     // ---- host environment ----
     f(
+        "BROOD_DIST_V10",
+        HOST,
+        "speak distribution protocol v10 exactly, as a runtime from before mailbox lanes crossed a link (ADR-492) — the old peer a mixed-cluster test links with",
+    ),
+    f(
         "BROOD_GUI_MAIN_THREAD",
         HOST,
         "host the GUI event loop on the process MAIN thread instead of a dedicated one — forced on macOS/Windows, where AppKit allows nowhere else; the lever exists so Linux can exercise that path (KI-125)",

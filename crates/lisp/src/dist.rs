@@ -330,6 +330,9 @@ struct Conn {
     /// `Arc<[u8]>`, so wrapping a freshly encoded frame takes its buffer as it is
     /// instead of copying it into a new allocation.
     tx: SyncSender<Arc<Vec<u8>>>,
+    /// Whether the peer speaks v11, so a send in a lane goes as `FRAME_SEND_LANE`
+    /// (ADR-492). A v10 peer is sent every message as the plain `Send` it knows.
+    lanes: bool,
     /// A handle to the socket, for `shutdown` — the single teardown lever.
     sock: Arc<Stream>,
     /// Millis (on the `START` clock) of the last inbound frame. The heartbeat
@@ -1118,10 +1121,13 @@ pub(crate) fn route_in_lane(
     // see [`enqueue_to`] for why the shutdown syscall must not run under the lock.
     let link = crate::core::sync::read(&NODES)
         .get(&node)
-        .map(|conn| (conn.writer_handles(), conn.guest.clone()));
-    let Some(((tx, sock), guest)) = link else {
+        .map(|conn| (conn.writer_handles(), conn.guest.clone(), conn.lanes));
+    let Some(((tx, sock), guest, lanes)) = link else {
         return false;
     };
+    // The lane goes on the wire only to a v11 peer; to a v10 one the message is the plain
+    // `Send` it knows (ADR-492).
+    let lane = if lanes { lane } else { process::Lane::Normal };
     // A guest link is told about every local pid in the message, which is what lets it
     // reply to one (ADR-415) — noted on the link the message goes out on, before it is
     // queued there.
@@ -1591,7 +1597,35 @@ fn prepare_unix_path(path: &str) -> io::Result<()> {
 // `Role` + the four-step `handshake` live in `dist::handshake`; only the link
 // lifecycle uses them, and they keep the cookie/nonce/MAC plumbing self-
 // contained.
-use handshake::{Role, handshake};
+use handshake::{Offer, Role, handshake};
+
+/// The protocol version this node offers in a handshake (ADR-492): v11, or exactly v10
+/// under `BROOD_DIST_V10` — a runtime from before lanes, which a mixed-cluster test
+/// needs and cannot otherwise build.
+fn local_offer() -> Offer {
+    static OFFER: LazyLock<Offer> = LazyLock::new(|| {
+        if std::env::var_os("BROOD_DIST_V10").is_some() {
+            Offer::V10
+        } else {
+            Offer::Current
+        }
+    });
+    *OFFER
+}
+
+/// Dial `addr` and drive the client handshake, offering `offer`.
+fn dial_and_greet(addr: &str, offer: Offer) -> io::Result<(Stream, handshake::Authenticated)> {
+    let mut stream = dial(addr)?;
+    stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+    // Deadlined like the accept side: a malicious or wedged *listener* can
+    // trickle at a dialer just as easily, and this call is made from a scheduler
+    // worker, so an unbounded hold here wedges a worker rather than a slot.
+    let authenticated = {
+        let mut guarded = Deadline::new(&mut stream, HANDSHAKE_DEADLINE);
+        handshake(&mut guarded, Role::Initiator, offer)?
+    };
+    Ok((stream, authenticated))
+}
 
 /// `(%node-connect peer addr)` — dial a peer and complete the client handshake.
 /// `addr` carries the transport (`"unix:PATH"` / `"tcp:HOST:PORT"`); `peer` is
@@ -1617,14 +1651,11 @@ pub(crate) fn node_connect(peer: Symbol, addr: &str) -> io::Result<Symbol> {
     if let Some(linked) = linked_peer_for(peer, addr) {
         return Ok(linked);
     }
-    let mut stream = dial(addr)?;
-    stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
-    // Deadlined like the accept side: a malicious or wedged *listener* can
-    // trickle at a dialer just as easily, and this call is made from a scheduler
-    // worker, so an unbounded hold here wedges a worker rather than a slot.
-    let authenticated = {
-        let mut guarded = Deadline::new(&mut stream, HANDSHAKE_DEADLINE);
-        handshake(&mut guarded, Role::Initiator)?
+    // A v10 node answers a v11 offer with its own magic and closes: dial it again in v10,
+    // so a node from before lanes still links (ADR-492).
+    let (stream, authenticated) = match dial_and_greet(addr, local_offer()) {
+        Err(error) if handshake::is_v10_peer(&error) => dial_and_greet(addr, Offer::V10)?,
+        greeted => greeted?,
     };
     let peer = authenticated.peer;
     // The claim can name another node while the address reaches us (a second
@@ -1718,7 +1749,7 @@ fn accept_link(mut stream: Stream) -> io::Result<()> {
     // unauthenticated peer can hold its `HandshakeSlot` (KI-97 item 1).
     let authenticated = {
         let mut guarded = Deadline::new(&mut stream, HANDSHAKE_DEADLINE);
-        handshake(&mut guarded, Role::Responder)?
+        handshake(&mut guarded, Role::Responder, local_offer())?
     };
     let peer = authenticated.peer;
     // Refuse a peer claiming to BE us — the accept-side counterpart of the check
@@ -1773,6 +1804,7 @@ fn establish(authenticated: handshake::Authenticated, stream: Stream, role: Role
         incarnation,
         session,
         grant,
+        lanes,
     } = authenticated;
     // Who initiated *this* connection (the tie-break key).
     let connector = match role {
@@ -1802,6 +1834,7 @@ fn establish(authenticated: handshake::Authenticated, stream: Stream, role: Role
         incarnation,
         addr: peer_addr,
         tx: tx.clone(),
+        lanes,
         sock: Arc::clone(&sock),
         last_seen: Arc::clone(&last_seen),
         guest: guest.clone(),
@@ -2436,6 +2469,7 @@ mod tests {
             addr: String::new(),
             incarnation,
             grant: None,
+            lanes: true,
             session: Session {
                 send: session::SealKey::new([1; session::KEY_LEN]),
                 recv: session::OpenKey::new([2; session::KEY_LEN]),
@@ -2783,6 +2817,53 @@ mod tests {
             "a guest was sent its own pid under the name the host minted for it"
         );
         assert!(disconnect(guest_name));
+    }
+
+    /// A lane reaches the wire only on a link to a v11 peer (ADR-492): to a v10 peer, a
+    /// priority and a latest send each go as the plain `Send` it knows, and to a v11 peer
+    /// both keep their lane.
+    #[test]
+    fn a_lane_goes_on_the_wire_only_to_a_v11_peer() {
+        let lanes_seen = |peer: &str, lanes: bool| {
+            let peer = value::intern(peer);
+            let (stream, far_end) = stream_pair();
+            establish(
+                handshake::Authenticated {
+                    lanes,
+                    ..authenticated_as(peer, 1)
+                },
+                stream,
+                Role::Responder,
+            );
+            let latest = process::Lane::Latest(Box::new(":frame".to_string()));
+            for lane in [process::Lane::Priority, latest] {
+                assert!(route_in_lane(peer, Target::Pid(3), Message::Int(1), lane));
+            }
+            far_end
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut open = session::OpenKey::new([1; session::KEY_LEN]);
+            let mut reader = std::io::BufReader::new(&far_end);
+            let mut seen = Vec::new();
+            while seen.len() < 2 {
+                if let Frame::Send { lane, .. } = open.open(&mut reader).expect("a frame") {
+                    seen.push(lane);
+                }
+            }
+            assert!(disconnect(peer));
+            seen
+        };
+        assert_eq!(
+            lanes_seen("v10-lane-peer@test", false),
+            vec![process::Lane::Normal, process::Lane::Normal]
+        );
+        assert_eq!(
+            lanes_seen("v11-lane-peer@test", true),
+            vec![
+                process::Lane::Priority,
+                process::Lane::Latest(Box::new(":frame".to_string()))
+            ]
+        );
     }
 
     /// A peer that restarted (its old host vanished without a FIN, so the old link is

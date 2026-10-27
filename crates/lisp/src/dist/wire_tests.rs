@@ -520,7 +520,6 @@ fn a_peer_cannot_mint_symbols_without_limit() {
     let mut payload = vec![FRAME_SEND, TARGET_NAME];
     put_str(&mut payload, &fresh);
     encode_msg(&mut payload, &Message::Int(1)).unwrap();
-    encode_lane(&mut payload, &crate::process::Lane::Normal);
     let mut framed = (payload.len() as u32).to_be_bytes().to_vec();
     framed.extend_from_slice(&payload);
     match read_frame(&mut Cursor::new(framed)) {
@@ -697,7 +696,7 @@ fn a_send_carries_its_lane_across_the_wire() {
             _ => panic!("wrong frame"),
         }
     }
-    let mut payload = vec![FRAME_SEND];
+    let mut payload = vec![FRAME_SEND_LANE];
     encode_target(&mut payload, &Target::Pid(7));
     encode_msg(&mut payload, &Message::Int(1)).unwrap();
     payload.push(9);
@@ -707,4 +706,19 @@ fn a_send_carries_its_lane_across_the_wire() {
         Err(e) => assert_eq!(e.kind(), io::ErrorKind::InvalidData),
         Ok(_) => panic!("an unknown lane tag must be refused"),
     }
+}
+
+/// A normal send is the `FRAME_SEND` a v10 peer reads — no lane byte — so what a v11
+/// node writes on a v10 link is exactly what a v10 node writes (ADR-492).
+#[test]
+fn a_normal_send_is_the_frame_a_v10_peer_reads() {
+    let f = Frame::Send {
+        target: Target::Pid(7),
+        msg: Message::Int(1),
+        lane: crate::process::Lane::Normal,
+    };
+    let mut v10 = vec![FRAME_SEND];
+    encode_target(&mut v10, &Target::Pid(7));
+    encode_msg(&mut v10, &Message::Int(1)).unwrap();
+    assert_eq!(encode_payload(&f).unwrap(), v10);
 }

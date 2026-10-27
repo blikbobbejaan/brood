@@ -3,9 +3,10 @@
 //! Both ends of a fresh TCP connection drive the same four-step exchange
 //! before either accepts a steady-state frame:
 //!
-//! 1. **Magic + version** (4 bytes, `PROTOCOL_MAGIC`, currently `b"BRD\x0b"`). A mismatch
-//!    aborts before any allocation — a stray HTTP request or port-scanner can't push us
-//!    past this point.
+//! 1. **Magic + version** (4 bytes: `PROTOCOL_MAGIC`, `b"BRD\x0b"`, or `PROTOCOL_MAGIC_V10`).
+//!    A v11 responder reads the dialer's first and answers in its version, so a v10 node
+//!    still links; anything else aborts before any allocation — a stray HTTP request or
+//!    port-scanner can't push us past this point. See [`agree_version`] (ADR-492).
 //! 2. **Hello** (`{ node, nonce, eph_pub, addr, incarnation }`) — each side announces
 //!    its name, a fresh 32-byte nonce, an ephemeral DH key, the address peers should
 //!    dial to reach it (for the cluster mesh, ADR-088) and which life of the node this
@@ -33,7 +34,8 @@ use crate::core::value::{self, Symbol};
 use super::MAX_HANDSHAKE_FRAME;
 use super::session::{KEY_LEN, OpenKey, SealKey, Session};
 use super::wire::{
-    EPH_PUB_LEN, Frame, MAC_LEN, NONCE_LEN, PROTOCOL_MAGIC, read_frame_capped, write_frame,
+    EPH_PUB_LEN, Frame, MAC_LEN, NONCE_LEN, PROTOCOL_MAGIC, PROTOCOL_MAGIC_V10, read_frame_capped,
+    write_frame,
 };
 
 /// Which end opened a connection — the tie-break for a duplicate keeps the link
@@ -60,6 +62,9 @@ pub(super) struct Authenticated {
     /// The guest grant the initiator authenticated with (ADR-415), or `None` for a full
     /// peer — one that holds the node's own cookie. Only ever `Some` on the responder.
     pub(super) grant: Option<std::sync::Arc<super::guest::Grant>>,
+    /// Whether the peer speaks v11 and so takes a message's mailbox lane in its `Send`
+    /// frame (ADR-492). A v10 peer gets every send as the plain frame it knows.
+    pub(super) lanes: bool,
 }
 
 /// Drive the four-step exchange. Returns the peer's authoritative node name, its
@@ -67,21 +72,14 @@ pub(super) struct Authenticated {
 /// on success — `dist::establish` registers the link under the name, stores the
 /// address for mesh gossip, resolves a duplicate by the incarnation, and hands the
 /// session's two directional keys to the reader/writer.
-pub(super) fn handshake<S: Read + Write>(stream: &mut S, role: Role) -> io::Result<Authenticated> {
+pub(super) fn handshake<S: Read + Write>(
+    stream: &mut S,
+    role: Role,
+    offer: Offer,
+) -> io::Result<Authenticated> {
     // Step 1: magic + version. Reject before any allocation if we don't speak
     // the same dialect.
-    stream.write_all(&PROTOCOL_MAGIC)?;
-    let mut their_magic = [0u8; 4];
-    stream.read_exact(&mut their_magic)?;
-    if their_magic != PROTOCOL_MAGIC {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "protocol magic/version mismatch (theirs: {:02x?}, ours: {:02x?})",
-                their_magic, PROTOCOL_MAGIC
-            ),
-        ));
-    }
+    let lanes = agree_version(stream, role, offer)?;
 
     // Step 2: Hellos with nonces, a fresh ephemeral DH pubkey, and the advertised
     // mesh address. The ephemeral keypair is generated per handshake and never
@@ -242,7 +240,78 @@ pub(super) fn handshake<S: Read + Write>(stream: &mut S, role: Role) -> io::Resu
         incarnation: peer_incarnation,
         session,
         grant,
+        lanes,
     })
+}
+
+/// Which protocol version this end of a handshake offers (ADR-492).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum Offer {
+    /// v11, falling back to v10 for a peer that speaks only that: a responder answers a
+    /// v10 initiator in v10, and a dialer that hears a v10 responder redials offering
+    /// [`Offer::V10`].
+    Current,
+    /// v10 exactly, as a runtime from before ADR-492 speaks it: the magic written before
+    /// the peer's is read, and only v10 accepted. A dialer's second try at a v10 node,
+    /// and the whole dialect under `BROOD_DIST_V10` — the old peer a mixed-cluster test
+    /// needs.
+    V10,
+}
+
+/// The error [`handshake`] gives a dialer whose `Offer::Current` reached a v10 responder:
+/// that responder has already refused the v11 magic and is closing, so the dialer redials
+/// offering [`Offer::V10`].
+pub(super) fn is_v10_peer(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::Unsupported
+}
+
+/// Step 1: agree a protocol version over the magic, answering whether it is v11 — the
+/// link carries mailbox lanes. A v10 runtime writes its magic and requires the peer's to
+/// equal it, and so does `Offer::V10`. A v11 responder READS first and answers in the
+/// initiator's version, so a v10 dialer hears v10. A v11 dialer writes v11 first; a v10
+/// responder, which wrote first too, answers v10 and closes, which is
+/// [`is_v10_peer`] here.
+fn agree_version<S: Read + Write>(stream: &mut S, role: Role, offer: Offer) -> io::Result<bool> {
+    let mismatch = |theirs: [u8; 4], ours: [u8; 4]| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("protocol magic/version mismatch (theirs: {theirs:02x?}, ours: {ours:02x?})"),
+        )
+    };
+    let mut theirs = [0u8; 4];
+    match (offer, role) {
+        (Offer::V10, _) => {
+            stream.write_all(&PROTOCOL_MAGIC_V10)?;
+            stream.read_exact(&mut theirs)?;
+            if theirs == PROTOCOL_MAGIC_V10 {
+                Ok(false)
+            } else {
+                Err(mismatch(theirs, PROTOCOL_MAGIC_V10))
+            }
+        }
+        (Offer::Current, Role::Responder) => {
+            stream.read_exact(&mut theirs)?;
+            if theirs != PROTOCOL_MAGIC && theirs != PROTOCOL_MAGIC_V10 {
+                return Err(mismatch(theirs, PROTOCOL_MAGIC));
+            }
+            stream.write_all(&theirs)?;
+            Ok(theirs == PROTOCOL_MAGIC)
+        }
+        (Offer::Current, Role::Initiator) => {
+            stream.write_all(&PROTOCOL_MAGIC)?;
+            stream.read_exact(&mut theirs)?;
+            if theirs == PROTOCOL_MAGIC {
+                Ok(true)
+            } else if theirs == PROTOCOL_MAGIC_V10 {
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "the peer speaks protocol v10",
+                ))
+            } else {
+                Err(mismatch(theirs, PROTOCOL_MAGIC))
+            }
+        }
+    }
 }
 
 /// A peer's `Hello`, unauthenticated until its `Auth` verifies.
@@ -576,6 +645,51 @@ mod tests {
         );
     }
 
+    /// Step 1 between every pairing of a v11 and a v10 end (ADR-492): two v11 ends agree
+    /// v11, any pairing with a v10 dialer agrees v10, and a v11 dialer that reaches a v10
+    /// responder learns that it must redial offering v10 — while the v10 responder refuses
+    /// the v11 magic, as a runtime from before the change does.
+    #[test]
+    fn the_version_is_agreed_between_v11_and_v10_ends() {
+        let agree = |dialer: Offer, responder: Offer| {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut dialer_end =
+                std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (mut responder_end, _) = listener.accept().unwrap();
+            let responding = std::thread::spawn(move || {
+                agree_version(&mut responder_end, Role::Responder, responder)
+            });
+            let dialed = agree_version(&mut dialer_end, Role::Initiator, dialer);
+            drop(dialer_end);
+            (dialed, responding.join().unwrap())
+        };
+        let (dialed, responded) = agree(Offer::Current, Offer::Current);
+        assert!(
+            dialed.unwrap() && responded.unwrap(),
+            "two v11 ends carry lanes"
+        );
+        let (dialed, responded) = agree(Offer::V10, Offer::Current);
+        assert!(
+            !dialed.unwrap() && !responded.unwrap(),
+            "a v10 dialer links in v10"
+        );
+        let (dialed, responded) = agree(Offer::V10, Offer::V10);
+        assert!(
+            !dialed.unwrap() && !responded.unwrap(),
+            "two v10 ends link in v10"
+        );
+        let (dialed, responded) = agree(Offer::Current, Offer::V10);
+        assert!(
+            is_v10_peer(&dialed.unwrap_err()),
+            "a v11 dialer learns the responder speaks v10"
+        );
+        assert_eq!(
+            responded.unwrap_err().kind(),
+            io::ErrorKind::InvalidData,
+            "the v10 responder refuses the v11 magic"
+        );
+    }
+
     /// An unauthenticated dialer must leave no trace: its `Hello` name is not
     /// interned (the interner is append-only and the wire-symbol budget is shared
     /// with every authenticated link), and the responder refuses it without first
@@ -627,7 +741,7 @@ mod tests {
             dialer_end.read_to_end(&mut rest).unwrap();
             rest
         });
-        let outcome = handshake(&mut responder_end, Role::Responder);
+        let outcome = handshake(&mut responder_end, Role::Responder, Offer::Current);
         drop(responder_end);
         let after_hello = dialer.join().unwrap();
         match outcome {
