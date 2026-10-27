@@ -510,14 +510,15 @@ caller starts again from when the lexer changes (a new mode) — one cache serve
   ;; a line inside the edit going to its end is close enough
   (if (> line old-last) (+ line (- new-last old-last)) (math/min line (inc new-last))))
 
-(defn- lc-edited (cache rope)
-  "`cache` moved onto `rope`. The lines the edit touched lose their entries — except the
+(defn- lc-edited (cache rope given)
+  "`cache` moved onto `rope`, which differs from the cache's rope by `given` (`[start old-end
+new-end]`, as `text/changed-range` answers) when the caller knows it, else by what a compare finds. The lines the edit touched lose their entries — except the
 first, whose state-in no edit at or below it can change — and the lines after it are
 re-based, now tentative. A walk not yet back in step from an earlier edit leaves one
 tentative chain already; the entries between the two seams go too, so there is only ever
 one chain to confirm."
   (let (old (:rope cache)
-        change (text/changed-range old rope))
+        change (if (nil? given) (text/changed-range old rope) given))
     (if (nil? change)
       (assoc cache :rope rope)
       (let ([start old-end new-end] change
@@ -668,7 +669,7 @@ the oldest past `lc-retained-windows` goes."
                     (fold line-spans acc (fn (a [s e f]) (cons [(+ base s) (+ base e) f] a)))))))
     [(assoc (line-cache) :rope rope :memo next-memo) (reverse spans)]))
 
-(defn line-cache-update (cache lexer rope lo hi)
+(defn line-cache-update (cache lexer rope lo hi &optional (change nil))
   "`[cache' spans]`: the absolute `[start end face]` spans of lines `[lo, hi)` of `rope`,
 coloured by `lexer` (`line-lexer` / `stateless-lexer`), and the cache to pass next time.
 `cache` is the previous result's (`line-cache` at first), for any earlier rope: an edit
@@ -680,6 +681,12 @@ what an edit costs does not grow with how much of the document was ever shown. A
 stateless one lexes only `[lo, hi)`, and of those only the lines whose text it has not
 just seen.
 
+`change`, when given, is what changed from the cache's rope to `rope` — `[start old-end
+new-end]`, the shape `text/changed-range` answers — so an editor that knows its edit (its
+buffer's splice log, `editor/buffer/buffer-splices-cover`) spares the compare of two whole
+ropes that finding it costs. It must describe exactly that pair of texts; nil (the default)
+compares them.
+
     (second (editor/highlight/line-cache-update (editor/highlight/line-cache) (editor/highlight/stateless-lexer (fn (line) (if (string/starts-with? line \"#\") [[0 (string/length line) :c]] []))) (text/from-string \"a\\n# b\") 0 2))   → ([2 5 :c])"
   (if (:stateless? lexer)
     (lc-stateless cache lexer rope lo hi)
@@ -687,7 +694,7 @@ just seen.
           bottom (math/min lo top)
           moved (if (nil? (:tree cache))
                   (assoc cache :rope rope :tree (lc-put nil 0 [(:initial lexer)]))
-                  (lc-edited cache rope))
+                  (lc-edited cache rope change))
           [walked acc] (lc-start moved {:lex (:lex lexer) :rope rope :lo bottom :hi top} '()))
       [(lc-retain walked bottom top) (reverse acc)])))
 

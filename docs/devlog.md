@@ -4213,3 +4213,10 @@ commands, `point-kill-end` and `editor/highlight/closer-redundant?` read the rop
 `cargo test -p brood --lib form_scan_tests`, `sexp_test`, `highlight_test`, `rope_test`,
 `treesit_module_test`, `memo_test`, `doc_examples`, `audit`, `nest check --strict` on the
 touched std, clippy (gui, treesit-grammars). Nothing timed.
+
+2026-10-27 (the line cache told what changed): `editor/highlight/line-cache-update` takes an
+optional `change` (`[start old-end new-end]`, `text/changed-range`'s shape) and uses it instead
+of comparing the two ropes; `editor/buffer/buffer-splices-cover` (was the private
+`buffer-cover-step` fold) folds a buffer's splices into that range, so an editor passes its
+splice log's answer. Run here: `buffer_test`, `highlight_test` (told == found == a cold cache,
+four edits), `doc_examples`, `audit`, `nest check --strict` on both files.

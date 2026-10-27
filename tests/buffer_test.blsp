@@ -1527,6 +1527,41 @@ suite run. `*test-wait-ms*` is a failure deadline, reached only if a relay never
   (test "a change the log cannot account for is nil, for the caller to diff"
     (is (nil? (buffer-splices-since (make-buffer "one") (make-buffer "two"))))))
 
+(describe "buffer-splices-cover: the one stretch several splices changed"
+  (test "nil for none, a splice's own range for one"
+    (assert= nil (buffer-splices-cover '()))
+    (assert= [2 4 5] (buffer-splices-cover [[2 4 "xyz"]])))
+  (test "splices before, inside, after and straddling the cover widen it as the texts say"
+    ;; each case is checked against the texts: before the cover nothing changed, after it
+    ;; everything is the old text shifted
+    (let (cases [[[2 4 "xyz"] [0 0 "a"]]
+                  [[5 5 "abc"] [6 7 ""]]
+                  [[1 2 ""] [8 9 "QQ"]]
+                  [[3 3 "x"] [0 6 "y"] [2 2 "zz"]]
+                  [[0 10 ""]]]
+          base "0123456789abcdef"
+          splice-into (fn (text splice)
+                        (let ([lo hi repl] splice)
+                          (str (string/substring text 0 lo)
+                            repl
+                            (string/substring text hi (string/length text)))))
+          wrong (seq/filter cases
+                  (fn (splices)
+                    (let (after (fold splices base splice-into)
+                          [lo old-hi new-hi] (buffer-splices-cover splices))
+                      (not (and (= (string/substring base 0 lo) (string/substring after 0 lo))
+                             (= (string/substring base old-hi (string/length base))
+                               (string/substring after new-hi (string/length after)))))))))
+      (assert= [] (vec wrong))))
+  (test "the cover of a buffer's edits is what the compare of its texts finds, or wider"
+    (let (before (make-buffer "(a)\n(b)\n(c)\n")
+          after (insert (goto-char (insert (goto-char before 5) "xy") 0) ";; ")
+          [lo old-hi new-hi] (buffer-splices-cover (buffer-splices-since before after))
+          [clo cold chi] (text/changed-range (buffer-rope before) (buffer-rope after)))
+      (is (<= lo clo))
+      (is (>= old-hi cold))
+      (assert= (- new-hi old-hi) (- chi cold)))))
+
 (describe "narrowing: which text may be edited"
   (test "a fresh buffer is not narrowed; narrow-to narrows it and widen undoes that"
     (let (b (make-buffer "hello world")

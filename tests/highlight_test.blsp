@@ -576,6 +576,45 @@ cached: a line inserted at line 10, then the window (moved down one) shown again
       (lc-lexed)
       (is agreed))))
 
+;; An editor knows what it changed — its buffer's splice log — and can hand that to the cache
+;; instead of having it compare two whole ropes. Told or found, the answer is the same.
+(describe "line-cache-update — told what changed"
+  (test "a change from the splice log gives what the compare gives, edit after edit"
+    (let (me (self)
+          lexer (lc-fence-lexer me)
+          start (editor/buffer/make-buffer (text/->string (lc-doc 300)))
+          ;; typing in a fence, opening one, a run of deletions, a paste of several lines
+          edits [(fn (b) (editor/buffer/insert (editor/buffer/goto-char b 1300) "Z"))
+                  (fn (b) (editor/buffer/insert (editor/buffer/goto-char b 900) "```\n"))
+                  (fn (b) (editor/buffer/replace-region b 400 460 ""))
+                  (fn (b) (editor/buffer/insert (editor/buffer/goto-char b 20) "a\nb\n```\nc\n"))]
+          [cache0 _] (line-cache-update (line-cache)
+                       lexer
+                       (editor/buffer/buffer-rope start)
+                       200
+                       260)
+          [_ _ _ results] (fold edits
+                            [start cache0 cache0 '()]
+                            (fn (state edit)
+                              (let ([before told found acc] state
+                                    after (edit before)
+                                    rope (editor/buffer/buffer-rope after)
+                                    change (editor/buffer/buffer-splices-cover (editor/buffer/buffer-splices-since before
+                                                                                 after))
+                                    [told2 told-spans] (line-cache-update told
+                                                         lexer rope 200 260 change)
+                                    [found2 found-spans] (line-cache-update found
+                                                           lexer rope 200 260))
+                                [after
+                                  told2
+                                  found2
+                                  (cons [told-spans found-spans (lc-truth lexer rope 200 260)] acc)]))))
+      (lc-lexed)
+      (assert= 4 (count results))
+      (assert= []
+        (vec (seq/filter results
+               (fn ([told found truth]) (not (and (= told found) (= told truth))))))))))
+
 (describe "line-cache-update — a stateless lexer"
   (test "lexes only the window, and a line whose text it has seen not at all"
     (let (me (self)

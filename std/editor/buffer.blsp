@@ -1247,11 +1247,11 @@ inside the range collapses to `lo`, one at/after `hi` moves left by the deleted 
 ;; Edits one entry merges. Bounds the texts a run keeps alive for a mid-run holder, and the
 ;; replacement string a run rebuilds per keystroke.
 
-;; The shapes the log is made of, for the checker: an entry, a mid-run text, one step of a
-;; path (`[rope-before lo hi repl]`), and a cover (`[lo restored-hi current-hi]`).
+;; The shapes the log is made of, for the checker: an entry, a mid-run text, one splice
+;; (`[lo hi repl]`), and a cover (`[lo old-hi new-hi]`).
 (deftype splice-entry (tuple any any int int string any))
 (deftype splice-mid (tuple any int))
-(deftype splice-step (tuple any int int string))
+(deftype splice-step (tuple int int string))
 (deftype splice-cover (tuple int int int))
 
 (defn- buffer-splice-coalesce (entry:splice-entry before-rope after-rope a:int b:int r:string)
@@ -1357,15 +1357,15 @@ this can. Costs no text but a run's own: the walk compares rope handles.
       (reverse (fold path () (fn (acc step) (let ([_ lo hi repl] step) (cons [lo hi repl] acc))))))))
 
 (defn- buffer-cover-of (step:splice-step -> splice-cover)
-  "The cover of one step: `[lo, hi)` of the text before it became `[lo, lo + |repl|)`."
-  (let ([_ lo hi repl] step) [lo hi (+ lo (string/length repl))]))
+  "The cover of one splice: `[lo, hi)` of the text before it became `[lo, lo + |repl|)`."
+  (let ([lo hi repl] step) [lo hi (+ lo (string/length repl))]))
 
 (defn- buffer-cover-step (cover:splice-cover step:splice-step -> splice-cover)
-  "`cover` widened by the next `step` of a path: still one range of the path's first text
-that became one range of the text after `step`. A position outside the cover maps across
+  "`cover` widened by the next splice `step`: still one range of the first splice's text that
+became one range of the text after `step`. A position outside the cover maps across
 by the cover's length change; one inside it widens to the cover's edge."
   (let ([cover-lo restored-hi current-hi] cover
-        [_ lo hi repl] step
+        [lo hi repl] step
         added (string/length repl)
         shift (- current-hi restored-hi)
         restored-hi-of (cond
@@ -1378,6 +1378,21 @@ by the cover's length change; one inside it widens to the cover's edge."
                   else (+ lo added)))
     [(math/min cover-lo lo) (math/max restored-hi restored-hi-of) (math/max through (+ lo added))]))
 
+(defn buffer-splices-cover (splices -> (or nil splice-cover))
+  "`[lo old-hi new-hi]`: the one stretch `[lo, old-hi)` of the text before `splices` that
+became `[lo, new-hi)` of the text after them — everything before it unchanged, everything
+after it shifted. `splices` are `[lo hi repl]`, oldest first, each positioned against the text
+the one before it left (what [[buffer-splices-since]] answers). Nil for none.
+
+The shape `text/changed-range` answers, at the cost of the edits rather than a compare of
+two texts: a cache keyed on a rope (`editor/highlight`'s line cache) can be told what changed
+by the buffer that made the change.
+
+    (editor/buffer/buffer-splices-cover [[2 4 \"xyz\"] [0 0 \"a\"]])   → [0 4 6]
+    (editor/buffer/buffer-splices-cover [])   → nil"
+  (when (not (empty? splices))
+    (fold (rest splices) (buffer-cover-of (first splices)) buffer-cover-step)))
+
 (defn- buffer-undo-splice (buf restored-rope)
   "The single splice `[lo hi repl]` that turns `buf`'s text into `restored-rope` — an undo
 or redo target — when `buf`'s log reaches it, else nil. The log's path runs FROM the
@@ -1387,9 +1402,9 @@ reverses all of it at once, trimmed to what actually differs."
     (when (not (empty? path))
       ;; The cover: `[cover-lo, restored-hi)` of the restored text became
       ;; `[cover-lo, current-hi)` of the current one.
-      (let ([cover-lo restored-hi current-hi] (fold (rest path)
-                                                (buffer-cover-of (first path))
-                                                buffer-cover-step)
+      (let ([cover-lo restored-hi current-hi] (buffer-splices-cover (map path
+                                                                      (fn ([_ lo hi repl])
+                                                                        [lo hi repl])))
             [same-lo same-hi changed] (%str-splice-diff (text/slice (get buf :rope)
                                                           cover-lo current-hi)
                                         (text/slice restored-rope cover-lo restored-hi)))
