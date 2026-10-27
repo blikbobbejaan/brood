@@ -462,21 +462,27 @@ paint while the window's next input waits behind it.
 `latest` is the newest frame taken; `after` the seam messages (textures, sounds, window
 options) taken since it, in arrival order; `carried` the one-shot ops (`[:sound …]`,
 `[:burst …]`) of the frames skipped so far. A newer frame applies `after` — everything the
-daemon sent before it — and carries `latest`'s one-shots. So the backlog leaves the window
-as painting every frame in order would: each seam message before the painted frame is
-applied before it, one after it (a texture freed once that frame was drawn) only after
-it is painted, and every skipped sound still plays. The daemon's `[:bye]` paints the
+daemon sent before it — and carries `latest`'s one-shots, unless a seam message came after
+one still to play: then `latest` is painted in its turn, since applying that message first
+(a `[:sound-free …]` of the sound the frame plays, a texture a burst uses) would play a
+freed sound. So the backlog leaves the window as painting every frame in order would: each
+seam message before the painted frame is applied before it, one after it (a texture freed
+once that frame was drawn) only after it is painted, and every skipped sound plays before
+anything sent after it. The daemon's `[:bye]` paints the
 backlog and ends; the link's or the session's end just ends, as in `attach-display-loop`.
 Window input is not taken here: `attach-display-paint` ships it before the paint."
   (receive
-    ([:frame f] (do
-                  (attach-display-apply-all display after)
-                  (attach-display-backlog peer
-                    session
-                    display
-                    f
-                    (into carried (editor/display/frame-one-shots latest))
-                    [])))
+    ([:frame f]
+      (let (shots (into carried (editor/display/frame-one-shots latest)))
+        (if (or (empty? shots) (empty? after))
+          (do
+            (attach-display-apply-all display after)
+            (attach-display-backlog peer session display f shots []))
+          ;; a seam message follows a one-shot still to play (a sound, then its
+          ;; free): paint `latest` in its turn, so the sound plays first
+          (do
+            (attach-display-show display latest carried after)
+            (attach-display-backlog peer session display f [] [])))))
     ((and m
        (or [:texture _ _ _ _] [:texture-free _] [:window _] [:sound-data _ _ _ _] [:sound-free _])) (attach-display-backlog peer
                                                                                                            session

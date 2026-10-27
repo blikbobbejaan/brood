@@ -363,6 +363,20 @@
                  [:frame [[:text 0 0 "last"]]]])
       [[:drew [[:text 0 0 "last"] [:sound 4 0.5] [:burst 7 3]]]]))
 
+  (test "a skipped frame's sound is played before the free that followed it"
+    ;; the daemon played sound 4 in a frame, then freed it: carried past the free to the
+    ;; next paint, it would play a freed (or reused) sound. A frame whose one-shots a seam
+    ;; message follows is painted in its turn instead.
+    (assert= (drive-backlog (fn (me)
+                              {:draw (fn (f) (send me [:drew f]))
+                               :sound-free (fn (snd) (send me [:freed snd]))
+                               :leave (fn () nil)})
+               [[:frame [[:clear] [:sound 4 0.5]]]
+                 [:sound-free 4]
+                 [:frame [[:text 0 0 "a"]]]
+                 [:frame [[:text 0 0 "last"]]]])
+      [[:drew [[:clear] [:sound 4 0.5]]] [:freed 4] [:drew [[:text 0 0 "last"]]]]))
+
   (test "a key queued behind a backlog still goes before its paint"
     (assert= (drive-backlog (fn (me)
                               {:draw (fn (f) (send me [:drew f]))
