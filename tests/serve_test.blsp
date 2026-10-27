@@ -293,6 +293,23 @@
       (send (self) [:bye])
       (assert= (editor/serve/attach-display-loop nil (self) bare) nil)))
 
+  ;; ADR-490: the client's own window input goes out before it paints a backlog of frames
+  (test "attach-display-loop ships a queued key before it paints queued frames"
+    (let (me (self)
+          client (spawn (receive
+                          (:go (editor/serve/attach-display-loop nil
+                                 me
+                                 {:draw (fn (f) (send me [:drew f]))
+                                  :leave (fn () nil)
+                                  :poll-input (fn ()
+                                                (let (taken (proc/take-priority))
+                                                  (if (nil? taken) nil (first taken))))})))))
+      (doseq (i (range 50)) (send client [:frame [:frame-number i]]))
+      (proc/send-priority client "k")
+      (send client [:bye])
+      (send client :go)
+      (assert= (receive ([:key k _held?] k) ([:drew f] [:drew-first f]) (after 5000 :none)) "k")))
+
   (test "an async (non-key) mailbox message reaches a served app's update — the event bus"
     ;; The editor pattern: a spawned task / buffer process sends `[:tag …]` straight to the
     ;; ui-run process's mailbox and update folds it. On a served session those messages land

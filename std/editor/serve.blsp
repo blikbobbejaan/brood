@@ -214,31 +214,40 @@ Opt-in: a runtime serves nothing unless it calls `serve`.
   "A unique transient node name for a client, so two clients on one box don't collide."
   (keyword (str "attach-" (os/now))))
 
-(defn- attach-drain (peer)
-  "Draw every frame the daemon has queued (non-blocking), returning `:open`, or
-`:closed` if the daemon said `[:bye]` (the app quit), the link to `peer` dropped, or
-the session process died (`[:down …]` from the monitor) — the last covers a session
-that died *without* a clean `[:bye]` (e.g. a throwing `make-model`, which runs before
-`ui-run` can install its `:leave`), so the client never hangs waiting on a dead session."
+(defn- attach-drain (peer latest)
+  "Take every frame the daemon has queued (non-blocking) and draw only the newest — a
+frame is the whole screen, so the ones before it would be painted only to be painted
+over, while a key waits (ADR-490) — returning `:open`, or `:closed` if the daemon said
+`[:bye]` (the app quit), the link to `peer` dropped, or the session process died
+(`[:down …]` from the monitor) — the last covers a session that died *without* a clean
+`[:bye]` (e.g. a throwing `make-model`, which runs before `ui-run` can install its
+`:leave`), so the client never hangs waiting on a dead session. `latest` is the newest
+frame taken so far, nil at the start."
   (receive
-    ([:frame f] (do (term/draw f) (attach-drain peer)))
+    ([:frame f] (attach-drain peer f))
     ([:bye] :closed)
     ([:nodedown ^peer] :closed)
     ([:down _ _ _] :closed)
-    (after 0 :open)))
+    (after 0 (do (when (not (nil? latest)) (term/draw latest)) :open))))
+
+(defn- attach-ship-key (session key)
+  "Ship one terminal `key` to the daemon's `session`, with whether a key is down here."
+  (send session [:key key (display-key-held? *term-display*)]))
 
 (defn- attach-loop (peer session)
-  "The thin client loop: draw any pushed frames, then poll the local terminal briefly
-and ship each key to the daemon's `session`, with whether a key is down here. Tail-recursive (O(1) stack). Ends when
-the daemon says `[:bye]` or the link drops."
-  (if (= (attach-drain peer) :closed)
-    nil
-    (let (k (term/poll 30))
-      (if (nil? k)
-        (attach-loop peer session)
-        (do
-          (send session [:key k (display-key-held? *term-display*)])
-          (attach-loop peer session))))))
+  "The thin client loop: ship any key the terminal already has, FIRST (ADR-490); then draw
+the newest pushed frame, poll the local terminal briefly and ship what it gives the
+daemon's `session`. Tail-recursive (O(1) stack). Ends when the daemon says `[:bye]` or
+the link drops."
+  (let (queued (term/poll 0))
+    (cond
+      (not (nil? queued)) (do (attach-ship-key session queued) (attach-loop peer session))
+      (= (attach-drain peer nil) :closed) nil
+      else
+        (let (key (term/poll 30))
+          (do
+            (when (not (nil? key)) (attach-ship-key session key))
+            (attach-loop peer session))))))
 
 (defn- attach-handshake (peer cols rows &optional opts)
   "Report our `cols`×`rows` (and, when given, our identity `opts` map — e.g.
@@ -300,7 +309,30 @@ process's mailbox, so one `receive` serves them. A `[:frame f]` is painted to `d
 `[:bye]` (the app quit), `[:nodedown]` (link dropped), or `[:down …]` (the session died)
 ends the loop; `:close` (the window's X button) ships a `[:detach]` and ends; anything
 else is a key/mouse input shipped to the daemon `session` as `[:key input held?]`, `held?`
-whether a key is down in this window. Tail-recursive."
+whether a key is down in this window. Tail-recursive.
+
+The window's queued input is shipped BEFORE anything else is handled (ADR-490): a burst
+of frames from a daemon that renders faster than this client paints never holds a key
+back, and pointer motion goes coalesced (`display-poll-input`)."
+  (let (input (display-poll-input display))
+    (if (nil? input)
+      (attach-display-receive peer session display)
+      (attach-ship-input peer session display input))))
+
+(defn- attach-ship-input (peer session display input)
+  "Ship one window `input` to the daemon `session` and go on (`attach-display-loop`) — or,
+for `:close` (the window's X button), detach and end. With whether a key is down here,
+read after the window delivered `input`: a press, its key-up and a blur each change it,
+so the session learns of every change."
+  (if (= input :close)
+    (send session [:detach])
+    (do
+      (send session [:key input (display-key-held? display)])
+      (attach-display-loop peer session display))))
+
+(defn- attach-display-receive (peer session display)
+  "One message for the client loop when no window input was queued: a frame or control
+from the daemon, or the window's next input (`attach-display-loop`)."
   (receive
     ([:frame f] (do ((get display :draw) f) (attach-display-loop peer session display)))
     ;; The pixel-space seam: applied to the local display when it has the entry (a
@@ -324,12 +356,7 @@ whether a key is down in this window. Tail-recursive."
     ([:bye] nil)
     ([:nodedown ^peer] nil)
     ([:down _ _ _] nil)
-    (:close (send session [:detach]))
-    ;; with whether a key is down here, read after the window delivered `m`: a press, its
-    ;; key-up and a blur each change it, so the session learns of every change
-    (m (do
-         (send session [:key m (display-key-held? display)])
-         (attach-display-loop peer session display)))))
+    (m (attach-ship-input peer session display m))))
 
 (defn attach-display (spec display &optional cookie opts)
   "Attach `display` — any `ui-run` frontend map, e.g. `(gui-display)` (a native window)
