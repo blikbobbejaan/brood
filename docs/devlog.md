@@ -4149,3 +4149,18 @@ lines). bedit's `sectionbuf` rewrite built that render with a vector `conj` per 
 O(lines²), past 6 GB. It was found by measuring each changed test file in both trees, then
 reproducing in an identical single-commit repo. bedit `e3dde585` builds in one pass, with a
 guard that hits the limit on the old builders. `BEDIT_REF` moved there.
+
+2026-10-27 (ADR-486, context faces and verbatim indent): two gaps found adding Terraform/HCL
+to bedit. In HCL every name is an `identifier`, so a face table keyed on kind alone could not
+tell a block's type from an attribute's name from a called function, and Rust/Go/Python could
+not colour a call's function. A face-table key may now be a selector map `{:kind :parent
+:field :nth}`, matched in the native span walk from the cursor it already holds (parent kind,
+`field_name`, named-child index). The most specific entry wins, weighted field > parent > nth
+> kind. `%tree-sitter-spans` / `%tree-sitter-tree-spans` take the table and report its value
+(the face name). `face-table-problems` validates a table. The indent spec's new `:verbatim`
+names node kinds whose interior lines keep their indentation (a blank one continues the
+previous line's), so TAB in a heredoc no longer rewrites its content. Run here:
+`treesit_module_test` (54, with Ruby, plus HCL / Rust / Go from the installed grammars),
+`tree_sitter_test`, `doc_examples`, `doctest`, `audit`, `nest check --strict` on
+`std/editor/treesit.blsp`, `cargo test -p brood --lib tree_handle_tests`, and clippy
+(gui, treesit-grammars).

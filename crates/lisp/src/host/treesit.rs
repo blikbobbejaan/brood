@@ -459,11 +459,115 @@ impl SpanText for ropey::Rope {
     }
 }
 
-/// What one span walk is asked for: the kinds to colour, the keyword flag, and the byte
-/// window `[from, to)` to report — `None` for the whole tree, unclipped.
+/// One entry of a face table, as the span walk matches it (ADR-486): the node's own KIND, and
+/// optionally its CONTEXT — the kind of its parent, the FIELD it occupies in that parent
+/// (tree-sitter's field names: `function`, `name`, `body`), and its position among the
+/// parent's NAMED children. Every constraint present must hold; an absent one is free. A
+/// table keyword `:string` is the rule with a kind alone.
+///
+/// `reported` is what a span for this rule carries back — the table's value (a face name),
+/// copied through untouched, so which face it means stays the caller's policy.
+#[derive(Clone, Debug)]
+#[cfg_attr(not(feature = "treesit"), allow(dead_code))]
+pub struct SpanRule {
+    pub kind: Option<String>,
+    pub parent: Option<String>,
+    pub field: Option<String>,
+    pub nth: Option<usize>,
+    pub reported: crate::core::value::Value,
+}
+
+#[cfg_attr(not(feature = "treesit"), allow(dead_code))]
+impl SpanRule {
+    /// How specific the rule is — the higher wins when several match one node. Each
+    /// constraint is a distinct power of two, so two different constraint sets never tie and
+    /// the winner never depends on the table's (hash) order: a field beats a parent beats a
+    /// position beats the kind, and any context beats the kind alone.
+    fn weight(&self) -> u8 {
+        u8::from(self.kind.is_some())
+            | (u8::from(self.nth.is_some()) << 1)
+            | (u8::from(self.parent.is_some()) << 2)
+            | (u8::from(self.field.is_some()) << 3)
+    }
+
+    #[cfg(feature = "treesit")]
+    fn holds(&self, context: &NodeContext) -> bool {
+        (self.parent.is_none() || self.parent.as_deref() == context.parent)
+            && (self.field.is_none() || self.field.as_deref() == context.field)
+            && (self.nth.is_none() || self.nth == context.nth)
+    }
+}
+
+/// A face table compiled for the span walk: the rules indexed by kind, and the few that name
+/// no kind (`{:field :function}` — whatever fills that field). One hash lookup per node, then
+/// a scan of that kind's handful of rules; a table of plain kinds is exactly the kind set the
+/// walk always took.
+#[derive(Default, Debug)]
+#[cfg_attr(not(feature = "treesit"), allow(dead_code))]
+pub struct SpanTable {
+    by_kind: std::collections::HashMap<String, Vec<SpanRule>>,
+    any_kind: Vec<SpanRule>,
+}
+
+#[cfg_attr(not(feature = "treesit"), allow(dead_code))]
+impl SpanTable {
+    pub fn new(rules: Vec<SpanRule>) -> SpanTable {
+        let mut table = SpanTable::default();
+        for rule in rules {
+            match rule.kind.clone() {
+                Some(kind) => table.by_kind.entry(kind).or_default().push(rule),
+                None => table.any_kind.push(rule),
+            }
+        }
+        table
+    }
+
+    /// A table of plain kinds, each reporting its own kind keyword — the shape the walk took
+    /// before tables could name a context.
+    pub fn of_kinds(kinds: Vec<String>) -> SpanTable {
+        SpanTable::new(
+            kinds
+                .into_iter()
+                .map(|kind| SpanRule {
+                    reported: crate::core::value::Value::keyword(crate::core::value::intern(&kind)),
+                    kind: Some(kind),
+                    parent: None,
+                    field: None,
+                    nth: None,
+                })
+                .collect(),
+        )
+    }
+
+    /// The most specific rule that colours a node of `kind` in `context`, or None.
+    #[cfg(feature = "treesit")]
+    fn rule_for(&self, kind: &str, context: &NodeContext) -> Option<&SpanRule> {
+        let kinded = self.by_kind.get(kind).map(Vec::as_slice).unwrap_or(&[]);
+        kinded
+            .iter()
+            .chain(self.any_kind.iter())
+            .filter(|rule| rule.holds(context))
+            .max_by_key(|rule| rule.weight())
+    }
+}
+
+/// Where a node sits, as the walk reaches it: its parent's kind, the field it fills there
+/// (None when the grammar names none), and its index among the parent's named children (None
+/// for an anonymous token, which has no place in that count). Read off the cursor that is
+/// already walking the parent's children, so it costs nothing a plain-kind table did not.
+#[cfg(feature = "treesit")]
+#[derive(Clone, Copy, Default)]
+struct NodeContext<'a> {
+    parent: Option<&'a str>,
+    field: Option<&'a str>,
+    nth: Option<usize>,
+}
+
+/// What one span walk is asked for: the face table, the keyword flag, and the byte window
+/// `[from, to)` to report — `None` for the whole tree, unclipped.
 #[cfg(feature = "treesit")]
 struct SpanQuery<'a> {
-    wanted: &'a std::collections::HashSet<String>,
+    table: &'a SpanTable,
     keywords: bool,
     window: Option<(usize, usize)>,
 }
@@ -482,13 +586,15 @@ impl SpanQuery<'_> {
     }
 }
 
-/// Collect `[start end kind]` for the OUTERMOST nodes whose kind is wanted, in source
+/// Collect `[start end reported]` for the OUTERMOST nodes the table colours, in source
 /// order, descending only into children that reach the query's window. A span is clipped
-/// to the window, so a string opened above it reports only its visible part.
+/// to the window, so a string opened above it reports only its visible part. `context` is
+/// where `node` sits in its parent — what a table's context entries match against.
 #[cfg(feature = "treesit")]
 fn spans_into<T: SpanText>(
     heap: &mut Heap,
     node: tree_sitter::Node,
+    context: NodeContext,
     text: &T,
     query: &SpanQuery,
     out: &mut Vec<Value>,
@@ -496,14 +602,18 @@ fn spans_into<T: SpanText>(
     let kind = node.kind();
     // An anonymous token whose text starts with a letter is a language keyword — the
     // cross-language rule, so a table need only name the handful of NAMED nodes it
-    // colours. Reported under its own kind so the caller maps it like any other.
-    let wanted = query.wanted.contains(kind);
-    let is_keyword = !wanted
-        && query.keywords
-        && !node.is_named()
-        && text.starts_alphabetic(node.start_byte(), node.end_byte());
-    if wanted || is_keyword {
-        let reported = if wanted { kind } else { "__keyword__" };
+    // colours. Reported as `:__keyword__` so the caller maps it like any other.
+    let reported = query
+        .table
+        .rule_for(kind, &context)
+        .map(|rule| rule.reported)
+        .or_else(|| {
+            (query.keywords
+                && !node.is_named()
+                && text.starts_alphabetic(node.start_byte(), node.end_byte()))
+            .then(|| Value::keyword(value::intern("__keyword__")))
+        });
+    if let Some(reported) = reported {
         let (start, end) = match query.window {
             None => (node.start_byte(), node.end_byte()),
             Some((from, to)) => (
@@ -514,7 +624,7 @@ fn spans_into<T: SpanText>(
         let span = vec![
             Value::int(text.char_of(start) as i64),
             Value::int(text.char_of(end) as i64),
-            Value::keyword(value::intern(reported)),
+            reported,
         ];
         let v = heap.alloc_vector(span);
         out.push(v);
@@ -524,6 +634,7 @@ fn spans_into<T: SpanText>(
     if !cursor.goto_first_child() {
         return;
     }
+    let mut named_index = 0;
     loop {
         let child = cursor.node();
         if let Some((_, to)) = query.window
@@ -531,8 +642,16 @@ fn spans_into<T: SpanText>(
         {
             break; // children are in source order: nothing after this reaches the window
         }
+        let child_context = NodeContext {
+            parent: Some(kind),
+            field: cursor.field_name(),
+            nth: child.is_named().then_some(named_index),
+        };
+        if child.is_named() {
+            named_index += 1;
+        }
         if query.touches(&child) {
-            spans_into(heap, child, text, query, out);
+            spans_into(heap, child, child_context, text, query, out);
         }
         if !cursor.goto_next_sibling() {
             break;
@@ -540,8 +659,16 @@ fn spans_into<T: SpanText>(
     }
 }
 
-/// `(tree-sitter-spans source lang kinds keywords?)` — the fontify query: `[start end
-/// kind]` for the outermost nodes whose kind is in `kinds`, in source order.
+/// `(tree-sitter-spans source lang table keywords?)` — the fontify query: `[start end
+/// reported]` for the outermost nodes `table` colours, in source order.
+///
+/// **Why a table and not only a kind set (ADR-486).** A kind alone cannot tell apart the
+/// names a grammar gives one kind: in HCL a block's type, an attribute's name and a called
+/// function are all `identifier`, and so is the function in a Rust or Go call. What tells
+/// them apart is where the node sits — its parent's kind, the field it fills, its place
+/// among the parent's named children — and the walk is already standing on the parent's
+/// cursor when it reaches the node, so matching on that context is free here and would be
+/// a Brood callback per node anywhere else.
 ///
 /// **Why the kernel takes the kind set.** Fontify is the one consumer that genuinely
 /// walks the WHOLE tree, so it was the one paying the full projection — thousands of
@@ -558,20 +685,20 @@ pub fn spans(
     heap: &mut Heap,
     src: &str,
     lang: &str,
-    kinds: Vec<String>,
+    table: &SpanTable,
     keywords: bool,
 ) -> LispResult {
     let tree = parse_cached(src, lang)?;
     let b2c = byte_to_char_offsets(src);
-    let wanted: std::collections::HashSet<String> = kinds.into_iter().collect();
     let query = SpanQuery {
-        wanted: &wanted,
+        table,
         keywords,
         window: None,
     };
     let mut out: Vec<Value> = Vec::new();
     let text = FlatText { src, b2c: &b2c };
-    spans_into(heap, tree.root_node(), &text, &query, &mut out);
+    let root = tree.root_node();
+    spans_into(heap, root, NodeContext::default(), &text, &query, &mut out);
     Ok(heap.alloc_vector(out))
 }
 
@@ -964,13 +1091,14 @@ pub fn tree_reparse(
     }))
 }
 
-/// `(%tree-sitter-tree-spans tree kinds keywords? from to)` — the fontify walk over a held
-/// tree, restricted to chars `[from, to)` and clipped to it; `Nil` for a gone handle.
+/// `(%tree-sitter-tree-spans tree table keywords? from to)` — the fontify walk over a held
+/// tree, restricted to chars `[from, to)` and clipped to it; `Nil` for a gone handle. The
+/// walk still starts at the root, so a node's context is the whole document's.
 #[cfg(feature = "treesit")]
 pub fn tree_spans(
     heap: &mut Heap,
     handle: u64,
-    kinds: Vec<String>,
+    table: &SpanTable,
     keywords: bool,
     from: i64,
     to: i64,
@@ -982,14 +1110,21 @@ pub fn tree_spans(
     let from = (from.max(0) as usize).min(chars);
     let to = (to.max(0) as usize).min(chars).max(from);
     let window = (entry.text.char_to_byte(from), entry.text.char_to_byte(to));
-    let wanted: std::collections::HashSet<String> = kinds.into_iter().collect();
     let query = SpanQuery {
-        wanted: &wanted,
+        table,
         keywords,
         window: Some(window),
     };
     let mut out: Vec<Value> = Vec::new();
-    spans_into(heap, entry.tree.root_node(), &entry.text, &query, &mut out);
+    let root = entry.tree.root_node();
+    spans_into(
+        heap,
+        root,
+        NodeContext::default(),
+        &entry.text,
+        &query,
+        &mut out,
+    );
     Ok(heap.alloc_vector(out))
 }
 
@@ -1088,7 +1223,7 @@ pub fn tree_reparse(
 pub fn tree_spans(
     _heap: &mut crate::core::heap::Heap,
     _handle: u64,
-    _kinds: Vec<String>,
+    _table: &SpanTable,
     _keywords: bool,
     _from: i64,
     _to: i64,
@@ -1126,7 +1261,7 @@ pub fn spans(
     heap: &mut crate::core::heap::Heap,
     src: &str,
     lang: &str,
-    _kinds: Vec<String>,
+    _table: &SpanTable,
     _keywords: bool,
 ) -> LispResult {
     parse(heap, src, lang)
@@ -1686,8 +1821,8 @@ mod tree_handle_tests {
 
     fn spans_of(handle: u64, from: i64, to: i64) -> Vec<(i64, i64)> {
         let mut heap = Heap::new();
-        let kinds = vec!["string".to_string(), "comment".to_string()];
-        let v = tree_spans(&mut heap, handle, kinds, false, from, to).expect("spans");
+        let table = SpanTable::of_kinds(vec!["string".to_string(), "comment".to_string()]);
+        let v = tree_spans(&mut heap, handle, &table, false, from, to).expect("spans");
         heap.seq_items(v)
             .expect("a vector")
             .into_iter()
@@ -1736,7 +1871,8 @@ mod tree_handle_tests {
         assert!(tree_reparse(old, new_text, "ruby", Some(vec![(4, 4, 9)])).is_err());
         assert!(tree_free(fresh));
         let mut heap = Heap::new();
-        let gone = tree_spans(&mut heap, fresh, Vec::new(), false, 0, 10).expect("answers");
+        let empty = SpanTable::default();
+        let gone = tree_spans(&mut heap, fresh, &empty, false, 0, 10).expect("answers");
         assert!(matches!(gone, Value::Nil), "a freed handle reads as nil");
     }
 }

@@ -444,3 +444,140 @@
       (when tsm-grammars?
         (is (includes? names :ruby))
         (is (includes? names :elixir))))))
+
+;; A face table keyed on CONTEXT (ADR-486): a selector map names the node's parent kind,
+;; the field it fills, its place among the parent's named children. The raw span query is
+;; asserted where the face names matter; it reports the table's value untouched.
+(when tsm-grammars?
+  (describe "face-table context selectors"
+    (test "a field beats a kind: a Ruby call's method name is told from its receiver"
+      (assert= (%tree-sitter-spans "foo.bar(1)\nbaz(2)\n"
+                 :ruby {{:field :method} :syntax/function :identifier :syntax/variable}
+                 false)
+        [[0 3 :syntax/variable] [4 7 :syntax/function] [11 14 :syntax/function]]))
+
+    (test "the most specific entry wins, whatever the map's order"
+      (let (src "a.b(c)\n"
+            table {:identifier :plain
+                   {:kind :identifier :parent :call} :parent
+                   {:kind :identifier :parent :call :field :method} :field})
+        ;; `a` fills :receiver, `b` :method; `c` sits under argument_list, so only the kind holds
+        (assert= (%tree-sitter-spans src :ruby table false)
+          [[0 1 :parent] [2 3 :field] [4 5 :plain]])))
+
+    (test ":nth counts named children only"
+      (assert= (%tree-sitter-spans "f(a, b)\n"
+                 :ruby {{:parent :argument_list :nth 1} :second}
+                 false)
+        [[5 6 :second]]))
+
+    (test "a coloured ancestor still hides what is under it"
+      (assert= (%tree-sitter-spans "foo.bar\n" :ruby {:call :whole {:field :method} :method} false)
+        [[0 7 :whole]]))
+
+    (test "the held tree answers what the text does, context and all"
+      (let (src "def go\n  foo.bar(1)\n  baz(x)\nend\n"
+            table {{:field :method} :syntax/function :identifier :syntax/variable}
+            tree (editor/treesit/open-tree src :ruby))
+        (assert= (%tree-sitter-tree-spans tree table false 0 (string/length src))
+          (%tree-sitter-spans src :ruby table false))
+        (assert= (editor/treesit/fontify-tree tree table 0 (string/length src))
+          (vec (editor/treesit/fontify src :ruby table)))
+        (editor/treesit/free-tree tree)))
+
+    (test "a malformed selector is refused by the kernel and named by the validator"
+      (is (failure? (try
+                      (%tree-sitter-spans "x\n" :ruby {{:feild :name} :f} false)
+                      (catch e (failure (error-message e))))))
+      (is (failure? (try
+                      (%tree-sitter-spans "x\n" :ruby {{} :f} false)
+                      (catch e (failure (error-message e))))))
+      (assert= (count (editor/treesit/face-table-problems {{:feild :name} :f
+                                                           {} :g
+                                                           {:nth -1} :h
+                                                           {:kind "x"} :i
+                                                           :ok "face"}))
+        5)
+      (assert= (editor/treesit/face-table-problems {:string :syntax/string
+                                                    {:parent :call
+                                                     :field :method
+                                                     :kind :identifier
+                                                     :nth 0} :f})
+        '()))))
+
+;; The installed grammars an editor fetched (bedit's ~/.config/bedit/grammars); a suite
+;; runs only when its library is there, so a machine without them stays green.
+(def tsm-grammar-dir (str (or (os/env "HOME") "") "/.config/bedit/grammars/"))
+
+(defn tsm-installed? (lang)
+  (let (path (str tsm-grammar-dir "libtree-sitter-" (->string lang) ".so"))
+    (when (file/exists? path) (editor/treesit/declare-grammar path lang))))
+
+(when (tsm-installed? :hcl)
+  ;; Every name in HCL is an `identifier`; where it sits is the only thing telling a block's
+  ;; type from an attribute's name from a called function.
+  (def tsm-hcl-faces
+    {:string_lit :label
+     {:parent :block :kind :identifier :nth 0} :block-type
+     {:parent :attribute :kind :identifier} :attribute
+     {:parent :function_call :kind :identifier} :function
+     :identifier :name})
+
+  (def tsm-hcl-src
+    "resource \"aws_instance\" \"web\" {\n  ami = lookup(var.amis, \"x\")\n  user_data = <<-EOT\n    #!/bin/bash\n\n      echo hi\n}\n  EOT\n}\nlocals {\n  a = 1\n}\n")
+
+  (describe "HCL: context faces"
+    (test "block type, label, attribute name, function name and variable each their own"
+      (let (spans (%tree-sitter-spans tsm-hcl-src :hcl tsm-hcl-faces false)
+            named (fn (from) (nth (seq/find spans (fn (sp) (= (first sp) from))) 2)))
+        (assert= (named 0) :block-type)
+        (assert= (named 9) :label)
+        (assert= (named 34) :attribute)
+        (assert= (named 40) :function)
+        (assert= (named 47) :name)
+        ;; `locals` is a block type too, with no label after it
+        (assert= (named (index-of tsm-hcl-src "locals")) :block-type)))
+
+    (test "the held tree's spans equal the text's, over the whole file and a window"
+      (let (tree (editor/treesit/open-tree tsm-hcl-src :hcl)
+            whole (%tree-sitter-spans tsm-hcl-src :hcl tsm-hcl-faces false))
+        (assert= (%tree-sitter-tree-spans tree tsm-hcl-faces false 0 (string/length tsm-hcl-src))
+          whole)
+        ;; a window starting inside the first block still sees `ami` as an attribute
+        (assert= (%tree-sitter-tree-spans tree tsm-hcl-faces false 34 61)
+          (vec (seq/filter whole (fn (sp) (and (>= (first sp) 34) (< (first sp) 61))))))
+        (editor/treesit/free-tree tree))))
+
+  (def tsm-hcl-indent
+    {:width 2
+     :blocks #{}
+     :brackets #{:block :object :tuple :function_call}
+     :dedent #{}
+     :opens #{"{" "[" "("}
+     :verbatim #{:heredoc_template}})
+
+  (describe "HCL: verbatim heredoc lines"
+    (test "a heredoc's lines keep their indentation; a blank one continues the content's"
+      (let (lines (string/split tsm-hcl-src "\n")
+            bol (fn (i) (fold (take lines i) 0 (fn (acc l) (+ acc (string/length l) 1))))
+            column (fn (spec i) (editor/treesit/indent-column tsm-hcl-src :hcl (bol i) spec)))
+        ;; resource · ami · user_data · #!/bin/bash · blank · echo · `}` · EOT · } · locals · a · }
+        (assert= (map (range 0 12) (fn (i) (column tsm-hcl-indent i)))
+          '(0 2 2 4 4 6 0 2 0 0 2 0))
+        ;; the opening line is code; without :verbatim the content is re-indented as code
+        (assert= (column (dissoc tsm-hcl-indent :verbatim) 5) 2)))
+
+    (test "the held tree agrees"
+      (let (tree (editor/treesit/open-tree tsm-hcl-src :hcl)
+            echo-bol (index-of tsm-hcl-src "      echo"))
+        (assert= (editor/treesit/indent-column tsm-hcl-src :hcl echo-bol tsm-hcl-indent tree) 6)
+        (editor/treesit/free-tree tree)))))
+
+(when (and (tsm-installed? :rust) (tsm-installed? :go))
+  (describe "Rust and Go: a call's function name"
+    (test "the identifier filling `function` is not the one in the arguments"
+      (let (calls {{:field :function :kind :identifier} :function :identifier :name})
+        (assert= (%tree-sitter-spans "fn main() { let x = foo(y); }\n" :rust calls false)
+          [[3 7 :name] [16 17 :name] [20 23 :function] [24 25 :name]])
+        (assert= (%tree-sitter-spans "package m\nfunc main() { x := foo(y) }\n" :go calls false)
+          [[15 19 :name] [24 25 :name] [29 32 :function] [33 34 :name]])))))

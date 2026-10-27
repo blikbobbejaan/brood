@@ -51,9 +51,9 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     primitives.def(
         "%tree-sitter-spans",
         Arity::exact(4),
-        Sig::new(vec![string, kw, list_ty.union(vec_ty), any], vec_ty),
-        &["source", "lang", "kinds", "keywords?"],
-        "The fontify query: [start end kind] for the OUTERMOST nodes whose :kind is in `kinds` (a list/vector of keywords), in source order, not descending into one that matched. With keywords? true, an anonymous token beginning with a letter is also reported, as kind :__keyword__ — the cross-language keyword rule, which no grammar names. Which kinds get which face stays with the caller; what this avoids is projecting every node into a map to read its kind and discard the rest, which is what a windowed fontify did on every keystroke.",
+        Sig::new(vec![string, kw, list_ty.union(vec_ty).union(map_ty), any], vec_ty),
+        &["source", "lang", "table", "keywords?"],
+        "The fontify query: [start end reported] for the OUTERMOST nodes the face `table` colours, in source order, not descending into one that matched. `table` is a list/vector of kind keywords (each reported as itself), or a map from SELECTOR to what a span reports: a selector is a kind keyword, or a context map {:kind :parent :field :nth} — the node's kind, its parent's kind, the field it fills in the parent (tree-sitter's field name) and its index among the parent's named children — whose given constraints must all hold. When several match, the most specific wins (:field over :parent over :nth over :kind), so any context entry beats the plain kind (ADR-486). With keywords? true, an anonymous token beginning with a letter is also reported, as kind :__keyword__ — the cross-language keyword rule, which no grammar names. Which kinds get which face stays with the caller; what this avoids is projecting every node into a map to read its kind and discard the rest, which is what a windowed fontify did on every keystroke.",
         tree_sitter_spans);
     // Tree HANDLES (ADR-443): a whole document's parse tree, held across edits and
     // reparsed incrementally, queried over a range — what an editor's view keeps per
@@ -75,9 +75,9 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     primitives.def(
         "%tree-sitter-tree-spans",
         Arity::exact(5),
-        Sig::new(vec![ref_ty, list_ty.union(vec_ty), any, int, int], vec_or_nil),
-        &["tree", "kinds", "keywords?", "from", "to"],
-        "The fontify query over a held tree, for chars [from, to) of its text only: [start end kind] for the OUTERMOST nodes whose :kind is in kinds that reach into the range, in source order, each clipped to the range — so a string opened above it reports its visible part, coloured as a string, because the tree is the whole document's. Walks only the nodes that reach the range. keywords? as in %tree-sitter-spans (an anonymous token beginning with a letter is :__keyword__). Absolute char offsets. nil when the handle is gone (freed or evicted): open a fresh tree.",
+        Sig::new(vec![ref_ty, list_ty.union(vec_ty).union(map_ty), any, int, int], vec_or_nil),
+        &["tree", "table", "keywords?", "from", "to"],
+        "The fontify query over a held tree, for chars [from, to) of its text only: [start end reported] for the OUTERMOST nodes the face table colours (as in %tree-sitter-spans, context selectors included) that reach into the range, in source order, each clipped to the range — so a string opened above it reports its visible part, coloured as a string, because the tree is the whole document's. Walks only the nodes that reach the range. keywords? as in %tree-sitter-spans (an anonymous token beginning with a letter is :__keyword__). Absolute char offsets. nil when the handle is gone (freed or evicted): open a fresh tree.",
         tree_sitter_tree_spans);
     primitives.def(
         "%tree-sitter-tree-changes",
@@ -200,9 +200,9 @@ pub(super) fn tree_sitter_errors(args: &[Value], _: EnvId, heap: &mut Heap) -> L
 pub(super) fn tree_sitter_spans(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let src = expect_string(heap, "%tree-sitter-spans", arg(args, 0))?;
     let lang = ts_lang(heap, "%tree-sitter-spans", arg(args, 1))?;
-    let kinds = ts_kinds(heap, "%tree-sitter-spans", arg(args, 2))?;
+    let table = ts_table(heap, "%tree-sitter-spans", arg(args, 2))?;
     let keywords = !matches!(arg(args, 3), Value::Nil | Value::Bool(false));
-    crate::host::treesit::spans(heap, &src, &lang, kinds, keywords)
+    crate::host::treesit::spans(heap, &src, &lang, &table, keywords)
 }
 
 /// `(tree-sitter-load-grammar path lang)` — load a grammar shared library at
@@ -236,6 +236,107 @@ fn ts_kinds(heap: &Heap, who: &'static str, v: Value) -> Result<Vec<String>, Lis
         }
     }
     Ok(kinds)
+}
+
+/// A span query's face table (ADR-486): a sequence of kind keywords (each reported as
+/// itself), or a map whose keys are SELECTORS and whose values are what a span reports. A
+/// selector is a kind keyword, or a map naming the node's context:
+///
+/// ```text
+/// {:kind :identifier :parent :block :nth 0}   ; the identifier first among a block's named children
+/// {:field :function}                          ; whatever fills a parent's `function` field
+/// ```
+///
+/// `:kind`, `:parent` and `:field` are keywords, `:nth` a non-negative int; at least one is
+/// given, and nothing else is accepted, so a misspelt constraint fails at the call rather
+/// than quietly matching everything.
+fn ts_table(
+    heap: &Heap,
+    who: &'static str,
+    v: Value,
+) -> Result<crate::host::treesit::SpanTable, LispError> {
+    use crate::host::treesit::{SpanRule, SpanTable};
+    let Value::Map(id) = v else {
+        return Ok(SpanTable::of_kinds(ts_kinds(heap, who, v)?));
+    };
+    let mut rules = Vec::new();
+    for (selector, reported) in heap.map_entries(id) {
+        let rule = match selector {
+            Value::Keyword(kind) => SpanRule {
+                kind: Some(value::symbol_name(kind)),
+                parent: None,
+                field: None,
+                nth: None,
+                reported,
+            },
+            Value::Map(selector_id) => ts_selector(heap, who, selector_id, reported)?,
+            other => {
+                return Err(LispError::wrong_type(
+                    heap,
+                    who,
+                    "a node kind keyword or a {:kind :parent :field :nth} selector map",
+                    other,
+                ));
+            }
+        };
+        rules.push(rule);
+    }
+    Ok(SpanTable::new(rules))
+}
+
+/// One context selector of a face table, as a rule reporting `reported`.
+fn ts_selector(
+    heap: &Heap,
+    who: &'static str,
+    selector: value::MapId,
+    reported: Value,
+) -> Result<crate::host::treesit::SpanRule, LispError> {
+    let mut rule = crate::host::treesit::SpanRule {
+        kind: None,
+        parent: None,
+        field: None,
+        nth: None,
+        reported,
+    };
+    let named = |constraint: &str, v: Value| match v {
+        Value::Keyword(name) => Ok(value::symbol_name(name)),
+        other => Err(LispError::wrong_type(
+            heap,
+            who,
+            &format!("a keyword for selector {constraint}"),
+            other,
+        )),
+    };
+    for (key, v) in heap.map_entries(selector) {
+        let constraint = match key {
+            Value::Keyword(k) => value::symbol_name(k),
+            other => return Err(LispError::wrong_type(heap, who, "a selector key", other)),
+        };
+        match constraint.as_str() {
+            "kind" => rule.kind = Some(named(":kind", v)?),
+            "parent" => rule.parent = Some(named(":parent", v)?),
+            "field" => rule.field = Some(named(":field", v)?),
+            "nth" => {
+                let n = expect_int(heap, who, v)?;
+                rule.nth = Some(usize::try_from(n).map_err(|_| {
+                    LispError::runtime(format!(
+                        "{who}: a selector's :nth is never negative, got {n}"
+                    ))
+                })?);
+            }
+            other => {
+                return Err(LispError::runtime(format!(
+                    "{who}: a face-table selector takes :kind :parent :field :nth, not :{other}"
+                )));
+            }
+        }
+    }
+    if rule.kind.is_none() && rule.parent.is_none() && rule.field.is_none() && rule.nth.is_none() {
+        return Err(LispError::runtime(format!(
+            "{who}: an empty face-table selector {{}} would colour every node"
+        )));
+    }
+    Ok(rule)
 }
 
 /// A document's text as a rope: a rope as itself (a reference count, no copy), a string
@@ -322,11 +423,11 @@ pub(super) fn tree_sitter_tree_reparse(args: &[Value], _: EnvId, heap: &mut Heap
 pub(super) fn tree_sitter_tree_spans(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let who = "%tree-sitter-tree-spans";
     let handle = ts_handle(heap, who, arg(args, 0))?;
-    let kinds = ts_kinds(heap, who, arg(args, 1))?;
+    let table = ts_table(heap, who, arg(args, 1))?;
     let keywords = !matches!(arg(args, 2), Value::Nil | Value::Bool(false));
     let from = expect_int(heap, who, arg(args, 3))?;
     let to = expect_int(heap, who, arg(args, 4))?;
-    crate::host::treesit::tree_spans(heap, handle, kinds, keywords, from, to)
+    crate::host::treesit::tree_spans(heap, handle, &table, keywords, from, to)
 }
 
 pub(super) fn tree_sitter_tree_changes(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
