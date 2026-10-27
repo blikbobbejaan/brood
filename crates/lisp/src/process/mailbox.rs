@@ -1135,12 +1135,16 @@ pub fn take_priority(heap: &mut Heap) -> LispResult {
 /// `(proc/set-quit-key key busy-ms)` (ADR-491): `key` — a keyword, string or integer, what a
 /// frontend delivers as a keystroke — arriving on the calling process's PRIORITY lane while
 /// it has been running in an interrupt window for `busy-ms` interrupts it. nil clears it.
-pub(crate) fn set_quit_key(key: Option<(super::interrupt::QuitPattern, u64)>) {
+pub(crate) fn set_quit_key(
+    key: Option<(super::interrupt::QuitPattern, u64)>,
+    from: Option<crate::core::value::Symbol>,
+) {
     let ctx = current_process();
     crate::core::sync::lock(&ctx.mailbox.state).quit_key = key.map(|(key, busy_ms)| {
         Box::new(super::interrupt::QuitKey {
             key,
             busy_us: busy_ms.saturating_mul(1000),
+            from,
         })
     });
 }
@@ -1392,6 +1396,7 @@ fn push_and_wake(mb: &Mailbox, env: Envelope) {
     if let Some(quit) = st.quit_key.as_deref()
         && let Payload::Wire(msg) = &env.msg
         && quit.matches(msg, matches!(env.lane, Lane::Priority))
+        && quit.admits(super::interrupt::delivery_origin())
         && mb.status.load(Ordering::Relaxed) != ST_WAITING
     {
         mb.interrupt.request(quit.busy_us);

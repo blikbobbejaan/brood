@@ -2991,6 +2991,83 @@ fn a_guest_link_reaches_what_it_was_given_and_ships_no_code() {
     );
 }
 
+/// A wire quit key (ADR-491) is a vector matched on any lane, so a GUEST link (ADR-415)
+/// that can reach a loop's pid could stop its turn with `[:key :ctrl-g]`. It must not: a key
+/// from another node interrupts only when it comes from the client the loop serves
+/// (`proc/set-quit-key`'s `from`) or from a full peer. Here the guest reaches `:ui` by its
+/// grant: its C-g leaves a turn with no `from` to run to its ceiling, and stops one whose
+/// `from` is the guest's own pid.
+#[test]
+fn a_guest_link_stops_a_turn_only_as_the_loops_own_client() {
+    let _g = port_lock();
+    let dir = std::env::temp_dir().join(format!("brood-dist-guest-quit-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let port_a = free_port();
+    let port_b = free_port();
+
+    let server = format!(
+        r#"
+(node/start :a "127.0.0.1:{port_a}" "full-node-cookie-16+")
+(node/grant-guest "guest-cookie-0123456789" {{:names [:ui] :as "alice"}})
+(defn spin (n) (spin (inc n)))
+(defn turn (label from)
+  (proc/set-quit-key [:key :ctrl-g] 0 from)
+  (let (r (proc/interruptible 3000 (fn () (spin 0))))
+    (io/puts (str label "=" (if (= (:message (second r)) "quit") "QUIT" "CEILING")))))
+(defn ui ()
+  (let (client (receive ([:hi from] from)))
+    (do (send client [:go 1])
+        (turn "OPEN" nil)
+        (send client [:go 2])
+        (turn "SERVED" client)
+        (send client [:done]))))
+(proc/register :ui (spawn (ui)))
+(receive (_ nil))
+"#
+    );
+    let client = format!(
+        r#"
+(node/start :b "127.0.0.1:{port_b}" "guest-cookie-0123456789")
+(node/connect "a@127.0.0.1:{port_a}")
+(def ui {{:name :ui :node :a@127.0.0.1}})
+(send ui [:hi (self)])
+(receive ([:go 1] nil) (after 30000 (throw "no first turn")))
+(sleep 300)
+(send ui [:key :ctrl-g true])
+(receive ([:go 2] nil) (after 30000 (throw "no second turn")))
+(sleep 300)
+(send ui [:key :ctrl-g true])
+(receive ([:done] (io/puts "DONE")) (after 30000 (throw "no end")))
+"#
+    );
+
+    let mut a = spawn_brood(&dir, "server.blsp", &server);
+    wait_until_listening(port_a);
+    let b = spawn_brood(&dir, "client.blsp", &client);
+    let out = b.wait_with_output().expect("client finished");
+    let _ = a.kill();
+    let _ = a.wait();
+    let mut a_out = String::new();
+    if let Some(mut o) = a.stdout.take() {
+        let _ = o.read_to_string(&mut a_out);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    let report = format!(
+        "--- guest stdout ---\n{}\n--- guest stderr ---\n{}\n--- host stdout ---\n{a_out}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "guest failed.\n{report}");
+    assert!(
+        a_out.contains("OPEN=CEILING"),
+        "a guest's C-g stopped a turn that is not its own.\n{report}"
+    );
+    assert!(
+        a_out.contains("SERVED=QUIT"),
+        "the loop's own client could not stop its turn.\n{report}"
+    );
+}
+
 /// Mailbox lanes cross a node link (ADR-492): a `proc/send-priority` from a peer is
 /// taken by `proc/take-priority` ahead of the plain messages the same peer sent before
 /// it, and a `proc/send-latest` from a peer supersedes the queued message with its key,

@@ -108,10 +108,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         busy_proc);
     primitives.def(
         "proc/set-quit-key",
-        Arity::exact(2),
-        Sig::new(vec![kw.union(string).union(int).union(vec_ty.clone()).union(nil_ty.clone()), int], nil_ty.clone()),
-        &["key", "busy-ms"],
-        "Declare the calling process's QUIT KEY (ADR-491), Emacs's `quit-char`: when key — a keyword, string or integer, the shape a frontend delivers a keystroke in (a window's C-g is `:ctrl-g`) — arrives on its PRIORITY lane (`proc/send-priority`) while it has been running in an open interrupt window for at least busy-ms, the kernel interrupts it as `proc/interrupt` does. key may instead be a VECTOR of such atoms, the shape a wire frontend ships a key in (`[:key :ctrl-g]` from a thin client): it then matches a vector message that BEGINS with them, on any lane — lanes do not cross a node link, and such a message's tag already says it is input. The message is queued as well, so the app still sees its key. nil clears it; with none set a delivery pays nothing. Returns nil.\n\n    (do (proc/set-quit-key :ctrl-g 0) (let (r (proc/interruptible nil (fn () (proc/send-priority (self) :ctrl-g) (letrec (spin (fn (n) (spin (inc n)))) (spin 0))))) (proc/set-quit-key nil 0) [(first r) (receive (m m))]))   → [:interrupted :ctrl-g]",
+        Arity::range(2, 3),
+        Sig::with_optional(
+            vec![kw.union(string).union(int).union(vec_ty.clone()).union(nil_ty.clone()), int],
+            vec![pid_ty.union(nil_ty.clone())],
+            nil_ty.clone(),
+        ),
+        &["key", "busy-ms", "from"],
+        "Declare the calling process's QUIT KEY (ADR-491), Emacs's `quit-char`: when key — a keyword, string or integer, the shape a frontend delivers a keystroke in (a window's C-g is `:ctrl-g`) — arrives on its PRIORITY lane (`proc/send-priority`) while it has been running in an open interrupt window for at least busy-ms, the kernel interrupts it as `proc/interrupt` does. key may instead be a VECTOR of such atoms, the shape a wire frontend ships a key in (`[:key :ctrl-g]` from a thin client): it then matches a vector message that BEGINS with them, on any lane — lanes do not cross a node link, and such a message's tag already says it is input. The message is queued as well, so the app still sees its key. A key from ANOTHER node (a thin client's, over the link) interrupts only when it comes from the node of `from` — the pid of the client this loop serves — or, with no `from`, from a full peer: never from a GUEST link (ADR-415) that merely reaches this pid. nil clears it; with none set a delivery pays nothing. Returns nil.\n\n    (do (proc/set-quit-key :ctrl-g 0) (let (r (proc/interruptible nil (fn () (proc/send-priority (self) :ctrl-g) (letrec (spin (fn (n) (spin (inc n)))) (spin 0))))) (proc/set-quit-key nil 0) [(first r) (receive (m m))]))   → [:interrupted :ctrl-g]",
         set_quit_key);
     // Arg shape: (matcher: callable|spec vector, timeout: int|nil, tags: vector|nil). The
     // `receive` macro in `std/prelude.blsp` expands to exactly this. The matcher
@@ -506,7 +510,8 @@ pub(super) fn busy_proc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
     }
 }
 
-/// `(proc/set-quit-key key busy-ms)` — the message that interrupts this process (ADR-491).
+/// `(proc/set-quit-key key busy-ms [from])` — the message that interrupts this process
+/// (ADR-491), and the client pid it may come from when it comes from another node.
 pub(super) fn set_quit_key(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     use crate::process::interrupt::QuitPattern;
     let busy_ms = optional_ms(heap, "proc/set-quit-key", arg(args, 1))?.unwrap_or(0);
@@ -522,7 +527,17 @@ pub(super) fn set_quit_key(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
         }
         atom => Some(QuitPattern::Atom(quit_atom(heap, atom)?)),
     };
-    crate::process::set_quit_key(key.map(|key| (key, busy_ms)));
+    let from = match arg(args, 2) {
+        Value::Nil => None,
+        Value::Pid { node, .. } => Some(node),
+        other => {
+            return Err(LispError::type_err(format!(
+                "proc/set-quit-key: expected the client pid a key may come from, or nil, got {}",
+                crate::syntax::printer::print(heap, other)
+            )));
+        }
+    };
+    crate::process::set_quit_key(key.map(|key| (key, busy_ms)), from);
     Ok(Value::nil())
 }
 

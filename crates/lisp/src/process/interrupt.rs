@@ -186,6 +186,40 @@ impl Interrupt {
 pub(super) struct QuitKey {
     pub(super) key: QuitPattern,
     pub(super) busy_us: u64,
+    /// The node a key from another node must come from: the thin client this loop serves
+    /// (`proc/set-quit-key`'s `from`). None: any full peer, and never a guest link.
+    pub(super) from: Option<crate::core::value::Symbol>,
+}
+
+/// Where a delivered message came from, for the quit key (ADR-491): this node, or a peer
+/// over a link — whether that link is a GUEST's (ADR-415).
+#[derive(Clone, Copy)]
+pub(crate) enum Origin {
+    Local,
+    Peer {
+        node: crate::core::value::Symbol,
+        guest: bool,
+    },
+}
+
+thread_local! {
+    /// The peer whose frame this thread is delivering, while a node link's reader delivers
+    /// one (`dist::deliver_inbound`); every other delivery is local.
+    static INBOUND: std::cell::Cell<Origin> = const { std::cell::Cell::new(Origin::Local) };
+}
+
+/// Run `deliver` as a delivery from `origin` — what a link's reader wraps around an inbound
+/// `Send`, so the quit key can ask where it came from without a field on every envelope.
+pub(crate) fn delivering_from<T>(origin: Origin, deliver: impl FnOnce() -> T) -> T {
+    let previous = INBOUND.with(|inbound| inbound.replace(origin));
+    let result = deliver();
+    INBOUND.with(|inbound| inbound.set(previous));
+    result
+}
+
+/// Where the message being delivered on this thread came from.
+pub(super) fn delivery_origin() -> Origin {
+    INBOUND.with(|inbound| inbound.get())
 }
 
 pub(crate) enum QuitPattern {
@@ -213,6 +247,18 @@ impl QuitAtom {
 }
 
 impl QuitKey {
+    /// May a key from `origin` interrupt (ADR-491)? From this node, always. From a peer, only
+    /// the one the key names (`from`), or — when it names none — a full peer: a GUEST link
+    /// (ADR-415) that can reach the loop's pid must not stop its turn unless it is the
+    /// loop's own client.
+    pub(super) fn admits(&self, origin: Origin) -> bool {
+        match (origin, self.from) {
+            (Origin::Local, _) => true,
+            (Origin::Peer { node, .. }, Some(from)) => node == from,
+            (Origin::Peer { guest, .. }, None) => !guest,
+        }
+    }
+
     /// Is `msg`, queued on the priority lane or not (`priority`), this key?
     pub(super) fn matches(&self, msg: &super::Message, priority: bool) -> bool {
         match &self.key {
@@ -290,6 +336,7 @@ mod tests {
         let wire = QuitKey {
             key: QuitPattern::Prefix(vec![QuitAtom::Keyword(key), QuitAtom::Keyword(ctrl_g)]),
             busy_us: 0,
+            from: None,
         };
         let shipped = Message::Vector(vec![
             Message::Keyword(key),
@@ -301,11 +348,49 @@ mod tests {
         let atom = QuitKey {
             key: QuitPattern::Atom(QuitAtom::Keyword(ctrl_g)),
             busy_us: 0,
+            from: None,
         };
         assert!(atom.matches(&Message::Keyword(ctrl_g), true));
         assert!(
             !atom.matches(&Message::Keyword(ctrl_g), false),
             "priority lane only"
+        );
+    }
+
+    #[test]
+    fn a_quit_key_from_another_node_must_come_from_its_client_or_a_full_peer() {
+        let client = crate::core::value::intern("client@host");
+        let other = crate::core::value::intern("other@host");
+        let key = |from| QuitKey {
+            key: QuitPattern::Atom(QuitAtom::Int(7)),
+            busy_us: 0,
+            from,
+        };
+        let peer = |node, guest| Origin::Peer { node, guest };
+        let open = key(None);
+        assert!(open.admits(Origin::Local));
+        assert!(open.admits(peer(other, false)), "a full peer");
+        assert!(
+            !open.admits(peer(other, true)),
+            "never a guest it does not name"
+        );
+        let served = key(Some(client));
+        assert!(served.admits(Origin::Local));
+        assert!(
+            served.admits(peer(client, true)),
+            "its own client, a guest or not"
+        );
+        assert!(!served.admits(peer(other, false)), "no other peer");
+        assert!(
+            delivering_from(peer(client, true), || matches!(
+                delivery_origin(),
+                Origin::Peer { guest: true, .. }
+            )),
+            "the reader's delivery is seen as its peer's"
+        );
+        assert!(
+            matches!(delivery_origin(), Origin::Local),
+            "and only while it delivers"
         );
     }
 

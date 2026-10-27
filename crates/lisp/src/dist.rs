@@ -2149,7 +2149,13 @@ fn handle_inbound_frame(peer: Symbol, guest: Option<&guest::GuestLink>, mut fram
         guest.translate_inbound(&mut frame);
     }
     match frame {
-        Frame::Send { target, msg, lane } => deliver_inbound(target, msg, lane),
+        Frame::Send { target, msg, lane } => process::interrupt::delivering_from(
+            process::interrupt::Origin::Peer {
+                node: peer,
+                guest: guest.is_some(),
+            },
+            || deliver_inbound(target, msg, lane),
+        ),
         // A peer asked to watch one of our local pids — the shared `add_monitor` core
         // with a `Watcher::Remote`, so the alive/dead-target paths are the local ones.
         Frame::Monitor {

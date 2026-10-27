@@ -1283,8 +1283,11 @@ non-blocking window. The shared loop behind the observer (and the editor)."
   (do
     ((get display :enter))
     ;; the quit key (ADR-491): a C-g that arrives while a turn is busy interrupts it
+    ;; a key from another node counts only from the client the display serves (`:quit-from`,
+    ;; a served session's), or a full peer — never a guest link that reaches this pid
     (proc/set-quit-key (ui-quit-message display (ui-quit-key model))
-      (or (get model :quit-busy-ms) *ui-quit-busy-ms*))
+      (or (get model :quit-busy-ms) *ui-quit-busy-ms*)
+      (get display :quit-from))
     (try
       (do
         ;; nil last-good: first render must succeed. {} clock: a fresh timer bookkeeping
