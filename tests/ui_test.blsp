@@ -549,6 +549,23 @@
       (is (<= (lane-count-renders 0) 2)))))
 
 (describe "proc/send-latest — newest-wins (ADR-490)"
+  ;; The race a delivery cannot see: the receiver has the older message OUT of its queue
+  ;; for a pattern check when the newer one lands. A guard that sends the newer copy is
+  ;; that window made deterministic — the older one must not be handed over.
+  (test "a message superseded while it is out for a pattern check is never delivered"
+    (proc/send-latest (self) :race [:p 1])
+    (assert= (receive
+               ([:p n] :when (do (when (= n 1) (proc/send-latest (self) :race [:p 2])) true) n))
+      2)
+    (assert= (receive (message message) (after 0 :empty)) :empty))
+  (test "the same, for a candidate matched in place behind an unmatched message"
+    (send (self) :other)
+    (proc/send-latest (self) :race [:p 1])
+    (assert= (receive
+               ([:p n] :when (do (when (= n 1) (proc/send-latest (self) :race [:p 2])) true) n))
+      2)
+    (assert= (receive (message message) (after 0 :empty)) :other)
+    (assert= (receive (message message) (after 0 :empty)) :empty))
   ;; an app addresses its loop by name (bedit's `:editor`): the name is a local process,
   ;; so the lane survives it — bare, and as a `{:name :node}` address naming this node
   (test "a locally registered name keeps both lanes"

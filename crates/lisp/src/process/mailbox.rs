@@ -332,9 +332,10 @@ impl MailboxState {
     /// park gate's count of messages a parked receive already rejected) shrinks with a
     /// removal inside it, or the replacement would read as already scanned and the
     /// receiver would sleep through it. The owner's own scan in progress re-anchors on
-    /// seq (`scan_mailbox`), so a removal under it is a shift it already handles. One
-    /// race is left by design: an envelope the owner has popped as a candidate is not in
-    /// the queue to find, so both are delivered — older first, newest still last.
+    /// seq (`scan_mailbox`), so a removal under it is a shift it already handles. An
+    /// envelope the owner has OUT of the queue as a scan candidate is not here to find:
+    /// the scan asks [`holds_latest`](Self::holds_latest) before handing it over, and
+    /// drops it then.
     fn drop_superseded(&mut self, key: &str) {
         let found = self
             .queue
@@ -346,6 +347,15 @@ impl MailboxState {
                 self.scanned -= 1;
             }
         }
+    }
+
+    /// Whether a LATEST envelope with `key` is queued. Asked about a candidate the scan
+    /// took OUT of the queue: at most one envelope per key is ever queued, so one queued
+    /// now arrived while the candidate was out, and supersedes it.
+    fn holds_latest(&self, key: &str) -> bool {
+        self.queue
+            .iter()
+            .any(|e| matches!(&e.lane, Lane::Latest(k) if k.as_str() == key))
     }
 }
 
@@ -1829,7 +1839,7 @@ fn scan_mailbox(
         // (A hard `:kill` is caught at the VM driver's loop top; a soft exit at the
         // `park_on_receive` boundary — not here, since there's no coroutine to suspend.)
         // Rebuild candidate `*i` into the heap (no eval here → no collection).
-        let (popped, v, cand_seq) = {
+        let (popped, v, cand_seq, cand_latest) = {
             let mut st = crate::core::sync::lock(&ctx.mailbox.state);
             // Re-anchor the cursor: `*i` is only meaningful relative to the queue the
             // previous iteration saw, and the matcher may have consumed entries out from
@@ -1935,6 +1945,9 @@ fn scan_mailbox(
             // that identity: the matcher below runs with the lock released, so by consume
             // time the index may name a different envelope — see the consume path.
             let cand_seq = st.queue[*i].seq;
+            // A LATEST candidate left in the queue while it is matched can be superseded
+            // (removed) by a delivery in that window; the consume path checks for that.
+            let cand_latest = matches!(st.queue[*i].lane, Lane::Latest(_));
             if optimistic {
                 let m = st.queue.remove(*i).expect("bounds checked above");
                 drop(st);
@@ -1949,7 +1962,7 @@ fn scan_mailbox(
                     // path below, the one place the message is actually consumed.
                     Payload::Local { slot, .. } => heap.msg_root_peek(*slot),
                 };
-                (Some(m), v, cand_seq)
+                (Some(m), v, cand_seq, false)
             } else {
                 // Peek-in-place: a Local payload must NOT be taken here (the candidate
                 // may not match and has to stay queued), so read the slot without
@@ -1972,13 +1985,13 @@ fn scan_mailbox(
                     };
                     // `Some(m)` routes it through the same re-insert path the optimistic
                     // branch uses on a non-match, so nothing new has to be maintained.
-                    (Some(m), v, cand_seq)
+                    (Some(m), v, cand_seq, false)
                 } else {
                     let v = match &st.queue[*i].msg {
                         Payload::Wire(w) => from_message(heap, w),
                         Payload::Local { slot, .. } => heap.msg_root_peek(*slot),
                     };
-                    (None, v, cand_seq)
+                    (None, v, cand_seq, cand_latest)
                 }
             }
         };
@@ -2013,8 +2026,27 @@ fn scan_mailbox(
             // the `receive` macro emits it at the call site and dispatches on `idx` there,
             // so a loop that tail-calls back into `receive` stays O(1) native stack. The
             // matcher's `[idx var…]` answer already roots any value the clause bound.
+            //
+            // A LATEST message is handed over only if it is still the newest of its key
+            // (ADR-490): one superseded while it was out of the queue for this match is
+            // dropped, and the scan goes on past it — so a receiver never sees an older
+            // copy after a newer one was delivered. The check costs an ordinary message
+            // nothing but the lane test.
             let consumed = match popped {
-                Some(env) => Some(env),
+                Some(env) => {
+                    let superseded = match &env.lane {
+                        Lane::Latest(key) => {
+                            crate::core::sync::lock(&ctx.mailbox.state).holds_latest(key)
+                        }
+                        _ => false,
+                    };
+                    if superseded {
+                        drop(env);
+                        prev_seq = Some(cand_seq); // re-anchors past the dropped candidate
+                        continue;
+                    }
+                    Some(env)
+                }
                 None => {
                     // Remove by `seq`, NEVER by the recorded index: the matcher ran with
                     // the lock released, and a guard's consuming nested `receive` may have
@@ -2033,7 +2065,16 @@ fn scan_mailbox(
                             .is_some_and(|e| e.seq == cand_seq)
                             .then_some(j)
                     };
-                    j.and_then(|j| st.queue.remove(j))
+                    let removed = j.and_then(|j| st.queue.remove(j));
+                    // A LATEST candidate gone from the queue was superseded by a newer
+                    // delivery while it was matched (or a guard's nested receive took it):
+                    // either way it is not this receive's to hand over.
+                    if removed.is_none() && cand_latest {
+                        drop(st);
+                        prev_seq = Some(cand_seq);
+                        continue;
+                    }
+                    removed
                 }
             };
             if let Some(env) = consumed.as_ref()
@@ -2105,6 +2146,16 @@ fn reinsert_at_seq(st: &mut MailboxState, i: usize, m: Envelope) -> usize {
 /// [`reinsert_at_seq`] against the current process's mailbox, taking the lock.
 fn reinsert_candidate(ctx: &CurrentProcess, i: usize, m: Envelope) -> usize {
     let mut st = crate::core::sync::lock(&ctx.mailbox.state);
+    // A LATEST candidate superseded while it was out (ADR-490) is not put back: the newer
+    // one is queued. Answer where it would have landed; the scan's re-anchor on its seq
+    // continues from the message after it.
+    if let Lane::Latest(key) = &m.lane
+        && st.holds_latest(key)
+    {
+        let seq = m.seq;
+        drop(m);
+        return st.queue.partition_point(|e| e.seq < seq);
+    }
     reinsert_at_seq(&mut st, i, m)
 }
 
