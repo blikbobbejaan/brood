@@ -409,3 +409,25 @@ fn a_windowed_regex_search_finds_what_one_search_finds() {
         );
     }
 }
+
+#[test]
+fn a_hard_kill_pending_beside_an_interrupt_lands_first() {
+    // Both arrive while the process is inside a native call with no safepoint (a child
+    // process it waits on), so its next quantum boundary finds both pending. The kill is
+    // untrappable and must win: raised first, the interrupt closed the window and ran the
+    // code after it — here the `send` — before the kill landed.
+    let src = r#"
+        (def root (self))
+        (defn spin (n) (spin (inc n)))
+        (let ([p watch] (spawn-monitor
+                          (do (proc/interruptible nil
+                                (fn () (do (%run-process "sleep" ["0.3"]) (spin 0))))
+                              (send root :ran-on))))
+          (do (sleep 100)
+              (proc/interrupt p)
+              (exit p :kill)
+              [(receive ([:down ^watch _ reason] reason) (after 5000 :survived))
+               (receive (:ran-on :ran-on) (after 100 :stopped))]))
+    "#;
+    assert_eq!(run_at(Tier::Bytecode, src.into()), "[:killed :stopped]");
+}

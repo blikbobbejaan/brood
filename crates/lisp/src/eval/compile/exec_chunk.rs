@@ -1758,8 +1758,12 @@ pub(super) fn quantum_checks(heap: &Heap) -> Result<(), LispError> {
         return Err(crate::eval::proc_mailbox_limit_error(len, limit));
     }
     // An interrupt (ADR-491) is honoured here, once per quantum like the mailbox bound: a
-    // relaxed load when nothing is armed.
-    crate::eval::check_interrupt()?;
+    // relaxed load when nothing is armed. Not past a pending hard kill, which both callers
+    // check next: the kill is untrappable, and an interrupt raised first would run the
+    // interrupted code's handlers — the window's close and whatever follows it — before it.
+    if !crate::process::capture_hard_kill_pending() {
+        crate::eval::check_interrupt()?;
+    }
     if heap.drain_active() {
         crate::process::report_drain_liveness(heap);
     }
