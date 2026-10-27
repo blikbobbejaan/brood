@@ -25,11 +25,16 @@
 //! UTF-8 byte offsets and they are converted with the string's own char index (O(1) for
 //! ASCII) before anything reaches the language.
 //!
-//! **Interrupts (ADR-491).** The engine cannot be stopped inside one search, but one search
-//! is linear in the text (regex-automata has no backtracking) and its compiled size is
-//! capped, so a single search is bounded by a pass over its input. The loops OVER searches —
-//! every match of `find-all`, every token, the shrinking windows of the longest-match walk
-//! (quadratic at worst) — poll for an interrupt between searches.
+//! **Interrupts (ADR-491).** regex-automata has no cancellation: one search cannot be stopped
+//! from inside. It is bounded instead. There is no backtracking; the compiled pattern is
+//! capped (`meta`'s defaults: a 10 MiB NFA, a 2 MiB lazy-DFA cache per search), and a
+//! search is one lazy-DFA pass over its text, or — when that cache keeps filling — the Pike
+//! VM, O(pattern × text): still one pass, a slower one. What the crate does offer is a
+//! search confined to a byte range (`Input::range`), and a pattern whose matches have a
+//! bounded length is searched a window at a time with a poll between
+//! ([`search_captures_polled`]); an unbounded one (`a+`) is one search. The loops OVER
+//! searches — every match of `find-all`, every token, the shrinking windows of the
+//! longest-match walk (quadratic at worst) — poll between searches.
 //!
 //! Compiled patterns are cached by their text, process-wide. A `meta::Regex` is
 //! `Sync` and keeps a pool of per-thread search caches, so the map hands out the SAME `Arc`
@@ -108,7 +113,23 @@ enum Kind {
 
 /// One map per [`Kind`], keyed by the pattern alone, so a lookup borrows the caller's `&str`
 /// instead of allocating a key on every call.
-type Cache = HashMap<Box<str>, Arc<Regex>>;
+type Cache = HashMap<Box<str>, Arc<Pattern>>;
+
+/// A compiled pattern, and the longest text one of its matches can span — `None` when that
+/// is unbounded (`a+`). The bound is what lets a search run a window at a time
+/// ([`search_captures_polled`]); the engine does not expose it, so it is read from the
+/// parsed pattern once, when the pattern is compiled.
+struct Pattern {
+    regex: Regex,
+    longest: Option<usize>,
+}
+
+impl std::ops::Deref for Pattern {
+    type Target = Regex;
+    fn deref(&self) -> &Regex {
+        &self.regex
+    }
+}
 
 fn cache(kind: Kind) -> &'static Mutex<Cache> {
     static CACHES: OnceLock<[Mutex<Cache>; 2]> = OnceLock::new();
@@ -119,7 +140,7 @@ fn cache(kind: Kind) -> &'static Mutex<Cache> {
 /// The compiled form of `pattern` under `kind`, from the cache or compiled now. Compiling
 /// happens outside the lock: two threads meeting the same new pattern both compile it and
 /// one insert wins, which is cheaper than holding every other thread for the compile.
-fn compiled(who: &str, pattern: &str, kind: Kind) -> Result<Arc<Regex>, LispError> {
+fn compiled(who: &str, pattern: &str, kind: Kind) -> Result<Arc<Pattern>, LispError> {
     if let Some(hit) = cache(kind)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -131,12 +152,14 @@ fn compiled(who: &str, pattern: &str, kind: Kind) -> Result<Arc<Regex>, LispErro
         Kind::LeftmostFirst => MatchKind::LeftmostFirst,
         Kind::Longest => MatchKind::All,
     };
-    let fresh = Arc::new(
-        Regex::builder()
-            .configure(Regex::config().match_kind(match_kind))
-            .build(pattern)
-            .map_err(|e| LispError::runtime(format!("{who}: cannot compile {pattern:?}: {e}")))?,
-    );
+    let regex = Regex::builder()
+        .configure(Regex::config().match_kind(match_kind))
+        .build(pattern)
+        .map_err(|e| LispError::runtime(format!("{who}: cannot compile {pattern:?}: {e}")))?;
+    let longest = regex_automata::util::syntax::parse(pattern)
+        .ok()
+        .and_then(|hir| hir.properties().maximum_len());
+    let fresh = Arc::new(Pattern { regex, longest });
     let mut map = cache(kind).lock().unwrap_or_else(|e| e.into_inner());
     if map.len() >= CACHE_LIMIT {
         map.clear();
@@ -153,7 +176,7 @@ fn string_id(heap: &Heap, who: &str, v: Value) -> Result<StrId, LispError> {
 }
 
 /// A pattern argument, compiled.
-fn pattern_arg(heap: &Heap, who: &str, v: Value, kind: Kind) -> Result<Arc<Regex>, LispError> {
+fn pattern_arg(heap: &Heap, who: &str, v: Value, kind: Kind) -> Result<Arc<Pattern>, LispError> {
     let pattern = expect_string_ref(heap, who, v)?;
     compiled(who, pattern, kind)
 }
@@ -256,11 +279,61 @@ fn match_value(heap: &mut Heap, id: StrId, spans: &[Option<Span>]) -> Value {
     heap.map_from_pairs(pairs)
 }
 
+/// Bytes of text one windowed search covers between interrupt polls (ADR-491).
+const SEARCH_WINDOW: usize = 64 * 1024;
+
+/// The leftmost-first match of `rx` in `s` starting at or after byte `start`, into `caps` —
+/// `search_captures` over `s[start..]`, but a window at a time with an interrupt poll
+/// between when the pattern's matches have a bounded length (ADR-491). The engine cannot be
+/// stopped inside one search; a search confined to a window (`Input::range`, which still
+/// lets look-around see the whole text) is the step it does offer. A window takes the
+/// leftmost match STARTING in its first `SEARCH_WINDOW` bytes: such a match is at most the
+/// pattern's maximum length long, so the window reaches that far past them, and a match it
+/// reports starting later is left for the next window, where it is whole. A pattern with no
+/// bound (`a+`, `.*`) is one search, bounded by a pass over the text.
+fn search_captures_polled(
+    rx: &Pattern,
+    s: &str,
+    start: usize,
+    caps: &mut Captures,
+    poll: &mut InterruptPoll,
+) -> Result<(), LispError> {
+    let Some(longest) = rx.longest else {
+        rx.search_captures(&Input::new(s).range(start..), caps);
+        return Ok(());
+    };
+    let mut from = start;
+    loop {
+        let starts_end = char_boundary_up(s, from.saturating_add(SEARCH_WINDOW));
+        let window_end = char_boundary_up(s, starts_end.saturating_add(longest));
+        rx.search_captures(&Input::new(s).range(from..window_end), caps);
+        let last = window_end >= s.len();
+        match caps.get_match() {
+            Some(found) if found.start() < starts_end || last => return Ok(()),
+            None if last => return Ok(()),
+            _ => {}
+        }
+        poll.advance(InterruptPoll::EVERY)?;
+        from = starts_end;
+    }
+}
+
+/// The smallest char boundary of `s` at or after byte `at`, clamped to its length.
+fn char_boundary_up(s: &str, at: usize) -> usize {
+    let mut at = at.min(s.len());
+    while !s.is_char_boundary(at) {
+        at += 1;
+    }
+    at
+}
+
 /// `(%regex-match? pattern s)`
 fn regex_match(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let rx = pattern_arg(heap, "%regex-match?", arg(args, 0), Kind::LeftmostFirst)?;
     let s = expect_string_ref(heap, "%regex-match?", arg(args, 1))?;
-    Ok(Value::Bool(rx.is_match(s)))
+    let mut caps = rx.create_captures();
+    search_captures_polled(&rx, s, 0, &mut caps, &mut InterruptPoll::new())?;
+    Ok(Value::Bool(caps.is_match()))
 }
 
 /// `(%regex-find pattern s from)`
@@ -272,7 +345,7 @@ fn regex_find(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         let start = heap.str_char_to_byte(id, from);
         let s = heap.string(id);
         let mut caps = rx.create_captures();
-        rx.search_captures(&Input::new(s).range(start..), &mut caps);
+        search_captures_polled(&rx, s, start, &mut caps, &mut InterruptPoll::new())?;
         if !caps.is_match() {
             return Ok(Value::Nil);
         }
@@ -296,7 +369,7 @@ fn regex_find_all(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         let mut poll = InterruptPoll::new();
         while at <= s.len() {
             poll.advance(16)?;
-            rx.search_captures(&Input::new(s).range(at..), &mut caps);
+            search_captures_polled(&rx, s, at, &mut caps, &mut poll)?;
             let Some(whole) = caps.get_match() else { break };
             at = if whole.is_empty() {
                 next_char(s, whole.end())
@@ -318,7 +391,7 @@ fn regex_find_all(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 /// start, and each rule on its own under longest semantics to decide which token it is.
 struct Lexer {
     any_rule: Regex,
-    rules: Vec<Arc<Regex>>,
+    rules: Vec<Arc<Pattern>>,
 }
 
 fn lexers() -> &'static Mutex<HashMap<Vec<Box<str>>, Arc<Lexer>>> {

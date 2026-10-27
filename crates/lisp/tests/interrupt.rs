@@ -372,3 +372,40 @@ fn a_receive_inside_a_region_parks_and_an_interrupt_lands_after_it_resumes() {
         "a receive inside a region blocked its worker"
     );
 }
+
+#[test]
+fn a_bounded_regex_search_is_interrupted_inside() {
+    // One search with no match over a megabyte: a pattern of bounded length is searched a
+    // window at a time, with a poll between.
+    builtin_is_stopped_inside(
+        "(string/repeat \"a\" 1000000)",
+        "(%regex-match? \"zq\" big)",
+    );
+    builtin_is_stopped_inside(
+        "(string/repeat \"a\" 1000000)",
+        "(%regex-find \"zq\" big 0)",
+    );
+}
+
+#[test]
+fn a_windowed_regex_search_finds_what_one_search_finds() {
+    // A match straddling a 64 KB window edge, after multi-byte text, is the one a single
+    // search gives — its start, its groups, and a word boundary that looks past the window.
+    for pad in [65_534usize, 65_535, 65_536, 131_070] {
+        let text = format!(
+            "{}é{} xbcd {}",
+            "a".repeat(pad),
+            "a".repeat(5),
+            "a".repeat(70_000)
+        );
+        let at = pad + 1 + 5 + 1;
+        let src = format!(
+            "(let (m (%regex-find \"\\\\bx(b|bc)d\" \"{text}\" 0)) [(:start m) (%regex-match? \"q\" \"{text}\")])"
+        );
+        assert_eq!(
+            run_at(Tier::Bytecode, src),
+            format!("[{at} false]"),
+            "pad {pad}"
+        );
+    }
+}
