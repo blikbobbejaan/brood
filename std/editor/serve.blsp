@@ -93,16 +93,26 @@ consumes them), leaving a served app deaf to everything but keys.
      ;; ahead of the session's background messages (ADR-490) — every clause is
      ;; tag-led, so the scan passes a backlog without rebuilding any of it.
      :poll-input (fn () (remote-take-input client held))
-     ;; the oldest message of any kind; the client's input means what it does above
-     :poll (fn (ms)
-             (receive
-               ([:key k held?] (do (table/put held :held? held?) k))
-               ([:key k] k)
-               ([:detach] :close)
-               ([:down _ ^client _] :close)
-               ; anything else is async app input — the event bus, as local displays deliver it
-               (m m)
-               (after ms nil)))}))
+     ;; the oldest message of any kind, tagged: the client's input as above, anything
+     ;; else async app input — the event bus, as local displays deliver it — but not the
+     ;; USER's, so it holds no idle timer back
+     :poll-tagged (fn (ms) (remote-receive-tagged client held ms))
+     :poll (fn (ms) (serve-untag (remote-receive-tagged client held ms)))}))
+
+(defn- serve-untag (tagged)
+  "The message of a `[message input?]` poll result, nil for nil."
+  (if (nil? tagged) nil (first tagged)))
+
+(defn- remote-receive-tagged (client held ms)
+  "A remote display's `:poll-tagged`: the oldest message, waiting up to `ms`, as
+`[message input?]` — the client's keys, detach and death are input — or nil on timeout."
+  (receive
+    ([:key k held?] (do (table/put held :held? held?) [k true]))
+    ([:key k] [k true])
+    ([:detach] [:close true])
+    ([:down _ ^client _] [:close true])
+    (m [m false])
+    (after ms nil)))
 
 (defn- remote-take-input (client held)
   "The next input `client` shipped this session — a key (noting whether one is held in
@@ -429,15 +439,20 @@ which is dropped (a nil ⇒ tick) rather than leaked to the app."
    :draw (fn (f) (send hub [:frame f]))
    ;; any client's key, ahead of the session's background messages (ADR-490)
    :poll-input (fn () (shared-take-key))
-   :poll (fn (ms)
-           (receive
-             ([:key k _held?] k)
-             ([:key k] k)
-             ; a :size reply past its 200ms window — drop, tick
-             ([:hub-size _ _] nil)
-             ; anything else is async app input — the event bus
-             (m m)
-             (after ms nil)))})
+   :poll-tagged shared-receive-tagged
+   :poll (fn (ms) (serve-untag (shared-receive-tagged ms)))})
+
+(defn- shared-receive-tagged (ms)
+  "A shared session's `:poll-tagged`: the oldest message, waiting up to `ms`, as
+`[message input?]` — any client's key is input, anything else is async app input (the
+event bus) — or nil on timeout, and for a `:size` reply past its 200ms window, which is
+dropped rather than leaked to the app."
+  (receive
+    ([:key k _held?] [k true])
+    ([:key k] [k true])
+    ([:hub-size _ _] nil)
+    (m [m false])
+    (after ms nil)))
 
 (defn- shared-take-key ()
   "The next key any client of a shared session shipped, without waiting; nil when none

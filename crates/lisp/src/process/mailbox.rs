@@ -166,6 +166,10 @@ pub(super) struct Mailbox {
     /// it (re-setting re-arms) instead of dying inside the very `proc/flag` call the
     /// E0046 hint tells it to make.
     pub(super) overflow_hit: AtomicUsize,
+    /// Whether the message the last `receive` took came on the PRIORITY lane (ADR-490):
+    /// cleared by `proc/receive-lane` before it receives, set by the consume path only
+    /// for a priority envelope — an ordinary receive pays a lane test, no store.
+    pub(super) took_priority: AtomicBool,
     /// **Park generation** — monotonic counter bumped each time this process parks
     /// in `receive` *with a deadline* (see `wait_for_message`). It implements lazy
     /// cancellation of superseded timer entries: each `arm_timer` stamps the entry
@@ -636,6 +640,7 @@ impl Mailbox {
             trap_exit: AtomicBool::new(false),
             max_mailbox: AtomicUsize::new(0),
             overflow_hit: AtomicUsize::new(0),
+            took_priority: AtomicBool::new(false),
             timer_gen: AtomicU64::new(0),
             parent: AtomicU64::new(0),
             isolate_owner: AtomicU64::new(0),
@@ -1029,6 +1034,29 @@ pub fn send_in_lane(
     };
     push_and_wake(&mailbox, envelope);
     Ok(())
+}
+
+/// `(proc/receive-lane ms)`: `(receive (m m) (after ms nil))` that also says which lane
+/// the message came on — `[msg :priority]` or `[msg :normal]`, nil on timeout (ADR-490).
+/// What lets a UI loop that parked on its mailbox tell the user's input that woke it from
+/// a background message.
+pub fn receive_lane(heap: &mut Heap, timeout: Value) -> LispResult {
+    let ctx = current_process();
+    ctx.mailbox.took_priority.store(false, Ordering::Relaxed);
+    // `(receive (m m) …)`'s native spec: any message, bound — so this IS a receive, with
+    // its parking, timeout and suspend/replay (a replay clears the flag again first).
+    let any = Value::Keyword(value::intern("%rspec [[:bind]]"));
+    let answer = receive_match(heap, any, timeout, Value::nil(), Value::nil())?;
+    let Value::Vector(id) = answer else {
+        return Ok(Value::nil()); // timed out
+    };
+    let msg = heap.vector(id)[1];
+    let lane = if ctx.mailbox.took_priority.load(Ordering::Relaxed) {
+        value::kw("priority")
+    } else {
+        value::kw("normal")
+    };
+    Ok(heap.alloc_vector2(msg, lane))
 }
 
 /// `(proc/take-priority)`: the calling process's oldest PRIORITY-lane message, removed
@@ -2081,6 +2109,12 @@ fn scan_mailbox(
                 && let Payload::Local { slot, .. } = &env.msg
             {
                 heap.msg_root_take(*slot);
+            }
+            // `proc/receive-lane` reports the lane of what it took (ADR-490)
+            if let Some(env) = consumed.as_ref()
+                && matches!(env.lane, Lane::Priority)
+            {
+                ctx.mailbox.took_priority.store(true, Ordering::Relaxed);
             }
             // Adopt the message's causal context (ADR-174 send-level) so this receive —
             // and anything it then spawns or sends — runs in the sender's causal context.

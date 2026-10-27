@@ -97,8 +97,8 @@ pub use timer::pending_timer_count;
 
 pub use mailbox::{
     deactivate_alias, list_local_pids, mailbox_len, max_mailbox, process_cpu_ns, process_gc_runs,
-    process_mem, process_reductions, process_status, receive_match, send, send_in_lane,
-    set_max_mailbox, take_priority,
+    process_mem, process_reductions, process_status, receive_lane, receive_match, send,
+    send_in_lane, set_max_mailbox, take_priority,
 };
 pub use message::{ClosureArmMsg, ClosureMsg, Message, from_message, to_message};
 pub(crate) use message::{chunk_flush, chunk_payload, error_reason};

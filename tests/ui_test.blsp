@@ -373,8 +373,7 @@
       (is (nil? (second result))))) ; queue drained clean
   (test "an empty queue folds nothing — the model passes through unchanged"
     (let (me (self))
-      (assert= (di-drain {:acc [:x]} me 1024)
-        [{:acc [:x]} nil])))
+      (assert= (di-drain {:acc [:x]} me 1024) [{:acc [:x]} nil :budget])))
   (test "a :close pulled mid-drain comes back as pending (the loop acts on it, not update)"
     (let (me (self)
           _ (do (send me [:input :a]) (send me :close) (send me [:input :b]))
@@ -446,6 +445,9 @@
    :poll-input (fn ()
                  (let (taken (proc/take-priority))
                    (if (nil? taken) nil (first taken))))
+   :poll-tagged (fn (ms)
+                  (let (received (proc/receive-lane 0))
+                    (if (nil? received) nil [(first received) (= (second received) :priority)])))
    :poll (fn (ms) (receive (message message) (after 0 nil)))})
 
 (defn- lane-tag (input)
@@ -517,28 +519,60 @@
       (assert= (vec (seq/filter (lane-await-seen)
                       (fn (input) (not (= (lane-tag input) :background)))))
         ["a" [:mouse :press :left 3 4 []] "b" :up :quit])))
-  (test "background still moves while input never stops"
-    ;; every key folded queues the next one, so input is ALWAYS waiting: background
-    ;; progresses only through each turn's one arrival-order fold, and must still finish
-    (let (me (self)
-          step (fn (model input cols rows)
-                 (cond
-                   (= input :tick) model
-                   (= input "k") (do (proc/send-priority (self) "k") (update model :keys inc))
-                   (= (count (:background model)) 19)
-                     (do
-                       (send me [:seen [(:keys model) (conj (:background model) input)]])
-                       (assoc model :done true))
-                   else (update model :background (fn (seen) (conj seen input)))))
-          loop (lane-start me {:coalesce-input? true :fold-budget-ms 1 :keys 0 :background []} step))
-      (doseq (i (range 20)) (send loop [:background i]))
-      (proc/send-priority loop "k")
-      (send loop :go)
-      (let (report (lane-await-seen))
-        (exit loop :kill)
-        (is (not (= report :timed-out)))
-        (assert= (second report) (vec (map (range 20) (fn (i) [:background i]))))
-        (is (> (first report) 20)))))
+  ;; every key folded queues the next one, so input is ALWAYS waiting: background
+  ;; progresses only through each turn's one arrival-order fold, and must still finish
+  (for (coalesce? [true])
+    (test (str "background still moves while input never stops (coalesce " coalesce? ")")
+      (let (me (self)
+            step (fn (model input cols rows)
+                   (cond
+                     (= input :tick) model
+                     (= input "k") (do (proc/send-priority (self) "k") (update model :keys inc))
+                     (= (count (:background model)) 19)
+                       (do
+                         (send me [:seen [(:keys model) (conj (:background model) input)]])
+                         (assoc model :done true))
+                     else (update model :background (fn (seen) (conj seen input)))))
+            loop (lane-start me
+                   {:coalesce-input? coalesce? :fold-budget-ms 1 :keys 0 :background []}
+                   step))
+        (doseq (i (range 20)) (send loop [:background i]))
+        (proc/send-priority loop "k")
+        (send loop :go)
+        (let (report (lane-await-seen))
+          (exit loop :kill)
+          (is (not (= report :timed-out)))
+          (assert= (second report) (vec (map (range 20) (fn (i) [:background i]))))
+          (is (>= (first report) 20))))))
+  ;; Only the USER's input holds an idle timer back. Each background message folded
+  ;; queues the next, so the flood never stops on its own: the idle timer has to fire
+  ;; in the middle of it, or the run reports that it starved.
+  (for (coalesce? [true false])
+    (test (str "an idle timer fires during a background flood (coalesce " coalesce? ")")
+      (let (me (self)
+            started (os/now)
+            step (fn (model input cols rows)
+                   (cond
+                     (= (lane-tag input) :timer)
+                       (do (send me [:seen [:fired (:background model)]]) (assoc model :done true))
+                     (> (- (os/now) started) 3000)
+                       (do
+                         (send me [:seen [:starved (:background model)]])
+                         (assoc model :done true))
+                     (= (lane-tag input) :background)
+                       (do (send (self) [:background 0]) (update model :background inc))
+                     else model))
+            loop (lane-start me
+                   {:coalesce-input? coalesce?
+                    :background 0
+                    :timers {:idle {:after 20 :idle? true}}}
+                   step))
+        (send loop [:background 0])
+        (send loop :go)
+        (let (report (lane-await-seen))
+          (exit loop :kill)
+          (assert= (first report) :fired)
+          (is (> (second report) 0))))))
   (test "a flood renders between budget slices, not once at the end"
     (let (me (self)
           sliced (lane-start me {:coalesce-input? true :fold-budget-ms 0} (lane-update me)))

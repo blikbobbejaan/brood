@@ -72,6 +72,13 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "Take the calling process's oldest PRIORITY-lane message (`proc/send-priority`, a window's input) out of its mailbox, as `[msg]` — or nil at once when none is queued. Never waits and never looks at an ordinary message, so it costs nothing in a mailbox thousands of background messages deep: the input-first half of a UI loop's poll (ADR-490).\n\n    (do (send (self) :background) (proc/take-priority))   → nil",
         take_priority);
     primitives.def(
+        "proc/receive-lane",
+        Arity::exact(1),
+        Sig::new(vec![int.union(nil_ty.clone())], vec_ty.union(nil_ty)),
+        &["ms"],
+        "Take the oldest message of any kind, waiting up to ms (nil: forever), and say which lane it came on: `[msg :priority]` for one sent with `proc/send-priority` (a window's input), `[msg :normal]` otherwise; nil on timeout. `(receive (m m) (after ms nil))` with the lane — what lets a UI loop that parked tell the key that woke it from a background reply (ADR-490).\n\n    (do (send (self) :reply) (proc/send-priority (self) :key) [(proc/receive-lane 0) (proc/receive-lane 0) (proc/receive-lane 0)])   → [[:reply :normal] [:key :priority] nil]",
+        receive_lane);
+    primitives.def(
         "proc/send-latest",
         Arity::exact(3),
         Sig::new(vec![pid_ty.union(map_ty).union(kw), any, any], nil_ty),
@@ -378,6 +385,11 @@ pub(super) fn send_priority(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
 pub(super) fn send_latest(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     crate::process::send_in_lane(heap, arg(args, 0), arg(args, 2), Some(arg(args, 1)))?;
     Ok(Value::nil())
+}
+
+/// `(proc/receive-lane ms)` — the oldest message as `[msg lane]`, or nil on timeout.
+pub(super) fn receive_lane(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    crate::process::receive_lane(heap, arg(args, 0))
 }
 
 /// `(proc/take-priority)` — the oldest priority-lane message as `[msg]`, or nil.
