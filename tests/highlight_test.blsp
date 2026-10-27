@@ -431,6 +431,14 @@
                                        (str "l" i))))
                       "\n")))
 
+(defn lc-insert-at (line text)
+  "An edit: insert `text` at the start of `line`."
+  (fn (rope) (text/insert rope (text/line->char rope line) text)))
+
+(defn lc-delete-lines (from to)
+  "An edit: delete lines `[from, to)`."
+  (fn (rope) (text/delete rope (text/line->char rope from) (text/line->char rope to))))
+
 (defn lc-truth (lexer rope lo hi)
   "What a cold cache says for lines `[lo, hi)` — exact by construction. Drains its lexing."
   (let (spans (second (line-cache-update (line-cache) lexer rope lo hi)))
@@ -550,24 +558,19 @@ cached: a line inserted at line 10, then the window (moved down one) shown again
   (test "a run of edits and windows agrees with a cold cache at every step"
     (let (me (self)
           lexer (lc-fence-lexer me)
-          steps [[:insert 5 "```\n" 0 40]
-                  [:insert 30 "q\n" 100 140]
-                  [:delete 2 4 20 60]
-                  [:insert 120 "```\n" 110 150]
-                  [:delete 100 160 0 60]
-                  [:insert 0 "```\n```\n" 150 190]
-                  [:insert 70 "w" 60 100]]
+          ;; each step is [edit lo hi]: the edit as a function of the rope, then the window
+          steps [[(lc-insert-at 5 "```\n") 0 40]
+                  [(lc-insert-at 30 "q\n") 100 140]
+                  [(lc-delete-lines 2 4) 20 60]
+                  [(lc-insert-at 120 "```\n") 110 150]
+                  [(lc-delete-lines 100 160) 0 60]
+                  [(lc-insert-at 0 "```\n```\n") 150 190]
+                  [(lc-insert-at 70 "w") 60 100]]
           [_ _ agreed] (fold steps
                          [(line-cache) (lc-doc 220) true]
                          (fn ([cache rope ok] step)
-                           (let ([kind a b c d] step
-                                 edited (if (= kind :insert)
-                                          (text/insert rope (text/line->char rope a) b)
-                                          (text/delete rope
-                                            (text/line->char rope a)
-                                            (text/line->char rope b)))
-                                 lo c
-                                 hi d
+                           (let ([edit lo hi] step
+                                 edited (edit rope)
                                  [next spans] (line-cache-update cache lexer edited lo hi))
                              [next edited (and ok (= spans (lc-truth lexer edited lo hi)))]))))
       (lc-lexed)
