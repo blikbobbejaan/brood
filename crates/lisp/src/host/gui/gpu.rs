@@ -2662,6 +2662,8 @@ impl GpuWindow {
             match op {
                 // The frame was cleared to the background before any op.
                 Op::Clear => {}
+                // A memoised fragment is its ops in place (ADR-470), in the same grid.
+                Op::Fragment(fragment) => self.expand(fb, renderer, &fragment.0, g),
                 Op::ScrollRegion { dy_frac, ops } => {
                     let saved_clip = fb.clip;
                     // A shifted op is clipped at the grid origin, never painted into the
@@ -2793,11 +2795,14 @@ impl GpuWindow {
                         );
                     }
                 }
+                // A blinking caret in its hidden half (ADR-469) draws nothing.
+                Op::Cursor { blink: Some(_), .. } if renderer.caret_hidden => {}
                 Op::Cursor {
                     row,
                     col,
                     style,
                     color,
+                    ..
                 } => {
                     let left = g.ox + *col as f32 * g.cw;
                     let top = g.oy + *row as f32 * g.ch - g.scroll_dy;

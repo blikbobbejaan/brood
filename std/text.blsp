@@ -64,6 +64,19 @@
     (text/->string (text/from-string \"hi\"))   → \"hi\""
   (%string->rope s))
 
+(defn changed-range (old new)
+  "What changed from rope `old` to rope `new`: nil when they hold the same text, else
+`[start old-end new-end]` in characters — `old`'s `[start, old-end)` became `new`'s
+`[start, new-end)`, and everything around it is common to both. Found natively from each
+end, chunk by chunk, with no string built, so asking costs little more than the edit did:
+exact for one contiguous change (a keystroke, a paste, an undo), correct but wider for a
+scattered one. What lets a cache keyed on a rope (`editor/highlight`'s line cache) keep
+everything the edit did not touch.
+
+    (text/changed-range (text/from-string \"abcd\") (text/from-string \"abXcd\"))   → [2 2 3]
+    (text/changed-range (text/from-string \"ab\") (text/from-string \"ab\"))   → nil"
+  (%rope-changed-range old new))
+
 (defn next-grapheme (r:rope idx:int -> int)
   "The character index one user-perceived character after `idx` — the next grapheme-cluster
 boundary, or the rope's length at the end. A cursor steps by this, never by 1: `e` followed

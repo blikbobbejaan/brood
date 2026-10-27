@@ -7,6 +7,7 @@ use crate::builtins::bytes::collect_bytes;
 use crate::builtins::io::capture_write;
 use crate::builtins::numeric::num_to_f64;
 
+mod fragments;
 mod keyboard;
 // The thin crossterm seam: enter/leave the alternate screen, read keys, and
 // paint a *frame* — a Brood vector of render ops. The protocol's meaning is
@@ -1114,6 +1115,7 @@ pub(in crate::builtins) fn gui_compiled_p(_: &[Value], _: EnvId, _: &mut Heap) -
 /// `(gui-close id)` — close window `id` (the teardown for `gui-open`; idempotent).
 pub(in crate::builtins) fn gui_close(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let id = gui_window_id(heap, "%gui-close", arg(args, 0))?;
+    fragments::forget(id);
     crate::host::gui::close(id).map_err(LispError::runtime)?;
     Ok(Value::nil())
 }
@@ -1309,6 +1311,7 @@ pub(in crate::builtins) fn gui_held_key(args: &[Value], _: EnvId, heap: &mut Hea
 /// Interned tag symbols shared between `gui_draw` and `parse_gui_ops`.
 struct GuiOpTags {
     clear_t: value::Symbol,
+    memo_t: value::Symbol,
     text_t: value::Symbol,
     cursor_t: value::Symbol,
     cursor_zone_t: value::Symbol,
@@ -1339,6 +1342,7 @@ impl GuiOpTags {
     fn new() -> Self {
         Self {
             clear_t: value::intern("clear"),
+            memo_t: value::intern("ui/memo"),
             text_t: value::intern("text"),
             cursor_t: value::intern("cursor"),
             cursor_zone_t: value::intern("cursor-zone"),
@@ -1374,6 +1378,7 @@ fn parse_gui_ops(
     heap: &Heap,
     parsed: Vec<(value::Symbol, Vec<Value>)>,
     tags: &GuiOpTags,
+    pass: &mut fragments::FragmentPass,
 ) -> Vec<crate::host::gui::Op> {
     // A ratio or decimal reads as its float — `/` is exact in Brood (ADR-196), so a
     // frame built with `(/ w 2)` carries a ratio, which must not silently read as 0.
@@ -1393,6 +1398,13 @@ fn parse_gui_ops(
     for (tag, parts) in parsed {
         if tag == tags.clear_t {
             ops.push(crate::host::gui::Op::Clear);
+        } else if tag == tags.memo_t {
+            // `[:ui/memo key deps ops reused?]` — a memoised view fragment, drawn with its
+            // marker by a display that takes them (ADR-470): last frame's parse when the
+            // loop reused it, else its ops parsed here.
+            fragments::parse_marker(heap, &parts, pass, &mut ops, |heap, items, pass| {
+                parse_gui_ops(heap, tagged_ops(heap, items), tags, pass)
+            });
         } else if tag == tags.cursor_t {
             let Ok(row_i) = expect_int(heap, "%gui-draw", arg(&parts, 1)) else {
                 continue;
@@ -1405,11 +1417,15 @@ fn parse_gui_ops(
             // keyword, `[r g b]` or `"#rrggbb"`); absent, nil or unreadable is the
             // painters' default. The style slot may be nil to colour a block.
             let color = parts.get(4).and_then(|v| face_rgb(heap, *v));
+            // `[:cursor row col style colour blink]`: a blink the window animates itself
+            // (ADR-469), `{:interval ms :blinks n}`; absent or unreadable is steady.
+            let blink = parts.get(5).and_then(|v| cursor_blink_from(heap, *v));
             ops.push(crate::host::gui::Op::Cursor {
                 row: clamp_u16(row_i),
                 col: clamp_u16(col_i),
                 style,
                 color,
+                blink,
             });
         } else if tag == tags.rect_t {
             let Ok(row_i) = expect_int(heap, "%gui-draw", arg(&parts, 1)) else {
@@ -1639,7 +1655,7 @@ fn parse_gui_ops(
             let dy_frac = num(arg(&parts, 1));
             let inner_val = arg(&parts, 2);
             if let Ok(inner_parsed) = frame_ops(heap, inner_val, "%gui-draw", "scroll-region ops") {
-                let inner_ops = parse_gui_ops(heap, inner_parsed, tags);
+                let inner_ops = parse_gui_ops(heap, inner_parsed, tags, pass);
                 ops.push(crate::host::gui::Op::ScrollRegion {
                     dy_frac,
                     ops: inner_ops,
@@ -1669,7 +1685,7 @@ fn parse_gui_ops(
             if let Ok(inner_parsed) =
                 frame_ops(heap, arg(&parts, 6), "%gui-draw", "cell-region ops")
             {
-                let inner_ops = parse_gui_ops(heap, inner_parsed, tags);
+                let inner_ops = parse_gui_ops(heap, inner_parsed, tags, pass);
                 ops.push(crate::host::gui::Op::CellRegion {
                     x: clamp_u16(x_i),
                     y: clamp_u16(y_i),
@@ -1965,9 +1981,45 @@ pub(in crate::builtins) fn gui_draw(args: &[Value], _: EnvId, heap: &mut Heap) -
     let win = gui_window_id(heap, "%gui-draw", arg(args, 0))?;
     let parsed = frame_ops(heap, arg(args, 1), "%gui-draw", "vector (a frame)")?;
     let tags = GuiOpTags::new();
-    let ops = parse_gui_ops(heap, parsed, &tags);
+    let mut pass = fragments::FragmentPass::for_window(win);
+    let ops = parse_gui_ops(heap, parsed, &tags, &mut pass);
     crate::host::gui::draw(win, ops).map_err(LispError::runtime)?;
+    pass.store(win);
     Ok(Value::nil())
+}
+
+/// `ops` (a fragment's, as a marker carries them) as the `(tag, parts)` pairs
+/// `parse_gui_ops` reads — `frame_ops` for a sequence already in hand.
+fn tagged_ops(heap: &Heap, ops: Vec<Value>) -> Vec<(value::Symbol, Vec<Value>)> {
+    ops.into_iter()
+        .filter_map(|op| match op {
+            Value::Vector(id) => {
+                let parts = heap.vector(id).to_vec();
+                match parts.first() {
+                    Some(Value::Keyword(tag)) => Some((*tag, parts)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The blink of a `[:cursor … blink]` op: a map `{:interval ms :blinks n}` (`:interval`
+/// defaults to 530 ms, Emacs's `blink-cursor-interval` near enough, floored at 50;
+/// `:blinks` to 0, blink for as long as no input comes), or `None` for anything else.
+fn cursor_blink_from(heap: &Heap, v: Value) -> Option<crate::host::gui::CursorBlink> {
+    let Value::Map(id) = v else {
+        return None;
+    };
+    let count = |name: &str, default: i64| match heap.map_get(id, value::kw(name)) {
+        Some(Value::Int(n)) => n,
+        _ => default,
+    };
+    Some(crate::host::gui::CursorBlink {
+        interval_ms: count("interval", 530).clamp(50, 60_000) as u32,
+        blinks: count("blinks", 0).clamp(0, 1_000_000) as u32,
+    })
 }
 /// A `:vspans` segment colour: a face colour keyword (`:red` → the GUI palette),
 /// an explicit `[r g b]` triple, or a `"#rrggbb"` hex string (all via the shared
@@ -2568,7 +2620,12 @@ mod gui_music_op_tests {
                 vec![Value::Keyword(music), Value::int(4_294_967_296)],
             ),
         ];
-        let ops = parse_gui_ops(&heap, parsed, &GuiOpTags::new());
+        let ops = parse_gui_ops(
+            &heap,
+            parsed,
+            &GuiOpTags::new(),
+            &mut super::fragments::FragmentPass::empty(),
+        );
         assert!(
             ops == vec![Op::Music { id: 3, vol: 0.4 }, Op::Music { id: 5, vol: 0.0 }],
             "{} ops",

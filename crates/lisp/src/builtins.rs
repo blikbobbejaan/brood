@@ -55,6 +55,7 @@ mod fuzzy;
 mod gui_fonts;
 mod io;
 mod json;
+mod line_diff;
 mod regex_native;
 mod text_search;
 // `pub(crate)` for `eval::unbound_error`'s KI-120 diagnostic, which asks whether a missing
@@ -198,6 +199,10 @@ pub fn register(heap: &mut Heap, root: EnvId) {
     json::register(&mut primitives);
     // And again: the GUI font natives of ADR-442 (`%gui-font-info`, `%gui-ligatures!`).
     gui_fonts::register(&mut primitives);
+    // And again: the native line diff under `diff/line-hunks` (ADR-468).
+    line_diff::register(&mut primitives);
+    // And again: the structural queries over a held tree (ADR-467).
+    treesit::register_tree_queries(&mut primitives);
 }
 
 #[cfg(test)]

@@ -705,6 +705,42 @@ pub fn resolve_reference(heap: &Heap, s: value::Symbol) -> value::Symbol {
     }
 }
 
+/// The global a lone reference symbol names, when the compile pass would resolve it to
+/// exactly that binding and nothing else could intervene — the fast path that lets
+/// `reflect/eval` of a late-bound name (a keymap command, a layer, a hook) be a table read
+/// instead of a compile (ADR-465). `None` means "not provably simple": the caller runs the
+/// full pass, which then raises or resolves exactly as before.
+///
+/// Simple means: the symbol resolves (namespace, imports, aliases, package rooting, the
+/// `/name` root escape — the same [`resolve_sym`] the pass uses) to a bound global that is
+/// not a macro; the bare name is not an ambiguous import (the pass raises a use-site clash);
+/// and, inside a module, the reference is not a foreign private one (the pass raises a
+/// privacy error). A dynamic var answers its innermost `binding`, as the compiled read does.
+pub fn resolve_bound_global(heap: &Heap, s: value::Symbol, root: EnvId) -> Option<Value> {
+    let resolved = match heap.compile_ns() {
+        Some(ns) => {
+            if heap.ambiguous_import_of(s).is_some() {
+                return None;
+            }
+            let ns_name = value::symbol_name_ref(ns);
+            enforce_private_refs(heap, Value::Sym(s), ns_name, None, 0).ok()?;
+            resolve_sym(heap, s, ns_name, &[])
+        }
+        None => {
+            let name = value::symbol_name_ref(s);
+            if name.len() > 1 && name.starts_with('/') {
+                value::intern_existing(&name[1..])?
+            } else {
+                s
+            }
+        }
+    };
+    match heap.env_get(root, resolved) {
+        Some(found) if !matches!(found.unpack(), ValueRef::Macro(_)) => Some(found),
+        _ => None,
+    }
+}
+
 /// An **ambient** name — one that is never namespaced, so a `def` of it in any
 /// module rebinds the single *root* binding (what makes `(def *load-path* …)` from
 /// anywhere change the path the loader reads).

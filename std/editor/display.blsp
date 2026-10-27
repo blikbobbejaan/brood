@@ -18,6 +18,7 @@
 ;;   [:cursor row col]              place the text cursor (a block caret)
 ;;   [:cursor row col style]        …shaped :block / :bar / :underline / :hollow
 ;;   [:cursor row col style colour] …in `colour` (a face colour; `style` may be nil)
+;;   [:cursor row col style colour blink] …blinked by the GUI window itself (`cursor-blink`)
 ;;   [:rect row col w h face]       fill a w×h cell block with `face`'s :bg colour
 ;;   [:rect row col w h face r]     …with corners rounded by `r` cells (GUI only)
 ;;   [:frect x y w h face op r]     sub-cell rounded rect (cell-unit floats); GUI-only
@@ -59,7 +60,7 @@ styled by `face` (a map like `{:fg :red :bold true}`).
     [:text row col s]
     [:text row col s face]))
 
-(defn cursor (row col &optional (style nil) (color nil))
+(defn cursor (row col &optional (style nil) (color nil) (blink nil))
   "A render op placing the text cursor at (`row`, `col`). With `style` — `:bar`
 (a thin insertion caret on the cell's left edge), `:underline` (a rule along the
 cell bottom), `:hollow` (an outline box around the cell, the cursor of a window
@@ -68,15 +69,30 @@ the caret accordingly and the terminal maps it to its matching steady cursor
 (`:hollow` to a block). With `color` (a face colour: a palette keyword, `[r g b]` or
 `\"#rrggbb\"`) the GUI draws the caret in it — a block washes its cell in the colour
 at half strength and rims it solid, every other shape is solid; the terminal ignores
-it. With neither it's `[:cursor row col]`, unchanged (a block caret).
+it. With `blink` (a `cursor-blink` map) the GUI window blinks the caret ITSELF, between
+frames: the app draws it once and no turn of its loop runs per toggle (ADR-469). With
+none it's `[:cursor row col]`, unchanged (a block caret).
 
     (editor/display/cursor 1 2)   → [:cursor 1 2]
     (editor/display/cursor 1 2 :hollow)   → [:cursor 1 2 :hollow]
-    (editor/display/cursor 1 2 nil :red)   → [:cursor 1 2 nil :red]"
+    (editor/display/cursor 1 2 nil :red)   → [:cursor 1 2 nil :red]
+    (editor/display/cursor 1 2 :bar nil {:interval 530 :blinks 10})   → [:cursor 1 2 :bar nil {:interval 530 :blinks 10}]"
   (cond
+    (not (nil? blink)) [:cursor row col style color blink]
     (not (nil? color)) [:cursor row col style color]
     (not (nil? style)) [:cursor row col style]
     else [:cursor row col]))
+
+(defn cursor-blink (interval &optional (blinks 0))
+  "How a `cursor` blinks in a GUI window (ADR-469): shown for `interval` ms, hidden for
+`interval` ms, `blinks` times over and then steady — Emacs's `blink-cursor-interval` and
+`blink-cursor-blinks`; 0 blinks for as long as no input comes. The window restarts the
+blink, shown, on every key, click and wheel step it sees and on every frame that moves the
+caret, and holds it shown while it lacks focus; a toggle repaints the caret's row, not the
+window. The terminal ignores it.
+
+    (editor/display/cursor-blink 530 10)   → {:interval 530 :blinks 10}"
+  {:interval interval :blinks blinks})
 
 (defn cursor-zone (x y w h shape)
   "A render op marking a rectangular hot-zone (cells: `[x y]` origin, `w`×`h`) that

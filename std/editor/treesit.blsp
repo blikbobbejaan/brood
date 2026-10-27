@@ -289,6 +289,14 @@ were made, or nil to have the kernel find the change by comparing the two texts 
 the right default for a caller that does not already know. A splice `[lo hi repl]` is the
 edit `[lo hi (+ lo (string/length repl))]`.
 
+That comparison reads both texts up to the change from each end — linear in the document
+per call. A caller holding the splices it made (`editor/buffer/buffer-splices-since`, nil
+when the log cannot say) passes them instead and the reparse costs the edit alone: the
+kernel composes a sequence into the one range it covers, and refuses an edit whose lengths
+do not fit the two texts rather than build a wrong tree.
+
+    (editor/treesit/update-tree tree rope :elixir (map splices (fn ([lo hi repl]) [lo hi (+ lo (string/length repl))])))   ;=> a new handle, reparsed without comparing the texts
+
     (editor/treesit/update-tree tree new-text :elixir)   ;=> a new handle; tree still answers for the old text
     (fn? editor/treesit/update-tree)   → true"
   (%tree-sitter-tree-reparse tree text lang edits))
@@ -325,6 +333,32 @@ so a caller can tell the two apart: open a fresh tree on nil.
     (fn? editor/treesit/fontify-tree)   → true"
   (let (raw (%tree-sitter-tree-spans tree (table-kinds kind->face-name) keywords? from to))
     (when raw (into [] (kind-spans->faces raw kind->face-name)))))
+
+(defn tree-alive? (tree)
+  "Whether `tree` is still held — not freed, not evicted. Marks it used, as a query does, so a
+holder that only checks keeps it from being the next one evicted. Builds nothing: the check
+to make per event, where asking `tree-changes` would build a vector only to test it for nil.
+
+    (editor/treesit/tree-alive? (ref))   → false"
+  (%tree-sitter-tree-alive? tree))
+
+;; ---- the structural queries over a held tree (ADR-467) --------------------------
+;; Every query below — `indent-column`, the `point-*` motions — takes the document's TEXT
+;; and asks the kernel about it, which parses it (cached by text, so the first query after
+;; an edit pays a whole parse: ~650 ms on a 250 KB file). A caller that keeps the
+;; document's tree incrementally (`update-tree` per edit) passes it as the optional last
+;; argument, and the query reads that tree instead: no parse, O(depth). The tree must be
+;; the one for exactly `text` — the query still reads `text` for what a node does not carry
+;; (a line's indentation, an Elixir call's head word). A gone handle falls back to the
+;; text, so passing one is never worse than not.
+
+(defn- ts-chain-at (text lang at tree)
+  ;; the held tree's chain when there is one alive, else the text's
+  (or (when tree (%tree-sitter-tree-chain tree at)) (%tree-sitter-chain text lang at)))
+
+(defn- ts-kids-at (text lang at tree)
+  ;; the held tree's sibling list when there is one alive, else the text's
+  (or (when tree (%tree-sitter-tree-kids tree at)) (%tree-sitter-kids text lang at)))
 
 ;; ---- where a windowed fontify may restart -------------------------------------
 
@@ -563,7 +597,7 @@ comment in Python, and stopping at the blank put the comment in column 0."
 ;; check-allow: deliberately non-tail — the depth is a run of consecutive comment
 ;; lines, and it stops at the first line that is code.
 (check-allow :non-tail-recursion
-  (defn- ts-comment-column (text lang bol chain spec)
+  (defn- ts-comment-column (text lang bol chain spec tree)
     "The column for a COMMENT line — the column of the next line that is code — or nil
 when this line is not a comment.
 
@@ -574,9 +608,9 @@ method's body and counting blocks puts it a level short — every documented met
 Ruby stdlib. Asking what the next code line does is right there and right everywhere."
     (when (and (not (empty? chain)) (contains? *comment-kinds* (get (last chain) :kind)))
       (let (next-bol (ts-next-nonblank-bol text bol))
-        (when next-bol (indent-column text lang next-bol spec))))))
+        (when next-bol (indent-column text lang next-bol spec tree))))))
 
-(defn indent-column (text lang bol spec)
+(defn indent-column (text lang bol spec &optional (tree nil))
   "The column the line beginning at offset `bol` should be indented to — a `:indent` service
 for a tree-sitter mode, given a per-language `spec`.
 
@@ -616,7 +650,7 @@ shape `nest format` answers for Brood, and it is checked line-for-line against r
         ;; an ordinary line measures at its first non-blank, a closing line at the line start
         at (if closing bol (+ bol (- (string/length line) (string/length (string/triml line)))))
         blocks (get spec :blocks #{})
-        chain (%tree-sitter-chain text lang at)
+        chain (ts-chain-at text lang at tree)
         broken (get (first chain) :broken)
         ;; Two kinds of opener, and they differ in ONE way: whether a node that begins on
         ;; the line being indented counts for that line.
@@ -673,7 +707,7 @@ shape `nest format` answers for Brood, and it is checked line-for-line against r
               (+ indent
                 (if opened width 0)
                 (if closing (- (* width (ts-dedent-levels spec closing-token brackets-counted))) 0))))))
-      (or (ts-comment-column text lang bol chain spec)
+      (or (ts-comment-column text lang bol chain spec tree)
         (ts-align-column text bol chain (get spec :brackets #{}))
         (* width
           (math/max 0 (if closing (- n (ts-dedent-levels spec closing-token brackets-counted)) n)))))))
@@ -709,10 +743,10 @@ shape `nest format` answers for Brood, and it is checked line-for-line against r
   ;; a grammar spelling comments otherwise is one `defdyn` away, not a patch.
   #{:comment :line_comment :block_comment :comment_block})
 
-(defn- ts-siblings (text lang point)
+(defn- ts-siblings (text lang point tree)
   "The named children of the node strictly containing `point` — the siblings a motion
 steps through, comments excluded (see [[*comment-kinds*]])."
-  (seq/filter (%tree-sitter-kids text lang point)
+  (seq/filter (ts-kids-at text lang point tree)
     (fn (n) (not (contains? *comment-kinds* (get n :kind))))))
 
 ;; A node's offsets are ints by construction (the kernel writes them), but a `get` on a map
@@ -723,61 +757,65 @@ steps through, comments excluded (see [[*comment-kinds*]])."
 (defn- ts-start (node:ts-node -> int) (get node :start))
 (defn- ts-end (node:ts-node -> int) (get node :end))
 
-(defn point-forward (text:string lang:keyword point:any -> any)
+(defn point-forward (text:string lang:keyword point:any &optional (tree nil) -> any)
   "End of the next named node at or after `point` within the enclosing node;
 unchanged if none (the Emacs `forward-sexp`, over a tree-sitter tree).
 
+Every `point-*` motion and `indent-column` take an optional last `tree`: the held tree of
+exactly `text` (`open-tree` / `update-tree`), read instead of parsing `text`; a gone handle
+falls back to the text.
+
     (editor/treesit/point-forward \"foo(1, 2)\" :elixir 0)   ;=> 9 — with the :elixir grammar installed"
-  (let (nxt (seq/find (ts-siblings text lang point) (fn (f) (>= (get f :start) point))))
+  (let (nxt (seq/find (ts-siblings text lang point tree) (fn (f) (>= (get f :start) point))))
     (if (nil? nxt) point (get nxt :end))))
 
-(defn point-backward (text:string lang:keyword point:any -> any)
+(defn point-backward (text:string lang:keyword point:any &optional (tree nil) -> any)
   "Start of the previous named node ending at or before `point` (`backward-sexp`).
 
     (editor/treesit/point-backward \"foo(1, 2)\" :elixir 9)   ;=> 0 — with the :elixir grammar installed"
-  (let (prev (last (seq/filter (ts-siblings text lang point) (fn (f) (<= (get f :end) point)))))
+  (let (prev (last (seq/filter (ts-siblings text lang point tree) (fn (f) (<= (get f :end) point)))))
     (if (nil? prev) point (get prev :start))))
 
-(defn point-list-forward (text:string lang:keyword point:any -> any)
+(defn point-list-forward (text:string lang:keyword point:any &optional (tree nil) -> any)
   "End of the next child CONTAINER at or after `point` — leaf nodes are stepped over, not
 stopped at (Emacs `forward-list`); unchanged if none.
 
     (editor/treesit/point-list-forward src :elixir 0)   ;=> …the end of the next container…"
-  (let (nxt (seq/find (ts-siblings text lang point)
+  (let (nxt (seq/find (ts-siblings text lang point tree)
               (fn (f) (and (get f :container) (>= (get f :start) point)))))
     (if (nil? nxt) point (get nxt :end))))
 
-(defn point-list-backward (text:string lang:keyword point:any -> any)
+(defn point-list-backward (text:string lang:keyword point:any &optional (tree nil) -> any)
   "Start of the previous child CONTAINER ending at or before `point` — leaves stepped over
 (Emacs `backward-list`); unchanged if none.
 
     (editor/treesit/point-list-backward src :elixir 40)   ;=> …the start of the previous container…"
-  (let (prev (last (seq/filter (ts-siblings text lang point)
+  (let (prev (last (seq/filter (ts-siblings text lang point tree)
                      (fn (f) (and (get f :container) (<= (get f :end) point))))))
     (if (nil? prev) point (get prev :start))))
 
-(defn- ts-enclosing-node (text lang point)
+(defn- ts-enclosing-node (text lang point tree)
   "The deepest node STRICTLY containing `point`, or nil at the top level — the last
 container on the chain that neither begins nor ends at `point` itself."
-  (last (seq/filter (%tree-sitter-chain text lang point)
+  (last (seq/filter (ts-chain-at text lang point tree)
           (fn (n) (and (get n :container) (< (get n :start) point) (< point (get n :end)))))))
 
-(defn point-up (text:string lang:keyword point:any -> any)
+(defn point-up (text:string lang:keyword point:any &optional (tree nil) -> any)
   "Start of the enclosing node (`backward-up-list`); unchanged at top level.
 
     (editor/treesit/point-up src :elixir 30)   ;=> …the start of the node enclosing offset 30…"
-  (let (enc (ts-enclosing-node text lang point))
+  (let (enc (ts-enclosing-node text lang point tree))
     (if (nil? enc) point (get enc :start))))
 
-(defn point-up-forward (text:string lang:keyword point:any -> any)
+(defn point-up-forward (text:string lang:keyword point:any &optional (tree nil) -> any)
   "End of the enclosing node — the forward counterpart of `point-up` (Emacs `up-list`);
 unchanged at top level.
 
     (editor/treesit/point-up-forward src :elixir 30)   ;=> …the end of the node enclosing offset 30…"
-  (let (enc (ts-enclosing-node text lang point))
+  (let (enc (ts-enclosing-node text lang point tree))
     (if (nil? enc) point (get enc :end))))
 
-(defn point-down (text:string lang:keyword point:any -> any)
+(defn point-down (text:string lang:keyword point:any &optional (tree nil) -> any)
   "INSIDE the next child container at or after `point` (`down-list`); unchanged if none.
 
 Emacs' `down-list` moves *into* one level (`|(a b)` → `(|a b)`). A tree has no delimiter
@@ -785,11 +823,11 @@ to step over, so \"inside\" is that container's first child lying ahead of point
 own start, which is usually where point already is (a container and its opening token
 begin together: `defmodule` is its own call's first named child, both at the same
 offset), and a motion that cannot move is worse than one that overshoots."
-  (let (lst (seq/find (ts-siblings text lang point)
+  (let (lst (seq/find (ts-siblings text lang point tree)
               (fn (f) (and (get f :container) (>= (get f :start) point)))))
     (if (nil? lst)
       point
-      (let (inner (seq/find (ts-siblings text lang (inc (ts-start lst)))
+      (let (inner (seq/find (ts-siblings text lang (inc (ts-start lst)) tree)
                     (fn (k) (> (get k :start) point))))
         (cond
           inner (get inner :start)
@@ -850,11 +888,11 @@ whose callee is a defining one (Elixir, where `def`/`defmodule`/… are calls)."
     (or (contains? (get definitions :kinds #{}) k)
       (and (= k :call) (contains? (get definitions :calls #{}) (ts-head-word text node))))))
 
-(defn- ts-defun-edge (text:string lang:keyword point:any edge:any -> any)
+(defn- ts-defun-edge (text:string lang:keyword point:any edge:any tree:any -> any)
   "The `edge` (`:start` / `:end`) of the enclosing **definition**: the deepest `def` /
 `class` / `module` / … containing `point`, falling back to the top-level form, then `point`.
 The shared body of `point-defun-start` / `point-defun-end`."
-  (let (chain (seq/filter (%tree-sitter-chain text lang point)
+  (let (chain (seq/filter (ts-chain-at text lang point tree)
                 (fn (n) (and (get n :container) (< (get n :start) point) (< point (get n :end)))))
         definitions (definitions lang)
         defuns (seq/filter chain (fn (n) (ts-defun? text definitions n))))
@@ -863,20 +901,20 @@ The shared body of `point-defun-start` / `point-defun-end`."
       (not (empty? chain)) (get (first chain) edge)
       else point)))
 
-(defn point-defun-start (text lang point)
+(defn point-defun-start (text lang point &optional (tree nil))
   "Start of the enclosing **definition** (`beginning-of-defun`): the deepest `def` / `class`
 / `module` / … containing `point` — so a `def` inside an Elixir `defmodule` or a Ruby `class`,
 not the whole enclosing module. Falls back to the top-level form, then `point`.
 
     (editor/treesit/point-defun-start src :elixir 30)   ;=> …the offset of the enclosing `def`…"
-  (ts-defun-edge text lang point :start))
+  (ts-defun-edge text lang point :start tree))
 
-(defn point-defun-end (text lang point)
+(defn point-defun-end (text lang point &optional (tree nil))
   "End of the enclosing **definition** (`end-of-defun`, C-M-e) — the close of the same node
 `point-defun-start` finds, so the pair brackets one `def` / `class` / `module`.
 
     (editor/treesit/point-defun-end src :elixir 30)   ;=> …the offset just past the enclosing def's `end`…"
-  (ts-defun-edge text lang point :end))
+  (ts-defun-edge text lang point :end tree))
 
 ;; ---- getting a grammar: from where it lives to a library the runtime can load ------
 ;; `%tree-sitter-load-grammar` takes a shared library; a grammar starts life as a

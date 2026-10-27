@@ -346,6 +346,132 @@ fontified, where the lexer that happens to colour the buffer may not be.
     (editor/highlight/line-restart \"line one\" 4)   → 4"
   pos)
 
+;; ---- the line-state cache (ADR-471) -------------------------------------------
+;; A lexer that carries state from line to line (markdown's fenced block, org's #+BEGIN,
+;; a heredoc) can only colour line N right if it knows how line N-1 ENDED. Lexing a
+;; window with a fixed lead-in guesses at that and re-lexes the lead-in on every
+;; keystroke; lexing from the top is exact and costs the whole file. The cache is the
+;; third way, Emacs's and every incremental highlighter's: each line keeps the state it
+;; started in, its spans and the state it ended in. An edit re-lexes from its first
+;; changed line only until a line starts in the state it started in before — from there
+;; on, nothing it did can reach — and every other line is reused, shifted. A stateless
+;; lexer (one rule table, no carry) degenerates to a per-line memo on the line's text.
+;;
+;; Pure data: the cache is a value the caller keeps (on its model, beside the rope it
+;; describes) and threads back in. Each line is `[text state-in spans state-out]`, spans
+;; line-relative so a line that moved keeps them.
+
+(defn line-lexer (lex &optional (initial nil))
+  "A line lexer for `line-cache-update`: `(lex line state)` returns `[spans state-out]` —
+the `[start end face]` spans of `line` (its text without the newline, offsets relative to
+it) and the state the next line starts in, given the `state` this one starts in. `initial`
+is the state of the first line. States are compared with `=`, so keep them small values:
+a keyword, a short vector (`[:fence \"```\"]`).
+
+    (:initial (editor/highlight/line-lexer (fn (line state) [[] state]) :text))   → :text"
+  {:lex lex :initial initial :stateless? false})
+
+(defn stateless-lexer (spans-of)
+  "A line lexer whose lines colour on their own: `(spans-of line)` returns the line's
+`[start end face]` spans, line-relative. `line-cache-update` keeps it as a memo on line
+text — no state to carry, so no line above the window is ever lexed, and an unchanged
+line is never lexed twice. Every `editor/lexer` grammar is one: `lexer-line-lexer`.
+
+    (:stateless? (editor/highlight/stateless-lexer (fn (line) [])))   → true"
+  {:lex (fn (line state) [(spans-of line) nil]) :initial nil :stateless? true})
+
+(defn line-cache ()
+  "An empty line-state cache: what `line-cache-update` takes the first time, and what a
+caller starts again from when the lexer changes (a new mode) — one cache serves one lexer.
+
+    (:lines (editor/highlight/line-cache))   → []"
+  {:rope nil :lines [] :memo {}})
+
+(defn- lc-line-text (rope i)
+  "Line `i` of `rope` without its newline — what a line lexer sees."
+  (let (s (text/line rope i))
+    (if (string/ends-with? s "\n") (string/substring s 0 (dec (string/length s))) s)))
+
+(defn- lc-spans (rope entries lo)
+  "The `[start end face]` spans of `entries` (one per line from `lo`, each
+`[text state-in spans state-out]`), shifted to absolute offsets in `rope`."
+  (second (fold entries
+            [lo '()]
+            (fn ([i acc] entry)
+              (let (base (text/line->char rope i))
+                [(inc i)
+                  (fold (nth entry 2) acc (fn (a [s e f]) (cons [(+ base s) (+ base e) f] a)))])))))
+
+(defn- lc-stateless (cache lexer rope lo hi)
+  "The stateless path: lines `[lo, hi)` through the memo, which keeps exactly them."
+  (let (lines (range lo (math/min hi (text/line-count rope)))
+        memo (:memo cache)
+        lex (:lex lexer)
+        entries (map lines
+                  (fn (i)
+                    (let (text (lc-line-text rope i)
+                          spans (get memo text))
+                      [text nil (if (nil? spans) (first (lex text nil)) spans) nil])))
+        next-memo (fold entries {} (fn (m entry) (assoc m (first entry) (nth entry 2)))))
+    [{:rope rope :lines [] :memo next-memo} (reverse (lc-spans rope entries lo))]))
+
+(defn- lc-valid (cache rope)
+  "`[lines tail tail-base]`: the cached entries still true of `rope` — every line before
+the first one the edit touched — and the entries after the edit (`tail`), which hold for
+the lines from `tail-base` on once the lexer is back in step. No edit: all of them."
+  (let (old (:rope cache)
+        lines (:lines cache)
+        change (when (not (nil? old)) (text/changed-range old rope)))
+    (cond
+      (nil? old) [[] [] 0]
+      (nil? change) [lines [] 0]
+      else
+        (let ([start old-end new-end] change
+              first-line (text/char->line rope start)
+              old-last (text/char->line old old-end)
+              new-last (text/char->line rope new-end)
+              n (count lines))
+          [(seq/subvec lines 0 (math/min first-line n))
+            (if (< (inc old-last) n) (seq/subvec lines (inc old-last) n) [])
+            (inc new-last)]))))
+
+(sig lc-extend (any any int int vector any vector int -> vector))
+(defn- lc-extend (lex rope total hi lines state tail tail-base)
+  "Lex on from the end of `lines` (the state there is `state`) to line `hi`: each line
+`[text state-in spans state-out]`. Once a line at or past `tail-base` starts in the state
+its old entry in `tail` started in, the rest of `tail` is the rest of the answer."
+  (let (i (count lines))
+    (if (or (>= i hi) (>= i total))
+      lines
+      (let (text (lc-line-text rope i)
+            at (- i tail-base)
+            old (when (and (>= at 0) (< at (count tail))) (nth tail at)))
+        (if (and (not (nil? old)) (= (first old) text) (= (second old) state))
+          (let (resumed (into lines (seq/subvec tail at (count tail))))
+            (lc-extend lex rope total hi resumed (nth (last resumed) 3) [] 0))
+          (let ([spans out] (lex text state))
+            (lc-extend lex rope total hi (conj lines [text state spans out]) out tail tail-base)))))))
+
+(defn line-cache-update (cache lexer rope lo hi)
+  "`[cache' spans]`: the absolute `[start end face]` spans of lines `[lo, hi)` of `rope`,
+coloured by `lexer` (`line-lexer` / `stateless-lexer`), and the cache to pass next time.
+`cache` is the previous result's (`line-cache` at first), for any earlier rope: an edit
+is found with `text/changed-range`, and only the lines from the first one it touched are
+lexed again — up to the first that starts in the state it started in before, after which
+the old lines are reused, moved. A stateful lexer is exact at any depth (lines above `lo`
+are lexed once, then kept); a stateless one lexes only `[lo, hi)`, and of those only the
+lines whose text it has not just seen.
+
+    (second (editor/highlight/line-cache-update (editor/highlight/line-cache) (editor/highlight/stateless-lexer (fn (line) (if (string/starts-with? line \"#\") [[0 (string/length line) :c]] []))) (text/from-string \"a\\n# b\") 0 2))   → ([2 5 :c])"
+  (if (:stateless? lexer)
+    (lc-stateless cache lexer rope lo hi)
+    (let ([valid tail tail-base] (lc-valid cache rope)
+          total (text/line-count rope)
+          state (if (empty? valid) (:initial lexer) (nth (last valid) 3))
+          lines (lc-extend (:lex lexer) rope total hi valid state tail tail-base)
+          shown (seq/subvec lines (math/min lo (count lines)) (math/min hi (count lines))))
+      [{:rope rope :lines lines :memo {}} (reverse (lc-spans rope shown lo))])))
+
 ;; ---- the shared span -> runs tiler ------------------------------------------
 ;; `face-at` / `ranges-face` / `fontify-runs` are the renderer-agnostic core: a
 ;; caller hands in the lexer `spans` plus one `ranges` overlay channel and gets

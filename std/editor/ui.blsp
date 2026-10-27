@@ -8,7 +8,9 @@
 ;;    the crossterm terminal; `(gui-display)` opens a native window (needs
 ;;    `--features gui`); `display-broadcast` fans one frame out to several at once.
 ;;    All over the `term-*` / `gui-*` primitives — the same pure `view` frame paints
-;;    to any of them unchanged.
+;;    to any of them unchanged. A display that sets `:fragments? true` (the GUI window)
+;;    is handed the frame with its `ui-memo` markers in, and reuses what it parsed a
+;;    reused fragment to last frame (ADR-470); every other display gets them spliced.
 ;;  - **The app loop** `(ui-run model view update display)` — a tiny TEA-style loop:
 ;;    enter the frontend, then render `(view model cols rows)`, poll input, fold it
 ;;    with `(update model input cols rows)`, recurse until the model is `:done`, then
@@ -145,6 +147,9 @@ their input. Both are deferred trade-offs (ADR-059), fine for the observer.
      :leave (fn () (gui/close id))
      :size (fn () (gui/size id))
      :draw (fn (f) (gui/draw id f))
+     ;; the window takes `ui-memo` markers: a fragment the loop reused is not parsed
+     ;; again, and is the same allocation as last frame's to its diff (ADR-470)
+     :fragments? true
      ;; a turn the loop skipped (ADR-444): the window still learns the app is done with
      ;; it — its wheel glide paces on that, and the latency trace drops the input
      :settle (fn () (gui/settle id))
@@ -452,36 +457,44 @@ already-open window instead of opening a duplicate (e.g. a repeated `(observe)`)
 (anything `=`-comparable: `[:line 12]`, `[:modeline pane-path]`); `deps` are the values
 its ops depend on; `(thunk)` computes the ops — a list or vector of render ops. Inside a
 running `ui-run` the previous turn's ops are reused when the key's `deps` are `=`, and the
-result is a one-element list holding a `[:ui/memo key deps ops]` marker the loop harvests
+result is a one-element list holding a `[:ui/memo key deps ops reused?]` marker the loop harvests
 (`ui-harvest`); splice it where the ops would go (`mapcat`/`append`). Outside a loop it is
 just `(thunk)` — as is a nil `key`, the way a caller opts a fragment out (a pane whose
 ops are transformed after this). Omit from `deps` nothing the thunk reads, or a stale
 fragment is painted.
 
-    (editor/ui/ui-memo [:line 12] [\"text\"] (fn () [[:text \"text\"]]))   ;=> ([:ui/memo [:line 12] [\"text\"] ops]) in a loop; the thunk's ops outside one"
+`reused?` is true when the ops are last turn's value itself (the deps matched): a display
+that takes the markers (`:fragments?`, the GUI window) then reuses what it parsed them to
+last frame instead of parsing them again (ADR-470).
+
+    (editor/ui/ui-memo [:line 12] [\"text\"] (fn () [[:text \"text\"]]))   ;=> ([:ui/memo [:line 12] [\"text\"] ops reused?]) in a loop; the thunk's ops outside one"
   (if (or (nil? *ui-memo*) (nil? key))
     (thunk)
-    (let (prev (get *ui-memo* key)
-          ops (if (and prev (= (first prev) deps)) (second prev) (thunk)))
-      (list [:ui/memo key deps ops]))))
+    (let (prev (get *ui-memo* key))
+      (if (and prev (= (first prev) deps))
+        (list [:ui/memo key deps (second prev) true])
+        (list [:ui/memo key deps (thunk) false])))))
 
 (defn ui-memo-marker? (op)
-  "True for a `[:ui/memo key deps ops]` marker.
+  "True for a `[:ui/memo key deps ops reused?]` marker.
 
-    (editor/ui/ui-memo-marker? [:ui/memo :k [] []])   → true
+    (editor/ui/ui-memo-marker? [:ui/memo :k [] [] false])   → true
     (editor/ui/ui-memo-marker? [:text \"x\"])          → false"
   (and (vector? op) (= (first op) :ui/memo)))
 
-(defn ui-harvest (frame)
+(defn ui-harvest (frame &optional (keep-markers? false))
   "`[frame' table]`: `frame` with every `ui-memo` marker spliced away (a plain frame the
 frontend paints), and the table of this turn's fragments — what `*ui-memo*` is bound to
-for the next turn. The loop calls it on every rendered frame; a frame without markers
+for the next turn. With `keep-markers?` the frame comes back as it is, markers and all,
+for a display whose `:fragments?` says it takes them: the GUI window parses a fragment the
+loop reused once, and shares it with the frame before (ADR-470). The loop calls it on every rendered frame; a frame without markers
 comes back as it went in, with an empty table. Recurses into a marker's ops and a
 `:scroll-region`'s. Native (`%ui-harvest`): it walks every op of every frame, where a
 Brood-level walk cost about a millisecond — more than the paint the memo saves.
 
-    (editor/ui/ui-harvest frame)   ;=> [the frame with markers spliced away, {key [deps ops] …}]"
-  (%ui-harvest frame))
+    (first (editor/ui/ui-harvest [[:ui/memo :k [] [[:clear]] false]]))   → [[:clear]]
+    (first (editor/ui/ui-harvest [[:ui/memo :k [] [] false]] true))   → [[:ui/memo :k [] [] false]]"
+  (%ui-harvest frame keep-markers?))
 
 ;; ---- per-turn tracing (BROOD_UI_TRACE=1) ------------------------------------
 ;; Where a turn's time goes on the BROOD side of the loop: `view` (model → frame),
@@ -622,7 +635,7 @@ re-raises, surfacing a genuine startup bug instead of spinning."
                                                          (binding (*ui-memo* (or (get clock :memo)
                                                                                {}))
                                                            (view model cols rows))))
-                             [flat table] (ui-harvest frame))
+                             [flat table] (ui-harvest frame (get display :fragments?)))
                          (do
                            (ui-trace "view"
                              ms

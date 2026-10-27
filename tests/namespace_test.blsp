@@ -396,3 +396,35 @@
           (fn (k) (let (v (vals-extra/payload k)) (spawn (fn () (send me (get v :sq)))))))
         (let (results (fold (range 5) nil (fn (acc _) (cons (receive) acc))))
           (assert= [0 1 4 9 16] (into [] (sort results))))))))
+
+;; `reflect/eval` of a lone bound symbol is a table read, not a compile (ADR-465). These
+;; pin that the read resolves the name exactly as the compile pass would: a module's own
+;; definition over the root one, the `/name` escape, a dynamic var's binding, and a
+;; foreign private name still refused.
+(describe "namespaces: reflect/eval of a bare symbol"
+  (test "a bare name evaluated inside a module is the module's own definition"
+    (%load-string "(defmodule nsEvA) (defn count (x) :mine) (def got ((reflect/eval 'count) [1 2]))")
+    (is (= nsEvA/got :mine)))
+
+  (test "the root escape reaches the root binding a module shadows"
+    (%load-string "(defmodule nsEvB) (defn count (x) :mine) (def got ((reflect/eval '/count) [1 2]))")
+    (is (= nsEvB/got 2)))
+
+  (test "a qualified name evaluated at root is that global"
+    (%load-string "(defmodule nsEvC) (defn helper () 7)")
+    (is (= ((reflect/eval 'nsEvC/helper)) 7)))
+
+  (test "a redefinition is what the next evaluation reads"
+    (%load-string "(defmodule nsEvD) (defn helper () :old)")
+    (let (before ((reflect/eval 'nsEvD/helper)))
+      (%load-string "(defmodule nsEvD) (defn helper () :new)")
+      (is (= [before ((reflect/eval 'nsEvD/helper))] [:old :new]))))
+
+  (test "a dynamic var answers its innermost binding"
+    (%load-string "(defdyn *ns-eval-dynamic* :outer)")
+    (is (= (binding (*ns-eval-dynamic* :inner) (reflect/eval '*ns-eval-dynamic*)) :inner)))
+
+  (test "another module's private name is still refused from inside a module"
+    (%load-string "(defmodule nsEvE) (defn- secret () 1)")
+    (%load-string "(defmodule nsEvF) (def got (try (reflect/eval 'nsEvE/secret) (catch e :refused)))")
+    (is (= nsEvF/got :refused))))

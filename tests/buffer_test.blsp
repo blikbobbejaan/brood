@@ -1431,31 +1431,101 @@ suite run. `*test-wait-ms*` is a failure deadline, reached only if a relay never
       (refute (buffer-modified? (mark-buffer-saved e)))
       (is (buffer-modified? (mark-buffer-modified (make-buffer "a")))))))
 
+(defn- splices-apply (text splices)
+  ;; `text` with each splice applied in order — what a holder replaying the log builds
+  (fold splices
+    text
+    (fn (acc splice)
+      (let ([lo hi repl] splice)
+        (str (string/substring acc 0 lo) repl (string/substring acc hi (string/length acc)))))))
+
+(defn- type-chars (buf n)
+  ;; `n` single-character inserts, as a typing burst makes them
+  (fold (range n) buf (fn (b i) (insert b (if (math/even? i) "a" "b")))))
+
 (describe "buffer-splices-since: what the edits did, not a diff's guess"
   (test "typing at the front of a run of equal characters is an insert at the FRONT"
     ;; a text diff of "aaa" -> "aaaa" says [3 3 "a"]: the right size, the wrong place
     (let (before (make-buffer "aaa"))
       (assert= (buffer-splices-since before (insert before "a")) (list [0 0 "a"]))))
-  (test "several edits come back oldest first, each against the text the last one left"
+  (test "a typing run is one splice, a backspace into it included"
     (let (before (goto-char (make-buffer "abc") 1)
           after (delete-backward-char (insert (insert before "X") "Y")))
-      (assert= (buffer-splices-since before after)
-        (list [1 1 "X"] [2 2 "Y"] [2 3 ""]))))
+      (assert= (buffer-splices-since before after) (list [1 1 "X"]))))
+  (test "edits apart from each other stay separate splices, oldest first"
+    (let (before (goto-char (make-buffer "abcdef") 1)
+          after (insert (goto-char (insert before "X") 5) "Y"))
+      (assert= (buffer-splices-since before after) (list [1 1 "X"] [5 5 "Y"]))))
+  (test "a typing burst longer than the log is still one splice"
+    ;; it used to be one entry per key, 32 kept: a server synced after 40 keys got nil
+    (let (before (make-buffer "")
+          after (type-chars before 40))
+      (assert= (count (buffer-splices-since before after)) 1)
+      (assert= (splices-apply "" (buffer-splices-since before after)) (buffer-text after))))
+  (test "a holder that synced mid-run gets exactly the rest of the run"
+    (let (base (goto-char (make-buffer "aaa") 1)
+          middle (insert (insert base "a") "a")
+          after (insert (insert middle "a") "b"))
+      (assert= (buffer-splices-since middle after) (list [3 3 "ab"]))
+      (assert= (buffer-splices-since base after) (list [1 1 "aaab"]))))
+  (test "a run of deletions is one splice, backward or forward, and answers mid-run too"
+    (let (base (goto-char (make-buffer "hello world") 5)
+          back-one (delete-backward-char base)
+          back (delete-backward-char (delete-backward-char back-one))
+          forward-base (goto-char (make-buffer "hello world") 5)
+          forward (delete-char (delete-char forward-base)))
+      (assert= (buffer-splices-since base back) (list [2 5 ""]))
+      (assert= (buffer-splices-since back-one back) (list [2 4 ""]))
+      (assert= (buffer-splices-since forward-base forward) (list [5 7 ""]))))
   (test "a deleted region and a replace-region are logged"
     (let (before (goto-char (set-mark (make-buffer "hello world")) 5))
       (assert= (buffer-splices-since before (delete-region before)) (list [0 5 ""]))
       (assert= (buffer-splices-since before (replace-region before 6 11 "there"))
-        (list [6 11 ""] [6 6 "there"]))))
+        (list [6 11 "there"]))))
   (test "no change is no splices, and movement is no change"
     (let (before (make-buffer "abc"))
       (assert= (buffer-splices-since before before) ())
       (assert= (buffer-splices-since before (goto-char before 2)) ())))
-  (test "a change the log cannot account for is nil, for the caller to diff"
-    ;; an undo restores a snapshot: the rope changes with no splice logged
+  (test "an undo is the splice it restored, and a redo the one after it"
     (let (edited (insert (make-buffer "abc") "X")
-          undone (undo edited))
-      (is (nil? (buffer-splices-since edited undone)))
-      (is (nil? (buffer-splices-since (make-buffer "one") (make-buffer "two")))))))
+          undone (undo edited)
+          redone (undo undone))
+      (assert= (buffer-text redone) "Xabc")
+      (assert= (buffer-splices-since edited undone) (list [0 1 ""]))
+      (assert= (buffer-splices-since undone redone) (list [0 0 "X"]))
+      ;; the same text again: ropes compare by content, so the walk stops at once
+      (assert= (buffer-splices-since edited redone) ())))
+  (test "undoing an amalgamated typing run reverses the whole run as one splice"
+    (let (base (goto-char (make-buffer "say hi") 4)
+          typed (fold (range 3)
+                  base
+                  (fn (b i) (insert (if (= i 0) b (amalgamate-undo b)) (if (= i 1) "x" "o"))))
+          undone (undo typed))
+      (assert= (buffer-text undone) "say hi")
+      (assert= (buffer-splices-since typed undone) (list [4 7 ""]))
+      (assert= (splices-apply (buffer-text base) (buffer-splices-since base undone)) "say hi")))
+  (test "a region undo logs the splice it made"
+    (let (edited (insert (goto-char (make-buffer "one\ntwo\n") 4) "X")
+          region (goto-char (set-mark (goto-char edited 4)) 6)
+          undone (undo-in-region region))
+      (assert= (buffer-text undone) "one\ntwo\n")
+      (assert= (buffer-splices-since region undone) (list [4 5 ""]))))
+  (test "replaying the splices rebuilds the text, edit after undo after edit"
+    (let (before (goto-char (make-buffer "the quick fox") 4)
+          after (-> before
+                  (insert "very ")
+                  (delete-backward-char 2)
+                  (goto-char 0)
+                  (insert "A: ")
+                  undo
+                  (insert "B")
+                  (goto-char 3)
+                  (delete-char 4))
+          splices (buffer-splices-since before after))
+      (is (not (nil? splices)))
+      (assert= (splices-apply (buffer-text before) splices) (buffer-text after))))
+  (test "a change the log cannot account for is nil, for the caller to diff"
+    (is (nil? (buffer-splices-since (make-buffer "one") (make-buffer "two"))))))
 
 (describe "narrowing: which text may be edited"
   (test "a fresh buffer is not narrowed; narrow-to narrows it and widen undoes that"

@@ -109,6 +109,41 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         tree_sitter_languages);
 }
 
+/// The structural queries over a held tree (ADR-467) — registered LAST from `builtins::register`,
+/// not beside their siblings above: registration order feeds the intern table (see
+/// `syntax_scan::register`).
+pub(super) fn register_tree_queries(primitives: &mut super::Primitives) {
+    use super::signature_types::*;
+    use crate::core::value::Arity;
+    use crate::types::Sig;
+    // `%tree-sitter-chain` and `%tree-sitter-kids` without re-parsing the text they are
+    // handed: a caller that keeps the document's tree incrementally (an editor's view) asks it.
+    primitives.def(
+        "%tree-sitter-tree-chain",
+        Arity::exact(2),
+        Sig::new(vec![ref_ty, int], vec_or_nil),
+        &["tree", "offset"],
+        "%tree-sitter-chain over a held tree: the nodes containing char offset of the tree's text, outermost first, each as {:kind :start :end :named :container} without its children, the outermost carrying :broken true when the tree has an error anywhere. Parses nothing — O(depth) over the tree an incremental reparse keeps. nil when the handle is gone (freed or evicted): ask the text-keyed query, or open a fresh tree.",
+        tree_sitter_tree_chain,
+    );
+    primitives.def(
+        "%tree-sitter-tree-kids",
+        Arity::exact(2),
+        Sig::new(vec![ref_ty, int], vec_or_nil),
+        &["tree", "offset"],
+        "%tree-sitter-kids over a held tree: the named children of the deepest node STRICTLY containing char offset, each without its own children. Parses nothing. nil when the handle is gone.",
+        tree_sitter_tree_kids,
+    );
+    primitives.def(
+        "%tree-sitter-tree-alive?",
+        Arity::exact(1),
+        Sig::new(vec![ref_ty], bool_ty),
+        &["tree"],
+        "Is the tree handle still held (not freed, not evicted)? Marks it used, as a query does, so a holder that only checks keeps it from being the next evicted. Builds nothing — the check a holder makes per event instead of asking %tree-sitter-tree-changes for a vector it throws away. false in a build without feature `treesit`.",
+        tree_sitter_tree_alive,
+    );
+}
+
 /// `(%tree-sitter-languages)` — the parseable languages; `crate::host::treesit::languages`.
 pub(super) fn tree_sitter_languages(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     crate::host::treesit::languages(heap)
@@ -302,4 +337,23 @@ pub(super) fn tree_sitter_tree_changes(args: &[Value], _: EnvId, heap: &mut Heap
 pub(super) fn tree_sitter_tree_free(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let handle = ts_handle(heap, "%tree-sitter-tree-free", arg(args, 0))?;
     Ok(Value::boolean(crate::host::treesit::tree_free(handle)))
+}
+
+pub(super) fn tree_sitter_tree_chain(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let who = "%tree-sitter-tree-chain";
+    let handle = ts_handle(heap, who, arg(args, 0))?;
+    let offset = expect_int(heap, who, arg(args, 1))?;
+    crate::host::treesit::tree_chain(heap, handle, offset)
+}
+
+pub(super) fn tree_sitter_tree_kids(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let who = "%tree-sitter-tree-kids";
+    let handle = ts_handle(heap, who, arg(args, 0))?;
+    let offset = expect_int(heap, who, arg(args, 1))?;
+    crate::host::treesit::tree_kids(heap, handle, offset)
+}
+
+pub(super) fn tree_sitter_tree_alive(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let handle = ts_handle(heap, "%tree-sitter-tree-alive?", arg(args, 0))?;
+    Ok(Value::boolean(crate::host::treesit::tree_alive(handle)))
 }
