@@ -262,7 +262,9 @@ pub(super) struct Envelope {
 
 /// The lane of a queued [`Envelope`] (ADR-490). A tag and a pointer: `Latest` boxes its key,
 /// so an envelope that never uses a key pays 16 bytes for the field and allocates nothing.
-pub(super) enum Lane {
+/// Crate-visible because a `Send` frame carries it across a node link (ADR-492).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Lane {
     Normal,
     /// Taken ahead of the rest by `proc/take-priority`, oldest first.
     Priority,
@@ -997,6 +999,15 @@ pub(crate) fn deliver_priority(pid: u64, msg: Message) {
     deliver_envelope(pid, envelope);
 }
 
+/// Like [`deliver`], in `lane`: a message a peer node sent with `proc/send-priority` or
+/// `proc/send-latest` (ADR-492), queued here as the local send queues it — a LATEST one
+/// superseding the queued message with its key.
+pub(crate) fn deliver_in_lane(pid: u64, msg: Message, lane: Lane) {
+    let mut envelope = Envelope::plain(msg);
+    envelope.lane = lane;
+    deliver_envelope(pid, envelope);
+}
+
 /// [`deliver_credited`] on the PRIORITY lane — a window's key repeat, whose source can
 /// take it back (`CreditSource::withdrawn`).
 pub(crate) fn deliver_priority_credited(pid: u64, msg: Message, credit: DeliveryCredit) {
@@ -1007,10 +1018,10 @@ pub(crate) fn deliver_priority_credited(pid: u64, msg: Message, credit: Delivery
 }
 
 /// `(proc/send-priority target msg)` / `(proc/send-latest target key msg)`: `send` in
-/// another lane (ADR-490). A lane is a property of a queued envelope in THIS runtime, so
-/// a target that is not a live local process — a remote pid or name, a dead pid, a name
-/// nobody holds —
-/// gets an ordinary `send`: the message arrives, without the lane. Never the L1 copy
+/// another lane (ADR-490). A remote target — a pid, or a `{:name :node}` address, on
+/// another node — gets the lane in its `Send` frame and the receiving node queues the
+/// message in it (ADR-492); a dead local pid or a name nobody holds drops the message, as
+/// `send` does. Never the L1 copy
 /// into a parked receiver's heap either: a lane must be on the envelope, and a LATEST
 /// one must stay a wire payload, which the delivery that supersedes it can drop without
 /// touching the receiver's heap.
@@ -1033,15 +1044,17 @@ pub fn send_in_lane(
         _ => None,
     };
     let mailbox = local_id.and_then(|id| REGISTRY.get(id));
-    let Some(mailbox) = mailbox else {
-        return send(heap, target, msg);
-    };
-    let wire = to_message_to_runtime(heap, msg, Some(mailbox.runtime_tag()))?;
-    let mut envelope = Envelope::plain(wire);
-    envelope.lane = match latest_key {
+    let lane = match latest_key {
         None => Lane::Priority,
         Some(key) => Lane::Latest(Box::new(crate::syntax::printer::print(heap, key))),
     };
+    let Some(mailbox) = mailbox else {
+        let wire = to_message_to_runtime(heap, msg, None)?;
+        return route_message(heap, target, wire, lane);
+    };
+    let wire = to_message_to_runtime(heap, msg, Some(mailbox.runtime_tag()))?;
+    let mut envelope = Envelope::plain(wire);
+    envelope.lane = lane;
     push_and_wake(&mailbox, envelope);
     Ok(())
 }
@@ -1486,15 +1499,28 @@ pub fn send(heap: &Heap, target_val: Value, msg_val: Value) -> Result<(), LispEr
         deliver_traced(id, msg, Some(trace));
         return Ok(());
     }
+    route_message(heap, target_val, msg, Lane::Normal)
+}
+
+/// Route a serialised `msg` to `target_val` through `crate::dist::route`, in `lane`: the
+/// part of [`send`] after its local fast paths, shared with [`send_in_lane`]'s remote
+/// targets so a lane crosses a node link (ADR-492). Raises `:noconnection` for a process
+/// that set `:send-errors` when the target's node has no link.
+fn route_message(
+    heap: &Heap,
+    target_val: Value,
+    msg: Message,
+    lane: Lane,
+) -> Result<(), LispError> {
     let (routed, node) = match target_val {
         Value::Pid { node, id } => (
-            crate::dist::route(node, crate::dist::Target::Pid(id), msg),
+            crate::dist::route_in_lane(node, crate::dist::Target::Pid(id), msg, lane),
             node,
         ),
         Value::Map(mid) => {
             let (name, node) = read_name_address(heap, mid)?;
             (
-                crate::dist::route(node, crate::dist::Target::Name(name), msg),
+                crate::dist::route_in_lane(node, crate::dist::Target::Name(name), msg, lane),
                 node,
             )
         }
@@ -1507,7 +1533,7 @@ pub fn send(heap: &Heap, target_val: Value, msg_val: Value) -> Result<(), LispEr
         Value::Keyword(name) => {
             let node = crate::dist::local_node();
             (
-                crate::dist::route(node, crate::dist::Target::Name(name), msg),
+                crate::dist::route_in_lane(node, crate::dist::Target::Name(name), msg, lane),
                 node,
             )
         }

@@ -210,7 +210,7 @@ pub(super) fn admit(peer: Symbol, guest: Option<&GuestLink>, frame: &Frame) -> b
         Target::Pid(id) => guest.reaches_pid(*id),
     };
     let admitted = match frame {
-        Frame::Send { target, msg } => {
+        Frame::Send { target, msg, .. } => {
             reaches(target) && !carries_code(msg) && guest.holds_only_known_pids(msg)
         }
         Frame::Monitor { target, .. } => guest.reaches_pid(*target),
@@ -363,7 +363,11 @@ mod tests {
             peer,
         );
         let guest = Some(&link);
-        let send = |target, msg| Frame::Send { target, msg };
+        let send = |target, msg| Frame::Send {
+            target,
+            msg,
+            lane: crate::process::Lane::Normal,
+        };
         assert!(admit(
             peer,
             guest,
@@ -490,6 +494,7 @@ mod tests {
                 pid(claimed, 5),
                 Message::Map(vec![(keyword("from"), pid(third, 6))]),
             ]),
+            lane: crate::process::Lane::Normal,
         };
         link.translate_inbound(&mut inbound);
         let Frame::Send { msg, .. } = &inbound else {

@@ -146,9 +146,10 @@ fn send_with_rich_message_roundtrips() {
     let f = Frame::Send {
         target: Target::Name(value::intern("echo")),
         msg,
+        lane: crate::process::Lane::Normal,
     };
     match read_full(&f) {
-        Frame::Send { target, msg } => {
+        Frame::Send { target, msg, .. } => {
             match target {
                 Target::Name(s) => assert_eq!(value::symbol_name(s), "echo"),
                 _ => panic!("wrong target"),
@@ -182,6 +183,7 @@ fn bytes_and_native_roundtrip_through_the_wire() {
     let f = Frame::Send {
         target: Target::Name(value::intern("echo")),
         msg,
+        lane: crate::process::Lane::Normal,
     };
     match read_full(&f) {
         Frame::Send { msg, .. } => match &msg {
@@ -213,11 +215,13 @@ fn pid_id_survives_above_u32() {
             node: value::intern("n"),
             id: big,
         },
+        lane: crate::process::Lane::Normal,
     };
     match read_full(&f) {
         Frame::Send {
             target: Target::Pid(t),
             msg: Message::Pid { id, .. },
+            ..
         } => {
             assert_eq!(t, big);
             assert_eq!(id, big);
@@ -297,6 +301,7 @@ fn closure_roundtrips_through_the_wire() {
     let f = Frame::Send {
         target: Target::Pid(1),
         msg: Message::Closure(Box::new(c)),
+        lane: crate::process::Lane::Normal,
     };
     match &read_full(&f) {
         Frame::Send {
@@ -369,6 +374,7 @@ fn closure_with_all_options_absent_roundtrips() {
     let f = Frame::Send {
         target: Target::Pid(1),
         msg: Message::Closure(Box::new(c)),
+        lane: crate::process::Lane::Normal,
     };
     match &read_full(&f) {
         Frame::Send {
@@ -418,6 +424,7 @@ fn a_dotted_list_roundtrips_and_a_tailless_one_is_refused() {
     let f = Frame::Send {
         target: Target::Pid(1),
         msg,
+        lane: crate::process::Lane::Normal,
     };
     match read_full(&f) {
         Frame::Send {
@@ -496,6 +503,7 @@ fn a_peer_cannot_mint_symbols_without_limit() {
         let f = Frame::Send {
             target: Target::Name(known),
             msg: Message::Int(1),
+            lane: crate::process::Lane::Normal,
         };
         match read_full(&f) {
             Frame::Send {
@@ -512,6 +520,7 @@ fn a_peer_cannot_mint_symbols_without_limit() {
     let mut payload = vec![FRAME_SEND, TARGET_NAME];
     put_str(&mut payload, &fresh);
     encode_msg(&mut payload, &Message::Int(1)).unwrap();
+    encode_lane(&mut payload, &crate::process::Lane::Normal);
     let mut framed = (payload.len() as u32).to_be_bytes().to_vec();
     framed.extend_from_slice(&payload);
     match read_frame(&mut Cursor::new(framed)) {
@@ -551,6 +560,7 @@ fn a_peer_cannot_mint_symbols_without_limit() {
     let f = Frame::Send {
         target: Target::Name(known),
         msg: Message::Int(1),
+        lane: crate::process::Lane::Normal,
     };
     match read_full(&f) {
         Frame::Send {
@@ -623,6 +633,7 @@ fn exact_numbers_cross_the_wire_into_another_heap() {
     let frame = Frame::Send {
         target: Target::Name(value::intern("echo")),
         msg,
+        lane: crate::process::Lane::Normal,
     };
     let Frame::Send { msg, .. } = read_full(&frame) else {
         panic!("wrong frame");
@@ -661,5 +672,39 @@ fn monitor_name_roundtrips() {
             assert_eq!(mref, 1 << 40);
         }
         _ => panic!("wrong frame"),
+    }
+}
+
+/// A `Send` carries its mailbox lane (ADR-492): the receiving node queues a
+/// `proc/send-priority` message on the priority lane and a `proc/send-latest` one under its
+/// key, so both decode as they were encoded — and a lane tag nobody defined is refused
+/// rather than read as the next field.
+#[test]
+fn a_send_carries_its_lane_across_the_wire() {
+    use crate::process::Lane;
+    for lane in [
+        Lane::Normal,
+        Lane::Priority,
+        Lane::Latest(Box::new(":frame".to_string())),
+    ] {
+        let f = Frame::Send {
+            target: Target::Pid(7),
+            msg: Message::Int(1),
+            lane: lane.clone(),
+        };
+        match read_full(&f) {
+            Frame::Send { lane: decoded, .. } => assert_eq!(decoded, lane),
+            _ => panic!("wrong frame"),
+        }
+    }
+    let mut payload = vec![FRAME_SEND];
+    encode_target(&mut payload, &Target::Pid(7));
+    encode_msg(&mut payload, &Message::Int(1)).unwrap();
+    payload.push(9);
+    let mut framed = (payload.len() as u32).to_be_bytes().to_vec();
+    framed.extend_from_slice(&payload);
+    match read_frame(&mut Cursor::new(framed)) {
+        Err(e) => assert_eq!(e.kind(), io::ErrorKind::InvalidData),
+        Ok(_) => panic!("an unknown lane tag must be refused"),
     }
 }

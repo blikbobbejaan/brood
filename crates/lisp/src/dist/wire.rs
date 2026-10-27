@@ -18,7 +18,7 @@ use std::io::{self, Cursor, Read, Write};
 
 use crate::core::blob::SharedBlob;
 use crate::core::value::{self, Symbol};
-use crate::process::Message;
+use crate::process::{Lane, Message};
 
 use super::{MAX_FRAME, Target};
 
@@ -70,8 +70,13 @@ pub(super) enum Frame {
     /// lives in `handshake::compute_mac` (don't restate it here — it has drifted
     /// before). Mismatch on either side aborts before the link enters `NODES`.
     Auth { mac: [u8; MAC_LEN] },
-    /// Route `msg` to `target` on the receiving node.
-    Send { target: Target, msg: Message },
+    /// Route `msg` to `target` on the receiving node, queued in `lane` (ADR-492): an
+    /// ordinary send, `proc/send-priority`'s priority lane, or `proc/send-latest`'s key.
+    Send {
+        target: Target,
+        msg: Message,
+        lane: Lane,
+    },
     /// Liveness probe; the peer answers with `Pong`.
     Ping,
     /// Reply to a `Ping`. (Receiving any frame refreshes liveness; these two carry
@@ -167,6 +172,10 @@ const FRAME_DOWN: u8 = 11;
 const FRAME_MONITOR_NAME: u8 = 12;
 const TARGET_PID: u8 = 0;
 const TARGET_NAME: u8 = 1;
+/// The lane a `Send` frame's message is queued in on arrival (ADR-492).
+const LANE_NORMAL: u8 = 0;
+const LANE_PRIORITY: u8 = 1;
+const LANE_LATEST: u8 = 2;
 
 /// Hard cap on entries in a single `Peers` gossip frame, so an (authenticated
 /// but possibly buggy/hostile) peer can't make us spawn an unbounded number of
@@ -201,8 +210,11 @@ const MAX_GOSSIP_PEERS: usize = 4096;
 /// a duplicate — a v8 peer would fail the handshake on the trailing bytes, so the
 /// byte bumps; **v10** adds `M_DOTTED`, an improper list (KI-240) — to a v9 peer the
 /// new tag is a decode error that tears the link down on the first one sent, so the
-/// byte bumps.
-pub(super) const PROTOCOL_MAGIC: [u8; 4] = *b"BRD\x0a";
+/// byte bumps; **v11** appends the message's mailbox lane to every `Send` (ADR-492) —
+/// `proc/send-priority` / `proc/send-latest` keep their meaning across a link — which a
+/// v10 peer would read as the next frame's first byte, so the byte bumps: a v10 and a
+/// v11 node refuse each other at the magic, before any frame, rather than mis-decode.
+pub(super) const PROTOCOL_MAGIC: [u8; 4] = *b"BRD\x0b";
 pub(super) const NONCE_LEN: usize = 32;
 pub(super) const MAC_LEN: usize = 32;
 /// Length of an X25519 public key (the ephemeral DH key in `Hello`, ADR-089).
@@ -305,10 +317,11 @@ fn encode_frame(w: &mut Vec<u8>, frame: &Frame) -> io::Result<()> {
             w.push(FRAME_AUTH);
             w.extend_from_slice(mac);
         }
-        Frame::Send { target, msg } => {
+        Frame::Send { target, msg, lane } => {
             w.push(FRAME_SEND);
             encode_target(w, target);
             encode_msg(w, msg)?;
+            encode_lane(w, lane);
         }
         Frame::Ping => w.push(FRAME_PING),
         Frame::Pong => w.push(FRAME_PONG),
@@ -403,6 +416,7 @@ pub(super) fn decode_frame(r: &mut Cursor<Vec<u8>>) -> io::Result<Frame> {
         FRAME_SEND => Ok(Frame::Send {
             target: decode_target(r)?,
             msg: decode_msg(r)?,
+            lane: decode_lane(r)?,
         }),
         FRAME_PING => Ok(Frame::Ping),
         FRAME_PONG => Ok(Frame::Pong),
@@ -483,6 +497,31 @@ fn decode_target(r: &mut Cursor<Vec<u8>>) -> io::Result<Target> {
         t => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("unknown target tag {t}"),
+        )),
+    }
+}
+
+/// A `Send`'s lane: one tag byte, and for a LATEST message its key's printed form, which
+/// the receiving mailbox compares as the sender's own runtime would (ADR-492).
+fn encode_lane(w: &mut Vec<u8>, lane: &Lane) {
+    match lane {
+        Lane::Normal => w.push(LANE_NORMAL),
+        Lane::Priority => w.push(LANE_PRIORITY),
+        Lane::Latest(key) => {
+            w.push(LANE_LATEST);
+            put_str(w, key);
+        }
+    }
+}
+
+fn decode_lane(r: &mut Cursor<Vec<u8>>) -> io::Result<Lane> {
+    match get_u8(r)? {
+        LANE_NORMAL => Ok(Lane::Normal),
+        LANE_PRIORITY => Ok(Lane::Priority),
+        LANE_LATEST => Ok(Lane::Latest(Box::new(get_str(r)?))),
+        t => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unknown lane tag {t}"),
         )),
     }
 }

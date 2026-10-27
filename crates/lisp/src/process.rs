@@ -175,7 +175,9 @@ pub(crate) use scheduler::set_reduction_budget_for_test;
 #[cfg(all(test, feature = "jit"))]
 pub(crate) use scheduler::test_work_waiting;
 
-pub(crate) use mailbox::{deliver, deliver_priority, is_alive, read_name_address};
+pub(crate) use mailbox::{
+    Lane, deliver, deliver_in_lane, deliver_priority, is_alive, read_name_address,
+};
 // Inbound flow control (socket backpressure): a credit rides in the envelope and is
 // returned to its source when the message leaves the mailbox. Used by `host::net` and
 // `host::subprocess`.

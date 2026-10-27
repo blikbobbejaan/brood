@@ -1017,19 +1017,6 @@ pub(crate) enum Target {
     /// A registered name resolved on the destination node.
     Name(Symbol),
 }
-
-/// Deliver `msg` to `target` on `node`, location-transparently: a local node
-/// delivers in-process; a remote one forwards over the link. Unknown name,
-/// unknown/disconnected node, or a dead pid is a silent no-op.
-///
-/// Returns whether a route existed at all: `true` for any local target (even a
-/// dead pid — process liveness stays silent) and for a remote node with
-/// a live link; `false` when the node is **unknown/disconnected** (the message
-/// was dropped on the floor). `send` surfaces that as a catchable
-/// `:noconnection` error when the sending process opted in via
-/// `(proc/flag :send-errors true)` — so a caller can queue-and-retry instead
-/// of silently losing messages until the reconnect (the dist self-healing
-/// seam); every other caller ignores it.
 /// Warn, once per name, that a message addressed to a **registered name no process holds**
 /// was dropped.
 ///
@@ -1087,7 +1074,28 @@ fn warn_dropped_to_unregistered_name(name: Symbol, whence: &str) {
     }
 }
 
-pub(crate) fn route(node: Symbol, target: Target, msg: Message) -> bool {
+/// Deliver `msg` to `target` on `node`, location-transparently: a local node
+/// delivers in-process; a remote one forwards over the link. Unknown name,
+/// unknown/disconnected node, or a dead pid is a silent no-op.
+///
+/// Returns whether a route existed at all: `true` for any local target (even a
+/// dead pid — process liveness stays silent) and for a remote node with
+/// a live link; `false` when the node is **unknown/disconnected** (the message
+/// was dropped on the floor). `send` surfaces that as a catchable
+/// `:noconnection` error when the sending process opted in via
+/// `(proc/flag :send-errors true)` — so a caller can queue-and-retry instead
+/// of silently losing messages until the reconnect (the dist self-healing
+/// seam); every other caller ignores it.
+///
+/// The message is queued in `lane` wherever it lands (ADR-492): a remote node gets the lane
+/// in the `Send` frame, so `proc/send-priority` and `proc/send-latest` mean the same thing
+/// to a pid on another node as to one here.
+pub(crate) fn route_in_lane(
+    node: Symbol,
+    target: Target,
+    msg: Message,
+    lane: process::Lane,
+) -> bool {
     if is_local(node) {
         let id = match target {
             Target::Pid(id) => id,
@@ -1102,7 +1110,7 @@ pub(crate) fn route(node: Symbol, target: Target, msg: Message) -> bool {
                 }
             },
         };
-        process::deliver(id, msg);
+        process::deliver_in_lane(id, msg, lane);
         return true;
     }
     // Remote: encode a Send frame and hand it to the peer's writer thread. Snapshot the
@@ -1121,7 +1129,7 @@ pub(crate) fn route(node: Symbol, target: Target, msg: Message) -> bool {
         guest.note_outbound(&msg);
     }
     // And its own pids go back in the guest's own spelling (ADR-425).
-    let mut frame = Frame::Send { target, msg };
+    let mut frame = Frame::Send { target, msg, lane };
     if let Some(guest) = &guest {
         guest.translate_outbound(&mut frame);
     }
@@ -1138,6 +1146,12 @@ pub(crate) fn route(node: Symbol, target: Target, msg: Message) -> bool {
     };
     let _ = enqueue_to(&tx, &sock, bytes); // severs the link if the writer is gone/stalled
     true
+}
+
+/// [`route_in_lane`] on the normal lane: the tests' plain send.
+#[cfg(test)]
+pub(crate) fn route(node: Symbol, target: Target, msg: Message) -> bool {
+    route_in_lane(node, target, msg, process::Lane::Normal)
 }
 
 // ----- connection lifecycle --------------------------------------------------
@@ -2001,7 +2015,7 @@ fn handle_inbound_frame(peer: Symbol, guest: Option<&guest::GuestLink>, mut fram
         guest.translate_inbound(&mut frame);
     }
     match frame {
-        Frame::Send { target, msg } => deliver_inbound(target, msg),
+        Frame::Send { target, msg, lane } => deliver_inbound(target, msg, lane),
         // A peer asked to watch one of our local pids — the shared `add_monitor` core
         // with a `Watcher::Remote`, so the alive/dead-target paths are the local ones.
         Frame::Monitor {
@@ -2244,7 +2258,7 @@ fn sever_couplings(peer: Symbol) {
 }
 
 /// An inbound `Send` from a peer: resolve the target locally and deliver.
-fn deliver_inbound(target: Target, msg: Message) {
+fn deliver_inbound(target: Target, msg: Message, lane: process::Lane) {
     let id = match target {
         Target::Pid(id) => id,
         Target::Name(name) => match crate::core::sync::read(&NAMES).get(name) {
@@ -2255,7 +2269,7 @@ fn deliver_inbound(target: Target, msg: Message) {
             }
         },
     };
-    process::deliver(id, msg);
+    process::deliver_in_lane(id, msg, lane);
 }
 
 pub(crate) mod guest;
@@ -2492,6 +2506,7 @@ mod tests {
         let to_probe = || Frame::Send {
             target: Target::Name(probe),
             msg: Message::Keyword(value::intern("ki-286")),
+            lane: crate::process::Lane::Normal,
         };
 
         let (guest_stream, _guest_far_end) = stream_pair();
@@ -2543,6 +2558,7 @@ mod tests {
         let to_pid = |id| Frame::Send {
             target: Target::Pid(id),
             msg: Message::Keyword(value::intern("ki-286")),
+            lane: crate::process::Lane::Normal,
         };
 
         let (guest_stream, _guest_far_end) = stream_pair();

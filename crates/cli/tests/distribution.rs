@@ -2990,3 +2990,103 @@ fn a_guest_link_reaches_what_it_was_given_and_ships_no_code() {
         "a guest cannot spawn on the host.\n{report}"
     );
 }
+
+/// Mailbox lanes cross a node link (ADR-492): a `proc/send-priority` from a peer is
+/// taken by `proc/take-priority` ahead of the plain messages the same peer sent before
+/// it, and a `proc/send-latest` from a peer supersedes the queued message with its key,
+/// queueing at the back as a local one does — by pid and by `{:name :node}` address.
+/// The inbox waits in a selective receive for `[:go …]`, so everything else the client
+/// sent before it is queued when it looks.
+#[test]
+fn mailbox_lanes_cross_a_node_link() {
+    let _g = port_lock();
+    let dir = std::env::temp_dir().join(format!("brood-dist-lanes-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let port_a = free_port();
+    let port_b = free_port();
+
+    let server = format!(
+        r#"
+(node/start :a "127.0.0.1:{port_a}" "secret-test-cookie-16+")
+(defn drain (acc) (receive (m (drain (conj acc m))) (after 0 acc)))
+(defn inbox ()
+  (receive ([:hello from] (send from [:inbox (self)])))
+  (receive ([:go from] (let (urgent (proc/take-priority)
+                             rest (drain []))
+                         (send from [:seen urgent rest])))))
+(proc/register :inbox (spawn (inbox)))
+(receive (:never :x))
+"#
+    );
+    let client = format!(
+        r#"
+(node/start :b "127.0.0.1:{port_b}" "secret-test-cookie-16+")
+(node/connect "a@127.0.0.1:{port_a}")
+(def by-name {{:name :inbox :node :a@127.0.0.1}})
+(send by-name [:hello (self)])
+(def inbox (receive ([:inbox p] p) (after 30000 (throw "no reply from the inbox"))))
+(send inbox [:plain 1])
+(proc/send-latest inbox :view [:view 1])
+(send by-name [:plain 2])
+(proc/send-priority by-name [:urgent 1])
+(proc/send-latest by-name :view [:view 2])
+(send inbox [:plain 3])
+(send inbox [:go (self)])
+(def seen (receive ([:seen urgent rest] [urgent rest]) (after 30000 :no-reply)))
+(def want [[[:urgent 1]] [[:plain 1] [:plain 2] [:view 2] [:plain 3]]])
+(unless (= seen want)
+  (throw (str "lanes did not cross the link: got " (pr-str seen) ", want " (pr-str want))))
+(io/puts "LANES-ACROSS-NODES-OK")
+"#
+    );
+
+    let mut a = spawn_brood(&dir, "server.blsp", &server);
+    wait_until_listening(port_a);
+    let b = spawn_brood(&dir, "client.blsp", &client);
+    let out = b.wait_with_output().expect("client finished");
+    let _ = a.kill();
+    let _ = a.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("LANES-ACROSS-NODES-OK"),
+        "cross-node lanes failed.\n--- stdout ---\n{stdout}\n--- stderr ---\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A peer that speaks the protocol before lanes crossed the link (v10, ADR-492) is
+/// refused at the magic — before any frame, so neither side mis-decodes a `Send` — and
+/// the server keeps serving: an old peer cannot connect, and cannot crash it.
+#[test]
+fn a_v10_peer_is_refused_at_the_magic_and_the_node_stays_up() {
+    let _g = port_lock();
+    let dir = std::env::temp_dir().join(format!("brood-dist-v10-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let port_a = free_port();
+    let server = format!(
+        r#"
+(node/start :a "127.0.0.1:{port_a}" "secret-test-cookie-16+")
+(receive (after 30000 nil))
+"#
+    );
+    let mut a = spawn_brood(&dir, "server.blsp", &server);
+    wait_until_listening(port_a);
+    let mut old = TcpStream::connect(("127.0.0.1", port_a)).expect("connect");
+    old.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    use std::io::Write as _;
+    let _ = old.write_all(b"BRD\x0a");
+    let mut buf = [0u8; 64];
+    let n = old.read(&mut buf).unwrap_or(0);
+    // The node is still up and still accepting.
+    let alive = TcpStream::connect(("127.0.0.1", port_a)).is_ok();
+    let still_running = a.try_wait().map(|s| s.is_none()).unwrap_or(false);
+    let _ = a.kill();
+    let _ = a.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(n < 8, "a v10 peer got past the magic: read {n} bytes");
+    assert!(
+        alive && still_running,
+        "the node went down after refusing a v10 peer"
+    );
+}

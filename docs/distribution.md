@@ -139,7 +139,7 @@ Silence it with `BROOD_NO_DROP_WARN=1`.
 matching carrier. A single `Stream { Tcp | Unix }` enum (ADR-068) carries the
 link, so everything below is transport-agnostic. Both ends perform the
 authenticated handshake (ADR-034 v2; wire **v10**, ADR-089): a 4-byte
-magic+version prefix (`b"BRD\x0a"`), then a `Hello { node, nonce, eph_pub, addr,
+magic+version prefix (`b"BRD\x0b"`), then a `Hello { node, nonce, eph_pub, addr,
 incarnation }` exchange (each side a fresh 32-byte nonce, a fresh **ephemeral X25519
 pubkey**, the address peers should dial it at, and its **incarnation** — a random id the
 runtime process mints once, so a peer can tell a restart from a duplicate link; it is
@@ -183,6 +183,12 @@ deep-copy that already crosses per-process heaps. The one cross-process subtlety
 **symbols travel by name** — a pid's `node`, keywords, and symbols are written as
 their spelling and **re-interned on arrival**, because separate runtimes have
 independent symbol interners. (In-process messages keep the interned id.)
+
+A `Send` frame also carries its message's **mailbox lane** (ADR-492): ordinary,
+priority (`proc/send-priority`) or latest with its key's printed form
+(`proc/send-latest`), and the receiving node queues it in that lane, so a lane means
+the same thing to a remote pid as to a local one. Protocol v11; a v10 peer is refused
+at the magic.
 
 ## Scope & limitations (slice 1)
 
