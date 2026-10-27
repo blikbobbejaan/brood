@@ -3,8 +3,9 @@
 (defn %identity-of (x)
   "The dispatch identity of `x`: its nominal record id (a `module/name` keyword) if it
   is an identity-carrying record, else its `type-of` kind. This — with `record?` /
-  `record-id` / `fields` — is the one seam a later kernel slot swaps behind; nothing
-  outside this module reads `:__id__` directly."
+  `record-id` / `fields` — is the seam a later kernel slot swaps behind. The collection
+  paths still probe `:__id__` themselves for speed (`seq`, `count`, `keys`, `into`/`conj`,
+  the contracts, and the kernel's inline `get`/dispatch); `docs/record-kind.md` lists them."
   ; one hash on the hot path: `get` (not `contains?` + `get`). `:__id__` is a reserved
   ; keyword a record always carries and is never nil, so a present id is truthy.
   (if (map? x)

@@ -47,8 +47,26 @@
       (assert= (fields p) {:x 3 :y 4})
       ; the id rides along through assoc
       (assert= (record-id q) :record-test/point)))
-  (test "merge works too"
-    (assert= (fields (merge (point 1 2) {:y 20})) {:x 1 :y 20})))
+  (test "merge works too, and a record base stays that record"
+    (let (merged (merge (point 1 2) {:y 20}))
+      (assert= (fields merged) {:x 1 :y 20})
+      (assert= (record-id merged) :record-test/point))
+    (assert= (record-id (merge nil (point 1 2) nil)) :record-test/point))
+  ;; Both leaked before 2026-10-27: `into`'s empty-target shortcut returned the record
+  ;; itself, and a plain target read the source with `%map-pairs`, which carries
+  ;; `:__id__` — so the plain map came out as a `point` (record-kind.md §2).
+  (test "a record poured into a plain map contributes its fields, never its identity"
+    (let (plain (into {} (point 1 2)))
+      (refute (record? plain))
+      (assert= plain {:x 1 :y 2}))
+    (let (plain (into {:z 3} (point 1 2)))
+      (refute (record? plain))
+      (assert= plain {:x 1 :y 2 :z 3})))
+  (test "a record merged INTO a plain map leaves the result a plain map"
+    (let (merged (merge {:z 1} (point 1 2)))
+      (refute (record? merged))
+      (assert= (record-id merged) nil)
+      (assert= merged {:x 1 :y 2 :z 1}))))
 
 (describe "defrecord: identity and nominal equality"
   (test "record? / record-id / fields are the clean API"
@@ -175,7 +193,16 @@
              (assert= (point-x p) 11)
              (assert= (point-y p) 22)
              (is (record? p))
-             (assert= (record-id p) :record-test/point)))))))
+             (assert= (record-id p) :record-test/point))))))
+  :isolated (test "a record merged into a plain map in a worker arrives as a plain map"
+    (let (me (self))
+      (spawn (fn () (send me [(merge {:z 1} (point 1 2)) (merge (point 1 2) {:y 9})])))
+      (receive
+        ([plain updated] (do
+                           (refute (record? plain))
+                           (assert= plain {:x 1 :y 2 :z 1})
+                           (assert= (record-id updated) :record-test/point)
+                           (assert= (point-y updated) 9)))))))
 
 ;; ---- a record name is a type (in a `sig`) -----------------------------------
 ;;

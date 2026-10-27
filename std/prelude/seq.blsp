@@ -270,14 +270,17 @@ Always true for `n` <= 0.
     ;; `from` is read as its entries first (`%map-into` takes a list/vector of `[k v]`).
     ;; a record target conj's each item via `Conjable` (a custom collection defines how);
     ;; a plain map uses the GC-quiet CHAMP builder. `%map-get` tells them apart.
-    ;; A map poured into an EMPTY map is the answer itself, as with vectors below — so
-    ;; `(merge m …)` copies nothing for its first map, rather than rebuilding it entry by
-    ;; entry through `%map-pairs`.
+    ;; A RECORD `from` is read through `seq` — its collection view, the fields by default —
+    ;; never `%map-pairs`, which would carry its `:__id__` across and turn the target into
+    ;; that record (`(into {} r)` returned `r` itself; `(merge {:z 1} r)` became an `r`).
+    ;; A plain map poured into an EMPTY map is the answer itself, as with vectors below.
     (map? to)
       (cond
         (%map-get to :__id__ nil) (fold (seq from) to %conj-one)
-        (and (map? from) (empty? to)) from
-        :else (%map-into to (if (map? from) (%map-pairs from) from)))
+        (not (map? from)) (%map-into to from)
+        (%map-get from :__id__ nil) (%map-into to (seq from))
+        (empty? to) from
+        :else (%map-into to (%map-pairs from)))
     ;; Set target: add each item (duplicates collapse). Without this branch the
     ;; `else` would pour a set into a LIST — `(into #{} [1 1 2])` as `(1 1 2)`.
     (set? to) (fold from to %set-add)
