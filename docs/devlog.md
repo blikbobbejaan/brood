@@ -4141,3 +4141,11 @@ cold re-check 42 → 4.7 s. Verdicts byte-identical to the old binary's. Run her
 `checker_pass_agreement`, `checker_follows_live_image`, `nest check --strict` on
 `project-check.blsp`, and clippy. Not run here: `check_incremental.rs` and the suites, left
 to CI.
+
+2026-10-27 (the downstream smoke's 2 GB red was a quadratic render in bedit): bedit's suite peak
+went from 1.5 GB to past `nest test`'s 2 GB default soft limit. The cause was no leak: on CI's
+fresh checkout, `web_fuzz_session_test` opens the root commit, whose diff is every file (~95 000
+lines). bedit's `sectionbuf` rewrite built that render with a vector `conj` per line and per span,
+O(lines²), past 6 GB. It was found by measuring each changed test file in both trees, then
+reproducing in an identical single-commit repo. bedit `e3dde585` builds in one pass, with a
+guard that hits the limit on the old builders. `BEDIT_REF` moved there.
