@@ -343,7 +343,10 @@ pub(super) fn changed_chars(old: &ropey::Rope, new: &ropey::Rope) -> Option<(usi
 
 /// How many bytes the chunk streams `a` and `b` agree on, at most `limit`: from the front,
 /// or (`from_end`, the streams reversed) from the back — a slice comparison per run of
-/// chunk, never a loop per byte until the run that differs.
+/// chunk, never a loop per byte until the run that differs. Two runs at the same address
+/// are the same bytes: an edited rope shares every leaf the edit did not touch with the
+/// rope it was made from, so those agree without a comparison — an unchanged rope costs a
+/// step per chunk, an edited one the bytes of the chunks around the edit.
 fn common_bytes<'r>(
     mut a: impl Iterator<Item = &'r str>,
     mut b: impl Iterator<Item = &'r str>,
@@ -373,7 +376,13 @@ fn common_bytes<'r>(
         } else {
             (&run_a[..n], &run_b[..n])
         };
-        if part_a != part_b {
+        // one shared leaf is equal, uncompared
+        let shared = part_a.as_ptr() == part_b.as_ptr();
+        #[cfg(test)]
+        if !shared {
+            COMPARED_BYTES.with(|compared| compared.set(compared.get() + n));
+        }
+        if !shared && part_a != part_b {
             let mut pairs = part_a.iter().zip(part_b);
             let same = if from_end {
                 pairs.rev().position(|(x, y)| x != y)
@@ -395,9 +404,38 @@ fn common_bytes<'r>(
 }
 
 #[cfg(test)]
+thread_local! {
+    /// Bytes `common_bytes` compared on this thread — what the shared-leaf skip saves.
+    static COMPARED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
 mod changed_range_tests {
     use super::changed_chars;
     use ropey::Rope;
+
+    /// An edit in a large rope compares the bytes around it, not the document: the leaves
+    /// the edit did not touch are shared with the rope it was made from.
+    #[test]
+    fn shared_leaves_are_not_compared() {
+        let old = Rope::from_str(&"0123456789abcdef\n".repeat(200_000));
+        let mut new = old.clone();
+        new.insert(1_600_000, "x");
+        super::COMPARED_BYTES.with(|compared| compared.set(0));
+        assert_eq!(
+            changed_chars(&old, &new),
+            Some((1_600_000, 1_600_000, 1_600_001))
+        );
+        let compared = super::COMPARED_BYTES.with(|compared| compared.get());
+        assert!(
+            compared < 64 * 1024,
+            "compared {compared} of {} bytes",
+            old.len_bytes()
+        );
+        super::COMPARED_BYTES.with(|compared| compared.set(0));
+        assert_eq!(changed_chars(&old, &old.clone()), None);
+        assert_eq!(super::COMPARED_BYTES.with(|compared| compared.get()), 0);
+    }
 
     fn diff(old: &str, new: &str) -> Option<(usize, usize, usize)> {
         changed_chars(&Rope::from_str(old), &Rope::from_str(new))
