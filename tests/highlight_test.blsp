@@ -331,3 +331,97 @@
     (let (close (+ (index-of hl-later-form-text "1))") 2)
           open (index-of hl-later-form-text "(foo"))
       (assert= [open close] (bracket-match hl-later-form-text (inc close))))))
+
+;; ---- the line-state cache (ADR-471) -----------------------------------------
+;; A toy stateful lexer: a line of ``` toggles a fence, and every line inside one is
+;; :code. It records each line it lexes, so a test can see what an edit re-lexed.
+
+(defn lc-fence-lexer (me)
+  (line-lexer (fn (line state)
+                (do
+                  (send me [:lexed line])
+                  (cond
+                    (= line "```") [[[0 3 :fence]] (if (= state :code) :text :code)]
+                    (= state :code) [[[0 (string/length line) :code]] :code]
+                    else [[] :text])))
+    :text))
+
+(defn lc-lexed ()
+  "The lines lexed since the last call, in order."
+  (letrec (go (fn (acc) (receive ([:lexed l] (go (cons l acc))) (after 0 (reverse acc))))) (go '())))
+
+(defn lc-all (cache lexer rope)
+  "`[cache spans]` over every line of `rope`."
+  (line-cache-update cache lexer rope 0 (text/line-count rope)))
+
+(defn lc-fresh (lexer rope)
+  "The spans a cold cache gives for every line — the ground truth an update must match."
+  (second (lc-all (line-cache) lexer rope)))
+
+(describe "line-cache-update — a stateful lexer"
+  (test "colours a fence opened above the window, exactly as a lex from the top does"
+    (let (lexer (lc-fence-lexer (self))
+          rope (text/from-string "a\n```\nx\ny\n```\nz")
+          [_ spans] (line-cache-update (line-cache) lexer rope 3 4))
+      (lc-lexed)
+      ;; line 3 ("y") sits inside the fence opened on line 1
+      (assert= spans (list [8 9 :code]))))
+
+  (test "an edit inside a line re-lexes that line and stops when the state is back in step"
+    (let (me (self)
+          lexer (lc-fence-lexer me)
+          old (text/from-string "a\n```\nx\ny\n```\nz\nw")
+          [cache _] (lc-all (line-cache) lexer old)
+          _ (lc-lexed)
+          new (text/insert old 6 "X")
+          [cache2 spans] (lc-all cache lexer new))
+      (assert= (lc-lexed) (list "Xx"))
+      (assert= spans (lc-fresh lexer new))))
+
+  (test "opening a fence re-lexes until the old lines agree again, and the rest moves"
+    (let (me (self)
+          lexer (lc-fence-lexer me)
+          old (text/from-string "a\nb\nc\n```\nd\n```\ne")
+          [cache _] (lc-all (line-cache) lexer old)
+          _ (lc-lexed)
+          ;; a new fence line after "a": everything below flips until it closes
+          new (text/insert old 2 "```\n")
+          [cache2 spans] (lc-all cache lexer new))
+      (lc-lexed)
+      (assert= spans (lc-fresh lexer new))
+      (assert= (count (:lines cache2)) (text/line-count new))))
+
+  (test "deleting lines shifts the lines after them without lexing them again"
+    (let (me (self)
+          lexer (lc-fence-lexer me)
+          old (text/from-string "a\nb\nc\nd\ne\nf")
+          [cache _] (lc-all (line-cache) lexer old)
+          _ (lc-lexed)
+          new (text/delete old 2 6)
+          [cache2 spans] (lc-all cache lexer new))
+      ;; "b\nc\n" went; line 1 is now "d" (re-lexed: it holds the edit), "e" and "f" are reused
+      (assert= (lc-lexed) (list "d"))
+      (assert= spans (lc-fresh lexer new))))
+
+  (test "the same text in a new rope lexes nothing"
+    (let (me (self)
+          lexer (lc-fence-lexer me)
+          [cache _] (lc-all (line-cache) lexer (text/from-string "```\nq"))
+          _ (lc-lexed)
+          [_ spans] (lc-all cache lexer (text/from-string "```\nq")))
+      (assert= (lc-lexed) '())
+      (assert= spans (list [0 3 :fence] [4 5 :code])))))
+
+(describe "line-cache-update — a stateless lexer"
+  (test "lexes only the window, and a line whose text it has seen not at all"
+    (let (me (self)
+          lexer (stateless-lexer (fn (line)
+                                   (do (send me [:lexed line]) (if (= line "#") [[0 1 :c]] []))))
+          rope (text/from-string "a\n#\nb\n#")
+          [cache spans] (line-cache-update (line-cache) lexer rope 1 3))
+      (assert= (lc-lexed) (list "#" "b"))
+      (assert= spans (list [2 3 :c]))
+      (let (edited (text/insert rope 4 "c")
+            [_ spans2] (line-cache-update cache lexer edited 1 3))
+        (assert= (lc-lexed) (list "cb"))
+        (assert= spans2 (list [2 3 :c]))))))

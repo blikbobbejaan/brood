@@ -3934,6 +3934,52 @@ its shape run as a script reads 3 at tier 2 on 8b7fddaa with the arm `:native`, 
 was restored, which the latch never allows; CI went red on it, and on the KI having no archive
 section. Not run on this machine: the suites run in CI.
 
+2026-10-26 (the editor's per-event costs: ADR-465..468): four mechanisms bedit's performance
+audit asked of the language. `reflect/eval` of a lone symbol bound as a global reads the table
+instead of running the compile pass, resolving the name as the pass would and declining
+whenever the pass could do anything but read it (ADR-465; every late-bound keymap, layer and
+hook lookup was a compile). `editor/buffer`'s splice log keeps a typing or deletion run as one
+entry, with the texts it passed through so a holder that synced mid-run still gets an exact
+splice, and an undo, redo or region undo logs the splice it restored, so a language server
+synced after a long burst or across C-/ is sent edits rather than the document (ADR-466).
+`%tree-sitter-tree-chain` / `-kids` / `-alive?` answer the structural queries from a held tree,
+and `indent-column` and the `point-*` motions take an optional held tree, so the first query
+after an edit no longer parses the whole file (ADR-467). `%diff-line-hunks` is Myers' line diff
+with git's indent-heuristic compaction, under `diff/line-hunks` and `diff/line-status`, so a
+change gutter needs no `git diff` subprocesses (ADR-468). Guards: `namespace_test`,
+`buffer_test`, `treesit_module_test`, `diff_test`, and the unit tests in
+`builtins/line_diff.rs`. Run here (single files, the GUI-less treesit-grammars nest): namespace, buffer,
+buffer_client, diff, treesit_module, eval_vm, layers, keymap, doc_examples, doctest — all green,
+and each new guard sabotaged red. Not run here: the Rust unit tests of `line_diff.rs` (clippy
+compiled them), `lazy_load_test` (it needs a `brood` binary beside `nest`), the rest of the suite.
+2026-10-26 (ADR-469, a caret that blinks in the window): `[:cursor row col style colour blink]`
+with `editor/display/cursor-blink` (`{:interval ms :blinks n}`) hands the blink to the GUI
+window. It keeps the clock on its own thread, restarts it shown on every key, click, wheel step
+and caret move, holds it shown without focus, and stops after `:blinks` cycles. A toggle costs
+no turn of the app's loop, and the CPU painter re-rasterises only the caret's row (its strip
+diff knows a blinking leaf whose phase flipped). Guard: `paint::strip_diff_tests` (a flip
+repaints one row; hidden equals the frame without the caret; scroll blits in every phase match
+a full raster). The clock itself is not covered: headless makes a draw a no-op. Run here:
+the filtered `cargo test -p brood --lib` (strip diff, fragments, cell regions, robustness) and
+`display`, `gui`, `gui_robustness` headless; the suites run in CI.
+
+2026-10-26 (ADR-470, memoised fragments reach the window): `ui-memo`'s marker says whether it
+was reused, `gui-display` declares `:fragments?`, and `ui-run` hands it the frame with its
+markers (`ui-harvest frame true` tables them without splicing). `%gui-draw` keeps a per-window
+parse cache: a reused fragment that is the same heap value under the same key is last frame's
+`Arc<[Op]>`, carried as `Op::Fragment`, and the frame diff, the strip diff and `prev_ops` cost
+a pointer per unchanged fragment. Guard: `fragments::tests`, `paint::strip_diff_tests`,
+`tests/ui_test.blsp`, all run here; the suites run in CI.
+
+2026-10-26 (ADR-471, a line-state highlight cache): `text/changed-range` (native
+`%rope-changed-range`, appended in `editor_native` for the intern-order reason) finds what
+changed between two ropes from both ends. `editor/highlight`'s `line-cache-update` keeps
+`[text state-in spans state-out]` per line and re-lexes from an edit's first line until the
+state agrees with the old line's; a stateless lexer keeps a memo by line text.
+`editor/lexer/lexer-line-lexer` adapts every table grammar. Guard: `changed_range_tests`,
+`tests/highlight_test.blsp`, `tests/lexer_test.blsp`, `doc_examples`, all run here; the suites
+run in CI.
+
 2026-10-27 (a JIT-refusal sweep over every benchmark row finds no cheap lowering left): every
 row run with `BROOD_JIT_BAIL_TRACE=1` on `9e5866f3`, each refusal ranked by whether its arm is
 hot. None is the `nbody` kind (one call to a variadic native keeping a hot arm off the native
@@ -3968,3 +4014,12 @@ expansion) once per run, a constant +7–16M instructions on the compiler thread
 CI: contract shims and small `receive`-adjacent helpers are this size, so the suspend latch
 (compute-frontier §7.1, latent until now) and `contracts_mode`'s depth case get real arms. Not
 run on this machine: the suites run in CI.
+
+2026-10-27 (a gate for the 2026-08-06 naming scrub): `scripts/banned-names.sh`, run by CI's
+rustfmt job and the pre-push hook, fails when a forward-facing file names another runtime; the
+scrub had only a memory note behind it. History (the devlog, decisions, archive, changelog and
+research notes) is out of scope. Four names are banned outright; the fifth is also a language the
+editor edits through tree-sitter, so it is allowed as an identifier anywhere and as prose only in
+the editor's language-support files, plus one paper title in `docs/types.md`. Two lines that read
+as prose were respelled as identifiers (a `known-issues.md` row, a `package-ci.yml` comment).
+Sabotaged: a banned word and a prose use in README each fail it, and an identifier use passes.

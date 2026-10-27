@@ -637,6 +637,12 @@ pub(crate) struct Renderer {
     /// the window (800×600 → 600×800) keeps the pixel count and changes every row.
     pub(super) canvas_size: (usize, usize),
     pub(super) prev_ops: Vec<Op>,
+    /// Whether the frame's blinking caret is in its hidden half for THIS paint — set by the
+    /// window from its blink clock before each paint (ADR-469) — and whether it was for the
+    /// paint that left `canvas` as it is. Both painters skip a hidden blinking caret; the
+    /// CPU one re-rasterises only the caret's rows when the two differ.
+    pub(crate) caret_hidden: bool,
+    pub(super) prev_caret_hidden: bool,
     pub(super) damage_ring: Vec<Vec<DamageRect>>,
     /// The pixel rows the last `raster_frame` copied from the old canvas instead of
     /// drawing (the scroll blit) — a per-paint stat for the trace and the tests.
@@ -681,6 +687,8 @@ impl Renderer {
             canvas: Vec::new(),
             canvas_size: (0, 0),
             prev_ops: Vec::new(),
+            caret_hidden: false,
+            prev_caret_hidden: false,
             damage_ring: Vec::new(),
             blit_rows: 0,
             textures: HashMap::new(),

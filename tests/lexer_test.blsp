@@ -40,3 +40,15 @@
                             :classes {"if" :special}
                             :line [["^(\\w+)=" :keyword]]}))
       (is (ordered? (lexer-spans g "a=1 if 2 # if 3\nb=if"))))))
+
+(describe "editor/lexer — through the line cache (ADR-471)"
+  (test "a grammar as a line lexer colours a window as lexer-spans colours the whole"
+    (let (g (lexer-grammar {:structured [["#.*" :comment] ["\\d+" :number]]})
+          src "a 1\n# two\nb 3 # x"
+          rope (text/from-string src)
+          [_ spans] (editor/highlight/line-cache-update (editor/highlight/line-cache)
+                      (lexer-line-lexer g)
+                      rope
+                      0
+                      (text/line-count rope)))
+      (assert= spans (lexer-spans g src)))))

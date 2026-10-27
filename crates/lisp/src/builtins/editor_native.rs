@@ -26,10 +26,10 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     use crate::types::{Sig, Ty};
     primitives.def(
         "%ui-harvest",
-        Arity::exact(1),
-        Sig::new(vec![any], vec_ty),
-        &["frame"],
-        "[frame' table]: frame (a vector or list of render ops) with every [:ui/memo key deps ops] marker replaced by its ops, and a map key -> [deps ops] of the markers. Recurses into a marker's ops and into the ops a block op carries — [:scroll-region frac ops] and [:cell-region x y w h px ops] (whose ops come back as a vector, as they went in). The pass behind editor/ui's memoised view fragments (ADR-336), native because it runs once per frame over every op.",
+        Arity::range(1, 2),
+        Sig::with_optional(vec![any], vec![any], vec_ty),
+        &["frame", "keep-markers?"],
+        "[frame' table]: frame (a vector or list of render ops) with every [:ui/memo key deps ops] (or [:ui/memo key deps ops reused?]) marker replaced by its ops — or, when keep-markers? is truthy, frame itself, markers and all (for a display that takes them: the GUI window parses a reused fragment once, ADR-470) — and a map key -> [deps ops] of the markers. Recurses into a marker's ops and into the ops a block op carries — [:scroll-region frac ops] and [:cell-region x y w h px ops] (whose ops come back as a vector, as they went in). The pass behind editor/ui's memoised view fragments (ADR-336), native because it runs once per frame over every op.",
         ui_harvest,
     );
     // The text contrast exponent (`gui-text-contrast!`, ADR-337): partial glyph coverage
@@ -62,6 +62,16 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["s", "start-col", "tab-width"],
         "s with every tab replaced by the spaces that carry it to its next tab stop, laid out from column start-col (default 0) with a stop every tab-width columns (default 8) — so the result occupies exactly (string/display-width s start-col tab-width) cells, with no tab left for a frontend to misplace (a render op has no column to expand one from; a terminal would use the SCREEN column). A view lays each chunk of a line out with the column it starts at, so the stops stay the line's. Returns s itself when it holds no tab.\n\n    (string/expand-tabs \"a\\tb\")     → \"a       b\"\n    (string/expand-tabs \"\\tx\" 3)    → \"     x\"\n    (string/expand-tabs \"\\tx\" 0 4)  → \"    x\"",
         string_expand_tabs,
+    );
+    // What changed between two ropes (ADR-471): the line-state highlight cache asks it once
+    // per edit to find the first line to re-lex, without materialising either text.
+    primitives.def(
+        "%rope-changed-range",
+        Arity::exact(2),
+        Sig::new(vec![rope, rope], vec_ty.union(nil_ty)),
+        &["old", "new"],
+        "nil when ropes old and new hold the same text, else [start old-end new-end] in CHAR offsets: chars [start, old-end) of old became [start, new-end) of new, everything before start and after the ends being common to both. Found by comparing the two texts chunk by chunk from each end (a memcmp per chunk run, no string built) — exact for any single contiguous change (a keystroke, a paste, an undo), and correct but wider than necessary for a scattered one. The edit shape treesit's update-tree takes.",
+        rope_changed_range,
     );
 }
 
@@ -105,7 +115,7 @@ fn harvest_into(
                 continue;
             }
         };
-        if tag == tags.memo && parts.len() == 4 {
+        if tag == tags.memo && (parts.len() == 4 || parts.len() == 5) {
             let (key, deps, inner) = (parts[1], parts[2], parts[3]);
             let Some(inner_ops) = heap.list_or_vector_items(inner) else {
                 continue; // a marker whose ops are not a sequence paints nothing
@@ -157,12 +167,42 @@ fn ui_harvest(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         scroll_region: value::intern("scroll-region"),
         cell_region: value::intern("cell-region"),
     };
-    let mut out = Vec::with_capacity(ops.len());
     let mut table = Vec::new();
-    harvest_into(heap, ops, &tags, &mut out, &mut table);
-    let flat = heap.alloc_vector(out);
+    let keep_markers = crate::eval::truthy(arg(args, 1));
+    let frame = if keep_markers {
+        collect_markers(heap, ops, &tags, &mut table);
+        frame
+    } else {
+        let mut out = Vec::with_capacity(ops.len());
+        harvest_into(heap, ops, &tags, &mut out, &mut table);
+        heap.alloc_vector(out)
+    };
     let map = heap.map_from_pairs(table);
-    Ok(heap.alloc_vector2(flat, map))
+    Ok(heap.alloc_vector2(frame, map))
+}
+
+/// `harvest_into` without the splice: every marker of `ops` into `table`, the ops left
+/// as they are — the walk for a display that takes the markers (ADR-470).
+fn collect_markers(heap: &mut Heap, ops: Vec<Value>, tags: &Tags, table: &mut Vec<(Value, Value)>) {
+    for op in ops {
+        let ValueRef::Vector(id) = op.unpack() else {
+            continue;
+        };
+        let parts = heap.vector(id).to_vec();
+        let Some(Value::Keyword(tag)) = parts.first().copied() else {
+            continue;
+        };
+        let nested = if tag == tags.memo && (parts.len() == 4 || parts.len() == 5) {
+            let entry = heap.alloc_vector2(parts[2], parts[3]);
+            table.push((parts[1], entry));
+            Some(parts[3])
+        } else {
+            nested_ops_at(tag, tags, parts.len()).map(|at| parts[at])
+        };
+        if let Some(inner) = nested.and_then(|inner| heap.list_or_vector_items(inner)) {
+            collect_markers(heap, inner, tags, table);
+        }
+    }
 }
 
 /// `(%gui-text-contrast! gamma)` — see the registration. GUI only; returns nil.
@@ -235,4 +275,144 @@ fn string_expand_tabs(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         std::borrow::Cow::Owned(expanded) => expanded,
     };
     Ok(heap.alloc_string(&expanded))
+}
+
+/// `(%rope-changed-range old new)` — see the registration.
+fn rope_changed_range(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let old = super::args::expect_rope_ref(heap, "%rope-changed-range", arg(args, 0))?;
+    let new = super::args::expect_rope_ref(heap, "%rope-changed-range", arg(args, 1))?;
+    let Some((start, old_end, new_end)) = changed_chars(old, new) else {
+        return Ok(Value::nil());
+    };
+    let items = vec![
+        Value::int(start as i64),
+        Value::int(old_end as i64),
+        Value::int(new_end as i64),
+    ];
+    Ok(heap.alloc_vector(items))
+}
+
+/// The char range `(start, old_end, new_end)` that differs between `old` and `new`, or
+/// `None` when they are equal: the common prefix and (non-overlapping) common suffix, in
+/// bytes, rounded outward to whole chars.
+fn changed_chars(old: &ropey::Rope, new: &ropey::Rope) -> Option<(usize, usize, usize)> {
+    let prefix = common_bytes(old.chunks(), new.chunks(), usize::MAX, false);
+    if prefix == old.len_bytes() && prefix == new.len_bytes() {
+        return None;
+    }
+    let limit = old.len_bytes().min(new.len_bytes()) - prefix;
+    let suffix = common_bytes(
+        old.chunks_at_byte(old.len_bytes()).0.reversed(),
+        new.chunks_at_byte(new.len_bytes()).0.reversed(),
+        limit,
+        true,
+    );
+    // A byte offset inside a multi-byte char: the char it is in is not common.
+    let start = old.byte_to_char(prefix);
+    let end_char = |rope: &ropey::Rope, byte: usize| {
+        let at = rope.byte_to_char(byte);
+        if rope.char_to_byte(at) < byte {
+            at + 1
+        } else {
+            at
+        }
+    };
+    let old_end = end_char(old, old.len_bytes() - suffix).max(start);
+    let new_end = end_char(new, new.len_bytes() - suffix).max(start);
+    Some((start, old_end, new_end))
+}
+
+/// How many bytes the chunk streams `a` and `b` agree on, at most `limit`: from the front,
+/// or (`from_end`, the streams reversed) from the back — a slice comparison per run of
+/// chunk, never a loop per byte until the run that differs.
+fn common_bytes<'r>(
+    mut a: impl Iterator<Item = &'r str>,
+    mut b: impl Iterator<Item = &'r str>,
+    limit: usize,
+    from_end: bool,
+) -> usize {
+    let (mut run_a, mut run_b): (&[u8], &[u8]) = (&[], &[]);
+    let mut total = 0usize;
+    while total < limit {
+        if run_a.is_empty() {
+            match a.next() {
+                Some(chunk) => run_a = chunk.as_bytes(),
+                None => break,
+            }
+            continue;
+        }
+        if run_b.is_empty() {
+            match b.next() {
+                Some(chunk) => run_b = chunk.as_bytes(),
+                None => break,
+            }
+            continue;
+        }
+        let n = run_a.len().min(run_b.len()).min(limit - total);
+        let (part_a, part_b) = if from_end {
+            (&run_a[run_a.len() - n..], &run_b[run_b.len() - n..])
+        } else {
+            (&run_a[..n], &run_b[..n])
+        };
+        if part_a != part_b {
+            let mut pairs = part_a.iter().zip(part_b);
+            let same = if from_end {
+                pairs.rev().position(|(x, y)| x != y)
+            } else {
+                pairs.position(|(x, y)| x != y)
+            };
+            return total + same.unwrap_or(n);
+        }
+        total += n;
+        if from_end {
+            run_a = &run_a[..run_a.len() - n];
+            run_b = &run_b[..run_b.len() - n];
+        } else {
+            run_a = &run_a[n..];
+            run_b = &run_b[n..];
+        }
+    }
+    total.min(limit)
+}
+
+#[cfg(test)]
+mod changed_range_tests {
+    use super::changed_chars;
+    use ropey::Rope;
+
+    fn diff(old: &str, new: &str) -> Option<(usize, usize, usize)> {
+        changed_chars(&Rope::from_str(old), &Rope::from_str(new))
+    }
+
+    #[test]
+    fn equal_texts_have_no_change() {
+        assert_eq!(diff("", ""), None);
+        assert_eq!(diff("abc\ndef", "abc\ndef"), None);
+    }
+
+    #[test]
+    fn an_insertion_a_deletion_and_a_replacement_are_their_char_ranges() {
+        assert_eq!(diff("abcd", "abXcd"), Some((2, 2, 3)));
+        assert_eq!(diff("abcd", "ad"), Some((1, 3, 1)));
+        assert_eq!(diff("abcd", "aXYd"), Some((1, 3, 3)));
+        // a repeated char: the suffix never overlaps the prefix
+        assert_eq!(diff("aaa", "aaaa"), Some((3, 3, 4)));
+        assert_eq!(diff("", "x"), Some((0, 0, 1)));
+    }
+
+    #[test]
+    fn offsets_are_chars_and_a_split_multibyte_char_is_inside_the_change() {
+        // é and è share their first UTF-8 byte: the change is the whole char
+        assert_eq!(diff("aéb", "aèb"), Some((1, 2, 2)));
+        assert_eq!(diff("😀x", "😀yx"), Some((1, 1, 2)));
+    }
+
+    #[test]
+    fn a_change_across_many_chunks_is_found_from_both_ends() {
+        let base: String = (0..5000).map(|i| format!("line {i}\n")).collect();
+        let mut edited = base.clone();
+        edited.insert_str(20_000, "XYZ");
+        let at = base[..20_000].chars().count();
+        assert_eq!(diff(&base, &edited), Some((at, at, at + 3)));
+    }
 }

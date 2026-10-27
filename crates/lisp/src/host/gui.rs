@@ -269,6 +269,64 @@ pub enum CursorStyle {
     Hollow,
 }
 
+/// How a caret BLINKS when the window animates it itself (ADR-469): visible for
+/// `interval_ms`, hidden for `interval_ms`, and so on — `blinks` whole cycles, then it
+/// stays visible until the next input (Emacs's `blink-cursor-blinks`); `0` blinks
+/// forever. The window resets the phase to visible on every key, button and wheel step
+/// it sees and on every frame that moves the caret, so a typist never sees it vanish.
+/// The app draws the caret ONCE and the window toggles it: the blink costs the app's
+/// loop nothing, and a toggle repaints the caret's row, not the window.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CursorBlink {
+    pub interval_ms: u32,
+    pub blinks: u32,
+}
+
+impl CursorBlink {
+    /// Whether a caret blinking since `elapsed` ago is in its hidden half now. The
+    /// first half-period is visible (the delay before the first blink), and after
+    /// `blinks` cycles it is visible for good.
+    pub fn hidden_after(&self, elapsed: std::time::Duration) -> bool {
+        let interval = u128::from(self.interval_ms.max(1));
+        let half_periods = elapsed.as_millis() / interval;
+        if self.blinks > 0 && half_periods >= 2 * u128::from(self.blinks) {
+            return false;
+        }
+        half_periods % 2 == 1
+    }
+
+    /// When the caret blinking since `since` next changes visibility, after `now` — or
+    /// `None` once its `blinks` have run out and it stays visible.
+    pub fn next_toggle(
+        &self,
+        since: std::time::Instant,
+        now: std::time::Instant,
+    ) -> Option<std::time::Instant> {
+        let interval = u128::from(self.interval_ms.max(1));
+        let half_periods = now.saturating_duration_since(since).as_millis() / interval;
+        if self.blinks > 0 && half_periods >= 2 * u128::from(self.blinks) {
+            return None;
+        }
+        let next = (half_periods + 1) * interval;
+        Some(since + std::time::Duration::from_millis(u64::try_from(next).unwrap_or(u64::MAX)))
+    }
+}
+
+/// The ops of one memoised view fragment (`editor/ui`'s `ui-memo`, ADR-470), parsed once
+/// and SHARED: a fragment whose deps did not change arrives at the window as the very
+/// allocation it arrived as last frame. Equality tries the pointer first, so comparing
+/// an unchanged fragment with its previous self — the frame diff, the strip diff — is
+/// O(1) instead of a walk of every op and string in it, and cloning a frame clones a
+/// pointer per fragment.
+#[derive(Clone)]
+pub struct FragmentOps(pub std::sync::Arc<[Op]>);
+
+impl PartialEq for FragmentOps {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0) || self.0[..] == other.0[..]
+    }
+}
+
 /// One render op, parsed out of a frame vector into plain (Send) data so it can
 /// cross to the GUI thread. Mirrors the protocol `term-draw` interprets.
 ///
@@ -293,6 +351,9 @@ pub enum Op {
         /// `CURSOR_FG` for the thin shapes. A block with a colour washes the cell in
         /// it at 50% and rims it solid; every other shape is drawn solid in it.
         color: Option<[u8; 3]>,
+        /// Blink the caret in the window, with no frame from the app per toggle
+        /// (`[:cursor row col style colour blink]`, ADR-469); `None` is a steady caret.
+        blink: Option<CursorBlink>,
     },
     /// Fill a `w`×`h` block of cells from `(row, col)` with `face`'s background — a
     /// solid panel (a popup card, a selection band, a gutter wash). Like a multi-row
@@ -543,6 +604,15 @@ pub enum Op {
         id: u32,
         count: u32,
     },
+    /// A memoised view fragment's ops (`[:ui/memo key deps ops]`, ADR-470), painted
+    /// exactly as if they were spliced in its place — every painter descends into it with
+    /// the context it is in (scroll shift, cell region). It exists for what it SHARES: an
+    /// unchanged fragment is the same allocation frame after frame (`FragmentOps`), so the
+    /// parse, the frame diff and the strip diff skip it. A fragment never carries a
+    /// frame-global op (`Sound`, `Music`, the effects, the emitters): `%gui-draw` splices
+    /// one that would, so the scanners that read those stay at the top level and in
+    /// regions.
+    Fragment(FragmentOps),
 }
 
 /// How an emitter emits: what an `[:emitter id x y opts]` op's map says, with defaults

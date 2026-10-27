@@ -705,7 +705,48 @@
       (assert= (get table [:body]) [[:d] (list [:text 0 0 "z"])])))
 
   (test "a frame without markers harvests to itself and an empty table"
-    (assert= (ui-harvest [(clear) (text 0 0 "x")]) [[[:clear] [:text 0 0 "x"]] {}])))
+    (assert= (ui-harvest [(clear) (text 0 0 "x")]) [[[:clear] [:text 0 0 "x"]] {}]))
+
+  (test "keep-markers? hands the frame back as it is, and tables the markers all the same"
+    (let (inner [:ui/memo [:l 2] [:d2] (list (text 2 0 "b")) true]
+          outer [:ui/memo [:pane] [:d1] (list (text 1 0 "a") inner) false]
+          frame [(clear) outer (scroll-region 0.5 [inner])]
+          [kept table] (ui-harvest frame true))
+      (assert= kept frame)
+      (assert= (get table [:l 2]) [[:d2] (list [:text 2 0 "b"])])
+      (assert= (get table [:pane]) [[:d1] (list [:text 1 0 "a"] inner)])))
+
+  (test "a display with :fragments? sees the markers, flagged reused only when they were"
+    ;; ADR-470: the GUI window reuses its parse of a fragment the loop reused, so the flag
+    ;; must be exactly "these ops are last turn's value": false on a recompute
+    (let (me (self)
+          view (fn (m c r)
+                 (append [(clear)] (ui-memo [:frag] (get m :deps) (fn () (list (text 0 0 "x"))))))
+          update (fn (m input c r)
+                   (case input
+                     :same (assoc m :n 1)
+                     :change (assoc m :deps [:b])
+                     :quit (assoc m :done true)
+                     m)))
+      (send me [:input :same])
+      (send me [:input :change])
+      (send me [:input :quit])
+      (ui-run {:done false :n 0 :deps [:a]}
+        view
+        update
+        {:enter (fn () nil)
+         :leave (fn () nil)
+         :size (fn () [40 10])
+         :draw (fn (f) (send me [:frame f]))
+         :fragments? true
+         :poll (fn (ms) (receive ([:input i] i) (after 0 :quit)))})
+      (let (flags (letrec (go (fn (acc)
+                                (receive
+                                  ([:frame f] (go (cons (nth (second f) 4) acc)))
+                                  (after 0 (reverse acc)))))
+                    (go (list))))
+        ;; first turn computes, the same deps reuse, new deps recompute
+        (assert= flags (list false true false))))))
 
 (describe "ui-memo — a nil key opts out"
   (test "inside a loop table, a nil key computes and emits no marker"

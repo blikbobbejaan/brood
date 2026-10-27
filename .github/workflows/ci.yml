@@ -71,6 +71,9 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all --check
+      # Brood is described in its own terms; the script says what is allowed and why.
+      - name: No other runtime named in a forward-facing file
+        run: scripts/banned-names.sh
 
   # `rust-version` in Cargo.toml is a claim; this job is what makes it true. Every other
   # job tracks `stable`, so a newly-stabilised API used anywhere would raise the real floor

@@ -1036,6 +1036,73 @@ fn reconcile_music(w: &mut Win, ops: &[Op]) {
     }
 }
 
+/// A window's blinking caret (ADR-469): the `Op::Cursor` that asked to blink, how, and
+/// when its current run of blinks began. `steady` holds it shown — a window without
+/// focus does not blink, as Emacs's unselected frames do not.
+struct CaretBlink {
+    caret: Op,
+    spec: crate::host::gui::CursorBlink,
+    since: Instant,
+    steady: bool,
+}
+
+impl CaretBlink {
+    /// The clock for `caret`, starting now, shown; `None` for an op that does not blink.
+    fn of(caret: &Op) -> Option<CaretBlink> {
+        match caret {
+            Op::Cursor {
+                blink: Some(spec), ..
+            } => Some(CaretBlink {
+                caret: caret.clone(),
+                spec: *spec,
+                since: Instant::now(),
+                steady: false,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Whether the caret is in its hidden half at `now`.
+    fn hidden(&self, now: Instant) -> bool {
+        !self.steady
+            && self
+                .spec
+                .hidden_after(now.saturating_duration_since(self.since))
+    }
+
+    /// When it next changes visibility after `now`, or `None` while it is held still or
+    /// has blinked its `blinks`.
+    fn next_toggle(&self, now: Instant) -> Option<Instant> {
+        if self.steady {
+            return None;
+        }
+        self.spec.next_toggle(self.since, now)
+    }
+}
+
+/// The first blinking caret of `ops`, walking into the regions and fragments (where a
+/// pane's caret is).
+fn blinking_caret(ops: &[Op]) -> Option<&Op> {
+    ops.iter().find_map(|op| match op {
+        Op::Cursor { blink: Some(_), .. } => Some(op),
+        Op::ScrollRegion { ops, .. } | Op::CellRegion { ops, .. } => blinking_caret(ops),
+        Op::Fragment(fragment) => blinking_caret(&fragment.0),
+        _ => None,
+    })
+}
+
+/// Show `w`'s blinking caret now and restart its blinks — `blinking` false holds it
+/// shown until the next wake (focus lost). A caret that was hidden is repainted.
+fn wake_caret(w: &mut Win, blinking: bool) {
+    if let Some(clock) = &mut w.caret_blink {
+        if w.renderer.caret_hidden {
+            w.window.request_redraw();
+        }
+        clock.since = Instant::now();
+        clock.steady = !blinking;
+    }
+}
+
 /// `(gui-sound-free id snd)` — forget sound `snd` of window `id`.
 pub fn sound_free(id: u64, snd: u32) -> Result<(), String> {
     if headless() {
@@ -1300,6 +1367,9 @@ struct Win {
     draw_input: Option<Instant>,
     /// The last `LATENCY_SAMPLES` input-to-present samples, shared with `gui-latency`.
     latency: Arc<Mutex<VecDeque<LatencySample>>>,
+    /// The frame's blinking caret and its clock (ADR-469), `None` when the frame on screen
+    /// has no `[:cursor … blink]`: the window toggles it itself, between frames.
+    caret_blink: Option<CaretBlink>,
 }
 
 /// How long a window waits, hidden, for its app's first frame before it is shown
@@ -1447,6 +1517,7 @@ fn build_window(
         drawn: false,
         opened_at: Instant::now(),
         input_at: None,
+        caret_blink: None,
         draw_input: None,
         latency: Arc::default(),
         zones: Vec::new(),
@@ -1743,6 +1814,14 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     // zone to pixels with the metrics its own region is painted at.
                     w.zones = cursor_zones(&ops, &w.renderer);
                     w.frame = ops;
+                    // A caret that moved, changed or appeared starts its blink over, shown; the
+                    // same caret in a new frame (a spinner turned, a line elsewhere changed)
+                    // keeps blinking where it was (ADR-469).
+                    w.caret_blink = match (blinking_caret(&w.frame), w.caret_blink.take()) {
+                        (None, _) => None,
+                        (Some(caret), Some(clock)) if clock.caret == *caret => Some(clock),
+                        (Some(caret), _) => CaretBlink::of(caret),
+                    };
                     update_ime_area(w);
                     w.window.request_redraw();
                 }
@@ -1949,29 +2028,33 @@ impl ApplicationHandler<UserEvent> for GuiApp {
         // drop (an auto-repeat) is stamped too — the frame the app's own repeat draws
         // answers it, which is what the user waits on. A bare modifier is not: `C-x` is
         // timed from the `x`, not from however long Ctrl was held before it.
-        if w.input_at.is_none()
-            && match &event {
-                WindowEvent::KeyboardInput {
-                    event: key_event,
-                    is_synthetic,
-                    ..
-                } => {
-                    key_event.state == ElementState::Pressed
-                        && !is_synthetic
-                        && !is_modifier_key(key_event)
-                }
-                WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,
-                // a horizontal-only wheel event scrolls nothing here, so no frame answers it
-                WindowEvent::MouseWheel { delta, .. } => match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y != 0.0,
-                    MouseScrollDelta::PixelDelta(position) => position.y != 0.0,
-                },
-                // an input method's commit is typing, whatever the keyboard did
-                WindowEvent::Ime(winit::event::Ime::Commit(text)) => !text.is_empty(),
-                _ => false,
+        let is_input = match &event {
+            WindowEvent::KeyboardInput {
+                event: key_event,
+                is_synthetic,
+                ..
+            } => {
+                key_event.state == ElementState::Pressed
+                    && !is_synthetic
+                    && !is_modifier_key(key_event)
             }
-        {
-            w.input_at = Some(Instant::now());
+            WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,
+            // a horizontal-only wheel event scrolls nothing here, so no frame answers it
+            WindowEvent::MouseWheel { delta, .. } => match delta {
+                MouseScrollDelta::LineDelta(_, y) => *y != 0.0,
+                MouseScrollDelta::PixelDelta(position) => position.y != 0.0,
+            },
+            // an input method's commit is typing, whatever the keyboard did
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => !text.is_empty(),
+            _ => false,
+        };
+        if is_input {
+            // the caret shows from the moment the user does something, whatever its blink
+            // phase, and the next blink is a whole interval away (ADR-469)
+            wake_caret(w, true);
+            if w.input_at.is_none() {
+                w.input_at = Some(Instant::now());
+            }
         }
         // A key that reached the window ends a composition that already ended: one that
         // was cancelled (Escape sends an empty preedit and no commit) must not make the
@@ -2074,6 +2157,8 @@ impl ApplicationHandler<UserEvent> for GuiApp {
             // belt-and-suspenders backstop beside the synthetic releases above
             // (ADR-086). Focus *gain* is `:focus-in`, below.
             WindowEvent::Focused(false) => {
+                // A window without focus holds its caret still and shown (ADR-469).
+                wake_caret(w, false);
                 // Drop the held key: we can't observe its release while unfocused,
                 // so `gui-held-key` must not keep reporting it (the poll-based stop)
                 // and the `:blur` is the event-based stop. Both, belt-and-braces.
@@ -2098,6 +2183,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
             // dropped on `:blur` starts clean. Not `:focus`: that is `ui-run`'s
             // raise-this-window control message, which the loop acts on itself.
             WindowEvent::Focused(true) => {
+                wake_caret(w, true);
                 deliver(w.subscriber, Message::Keyword(value::intern("focus-in")));
             }
             // The input method (ADR-441). A composition in progress is `[:preedit text
@@ -2419,6 +2505,10 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 }
                 let _sg = crate::core::heap::stall_guard("gui-paint");
                 let paint_start = Instant::now();
+                w.renderer.caret_hidden = w
+                    .caret_blink
+                    .as_ref()
+                    .is_some_and(|clock| clock.hidden(paint_start));
                 // The GPU paint's phases, or `None` from the CPU painter; nothing at all
                 // when the GPU target skipped the frame (an occluded window) — nothing
                 // reached the compositor, so the window stays hidden and the input
@@ -2493,6 +2583,19 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     w.particles_next = None;
                     w.window.request_redraw();
                 } else {
+                    next_wakeup = Some(next_wakeup.map_or(due, |t| t.min(due)));
+                }
+            }
+            // The caret blinks here, not in the app's loop (ADR-469): a phase that differs
+            // from the one painted asks for a paint — of the caret's row, on the CPU path —
+            // and the window sleeps until the next toggle.
+            if let Some(clock) = &w.caret_blink
+                && w.shown
+            {
+                if clock.hidden(now) != w.renderer.caret_hidden {
+                    w.window.request_redraw();
+                }
+                if let Some(due) = clock.next_toggle(now) {
                     next_wakeup = Some(next_wakeup.map_or(due, |t| t.min(due)));
                 }
             }

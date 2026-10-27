@@ -481,6 +481,7 @@ fn find_cursor(
         Op::ScrollRegion { dy_frac, ops } => {
             find_cursor(ops, r, ox, oy, cw, ch, scroll_px(*dy_frac, ch))
         }
+        Op::Fragment(fragment) => find_cursor(&fragment.0, r, ox, oy, cw, ch, scroll_dy),
         Op::CellRegion { x, y, px, ops, .. } => {
             let region = r.metrics_at(*px);
             if region.cell_w == 0 || region.cell_h == 0 {

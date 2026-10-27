@@ -8,6 +8,7 @@
 #
 #   always (under a second)
 #     - `cargo fmt --check` — unformatted Rust reached main three times on 2026-07-26.
+#     - `scripts/banned-names.sh` — Brood described in its own terms; a whole-tree git grep.
 #     - the BROOD_* flag catalogue — every `"BROOD_X"` literal in a changed .rs/.blsp must
 #       have an entry in diagnostics/debug_flags.rs (the same rule the 0.03 s Rust unit test
 #       `every_runtime_flag_is_catalogued` enforces, as a grep, so it costs nothing to ask
@@ -64,6 +65,9 @@ if ! cargo fmt --all --check >/dev/null 2>&1; then
     cargo fmt --all --check 2>&1 | grep '^Diff in' | sed 's/^/  /' >&2
     fail "rustfmt would fail CI. Run: cargo fmt --all"
 fi
+
+# ---- 1b. no other runtime named in a forward-facing file ----------------------------
+scripts/banned-names.sh >/dev/null || fail "banned-names would fail CI (listed above)"
 
 # ---- 2. the change set: the commits being pushed AND the working tree -------------
 # Both, because the Brood gates read the TREE: gating only on the pushed commits left a

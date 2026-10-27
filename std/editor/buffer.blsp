@@ -754,7 +754,7 @@ leaves the buffer unmodified.
   (let (p (get buf :pending-undo))
     (if (empty? p)
       buf
-      (let (restored (buffer-restore buf (first p)))
+      (let (restored (buffer-log-restore buf (buffer-restore buf (first p))))
         (assoc restored
           :undo (cons (buffer-snapshot buf) (or (get buf :undo) ()))
           :pending-undo (rest p)
@@ -887,7 +887,8 @@ whole thing back.
     (if (or (nil? bounds) (empty? (or (get buf :undo) ())))
       buf
       (let ([lo hi] bounds
-            found (undo-region-candidate (buffer-text buf)
+            text (buffer-text buf)
+            found (undo-region-candidate text
                     lo
                     hi
                     (get buf :undo)
@@ -898,9 +899,18 @@ whole thing back.
           ;; Point is clamped; the MARK is kept so the region stays live for a repeat.
           (let ([undone tail] found
                 pushed (buffer-record-change buf)
-                rope (text/from-string undone))
+                rope (text/from-string undone)
+                [same-lo same-hi changed] (%str-splice-diff text undone))
             (assoc pushed
               :rope rope
+              ;; the region undo knows both texts, so the splice it made is one native trim
+              :splices
+                (buffer-splice-log-push (or (get buf :splices) ())
+                  (get buf :rope)
+                  rope
+                  same-lo
+                  same-hi
+                  changed)
               ;; the consumed change is dropped from history and OUR pre-state sits on
               ;; top, so a plain `undo` still takes this step back while another region
               ;; undo continues backwards through the same lines.
@@ -1206,18 +1216,82 @@ inside the range collapses to `lo`, one at/after `hi` moves left by the deleted 
             (buffer-markers-delete m a b))))))
 
 ;; ---- the splice log: what an edit DID, not a guess from the text -------------------
-;; A holder that mirrors this buffer somewhere else — a buffer process, a collaborator —
-;; has to say what changed as a positional splice. Diffing the old text against the new
-;; one gets the SIZE right and the PLACE wrong in a run of equal characters: typing `a` at
-;; the front of `aaa` diffs as an insert at the END, which lands a collaborator's caret
-;; and every marker on the wrong side of it. It also materialises both texts per
-;; keystroke. The edit primitives know exactly what they did, so they say so: each logs
-;; `[rope-before rope-after lo hi repl]`, and `buffer-splices-since` replays the chain.
+;; A holder that mirrors this buffer somewhere else — a buffer process, a collaborator, a
+;; language server — has to say what changed as a positional splice. Diffing the old text
+;; against the new one gets the SIZE right and the PLACE wrong in a run of equal
+;; characters: typing `a` at the front of `aaa` diffs as an insert at the END, which lands a
+;; collaborator's caret and every marker on the wrong side of it. It also materialises both
+;; texts per keystroke. The edit primitives know exactly what they did, so they say so:
+;; each logs `[rope-before rope-after lo hi repl mids]`, and `buffer-splices-since` replays
+;; the chain.
+;;
+;; A RUN is one entry (ADR-466). Typing on at the end of the last splice, deleting back into
+;; what it typed, or extending a run of deletions merges into the newest entry instead of
+;; pushing one, so a burst of typing between two syncs is one splice rather than a log
+;; overflow (a language server synced on the idle beat used to get the whole document
+;; after 32 keys). `mids` keeps what a holder that synced MID-run needs: each text the run
+;; passed through, as `[rope delta]` — that text is the entry's own `rope-before` with the
+;; run so far applied, `delta` the length change so far — from which the rest of the run is
+;; one splice (`buffer-splice-from-mid`).
+;;
+;; An undo or redo restores a snapshot, so no primitive edit says what changed; it logs the
+;; splice the log can prove instead (`buffer-undo-splice`), and a holder keeps its exact
+;; path across C-/.
 
 (def *splice-log-max* 32)
-;; Entries a buffer keeps. A holder asks once per event, and one event's edits are a
-;; handful — a longer run (a macro, a rectangle over many lines) falls back to the diff,
+;; Entries a buffer keeps — runs, not keystrokes. A holder asks once per event or per idle
+;; beat; a longer history (a macro, a rectangle over many lines) falls back to the diff,
 ;; which is correct, merely approximate in placement.
+
+(def *splice-run-max* 256)
+;; Edits one entry merges. Bounds the texts a run keeps alive for a mid-run holder, and the
+;; replacement string a run rebuilds per keystroke.
+
+;; The shapes the log is made of, for the checker: an entry, a mid-run text, one step of a
+;; path (`[rope-before lo hi repl]`), and a cover (`[lo restored-hi current-hi]`).
+(deftype splice-entry (tuple any any int int string any))
+(deftype splice-mid (tuple any int))
+(deftype splice-step (tuple any int int string))
+(deftype splice-cover (tuple int int int))
+
+(defn- buffer-splice-coalesce (entry:splice-entry before-rope after-rope a:int b:int r:string)
+  "`entry` with the edit `[a b r]` (`before-rope` → `after-rope`) merged into it when the edit
+continues the entry's run, else nil. The merged splice still starts from the entry's
+`rope-before`, and only ever WIDENS — which is what lets `buffer-splice-from-mid` answer for
+every text the run passed through."
+  (let ([r0 r1 lo hi repl mids] entry
+        end (+ lo (string/length repl))
+        merged (cond
+                 (not (= r1 before-rope)) nil
+                 (>= (count mids) *splice-run-max*) nil
+                 ;; typing on at the run's end (a replacement: typing after a deletion)
+                 (and (= a end) (= b end) (not (= r ""))) [lo hi (str repl r)]
+                 (not (= r "")) nil
+                 ;; deleting back into what the run typed
+                 (and (= b end) (>= a lo) (< a b)) [lo hi (string/substring repl 0 (- a lo))]
+                 (not (= repl "")) nil
+                 ;; a run of deletions: backward, then forward
+                 (and (= b lo) (< a b)) [a hi ""]
+                 (and (= a lo) (< a b)) [lo (+ hi (- b a)) ""]
+                 else nil))
+    (when merged
+      (let ([merged-lo merged-hi merged-repl] merged)
+        [r0
+          after-rope
+          merged-lo
+          merged-hi
+          merged-repl
+          (cons [r1 (- (string/length repl) (- hi lo))] mids)]))))
+
+(defn- buffer-splice-log-push (log before-rope after-rope lo hi repl)
+  "`log` with the splice `[lo hi repl]` (`before-rope` → `after-rope`) recorded: merged into
+the newest entry when it continues that entry's run, else a new entry, the oldest dropped
+past `*splice-log-max*`."
+  (let (merged (when (not (empty? log))
+                 (buffer-splice-coalesce (first log) before-rope after-rope lo hi repl)))
+    (if merged
+      (cons merged (rest log))
+      (take (cons [before-rope after-rope lo hi repl ()] log) *splice-log-max*))))
 
 (defn- buffer-apply-edit (before:buffer after:buffer kind:keyword a:int b:int repl:string -> buffer)
   "`after` — `before` with `[lo, hi)` replaced by `repl` in its rope, where `kind`/`a`/`b`
@@ -1227,31 +1301,115 @@ shifted and the splice logged. The one tail every editing primitive shares."
         hi (if (= kind :insert) a b)
         logged (assoc after
                  :splices
-                   (take (cons [(get before :rope) (get after :rope) lo hi repl]
-                           (or (get before :splices) ()))
-                     *splice-log-max*)))
+                   (buffer-splice-log-push (or (get before :splices) ())
+                     (get before :rope)
+                     (get after :rope)
+                     lo
+                     hi
+                     repl)))
     (buffer-adjust-editable (buffer-adjust-markers logged kind a b) kind a b)))
+
+(defn- buffer-splice-from-mid (lo:int hi:int repl:string mid:splice-mid)
+  "The step `[rope lo hi repl]` from a text a run passed through (`mid`, `[rope delta]`) to
+the run's end, the run being the splice `[lo hi repl]` of its entry. That splice replaced
+`[lo, hi)` of the entry's `rope-before`; in the mid text
+that range is `[lo, hi + delta)`, and trimming what the two already share leaves the exact
+rest of the run — small, because a run is."
+  (let ([rope delta] mid
+        [same-lo same-hi changed] (%str-splice-diff (text/slice rope lo (+ hi delta))
+                                    repl))
+    [rope (+ lo same-lo) (+ lo same-hi) changed]))
+
+(defn- buffer-splice-path (from log target)
+  "The steps `[rope-before lo hi repl]`, oldest first, that `log` records from the text
+`from` to the text `target` (rope handles), or nil when it cannot account for them."
+  (letrec (walk (fn (target log acc)
+                  (cond
+                    (= target from) acc
+                    (empty? log) nil
+                    else
+                      (let (entry (first log)
+                            [rope-before rope-after lo hi repl mids] entry)
+                        (if (= rope-after target)
+                          (let (mid (seq/find mids (fn (m) (= (first m) from))))
+                            (if mid
+                              (cons (buffer-splice-from-mid lo hi repl mid) acc)
+                              (walk rope-before (rest log) (cons [rope-before lo hi repl] acc))))
+                          nil)))))
+    (walk target log ())))
 
 (defn buffer-splices-since (before:buffer after:buffer -> (or nil list))
   "The splices `[lo hi repl]`, oldest first, that the editing primitives made to turn
 `before`'s text into `after`'s — each positioned against the text the one before it left.
-`()` when the two hold the same text; nil when the log cannot account for the change (an
-undo restored a snapshot, the text was replaced wholesale, more edits than the log keeps),
-for the caller to diff the texts instead (`editor/buffer-client/text-splice`).
+A run of typing is one splice, and an undo or redo is the splice it restored. `()` when the
+two hold the same text; nil when the log cannot account for the change (the text was
+replaced wholesale, more history than the log keeps), for the caller to diff the texts
+instead (`editor/buffer-client/text-splice`).
 
 Exact where a diff guesses: a diff of `aaa` → `aaaa` cannot tell WHICH `a` was typed, and
-this can. Costs no text: the walk compares rope handles."
-  (let (from (get before :rope))
-    (letrec (walk (fn (target log acc)
-                    (cond
-                      (= target from) acc
-                      (empty? log) nil
-                      else
-                        (let ([rope-before rope-after lo hi repl] (first log))
-                          (if (= rope-after target)
-                            (walk rope-before (rest log) (cons [lo hi repl] acc))
-                            nil)))))
-      (walk (get after :rope) (or (get after :splices) ()) ()))))
+this can. Costs no text but a run's own: the walk compares rope handles.
+
+    (let (b (editor/buffer/make-buffer \"ab\")) (editor/buffer/buffer-splices-since b (editor/buffer/insert (editor/buffer/insert b \"x\") \"y\")))   → ([0 0 \"xy\"])"
+  (let (path (buffer-splice-path (get before :rope)
+               (or (get after :splices) ())
+               (get after :rope)))
+    (when (not (nil? path))
+      (reverse (fold path () (fn (acc step) (let ([_ lo hi repl] step) (cons [lo hi repl] acc))))))))
+
+(defn- buffer-cover-of (step:splice-step -> splice-cover)
+  "The cover of one step: `[lo, hi)` of the text before it became `[lo, lo + |repl|)`."
+  (let ([_ lo hi repl] step) [lo hi (+ lo (string/length repl))]))
+
+(defn- buffer-cover-step (cover:splice-cover step:splice-step -> splice-cover)
+  "`cover` widened by the next `step` of a path: still one range of the path's first text
+that became one range of the text after `step`. A position outside the cover maps across
+by the cover's length change; one inside it widens to the cover's edge."
+  (let ([cover-lo restored-hi current-hi] cover
+        [_ lo hi repl] step
+        added (string/length repl)
+        shift (- current-hi restored-hi)
+        restored-hi-of (cond
+                         (<= hi cover-lo) hi
+                         (>= hi current-hi) (- hi shift)
+                         else restored-hi)
+        through (cond
+                  (<= current-hi lo) current-hi
+                  (>= current-hi hi) (+ current-hi (- added (- hi lo)))
+                  else (+ lo added)))
+    [(math/min cover-lo lo) (math/max restored-hi restored-hi-of) (math/max through (+ lo added))]))
+
+(defn- buffer-undo-splice (buf restored-rope)
+  "The single splice `[lo hi repl]` that turns `buf`'s text into `restored-rope` — an undo
+or redo target — when `buf`'s log reaches it, else nil. The log's path runs FROM the
+restored text TO the current one; its covering range, re-read from the restored text,
+reverses all of it at once, trimmed to what actually differs."
+  (let (path (buffer-splice-path restored-rope (or (get buf :splices) ()) (get buf :rope)))
+    (when (not (empty? path))
+      ;; The cover: `[cover-lo, restored-hi)` of the restored text became
+      ;; `[cover-lo, current-hi)` of the current one.
+      (let ([cover-lo restored-hi current-hi] (fold (rest path)
+                                                (buffer-cover-of (first path))
+                                                buffer-cover-step)
+            [same-lo same-hi changed] (%str-splice-diff (text/slice (get buf :rope)
+                                                          cover-lo current-hi)
+                                        (text/slice restored-rope cover-lo restored-hi)))
+        [(+ cover-lo same-lo) (+ cover-lo same-hi) changed]))))
+
+(defn- buffer-log-restore (before after)
+  "`after` — `before` with a snapshot restored — with the splice that restore made logged,
+when the log can say what it was."
+  (let (splice (buffer-undo-splice before (get after :rope)))
+    (if (nil? splice)
+      after
+      (let ([lo hi repl] splice)
+        (assoc after
+          :splices
+            (buffer-splice-log-push (or (get before :splices) ())
+              (get before :rope)
+              (get after :rope)
+              lo
+              hi
+              repl))))))
 (defn insert (buf:buffer s:string -> buffer)
   "Insert string `s` at point; point advances past it. Recorded for undo. Markers after the
 insertion point shift with the text. Throws if `buf` is read-only.

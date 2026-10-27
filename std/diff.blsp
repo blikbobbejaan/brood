@@ -97,6 +97,45 @@ Returns a list of `[:keep line]`, `[:delete line]`, `[:insert line]` ops.
     (count (diff/lines \"a\nb\" \"a\nc\"))   → 3"
   (seq (string/split a "\n") (string/split b "\n")))
 
+;; ---- the line diff of two whole texts, native (ADR-468) ---------------------
+;; `seq` above is an O(m·n) table: right for a few hundred items, wrong for a source file,
+;; which is why a change gutter used to shell out to `git diff --no-index` per idle beat.
+;; `line-hunks` is the kernel's Myers diff with git's indent-heuristic compaction — the
+;; same hunks `git diff --unified=0` prints, 0-based — and `line-status` reads them the way
+;; a change gutter does.
+
+(defn line-hunks (old new)
+  "The line diff of `old` and `new` (strings or ropes) as git's zero-context hunks, in
+order: `[old-start old-count new-start new-count]`, 0-based. Lines `old-start..+old-count`
+became lines `new-start..+new-count`; a count of 0 is a pure insertion or deletion whose
+start is the line it sits before. A final newline ends the last line rather than starting
+an empty one, so a lone trailing-newline difference is no change. Placed where `git diff`
+places it: a line added in a run of equal ones (closing brackets, blank lines) is marked
+where a reader sees it added.
+
+    (diff/line-hunks \"a\\nb\\nc\\n\" \"a\\nx\\nc\\n\")   → [[1 1 1 1]]
+    (diff/line-hunks \"a\\nc\" \"a\\nb\\nc\\n\")   → [[1 0 1 1]]"
+  (%diff-line-hunks old new))
+
+(defn line-status (old new)
+  "What happened to each line of `new` against `old`, as a change gutter shows it: a
+`{0-based-line -> :added | :modified | :deleted}` map of the lines that changed. In a hunk
+the first lines that replace removed ones are `:modified` and the rest `:added`; a pure
+deletion marks the line that follows it `:deleted`. Diff-hl's reading of a hunk.
+
+    (diff/line-status \"a\\nb\\nc\\n\" \"a\\nx\\ny\\nc\\n\")   → {1 :modified 2 :added}
+    (diff/line-status \"a\\nb\\nc\\n\" \"a\\nc\\n\")   → {1 :deleted}"
+  (fold (line-hunks old new)
+    {}
+    (fn (status hunk)
+      (let ([_ old-count new-start new-count] hunk
+            modified (math/min old-count new-count))
+        (if (= new-count 0)
+          (assoc status new-start :deleted)
+          (fold (range new-count)
+            status
+            (fn (acc j) (assoc acc (+ new-start j) (if (< j modified) :modified :added)))))))))
+
 ;; ---- utilities --------------------------------------------------------------
 
 (defn summary (ops:seqable -> (or map vector))

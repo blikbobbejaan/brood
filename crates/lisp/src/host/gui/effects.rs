@@ -185,6 +185,9 @@ fn walk<'a>(ops: &'a [Op], f: &mut impl FnMut(&'a Op)) {
     for op in ops {
         match op {
             Op::ScrollRegion { ops, .. } | Op::CellRegion { ops, .. } => walk(ops, f),
+            // A fragment never holds a frame-global op (`%gui-draw` splices one that would,
+            // ADR-470), so the walk — every paint, over the whole frame — skips its ops.
+            Op::Fragment(_) => {}
             other => f(other),
         }
     }

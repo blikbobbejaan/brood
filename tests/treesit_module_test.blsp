@@ -266,6 +266,81 @@
       ;; past the end, forward stays put
       (assert= (editor/treesit/point-forward rb :ruby (string/length rb)) (string/length rb))))
 
+  ;; ---- the structural queries over a held tree (ADR-467) ----------------------
+  ;; A held tree answers exactly what the text query answers — at every offset, so a
+  ;; char/byte slip on the multi-byte line shows — and the wiring is proved by handing a
+  ;; tree whose text is NOT the text passed: the answer follows the tree.
+  (describe "treesit queries over a held tree"
+    (def ts-held-src "defmodule A do\n  # héllo — ünïcode\n  def f(x) do\n    [x, 1]\n  end\nend\n")
+
+    (defn ts-held-agrees? (motion tree)
+      (every? (range (inc (string/length ts-held-src)))
+        (fn (p) (= (motion ts-held-src :elixir p) (motion ts-held-src :elixir p tree)))))
+
+    (test "every motion over the tree agrees with the text query at every offset"
+      (let (tree (editor/treesit/open-tree (text/from-string ts-held-src) :elixir))
+        (is (ts-held-agrees? editor/treesit/point-forward tree))
+        (is (ts-held-agrees? editor/treesit/point-backward tree))
+        (is (ts-held-agrees? editor/treesit/point-list-forward tree))
+        (is (ts-held-agrees? editor/treesit/point-list-backward tree))
+        (is (ts-held-agrees? editor/treesit/point-up tree))
+        (is (ts-held-agrees? editor/treesit/point-up-forward tree))
+        (is (ts-held-agrees? editor/treesit/point-down tree))
+        (is (ts-held-agrees? editor/treesit/point-defun-start tree))
+        (is (ts-held-agrees? editor/treesit/point-defun-end tree))
+        (editor/treesit/free-tree tree)))
+
+    (test "indent-column over the tree agrees with the text query on every line"
+      (let (tree (editor/treesit/open-tree ts-held-src :elixir)
+            spec {:width 2 :blocks #{:do_block :body} :dedent #{"end"}}
+            starts (cons 0
+                     (seq/keep (range (string/length ts-held-src))
+                       (fn (i) (when (= (string/char-at ts-held-src i) "\n") (inc i))))))
+        (is (every? starts
+              (fn (bol)
+                (= (editor/treesit/indent-column ts-held-src :elixir bol spec)
+                  (editor/treesit/indent-column ts-held-src :elixir bol spec tree)))))
+        (editor/treesit/free-tree tree)))
+
+    (test "the tree is what is read: an empty text with this tree still finds the def"
+      (let (tree (editor/treesit/open-tree ts-held-src :elixir)
+            inside (index-of ts-held-src "[x"))
+        (assert= (editor/treesit/point-up "" :elixir inside) inside)
+        (assert= (editor/treesit/point-up "" :elixir inside tree)
+          (editor/treesit/point-up ts-held-src :elixir inside))
+        (editor/treesit/free-tree tree)))
+
+    (test "a gone tree falls back to the text, and tree-alive? says which"
+      (let (tree (editor/treesit/open-tree ts-held-src :elixir)
+            inside (index-of ts-held-src "[x")
+            alive (editor/treesit/tree-alive? tree))
+        (editor/treesit/free-tree tree)
+        (is alive)
+        (refute (editor/treesit/tree-alive? tree))
+        (assert= (editor/treesit/point-up ts-held-src :elixir inside tree)
+          (editor/treesit/point-up ts-held-src :elixir inside))))
+
+    (test "a tree updated with the buffer's own splices answers for the new text"
+      (let (at (index-of ts-held-src "1]")
+            before (editor/buffer/goto-char (editor/buffer/make-buffer ts-held-src) at)
+            after (editor/buffer/insert (editor/buffer/delete-char before) "2, 3")
+            edits (into []
+                    (map (editor/buffer/buffer-splices-since before after)
+                      (fn ([lo hi repl]) [lo hi (+ lo (string/length repl))])))
+            tree (editor/treesit/open-tree (editor/buffer/buffer-rope before) :elixir)
+            updated (editor/treesit/update-tree tree
+                      (editor/buffer/buffer-rope after)
+                      :elixir edits)
+            text (editor/buffer/buffer-text after))
+        ;; one splice — the deletion and the typing after it are one run
+        (assert= edits [[at (inc at) (+ at 4)]])
+        (is (every? (range (inc (string/length text)))
+              (fn (p)
+                (= (editor/treesit/point-forward text :elixir p)
+                  (editor/treesit/point-forward text :elixir p updated)))))
+        (editor/treesit/free-tree tree)
+        (editor/treesit/free-tree updated))))
+
   ;; ---- parse-state: unfinished is not wrong -----------------------------------
   ;; The whole contract of a live evaluator sits on this distinction, so each case
   ;; below is one shape a reader passes through while typing — or one they do not.

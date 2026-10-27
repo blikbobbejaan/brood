@@ -187,6 +187,9 @@ fn op_band(op: &Op, dy: isize, oy: usize, ch: usize) -> Option<(isize, isize)> {
         // A region paints only inside its own rect, whose height is in PARENT cells — so
         // this band is exact even though the ops inside it are on a different grid.
         Op::CellRegion { y, h, .. } => band(cell_top(*y), px_h(*h as usize)),
+        // Never a leaf: `flatten` splices a fragment's ops into the frame's leaves, and
+        // `render_ops` descends into it — so a fragment itself has no band of its own.
+        Op::Fragment(_) => None,
     }
 }
 
@@ -195,6 +198,21 @@ fn op_band(op: &Op, dy: isize, oy: usize, ch: usize) -> Option<(isize, isize)> {
 struct Entry<'a> {
     op: &'a Op,
     dy: isize,
+    /// Whether the leaf is, or (a cell region) holds, a blinking caret: its pixels depend on
+    /// the blink phase as well as on the op (ADR-469).
+    caret: bool,
+}
+
+/// Whether `op` is a blinking caret or a block holding one.
+fn holds_blinking_caret(op: &Op) -> bool {
+    match op {
+        Op::Cursor { blink, .. } => blink.is_some(),
+        Op::ScrollRegion { ops, .. } | Op::CellRegion { ops, .. } => {
+            ops.iter().any(holds_blinking_caret)
+        }
+        Op::Fragment(fragment) => fragment.0.iter().any(holds_blinking_caret),
+        _ => false,
+    }
 }
 
 /// Flatten a frame's op tree into leaves, each carrying its region's shift.
@@ -202,10 +220,16 @@ fn flatten<'a>(ops: &'a [Op], ch: usize, dy: isize, out: &mut Vec<Entry<'a>>) {
     for op in ops {
         match op {
             Op::ScrollRegion { dy_frac, ops } => flatten(ops, ch, scroll_px(*dy_frac, ch), out),
+            // A memoised fragment is its ops in place (ADR-470): its leaves are the frame's.
+            Op::Fragment(fragment) => flatten(&fragment.0, ch, dy, out),
             // A cell region is ONE leaf: its children are on the region's grid, not this one,
             // so their bands cannot be computed with `ch` and their positions mean nothing
             // here. The whole region is compared (and repainted) as a unit.
-            _ => out.push(Entry { op, dy }),
+            _ => out.push(Entry {
+                op,
+                dy,
+                caret: holds_blinking_caret(op),
+            }),
         }
     }
 }
@@ -264,15 +288,17 @@ impl Strips {
 }
 
 /// A frame flattened for the diff: its leaves, each leaf's signed pixel band (`None`
-/// for one that paints nothing), and per strip the leaves whose band covers it.
+/// for one that paints nothing), per strip the leaves whose band covers it, and whether
+/// the frame's blinking caret was in its hidden half when it was painted.
 struct Leaves<'a> {
     leaves: Vec<Entry<'a>>,
     bands: Vec<Option<(isize, isize)>>,
     per_strip: Vec<Vec<u32>>,
+    caret_hidden: bool,
 }
 
 impl<'a> Leaves<'a> {
-    fn of(ops: &'a [Op], strips: &Strips, oy: usize, ch: usize) -> Leaves<'a> {
+    fn of(ops: &'a [Op], strips: &Strips, oy: usize, ch: usize, caret_hidden: bool) -> Leaves<'a> {
         let mut leaves = Vec::new();
         flatten(ops, ch, 0, &mut leaves);
         let bands: Vec<Option<(isize, isize)>> =
@@ -289,6 +315,7 @@ impl<'a> Leaves<'a> {
             leaves,
             bands,
             per_strip,
+            caret_hidden,
         }
     }
 
@@ -308,8 +335,10 @@ impl<'a> Leaves<'a> {
 /// painted into the frame `new` would paint: those whose sequence of covering leaf
 /// ops differs — an op added, removed, changed, reordered, or shifted by a scroll
 /// region. Per strip, the ops are compared as values (`Op: PartialEq`), so an
-/// identical frame dirties nothing and a one-line edit dirties one strip. Returns a
-/// bool per strip.
+/// identical frame dirties nothing and a one-line edit dirties one strip. A leaf of the
+/// same memoised fragment in both frames is the same op in memory (ADR-470), so the
+/// pointer settles it before any field is compared; a blinking caret's strip is dirty
+/// when the phase flipped (ADR-469). Returns a bool per strip.
 fn strip_diff(new: &Leaves, old: &Leaves, strips: &Strips) -> Vec<bool> {
     (0..strips.count)
         .map(|k| {
@@ -317,7 +346,9 @@ fn strip_diff(new: &Leaves, old: &Leaves, strips: &Strips) -> Vec<bool> {
             a.len() != b.len()
                 || a.iter().zip(b).any(|(&i, &j)| {
                     let (x, y) = (&new.leaves[i as usize], &old.leaves[j as usize]);
-                    x.dy != y.dy || x.op != y.op
+                    x.dy != y.dy
+                        || (x.caret && new.caret_hidden != old.caret_hidden)
+                        || !(std::ptr::eq(x.op, y.op) || x.op == y.op)
                 })
         })
         .collect()
@@ -399,17 +430,20 @@ fn leaf_translates(
                 col: nc,
                 style: nst,
                 color: ncolor,
+                blink: nblink,
             },
             Op::Cursor {
                 row: or,
                 col: oc,
                 style: ost,
                 color: ocolor,
+                blink: oblink,
             },
         ) => {
             nc == oc
                 && nst == ost
                 && ncolor == ocolor
+                && nblink == oblink
                 && oy as isize + *nr as isize * ch_i - new.dy
                     == oy as isize + *or as isize * ch_i - old.dy + delta
         }
@@ -599,6 +633,12 @@ fn strip_translates(
         return false;
     }
     let new_leaves = &new.per_strip[k];
+    // a caret whose blink phase flipped is not the pixels the canvas holds anywhere
+    if new.caret_hidden != old.caret_hidden
+        && new_leaves.iter().any(|&i| new.leaves[i as usize].caret)
+    {
+        return false;
+    }
     let mut old_leaves = old.covering(src0 as usize, src1 as usize);
     for &i in new_leaves {
         let Some(j) = old_leaves.next() else {
@@ -769,6 +809,9 @@ fn collect_zones(
             Op::ScrollRegion { dy_frac, ops } => {
                 collect_zones(ops, r, ox, oy, cw, ch, scroll_px(*dy_frac, ch), clip, zones);
             }
+            Op::Fragment(fragment) => {
+                collect_zones(&fragment.0, r, ox, oy, cw, ch, scroll_dy, clip, zones);
+            }
             Op::CellRegion {
                 x, y, h, px, ops, ..
             } => {
@@ -833,6 +876,9 @@ pub(super) fn render_ops(
             Op::ScrollRegion { dy_frac, ops } => {
                 let inner_dy = scroll_px(*dy_frac, ch);
                 render_ops(ops, canvas, r, ox, oy, cw, ch, bg0, inner_dy);
+            }
+            Op::Fragment(fragment) => {
+                render_ops(&fragment.0, canvas, r, ox, oy, cw, ch, bg0, scroll_dy);
             }
             Op::CellRegion {
                 x, y, h, px, ops, ..
@@ -1036,11 +1082,14 @@ pub(super) fn render_ops(
                     );
                 }
             }
+            // A blinking caret in its hidden half (ADR-469) paints nothing.
+            Op::Cursor { blink: Some(_), .. } if r.caret_hidden => {}
             Op::Cursor {
                 row,
                 col,
                 style,
                 color,
+                ..
             } => {
                 // Compute the logical cell bounds in framebuffer pixels. `cell_top`
                 // may be < oy (partially scrolled off the viewport top) — clip the
@@ -1511,7 +1560,10 @@ pub(super) fn raster_frame(
         r.prev_ops.clear();
         return vec![(0, fb_h)];
     }
-    let same = frame == r.prev_ops.as_slice();
+    // `same`: nothing to raster — the frame is the one painted, and so is the blink phase
+    // of its caret (a phase flip of an unchanged frame dirties just the caret's row).
+    let same_ops = frame == r.prev_ops.as_slice();
+    let same = same_ops && r.caret_hidden == r.prev_caret_hidden;
     // `changed`: every band whose pixels differ after this raster (what the present
     // ships); `raster`: the subset drawn; `blits`: the strips copied from old rows.
     let (changed, raster, blits) =
@@ -1520,8 +1572,8 @@ pub(super) fn raster_frame(
         } else if same {
             (Vec::new(), Vec::new(), Vec::new())
         } else {
-            let new = Leaves::of(frame, &strips, oy, ch);
-            let old = Leaves::of(&r.prev_ops, &strips, oy, ch);
+            let new = Leaves::of(frame, &strips, oy, ch, r.caret_hidden);
+            let old = Leaves::of(&r.prev_ops, &strips, oy, ch, r.prev_caret_hidden);
             let mut dirty = strip_diff(&new, &old, &strips);
             let changed = dirty_bands(&dirty, &strips);
             let blits = if gui_blit_enabled() {
@@ -1561,9 +1613,10 @@ pub(super) fn raster_frame(
         render_ops(frame, &mut canvas, r, ox, oy, cw, ch, bg0, 0);
     }
     r.canvas = pixels;
-    if !same {
+    if !same_ops {
         r.prev_ops = frame.to_vec();
     }
+    r.prev_caret_hidden = r.caret_hidden;
     changed
 }
 
@@ -1787,6 +1840,7 @@ mod render_robustness {
                         col: 2,
                         style: CursorStyle::Block,
                         color: None,
+                        blink: None,
                     },
                     Op::Text {
                         row: 1,
@@ -1853,6 +1907,7 @@ mod render_robustness {
                 col: big,
                 style: CursorStyle::Bar,
                 color: None,
+                blink: None,
             },
         ]);
     }
@@ -1955,6 +2010,7 @@ mod strip_diff_tests {
             col: 2,
             style: CursorStyle::Block,
             color: None,
+            blink: None,
         }
     }
 
@@ -1985,8 +2041,8 @@ mod strip_diff_tests {
     fn dirty_rows(new: &[Op], old: &[Op], oy: usize, ch: usize, fb_h: usize) -> Vec<usize> {
         let strips = Strips::new(oy, ch, fb_h);
         strip_diff(
-            &Leaves::of(new, &strips, oy, ch),
-            &Leaves::of(old, &strips, oy, ch),
+            &Leaves::of(new, &strips, oy, ch, false),
+            &Leaves::of(old, &strips, oy, ch, false),
             &strips,
         )
         .iter()
@@ -2047,8 +2103,8 @@ mod strip_diff_tests {
         let new = vec![Op::Clear, text(0, "a")];
         let strips = Strips::new(0, 10, 30);
         let all: Vec<bool> = strip_diff(
-            &Leaves::of(&new, &strips, 0, 10),
-            &Leaves::of(&old, &strips, 0, 10),
+            &Leaves::of(&new, &strips, 0, 10, false),
+            &Leaves::of(&old, &strips, 0, 10, false),
             &strips,
         );
         // every strip that has rows (the top margin is empty at oy = 0)
@@ -2367,6 +2423,160 @@ mod strip_diff_tests {
             snap_hairline(3.0, 8.0, 2.0, 5.0, 1.5, 1.0),
             (3.0, 8.0, 2.0, 5.0, 1.5)
         );
+    }
+
+    // ---- the blinking caret (ADR-469) and shared fragments (ADR-470) ----
+
+    fn blinking(row: u16) -> Op {
+        Op::Cursor {
+            row,
+            col: 2,
+            style: CursorStyle::Block,
+            color: None,
+            blink: Some(crate::host::gui::CursorBlink {
+                interval_ms: 530,
+                blinks: 10,
+            }),
+        }
+    }
+
+    fn fragment(ops: Vec<Op>) -> Op {
+        Op::Fragment(crate::host::gui::FragmentOps(ops.into()))
+    }
+
+    /// Paint `steps` — a frame and the blink phase it is painted in — incrementally,
+    /// checking each against a from-scratch raster in the same phase; returns the bands
+    /// each step repainted.
+    fn blink_run(steps: &[(Vec<Op>, bool)], fb_w: usize, fb_h: usize) -> Vec<Vec<(usize, usize)>> {
+        let mut incremental = Renderer::new(1.0, default_families(), 14.0);
+        let mut repainted = Vec::new();
+        for (i, (frame, hidden)) in steps.iter().enumerate() {
+            incremental.caret_hidden = *hidden;
+            repainted.push(raster_frame(&mut incremental, frame, fb_w, fb_h, false));
+            let mut full = Renderer::new(1.0, default_families(), 14.0);
+            full.caret_hidden = *hidden;
+            raster_frame(&mut full, frame, fb_w, fb_h, true);
+            assert!(
+                incremental.canvas == full.canvas,
+                "step {i}: an incremental raster differs from a full one"
+            );
+        }
+        repainted
+    }
+
+    #[test]
+    fn a_blink_phase_flip_repaints_only_the_caret_row() {
+        let mut frame = editor_frame(&["alpha", "beta", "gamma"], 1);
+        frame.pop();
+        frame.push(blinking(1));
+        let ch = Renderer::new(1.0, default_families(), 14.0).cell_h;
+        let repainted = blink_run(
+            &[
+                (frame.clone(), false),
+                (frame.clone(), true),
+                (frame.clone(), true), // the same phase again: nothing to do
+                (frame.clone(), false),
+            ],
+            96,
+            80,
+        );
+        let (_, oy) = Renderer::new(1.0, default_families(), 14.0).grid_origin(96, 80);
+        let caret_row = (oy + ch, oy + 2 * ch);
+        assert_eq!(repainted[1], vec![caret_row]);
+        assert!(repainted[2].is_empty(), "{:?}", repainted[2]);
+        assert_eq!(repainted[3], vec![caret_row]);
+        // and a hidden caret is exactly the frame without it
+        let mut hidden = Renderer::new(1.0, default_families(), 14.0);
+        hidden.caret_hidden = true;
+        raster_frame(&mut hidden, &frame, 96, 80, true);
+        let mut without = Renderer::new(1.0, default_families(), 14.0);
+        let mut bare = frame.clone();
+        bare.pop();
+        raster_frame(&mut without, &bare, 96, 80, true);
+        assert!(hidden.canvas == without.canvas);
+    }
+
+    #[test]
+    fn a_blinking_caret_in_a_scrolling_pane_matches_a_full_raster_in_every_phase() {
+        let lines = [
+            "alpha", "beta", "gamma", "delta", "eps", "zeta", "eta", "theta",
+        ];
+        let with_caret = |top: usize, row: u16| {
+            let mut frame = scrolled_frame(top, &lines, 0.0);
+            if let Op::ScrollRegion { ops, .. } = &mut frame[1] {
+                ops.push(blinking(row));
+            }
+            frame
+        };
+        let ch = Renderer::new(1.0, default_families(), 14.0).cell_h;
+        blink_run(
+            &[
+                (with_caret(0, 2), false),
+                (with_caret(1, 1), true), // scrolled one line, caret riding along, hidden
+                (with_caret(1, 1), false),
+                (with_caret(2, 0), false), // a blit carries a shown caret
+                (with_caret(3, 3), true),
+                (with_caret(2, 3), true), // a blit carries a hidden one
+            ],
+            96,
+            7 * ch,
+        );
+    }
+
+    #[test]
+    fn a_fragment_paints_as_its_ops_spliced_in_and_matches_a_full_raster() {
+        let rows = vec![
+            text(0, "alpha"),
+            text(1, "beta"),
+            rect(2, 1),
+            text(2, "gamma"),
+        ];
+        let shared = fragment(rows.clone());
+        let spliced: Vec<Op> = [vec![Op::Clear], rows.clone(), vec![text(4, "mode")]].concat();
+        let fragmented = vec![Op::Clear, shared.clone(), text(4, "mode")];
+        let paint = |frame: &[Op]| {
+            let mut r = Renderer::new(1.0, default_families(), 14.0);
+            raster_frame(&mut r, frame, 96, 80, true);
+            r.canvas
+        };
+        assert!(paint(&spliced) == paint(&fragmented));
+        // inside a scroll region the fragment takes the region's shift
+        let scrolled = |ops: Vec<Op>| vec![Op::Clear, Op::ScrollRegion { dy_frac: 0.4, ops }];
+        assert!(paint(&scrolled(rows.clone())) == paint(&scrolled(vec![shared.clone()])));
+        // and a run of frames sharing it stays pixel-identical to full rasters
+        blink_run(
+            &[
+                (fragmented.clone(), false),
+                (vec![Op::Clear, shared.clone(), text(4, "mode!")], false),
+                (vec![Op::Clear, fragment(rows.clone()), blinking(1)], true),
+                (vec![Op::Clear, shared.clone(), blinking(1)], false),
+            ],
+            96,
+            80,
+        );
+    }
+
+    #[test]
+    fn an_unchanged_fragment_dirties_nothing_and_its_leaves_compare_by_pointer() {
+        let shared = fragment(vec![text(0, "alpha"), text(1, "beta"), text(2, "gamma")]);
+        let old = vec![Op::Clear, shared.clone(), text(4, "L1")];
+        let new = vec![Op::Clear, shared.clone(), text(4, "L2")];
+        assert_eq!(dirty_rows(&new, &old, 0, 10, 60), vec![5]);
+        // the frames' fragments are one allocation: the leaves are the same ops in memory
+        let strips = Strips::new(0, 10, 60);
+        let (a, b) = (
+            Leaves::of(&new, &strips, 0, 10, false),
+            Leaves::of(&old, &strips, 0, 10, false),
+        );
+        assert!(std::ptr::eq(a.leaves[1].op, b.leaves[1].op));
+        // a fragment rebuilt with the same ops is equal, just not by pointer
+        let rebuilt = vec![
+            Op::Clear,
+            fragment(vec![text(0, "alpha"), text(1, "beta"), text(2, "gamma")]),
+            text(4, "L2"),
+        ];
+        assert!(rebuilt == new);
+        assert_eq!(dirty_rows(&rebuilt, &old, 0, 10, 60), vec![5]);
     }
 }
 

@@ -172,3 +172,14 @@ colour spans — character offsets, end-exclusive, ascending, non-overlapping �
     (map (editor/lexer/lexer-spans (editor/lexer/lexer-grammar {:structured [[\"#.*\" :comment]]}) \"x # y\") (fn ([s e _]) [s e]))   → ([2 5])"
   (let (faces (lexer-faces))
     (lexer-walk-lines src (fn (line base) (lexer-line-spans grammar line base faces)))))
+
+(defn lexer-line-lexer (grammar:map -> map)
+  "`grammar` (from `lexer-grammar`) as a `stateless-lexer` for `editor/highlight`'s line
+cache (ADR-471): a line's spans are its own — no token crosses a line — so the cache keeps
+them as a memo on the line's text, and a pane lexes only the lines that changed. The faces
+are resolved when this is built, so build it again (and start a fresh `line-cache`) when
+the theme changes.
+
+    (:stateless? (editor/lexer/lexer-line-lexer (editor/lexer/lexer-grammar {:structured [[\"#.*\" :comment]]})))   → true"
+  (let (faces (lexer-faces))
+    (editor/highlight/stateless-lexer (fn (line) (lexer-line-spans grammar line 0 faces)))))
