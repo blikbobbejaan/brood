@@ -48,6 +48,11 @@ The appended archive carries, all baked in:
 - every `src/**/*.blsp` module
 - every resolved **dependency** source (`_deps/`), so a `:path`/`:git`-dep app is
   fully self-contained
+- the **startup image** those modules make (ADR-484), written by the bundled runtime
+  itself during `nest release`, so a launch materialises each module instead of compiling
+  its source (bedit: first frame ~750 ms → ~185 ms, +5 MB). A module the image has no
+  section for loads from its source; `BROOD_NO_BUNDLE_IMAGE=1` ignores the image. A
+  `--target` this host cannot run ships without one (its `image:` line says so).
 
 `tests/` is **excluded** — a release ships the app, not its tests.
 
@@ -164,7 +169,8 @@ runtime. Only the *stripped* modules above are unavailable to it.
   → `foo`), exactly the name `require` searches for.
 - Boot policy is Brood: `brood` calls `(project-release/run-bundle argv)` in
   `std/tool/project-release.blsp`, which applies the embedded manifest, loads every embedded
-  module, and invokes `:main` — passing the process's argv to the entry fn.
+  module (from the startup image when the archive carries one), and invokes `:main` —
+  passing the process's argv to the entry fn.
 
 Rust supplies only mechanism (append/extract the archive, the three
 `%bundle-*` primitives); the policy lives in Brood (ADR-006).

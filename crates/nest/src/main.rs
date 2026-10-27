@@ -547,8 +547,9 @@ fn cmd_release(
         _ => "app".to_string(),
     };
 
-    // 3. Serialize the archive once — it's target-independent.
-    let archive = brood::bundle::serialize(manifest, &modules);
+    // 3. Serialize the archive once — it's target-independent. The startup image is not:
+    //    each runtime writes its own, after the first write below (`embed_startup_image`).
+    let archive = brood::bundle::serialize(manifest, &modules, None);
 
     // 4. What are the binaries CALLED, and is any name refused? Policy, so Brood
     //    answers it (`project-release/release-plan`): a flat `("ok" triple out …)` list with
@@ -590,6 +591,7 @@ fn cmd_release(
             eprintln!("nest release: cannot write {}: {e}", out.display());
             std::process::exit(1);
         }
+        let image_note = embed_startup_image(&out, triple, &base, manifest, &modules);
         let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
         // What the command SAYS it wrote is policy too (`project-release/release-report`).
         let line = run_for_value(
@@ -608,10 +610,75 @@ fn cmd_release(
             Value::Str(id) => println!("{}", interp.heap.string(id)),
             other => println!("{}", interp.print(other)),
         }
+        println!("  image: {image_note}");
         if smoke {
             smoke_test(&out, triple);
         }
     }
+}
+
+/// `out` as something `Command` can run: `./out`, not `out`, because a bare relative name
+/// is not a command on any shell's PATH, and `Command` inherits that rule.
+fn runnable_path(out: &std::path::Path) -> std::path::PathBuf {
+    if out.is_absolute() {
+        out.to_path_buf()
+    } else {
+        std::path::Path::new(".").join(out)
+    }
+}
+
+/// Give the binary just written its startup image (ADR-484), and say what happened.
+///
+/// The image is written BY THE BINARY (`--brood-build-image`): it loads its own embedded
+/// sources on its own runtime and std, so the image is valid for exactly that runtime by
+/// construction — `nest`'s runtime is a different build, and an image it wrote would never
+/// match the shipped one's stamp. The binary is then rewritten with the image after its
+/// modules. Best-effort: a project that cannot be imaged (a `table` global, say), or a
+/// target this host cannot run, ships without one and loads its modules from source, as
+/// every bundle did before; the release is no less correct, only slower to start.
+fn embed_startup_image(
+    out: &std::path::Path,
+    triple: Option<&str>,
+    base: &[u8],
+    manifest: &str,
+    modules: &[(String, String)],
+) -> String {
+    if let Some(t) = triple
+        && t != release::HOST_TRIPLE
+    {
+        return format!("none for {t} (only the target can build it) — modules load from source");
+    }
+    let stem = out
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "release".to_string());
+    let image_path = out.with_file_name(format!(".{stem}.nest-image-{}", std::process::id()));
+    let built = std::process::Command::new(runnable_path(out))
+        .arg(brood::bundle::BUNDLE_BUILD_IMAGE_ARG)
+        .arg(&image_path)
+        .output();
+    let image = std::fs::read(&image_path);
+    let _ = std::fs::remove_file(&image_path);
+    let failed = |why: String| format!("none ({why}) — modules load from source");
+    let image = match (built, image) {
+        (Ok(run), Ok(image)) if run.status.success() => image,
+        (Ok(run), _) => {
+            let stderr = String::from_utf8_lossy(&run.stderr);
+            let why = stderr
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("the build failed");
+            return failed(why.trim().to_string());
+        }
+        (Err(e), _) => return failed(format!("cannot run the binary: {e}")),
+    };
+    let archive = brood::bundle::serialize(manifest, modules, Some(&image));
+    if let Err(e) = brood::bundle::write_release(base, &archive, out) {
+        eprintln!("nest release: cannot write {}: {e}", out.display());
+        std::process::exit(1);
+    }
+    format!("{} KB, written by the bundled runtime", image.len() / 1024)
 }
 
 /// The release's boot check — run the binary just written with the reserved
@@ -641,13 +708,7 @@ fn smoke_test(out: &std::path::Path, triple: Option<&str>) {
         println!("  smoke: skipped for {t} (not this host — run it on the target)");
         return;
     }
-    // `./out`, not `out`: a bare relative name is not a command on any shell's PATH,
-    // and `Command` inherits that rule.
-    let path = if out.is_absolute() {
-        out.to_path_buf()
-    } else {
-        std::path::Path::new(".").join(out)
-    };
+    let path = runnable_path(out);
     match std::process::Command::new(&path)
         .arg(brood::bundle::BUNDLE_BOOT_CHECK_ARG)
         .status()

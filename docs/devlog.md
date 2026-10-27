@@ -4114,3 +4114,14 @@ failed only in the two runs that carried `c38b5bc2`, which admitted small call-m
 such as the waiters' `child` to native code, and in none of the four without it. Its revert
 (`f37fcdf7`) is their fix. Run here: each touched test file once (`nest test FILE`), the
 strict checker over each, and `nest format --check`. The suites run in CI.
+2026-10-27 (ADR-484, a release bundle starts from its own startup image): `nest release` runs
+the binary it wrote with `--brood-build-image`, so the shipped runtime loads its own sources
+once and writes ADR-218's sectioned image, then appends the image to the archive (an optional
+`BRDIMG01` tail; the bundle format version is unchanged). At mount the runtime holds the bytes
+as `mem:bundle-image`; `run-bundle` installs them against a stamp of the stdlib id, contract
+mode and manifest (`system/build-id` holds the mtime, which a copy changes), and materialises
+each module, falling back to source for one without a section. `project-image`'s section
+writer, registration prune and installer take the carried-module predicate and the path. bedit's
+bundle: first frame ~750 → ~185 ms, +5.3 MB. Run here: `release_bundle` (9, two new),
+`bundle::tests`, `startup_image`, `image`, `image_section_decode`, `project`; bedit bundled,
+booted and boot-checked twice.

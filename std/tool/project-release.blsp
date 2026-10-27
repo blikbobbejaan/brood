@@ -4,7 +4,9 @@
   "Single-binary release (ADR-038): collect what a bundle ships, name the artifacts
 (`release-plan`), report what was written (`release-report`), and answer
 `--brood-build-info` from inside one. The byte assembly and the boot check of the
-written binary stay in the `nest` binary, which hosts the runtime it embeds.")
+written binary stay in the `nest` binary, which hosts the runtime it embeds."
+  ;; the image writer and installer a bundle's startup image shares with a project's (ADR-484)
+  (:use-internals project-image))
 
 ;; --- single-binary release (ADR-038) -----------------------------------------
 ;; `nest release` appends a project's source to a copy of the `brood` binary;
@@ -363,12 +365,59 @@ dev/release parity for package-rooting (ADR-070). Errors if `root` is nil (not i
           (when shorts (%register-package-modules! pkg shorts)))))
     nil))
 
-;; The shared boot prefix of `run-bundle` and `check-bundle-boot`: apply the embedded
-;; manifest, restore the dependency package-rooting context, load every embedded module,
-;; and return the entry `[modname fname]`. Factored out so the check cannot boot the
-;; bundle differently from the way the bundle boots itself — the only property that makes
-;; a smoke test worth running.
-(defn- bundle-boot-load ()
+;; ═══ The bundle's startup image (ADR-484) ═════════════════════════════════════
+;; Booting a bundle used to compile every embedded module's source on every launch — a GUI
+;; app of ~120 modules spent ~650 ms of its ~700 ms start doing it. `nest release` now has
+;; the freshly written binary load its own sources once (`--brood-build-image`) and write
+;; the startup image they make (ADR-218's sections, ADR-317's registrations), which `nest`
+;; appends to the archive. A launch installs it and materialises each module instead of
+;; compiling it; a module the image has no section for loads from its source, as before.
+
+;; Where the runtime holds the image it found in the archive — `brood::bundle::BUNDLE_IMAGE_PATH`.
+(def- *bundle-image-path* "mem:bundle-image")
+
+;; The stamp a bundle's image is written with and installed against. The image travels in
+;; the same file as the runtime that wrote it, so the binary half of a project image's key
+;; is true by construction; what is left is the contract mode an armed load bakes into each
+;; `sig`'d function (KI-276), the stdlib it was built over, and THIS release — the manifest
+;; carries `:built-at`, so an image can only ever be installed by the archive it was built for.
+(defn- bundle-image-stamp ()
+  (str "bundle\n"
+    (system/stdlib-id)
+    (if (%contracts-armed?) " contracts" "")
+    "\n"
+    (or (%bundle-manifest) "")))
+
+;; The name embedded module `key` is required by — the namespace its load defines, which is
+;; also the image section its bindings are grouped under. A uniquely named dependency module
+;; (`store/repo`) loads at ROOT as `repo` (`%bundle-module-package`), so it is required, and
+;; sectioned, as `repo`; the prelude marks its rooted key loaded too. Every other module —
+;; the project's own, a colliding dependency module that stays rooted — is its key.
+(defn- bundle-require-name (key)
+  (let (segment (first (string/split key "/")))
+    (if (and (not (= segment key))
+          (contains? *package-modules-of* segment)
+          (nil? (%bundle-module-package key)))
+      (let (short (string/substring key (+ 1 (string/length segment)) (string/length key)))
+        (if (%builtin-module? short) key short))
+      key)))
+
+;; Install the bundle's image, if it carries one this run may use. Returns the section count,
+;; or nil — the bundle then loads every module from source. `BROOD_NO_BUNDLE_IMAGE=1` is the
+;; lever that compares the two on one binary, as `BROOD_NO_STDIMAGE` is for the stdlib's.
+(defn- bundle-install-image ()
+  (when (and (%image-exists? *bundle-image-path*)
+          (nil? (os/env "BROOD_NO_BUNDLE_IMAGE"))
+          (project-image/image-usable?))
+    (project-image/image-install *bundle-image-path* (bundle-image-stamp))))
+
+;; The shared boot prefix of `run-bundle`, `check-bundle-boot` and `write-bundle-image`:
+;; apply the embedded manifest, restore the dependency package-rooting context, install the
+;; startup image (unless `from-source?`), load every embedded module, and return the entry
+;; `[modname fname sections]` — `sections` the image's section count, nil when none was
+;; installed. Factored out so the check cannot boot the bundle differently from the way the
+;; bundle boots itself — the only property that makes a smoke test worth running.
+(defn- bundle-boot-load (&optional from-source?)
   (let (form (reflect/read-first (or (%bundle-manifest) "")))
     (when (and (pair? form) (= (first form) 'project)) (project/apply-config (rest form))))
   ;; Rebuild the package-rooting context for the embedded DEPENDENCY modules (ADR-070
@@ -377,20 +426,23 @@ dev/release parity for package-rooting (ADR-070). Errors if `root` is nil (not i
   ;; targets root — exactly as `%require-force-package` does from disk. Must run BEFORE the
   ;; loads below (it is what makes `%require-force`'s embedded branch pick the right context).
   (bundle-register-dep-rooting)
-  ;; Load every embedded module once. Order-independent: cross-module
-  ;; `:use`/`require` resolve through the same embedded table, and require is
-  ;; idempotent — so a `(:use foo)` in the first module pulls `foo` on demand.
-  (map (%bundle-module-names) require-one)
-  (let (entry (or *project-main-override* *project-main*))
-    ;; No `%root-module-name` here (unlike `run`): a bundle's own modules are embedded
-    ;; under their require-name and the rooting context is rebuilt above.
-    [(first entry) (second entry)]))
+  ;; After the rooting context, which the image's root section leaves alone
+  ;; (`*package-modules-of*` is a registry exclusion), and before any module loads.
+  (let (sections (if from-source? nil (bundle-install-image)))
+    ;; Load every embedded module once. Order-independent: cross-module
+    ;; `:use`/`require` resolve through the same embedded table, and require is
+    ;; idempotent — so a `(:use foo)` in the first module pulls `foo` on demand.
+    (map (%bundle-module-names) (fn (key) (require-one (bundle-require-name key))))
+    (let (entry (or *project-main-override* *project-main*))
+      ;; No `%root-module-name` here (unlike `run`): a bundle's own modules are embedded
+      ;; under their require-name and the rooting context is rebuilt above.
+      [(first entry) (second entry) sections])))
 
 ;; (run-bundle args) — boot an embedded release bundle. The `brood` binary,
 ;; detecting its appended archive, calls this instead of starting a REPL. No
-;; disk/cwd: every module comes from the embedded archive via `%builtin-module`
-;; (which `require-one` consults). Mirrors `run`'s entry resolution minus
-;; the project walk and the advisory checker (a shipped app isn't a dev image).
+;; disk/cwd: every module comes from the embedded archive — its image section, else its
+;; source via `%builtin-module` (which `require-one` consults). Mirrors `run`'s entry
+;; resolution minus the project walk and the advisory checker (a shipped app isn't a dev image).
 (defn run-bundle (args)
   "Run an embedded release bundle's entry point, passing `args` (a list of CLI
 string arguments). The `brood` binary calls this when it detects it is a `nest
@@ -398,7 +450,7 @@ release` bundle. Loads the embedded manifest + modules and invokes `:main`
 (default module `main`, fn `main`). Errors if the entry fn is missing/uncallable.
 
     (project-release/run-bundle [\"serve\" \"--port\" \"8080\"])   ;=> whatever the bundle's :main fn returns"
-  (let ([modname fname] (bundle-boot-load))
+  (let ([modname fname _] (bundle-boot-load))
     (require-one modname)
     (%crash-report-arm-default)
     (/apply (project-run/project-entry-fn "run-bundle" modname fname) args)))
@@ -416,12 +468,13 @@ release` bundle. Loads the embedded manifest + modules and invokes `:main`
   "Load this release bundle's embedded modules and resolve its entry point, running
 nothing — an application (`defapp`) too is resolved, not started. Returns 0; raises if a module fails to load or the entry fn is missing or not
 callable. Reached by running a bundle with the reserved `--brood-boot-check` argument,
-which is what `nest release --smoke` does to the binary it just wrote.
+which is what `nest release --smoke` does to the binary it just wrote. Loads the modules
+the way a launch does — from the bundle's startup image when it carries one — and says which.
 
     (project-release/check-bundle-boot)   ;=> 0 — every embedded module loaded and :main resolved; raises otherwise"
   (unless (%bundled?)
     (error "check-bundle-boot: this executable is not a `nest release` bundle"))
-  (let ([modname fname] (bundle-boot-load))
+  (let ([modname fname sections] (bundle-boot-load))
     (require-one modname)
     ;; An application is resolved, never started (ADR-436): this runs on the machine that
     ;; BUILT the release, where starting would bind its ports and open its files, and
@@ -430,11 +483,37 @@ which is what `nest release --smoke` does to the binary it just wrote.
     (let (entry (project-run/project-entry "check-bundle-boot" modname fname))
       (io/puts (project-run/boot-ok-message modname
                  fname
-                 (str (count (%bundle-module-names)) " modules loaded")
+                 (str (count (%bundle-module-names))
+                   " modules loaded"
+                   (if sections " from the startup image" " from source"))
                  (if (application/app? entry)
                    "an application, not started"
                    "nothing run"))))
     0))
+
+(defn write-bundle-image (path)
+  "Load this release bundle's embedded modules from their SOURCE and write the startup image
+they make to `path`, running nothing. Returns the number of entries written. Reached by
+running a bundle with the reserved `--brood-build-image PATH` argument, which is how `nest
+release` gets an image the shipped runtime wrote itself (ADR-484); a load that cannot be
+imaged (a `table` global) raises, and the release ships without one.
+
+    (project-release/write-bundle-image \"/tmp/app.image\")   → RAISED write-bundle-image: this executable is not a `nest release` bundle"
+  (unless (%bundled?)
+    (error "write-bundle-image: this executable is not a `nest release` bundle"))
+  ;; Both baselines before a single module loads, as a project image takes them (KI-106).
+  (let (before (reflect/global-names)
+        before-regs (stdimage/registrations-by-module)
+        [modname _ _] (bundle-boot-load true))
+    (require-one modname)
+    (let (carried (into #{} (map (%bundle-module-names) bundle-require-name))
+          carried? (fn (k) (contains? carried k)))
+      ;; The prune runs inside the isolate, so it is rolled back once the image is written.
+      (%isolate (fn ()
+                  (project-image/image-prune-foreign-registrations before-regs carried?)
+                  (%image-write path
+                    (project-image/image-sections before carried?)
+                    (bundle-image-stamp)))))))
 
 ;; --- `nest release`: naming the artifacts, and saying what was written -------
 ;; `nest` keeps the release MECHANISM, because it is bound to the `nest` binary

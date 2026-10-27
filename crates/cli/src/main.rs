@@ -26,7 +26,7 @@
 //! daily-driver workflow lives.
 
 use brood::Interp;
-use brood::bundle::{BUNDLE_BOOT_CHECK_ARG, BUNDLE_BUILD_INFO_ARG};
+use brood::bundle::{BUNDLE_BOOT_CHECK_ARG, BUNDLE_BUILD_IMAGE_ARG, BUNDLE_BUILD_INFO_ARG};
 use brood::cli_support::{RawTermGuard, report_error, run_on_main_stack};
 use clap::Parser;
 use std::path::Path;
@@ -128,6 +128,20 @@ fn main() {
                 run_on_main_stack("brood-main", || {
                     run_bundle_meta("(project-release/check-bundle-boot)")
                 });
+                return;
+            }
+            Some(BUNDLE_BUILD_IMAGE_ARG) => {
+                let Some(path) = args.get(1) else {
+                    eprintln!(
+                        "error: {BUNDLE_BUILD_IMAGE_ARG} needs the path to write the image to"
+                    );
+                    std::process::exit(2);
+                };
+                let code = format!(
+                    "(project-release/write-bundle-image {})",
+                    brood::introspect::string_literal(path)
+                );
+                run_on_main_stack("brood-main", move || run_bundle_meta(&code));
                 return;
             }
             _ => {}

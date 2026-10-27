@@ -160,13 +160,13 @@ come from `*module-files*`).
 ;; MUST stay in root even though the load created it. Excluding it — as a bare `seen` test
 ;; did — dropped it from the image entirely: a deferred module's buffer type vanished on an
 ;; imaged start (register-type-layers runs at that module's load, which materialising skips).
-(defn- project-image-registry-names (seen)
+(defn- project-image-registry-names (seen carried?)
   (seq/reject (%registry-names)
     (fn (n)
       (or (includes? *project-image-registry-exclusions* n)
         (and (not (contains? seen n))
           (let (mod (project-image-section-of n))
-            (and mod (contains? *module-files* mod))))))))
+            (and mod (carried? mod))))))))
 
 ;; The module a global belongs to: its name minus the last segment, which IS the feature
 ;; name `require` uses (a global `myproj/shapes/area` comes from feature `myproj/shapes`).
@@ -190,6 +190,12 @@ come from `*module-files*`).
   (and (contains? *module-files* k)
     (not (= (first (string/split k "/")) (if *project-name* (->string *project-name*) nil)))))
 
+;; Whether module `k` is one a project image carries: the project's own or a dependency's —
+;; both live in `*module-files*` (a project roots its own modules under its `:name` too,
+;; ADR-070). A release bundle's image (ADR-484) asks the same question of its own module
+;; set, which is why every writer below takes the predicate rather than reading the registry.
+(defn- project-module-carried? (k) (contains? *module-files* k))
+
 ;; Group the image's globals into per-module sections, so `require` can materialise one
 ;; module at a time (ADR-218). The `""` section is the one the loader always materialises,
 ;; and it carries the registries, the root-level defs (a file with no `defmodule`) and — added
@@ -201,7 +207,7 @@ come from `*module-files*`).
 ;; section, and a std feature is served from its embedded source rather than the image — so
 ;; the section would never be materialised and the registry silently lost, which is the whole
 ;; class this is guarding against.
-(defn- project-image-sections (before)
+(defn- image-sections (before carried?)
   (let (seen (project-image-seen before)
         fresh (project-image-fresh-names seen)
         grouped (fold fresh
@@ -209,26 +215,21 @@ come from `*module-files*`).
                   (fn (m n)
                     (let (k (or (project-image-section-of n) ""))
                       (assoc m k (cons n (or (get m k) nil))))))
-        root (append (project-image-registry-names seen) (get grouped "")))
+        root (append (project-image-registry-names seen carried?) (get grouped "")))
     (cons ["" root]
       (map
         (seq/reject (keys grouped)
           (fn (k)
-            ;; A non-root section is materialised from the image only for the project's
-            ;; own modules and its dependencies — both live in `*module-files*`
-            ;; (a project roots its own modules under its `:name` too, ADR-070). A
+            ;; A non-root section is materialised from the image only for a module the
+            ;; image carries (`carried?`: the project's own and its dependencies). A
             ;; std/embedded module (regex, editor/ui, …) always loads from its baked-in
             ;; source, so its section would never be read back — writing it is dead
             ;; weight, and it is exactly where a runtime-only value like
             ;; `regex/regex-states-cache` (a mutable cache table) makes the whole image
             ;; write fail. Skip it. (Its bare globals still ride the always-materialised
             ;; root section; a builtin there images by name.)
-            (or (= k "") (not (contains? *module-files* k)))))
+            (or (= k "") (not (carried? k)))))
         (fn (k) [k (get grouped k)])))))
-
-;; A module this image does NOT carry: neither the project's own nor a dependency's (both
-;; live in `*module-files*`, ADR-070). Its registrations belong to whoever loads it.
-(defn- image-foreign-owner? (m) (not (contains? *module-files* m)))
 
 (defn- image-preexisting-reg-keys (before-regs:map -> set)
   "The `[registry key]` pairs already registered BEFORE this project's sources loaded, as a
@@ -239,10 +240,12 @@ brought in — so no module load will ever replay it, and pruning it loses it fo
     (fn (acc m)
       (fold (get before-regs m) acc (fn (acc2 t) (conj acc2 [(get t 0) (get t 1)]))))))
 
-(defn image-prune-foreign-registrations (before-regs:map -> int)
+(defn image-prune-foreign-registrations (before-regs:map &optional carried?:any -> int)
   "Remove from the live registries every registration OWNED by a module this project's
 image does not carry — a std module (or anything else outside `*module-files*`) that
 happened to be loaded in the session that built the image. Returns how many were removed.
+`carried?` says which modules the image carries; it defaults to the project's (`*module-files*`),
+and a release bundle passes its own module set (ADR-484).
 
 The registries travel in the image's root section as whole values, and a value snapshot
 carries the build session's load state with it: on 2026-09-03 the image of this very repo
@@ -278,10 +281,12 @@ image on disk keeps whatever the prune left, which is why pruning too much is si
 permanent rather than transient.
 
     (project-image/image-prune-foreign-registrations (stdimage/registrations-by-module))   ;=> 7 — foreign registrations removed"
-  (let (regs (stdimage/registrations-by-module)
+  (let (carried? (or carried? project-module-carried?)
+        foreign? (fn (m) (not (carried? m)))
+        regs (stdimage/registrations-by-module)
         impls (stdimage/%std-impls-by-module)
         keep (image-preexisting-reg-keys before-regs)
-        n-regs (fold (seq/filter (keys regs) image-foreign-owner?)
+        n-regs (fold (seq/filter (keys regs) foreign?)
                  0
                  (fn (n m)
                    (fold (get regs m)
@@ -290,7 +295,7 @@ permanent rather than transient.
                        (if (contains? keep [(get t 0) (get t 1)])
                          n2
                          (do (%registry-update! (get t 0) :dissoc (get t 1) nil) (+ n2 1)))))))
-        n-impls (fold (seq/filter (keys impls) image-foreign-owner?)
+        n-impls (fold (seq/filter (keys impls) foreign?)
                   0
                   (fn (n m)
                     (fold (get impls m)
@@ -311,7 +316,7 @@ permanent rather than transient.
 ;; rebuild KEPT is copied from the image on disk instead — even when it was materialised along
 ;; the way, since its bytes are already right.
 (defn- project-partial-sections (before kept)
-  (let (fresh (project-image-sections before))
+  (let (fresh (image-sections before project-module-carried?))
     (if (or (nil? kept) (empty? kept))
       fresh
       (append (seq/reject fresh (fn (sec) (contains? kept (first sec))))
@@ -453,8 +458,12 @@ the record the next partial rebuild reads.
         (%registry-cas! r after (project-registry-merge-values after before))))))
 
 (defn- project-install-image (root fp &optional choose)
-  (let (path (image-path root)
-        idx (%image-index path fp))
+  (image-install (image-path root) fp choose))
+
+;; Install the image at `path` (a file, or a `mem:` path a host provided) when its stamp is
+;; `fp` — the project's, or a release bundle's (ADR-484), which have no root on disk.
+(defn- image-install (path fp &optional choose)
+  (let (idx (%image-index path fp))
     (cond
       (nil? idx) nil
       else
