@@ -218,6 +218,37 @@ const WHEEL_LINES: f64 = 3.0;
 /// backlog goes anyway — a raw loop that never draws must not lose its wheel.
 const WHEEL_HOLD: Duration = Duration::from_millis(100);
 
+/// How often a window asks whether its app's loop is busy, from an input until the loop is
+/// idle again (ADR-491): the busy cursor appears at most this long after the loop's quit
+/// key would interrupt it, and goes as soon after the turn ends.
+const BUSY_PROBE: Duration = Duration::from_millis(100);
+
+/// The busy cursor (ADR-491): while the loop that takes this window's input has been in one
+/// `update` or `view` past its quit key's busy-ms, show the wait cursor — the C-g that would
+/// stop it is live — and put the hover shape back when the turn ends. Asked only from an
+/// input until the loop is idle again (`process::interrupt_busy` answers None), so it costs
+/// a window nothing at rest. When to ask next, if at all.
+fn busy_cursor(w: &mut Win, now: Instant) -> Option<Instant> {
+    let due = w.busy_check?;
+    if now < due {
+        return Some(due);
+    }
+    let busy = crate::process::interrupt_busy(w.subscriber);
+    let show = busy == Some(true);
+    if show != w.busy_shown {
+        w.busy_shown = show;
+        w.window.set_cursor(if show {
+            CursorIcon::Wait
+        } else {
+            w.shape.map(cursor_icon).unwrap_or(CursorIcon::Default)
+        });
+    }
+    // idle (no window open): stop asking until the next input; a busy cursor showing is
+    // never left behind, since that answer also cleared it above
+    w.busy_check = busy.map(|_| now + BUSY_PROBE);
+    w.busy_check
+}
+
 /// Deliver a `{:wheel :lines}` window's wheel backlog as ONE scroll message, unless the
 /// last one is still undrawn (and younger than `WHEEL_HOLD`) — then it waits and keeps
 /// summing. True when nothing is left waiting.
@@ -1312,6 +1343,13 @@ struct Win {
     /// The shape currently applied to the window, so we only call `set_cursor`
     /// when the hit-test result changes (not on every pointer move).
     shape: Option<CursorShape>,
+    /// When to ask next whether the app's loop is busy (ADR-491): armed by input, polled
+    /// every [`BUSY_PROBE`] while the loop is inside an `update` or `view`, and dropped once
+    /// it is idle again — so an idle window never wakes for it.
+    busy_check: Option<Instant>,
+    /// Whether the busy (wait) cursor is showing, because the loop has been in one turn
+    /// past its quit key's busy-ms.
+    busy_shown: bool,
     /// EMA of the scroll velocity (signed lines/step) tracked during a trackpad gesture.
     /// On `TouchPhase::Ended` this seeds the kinetic-momentum animation driven by
     /// `about_to_wait`. On `Started`, any existing momentum velocity is carried forward
@@ -1528,6 +1566,8 @@ fn build_window(
         latency: Arc::default(),
         zones: Vec::new(),
         shape: None,
+        busy_check: None,
+        busy_shown: false,
         scroll_velocity: 0.0,
         scroll_momentum_active: false,
         scroll_decay: TRACKPAD_DECAY,
@@ -2054,6 +2094,10 @@ impl ApplicationHandler<UserEvent> for GuiApp {
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => !text.is_empty(),
             _ => false,
         };
+        if is_input && w.busy_check.is_none() {
+            // the loop may now be busy with this input: look in a moment (ADR-491)
+            w.busy_check = Some(Instant::now() + BUSY_PROBE);
+        }
         if is_input {
             // the caret shows from the moment the user does something, whatever its blink
             // phase, and the next blink is a whole interval away (ADR-469)
@@ -2315,8 +2359,11 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 );
                 if want != w.shape {
                     w.shape = want;
-                    w.window
-                        .set_cursor(want.map(cursor_icon).unwrap_or(CursorIcon::Default));
+                    // the busy cursor wins while the loop is stuck; its end restores this one
+                    if !w.busy_shown {
+                        w.window
+                            .set_cursor(want.map(cursor_icon).unwrap_or(CursorIcon::Default));
+                    }
                 }
             }
             WindowEvent::MouseInput {
@@ -2582,6 +2629,9 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 } else {
                     next_wakeup = Some(next_wakeup.map_or(due, |t| t.min(due)));
                 }
+            }
+            if let Some(due) = busy_cursor(w, now) {
+                next_wakeup = Some(next_wakeup.map_or(due, |t| t.min(due)));
             }
             if let Some(due) = w.particles_next {
                 if now >= due {

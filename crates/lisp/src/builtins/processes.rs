@@ -492,10 +492,7 @@ pub(super) fn set_quit_key(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
 }
 
 /// One atom of a quit key: a keyword, string or integer.
-fn quit_atom(
-    heap: &Heap,
-    value: Value,
-) -> Result<crate::process::interrupt::QuitAtom, LispError> {
+fn quit_atom(heap: &Heap, value: Value) -> Result<crate::process::interrupt::QuitAtom, LispError> {
     use crate::process::interrupt::QuitAtom;
     match value {
         Value::Keyword(name) => Ok(QuitAtom::Keyword(name)),

@@ -220,7 +220,10 @@ impl QuitKey {
             QuitPattern::Prefix(atoms) => match msg {
                 super::Message::Vector(items) => {
                     items.len() >= atoms.len()
-                        && atoms.iter().zip(items.iter()).all(|(atom, item)| atom.matches(item))
+                        && atoms
+                            .iter()
+                            .zip(items.iter())
+                            .all(|(atom, item)| atom.matches(item))
                 }
                 _ => false,
             },
@@ -269,6 +272,44 @@ mod tests {
     }
 
     #[test]
+    fn how_long_a_window_has_been_open_is_what_a_busy_cursor_reads() {
+        let interrupt = Interrupt::default();
+        assert_eq!(interrupt.open_for_us(), None, "closed: the loop is idle");
+        interrupt.open(None);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(interrupt.open_for_us().is_some_and(|us| us >= 1_000));
+        interrupt.close();
+        assert_eq!(interrupt.open_for_us(), None);
+    }
+
+    #[test]
+    fn a_vector_quit_key_matches_a_tagged_message_on_any_lane() {
+        use super::super::Message;
+        let ctrl_g = crate::core::value::intern("ctrl-g");
+        let key = crate::core::value::intern("key");
+        let wire = QuitKey {
+            key: QuitPattern::Prefix(vec![QuitAtom::Keyword(key), QuitAtom::Keyword(ctrl_g)]),
+            busy_us: 0,
+        };
+        let shipped = Message::Vector(vec![
+            Message::Keyword(key),
+            Message::Keyword(ctrl_g),
+            Message::Bool(true),
+        ]);
+        assert!(wire.matches(&shipped, false));
+        assert!(!wire.matches(&Message::Keyword(ctrl_g), true));
+        let atom = QuitKey {
+            key: QuitPattern::Atom(QuitAtom::Keyword(ctrl_g)),
+            busy_us: 0,
+        };
+        assert!(atom.matches(&Message::Keyword(ctrl_g), true));
+        assert!(
+            !atom.matches(&Message::Keyword(ctrl_g), false),
+            "priority lane only"
+        );
+    }
+
+    #[test]
     fn a_ceiling_is_due_once_passed() {
         let interrupt = Interrupt::default();
         interrupt.open(Some(60_000));
@@ -277,7 +318,11 @@ mod tests {
         interrupt.open(Some(0));
         assert!(interrupt.due());
         assert_eq!(interrupt.take(), Some(true));
-        assert_eq!(interrupt.take(), Some(true), "still the ceiling's, raised again");
+        assert_eq!(
+            interrupt.take(),
+            Some(true),
+            "still the ceiling's, raised again"
+        );
         interrupt.close();
         assert!(!interrupt.due());
     }

@@ -2258,7 +2258,6 @@ pub(in crate::builtins) fn gui_font_register(
     Ok(Value::keyword(name))
 }
 
-
 /// The terminal's input forwarder (ADR-491): a thread that reads the keyboard and the mouse
 /// and delivers each event to one process's PRIORITY lane, as a window delivers its input —
 /// so a key typed while that process is busy is queued where the kernel's quit key can see

@@ -178,7 +178,14 @@ fn ui_harvest(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         frame
     } else {
         let mut out = Vec::with_capacity(ops.len());
-        harvest_into(heap, ops, &tags, &mut out, &mut table, &mut InterruptPoll::new())?;
+        harvest_into(
+            heap,
+            ops,
+            &tags,
+            &mut out,
+            &mut table,
+            &mut InterruptPoll::new(),
+        )?;
         heap.alloc_vector(out)
     };
     let map = heap.map_from_pairs(table);

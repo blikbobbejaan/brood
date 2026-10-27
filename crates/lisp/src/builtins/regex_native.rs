@@ -39,8 +39,8 @@
 use super::args::{arg, expect_int, expect_string_ref};
 use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, StrId, Value};
-use crate::eval::InterruptPoll;
 use crate::error::{LispError, LispResult};
+use crate::eval::InterruptPoll;
 use regex_automata::meta::Regex;
 use regex_automata::util::captures::Captures;
 use regex_automata::{Anchored, Input, MatchKind};

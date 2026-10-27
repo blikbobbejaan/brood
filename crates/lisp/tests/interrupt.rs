@@ -140,7 +140,10 @@ fn string_natives_are_interrupted_inside() {
 
 #[test]
 fn a_regex_scan_is_interrupted_between_searches() {
-    builtin_is_stopped_inside("(string/repeat \"a\" 100000)", "(%regex-find-all \"a\" big)");
+    builtin_is_stopped_inside(
+        "(string/repeat \"a\" 100000)",
+        "(%regex-find-all \"a\" big)",
+    );
 }
 
 #[test]
@@ -166,7 +169,10 @@ fn a_line_diff_is_interrupted_inside() {
 
 #[test]
 fn a_ui_harvest_is_interrupted_inside() {
-    builtin_is_stopped_inside("(vec (map (range 100000) (fn (i) [:clear])))", "(%ui-harvest big false)");
+    builtin_is_stopped_inside(
+        "(vec (map (range 100000) (fn (i) [:clear])))",
+        "(%ui-harvest big false)",
+    );
 }
 
 #[cfg(feature = "treesit-ruby")]

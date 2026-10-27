@@ -1173,14 +1173,19 @@ pub(crate) fn interrupt_caught() {
     }
 }
 
-/// How long `pid`'s interrupt window has been open, or None — a frontend's busy cursor
-/// asks it of the loop it delivers to (ADR-491). Dead or closed: None.
-pub(crate) fn interrupt_window_open_for(pid: u64) -> Option<std::time::Duration> {
+/// Is `pid` busy — running a turn in an interrupt window that has been open as long as its
+/// quit key's busy-ms (300 ms without one)? What a window's busy cursor asks of the loop it
+/// delivers to (ADR-491): `None` when no window is open (the loop is idle, or gone), so the
+/// frontend can stop asking; `Some(busy)` while one is.
+#[cfg(feature = "gui")]
+pub(crate) fn interrupt_busy(pid: u64) -> Option<bool> {
     let mailbox = REGISTRY.get(pid)?;
-    mailbox
-        .interrupt
-        .open_for_us()
-        .map(std::time::Duration::from_micros)
+    let open_us = mailbox.interrupt.open_for_us()?;
+    let busy_us = crate::core::sync::lock(&mailbox.state)
+        .quit_key
+        .as_ref()
+        .map_or(300_000, |quit| quit.busy_us);
+    Some(open_us >= busy_us)
 }
 
 /// Is an interrupt due for the calling process? A peek for code that cannot raise where it
