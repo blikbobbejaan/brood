@@ -1132,8 +1132,8 @@ pub(crate) fn set_quit_key(key: Option<(super::interrupt::QuitPattern, u64)>) {
     });
 }
 
-/// `(proc/allow-interrupt ceiling-ms)` / `(proc/inhibit-interrupt)` (ADR-491): open or close
-/// the calling process's interrupt window.
+/// Open (`Some(ceiling_ms)`) or close (`None`) the calling process's interrupt window —
+/// `proc/interruptible`'s two ends (ADR-491).
 pub fn set_interrupt_window(open: Option<Option<u64>>) {
     let ctx = current_process();
     match open {

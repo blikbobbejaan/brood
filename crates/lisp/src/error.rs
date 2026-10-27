@@ -304,8 +304,8 @@ pub mod error_codes {
     pub const PROC_MAILBOX_LIMIT: &str = "E0046";
     /// The process was interrupted at a safepoint (ADR-491): its quit key arrived while it
     /// was busy (a window's C-g), another process called `proc/interrupt`, or the ceiling of
-    /// its interrupt window (`proc/allow-interrupt ms`) passed. Catchable; the window closes
-    /// as it is raised, so the handler runs uninterrupted.
+    /// its interrupt window (`proc/interruptible ms thunk`) passed. Catchable, and sticky: a
+    /// catch inside the window is interrupted again until `proc/interruptible` closes it.
     pub const INTERRUPTED: &str = "E0047";
     /// File IO failed: `load` / `slurp` / `spit` / `make-dir` / `list-dir` /
     /// `cwd` / `check-file` couldn't read or write a path.

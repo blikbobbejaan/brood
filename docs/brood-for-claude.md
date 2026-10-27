@@ -896,16 +896,19 @@ code paints to a terminal or a GUI window unchanged.
   `update`/`view` slower than `*ui-slow-ms*` (50) is reported with the input's tag — to the
   model's `:on-slow` `(fn (report) …)`, else stderr.
 - **Quit** (ADR-491) = `update` and `view` run in an interrupt window, and `ui-run` arms the
-  kernel's quit key: a window's C-g (`:ctrl-g`, on the priority lane) arriving while a turn
-  has run past `*ui-quit-busy-ms*` (300) STOPS it at its next safepoint — an interrupted
-  `update` keeps the old model, an interrupted `view` the last frame — and is then folded as
-  an ordinary key. A BACKGROUND message's fold is stopped past `*ui-event-ceiling-ms*`
-  (2000); a user's command never is. Both are reported to `:on-slow` with `:interrupted true`.
-  Model keys: `:quit-key` (nil: none), `:quit-busy-ms`, `:event-ceiling-ms` (nil: none).
-  Outside `ui-run`: `(proc/allow-interrupt ceiling-ms)` / `(proc/inhibit-interrupt)` around
-  stoppable work, inside its `try`; `(proc/interrupt pid)`; `(proc/set-quit-key key
-  busy-ms)`. The error is `{:kind :interrupted :code "E0047"}`. A process parked in `receive`
-  is never interrupted.
+  kernel's quit key: C-g (`:ctrl-g` — a window and the terminal deliver it on the priority
+  lane, a served session as `[:key :ctrl-g]`) arriving while a turn has run past
+  `*ui-quit-busy-ms*` (300) STOPS it at its next safepoint, inside long builtins too — an
+  interrupted `update` keeps the old model, an interrupted `view` the last frame — and is
+  then folded as an ordinary key. A window shows the wait cursor meanwhile. A BACKGROUND
+  message's fold is stopped past `*ui-event-ceiling-ms*` (2000); a user's command never is.
+  Both are reported to `:on-slow` with `:interrupted true` and `:input` (true for the user's
+  turn — say "Quit" only then). Model keys: `:quit-key` (nil: none), `:quit-busy-ms`,
+  `:event-ceiling-ms` (nil: none). Outside `ui-run`: `(proc/interruptible ceiling-ms
+  thunk)` → `[:ok v]` or `[:interrupted e]`; `(proc/interrupt pid)`; `(proc/set-quit-key key
+  busy-ms)`. The error is `{:kind :interrupted :code "E0047"}` and it is STICKY: a
+  `(catch e …)` inside the window is interrupted again at its next safepoint, so a catch-all
+  cannot swallow quit. A process parked in `receive` is never interrupted.
 - **A fragment that need not re-render** = `(ui-memo key deps thunk)` (ADR-336): inside
   a running loop the previous turn's ops are reused while `deps` are `=` — a buffer
   line of its rope and spans, a status bar of its segments — else `(thunk)` runs. Name

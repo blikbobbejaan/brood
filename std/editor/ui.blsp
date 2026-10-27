@@ -1195,10 +1195,13 @@ keeps the previous model; an interrupted `view` keeps the last frame on screen. 
 a BACKGROUND message is also stopped by the loop itself past `*ui-event-ceiling-ms*` (the
 model's `:event-ceiling-ms`, nil for none); a user's own command never is — only C-g stops
 that, as in Emacs. Either is reported like a slow turn, with `:interrupted true` in the
-report. The C-g is queued as well, so the app still folds it next (its keyboard-quit).
-A window delivers C-g on the priority lane, where the kernel can see it while the loop
-is busy; the terminal's keys are read by the loop itself, so a terminal app has no quit
-key mid-turn (the ceiling still applies).
+report, whose `:input` says whether the turn was the user's. A catch-all inside `update`
+cannot swallow the interrupt: it is sticky until the turn ends. The C-g is queued as well,
+so the app still folds it next (its keyboard-quit). A window and the terminal (a reader
+thread, `term/forward-input`) deliver C-g on the priority lane, where the kernel sees it
+while the loop is busy; a display that ships keys in another shape says so with
+`:quit-message` (a served session's `[:key k]`). A window shows the wait cursor while a
+turn is past the busy-ms.
 
 **A turn that changes nothing renders nothing (ADR-444).** When the model after a turn
 is `=` to the one last drawn, at the same grid, the loop skips `view` and `:draw` and goes

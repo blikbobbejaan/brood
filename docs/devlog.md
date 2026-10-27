@@ -4300,3 +4300,20 @@ native poll's check sabotaged red), `--lib` filters `interrupt`, `mailbox`, `qua
 `natives_never_mutate` test binaries, `ui_test` (92), `display`, `gui`, `observer`, `serve`,
 the `receive_*` and `mailbox_order` tests, `doc_examples`, `audit`, `nest check --strict` on
 `ui.blsp`, clippy (gui, treesit-grammars). Nothing was measured.
+
+2026-10-27 (ADR-491, quit closed out): the interrupt is STICKY — a `catch` that binds it ends
+the quantum and it is raised again until the window closes — so a catch-all inside `update`
+cannot swallow C-g; `proc/interruptible ceiling-ms thunk` replaced the allow/inhibit pair,
+opening, closing and catching in Rust. Long builtins poll (`eval::InterruptPoll`): `sort`
+without a callback (chunked, then merged as runs), string split/join/codepoints/graphemes,
+the regex scans between searches (one search stays unstoppable but linear), rope
+find/rfind/skip, the plain JSON encoder, the Myers diff, `%ui-harvest`. The terminal's keys
+reach the loop's priority lane through a reader thread (`term/forward-input`), and a quit key
+may be a vector matched as a message head on any lane, which a served session's displays
+declare (`:quit-message`, `[:key k]`). A window shows the wait cursor while a turn is past
+busy-ms. Watchdog reports carry `:input`. Run here: `cargo test -p brood --test interrupt`
+(14; the sort probe sabotaged red), `--lib` filters `interrupt`, `mailbox`, `quantum`,
+`preempt`, `ui_test` (97, a real pty C-g among them), `display`, `gui`, `observer`, `serve`,
+`sse`, the `receive_*` and `mailbox_order` tests, `doc_examples`, `audit`, `nest check
+--strict` on `ui.blsp` / `term.blsp` / `serve.blsp`, clippy (gui, treesit-grammars, all
+targets). Nothing was measured.
