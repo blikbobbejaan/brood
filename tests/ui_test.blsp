@@ -1111,7 +1111,9 @@
 (defn- quit-stubborn (swallowed)
   "Work that catches EVERY error, an interrupt too, and goes on: Emacs's quit is not an
 error a catch-all sees, so the kernel keeps raising it (sticky) until the window closes."
-  (do (try (quit-spin 0) (catch e nil)) (quit-stubborn (inc swallowed))))
+  (do
+    (check-allow :discarded-catch (try (quit-spin 0) (catch e nil)))
+    (quit-stubborn (inc swallowed))))
 
 (defn- quit-count-to (n limit)
   "Count to `limit` — a fold that runs a while and then finishes."
