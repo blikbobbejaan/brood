@@ -73,6 +73,10 @@ pub enum ErrorKind {
     Runtime,
     /// Raised by `(throw v)` from user code.
     User,
+    /// A running process was interrupted at a safepoint (ADR-491): its quit key arrived, another
+    /// process asked (`proc/interrupt`), or its interrupt window's ceiling passed. Catchable like
+    /// any error; nothing was left half-written, since nothing mutates.
+    Interrupted,
 }
 
 impl ErrorKind {
@@ -88,6 +92,7 @@ impl ErrorKind {
             ErrorKind::Type => "type",
             ErrorKind::Runtime => "runtime",
             ErrorKind::User => "user",
+            ErrorKind::Interrupted => "interrupted",
         }
     }
 
@@ -103,6 +108,7 @@ impl ErrorKind {
             ErrorKind::Arity => "arity error:",
             ErrorKind::Type => "type error:",
             ErrorKind::Runtime => "runtime error:",
+            ErrorKind::Interrupted => "interrupted:",
         }
     }
 }
@@ -296,6 +302,11 @@ pub mod error_codes {
     /// library concern (`gen/call` with a timeout); this is the guard against a
     /// receiver that cannot keep up quietly eating the machine.
     pub const PROC_MAILBOX_LIMIT: &str = "E0046";
+    /// The process was interrupted at a safepoint (ADR-491): its quit key arrived while it
+    /// was busy (a window's C-g), another process called `proc/interrupt`, or the ceiling of
+    /// its interrupt window (`proc/allow-interrupt ms`) passed. Catchable; the window closes
+    /// as it is raised, so the handler runs uninterrupted.
+    pub const INTERRUPTED: &str = "E0047";
     /// File IO failed: `load` / `slurp` / `spit` / `make-dir` / `list-dir` /
     /// `cwd` / `check-file` couldn't read or write a path.
     pub const FILE_IO: &str = "E0050";
@@ -600,6 +611,7 @@ impl LispError {
             "type" => ErrorKind::Type,
             "runtime" => ErrorKind::Runtime,
             "user" => ErrorKind::User,
+            "interrupted" => ErrorKind::Interrupted,
             _ => return None,
         };
         let Value::Str(message_id) = key("message")? else {

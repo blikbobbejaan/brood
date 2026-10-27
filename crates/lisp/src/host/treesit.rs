@@ -163,10 +163,20 @@ fn parse_cached(src: &str, lang: &str) -> Result<tree_sitter::Tree, LispError> {
             })
     };
     let mut parser = checkout_parser(lang, &language)?;
-    let tree = parser.parse(src, reuse.as_ref().map(|(_, t)| t));
+    let bytes = src.as_bytes();
+    let tree = parser.parse_with_options(
+        &mut |byte: usize, _point: tree_sitter::Point| -> &[u8] {
+            if byte >= bytes.len() {
+                &[]
+            } else {
+                &bytes[byte..]
+            }
+        },
+        reuse.as_ref().map(|(_, t)| t),
+        Some(tree_sitter::ParseOptions::new().progress_callback(&mut interruptible)),
+    );
     return_parser(lang, parser);
-    let tree =
-        tree.ok_or_else(|| LispError::runtime(format!("tree-sitter: {lang}: parse failed")))?;
+    let tree = tree.ok_or_else(|| parse_failed(lang))?;
     {
         let mut cache = crate::core::sync::lock(&TREE_CACHE);
         // The entry this was an edit of is the same document's older version: it can never
@@ -1241,7 +1251,7 @@ fn parse_pieces<T: SpanText>(
                 }
             },
             None,
-            None,
+            Some(tree_sitter::ParseOptions::new().progress_callback(&mut interruptible)),
         )
     });
     // a pooled parser must not carry this call's ranges into the next parse
@@ -1686,10 +1696,10 @@ fn parse_rope(
             &chunk.as_bytes()[byte - chunk_start..]
         },
         old,
-        None,
+        Some(tree_sitter::ParseOptions::new().progress_callback(&mut interruptible)),
     );
     return_parser(lang, parser);
-    tree.ok_or_else(|| LispError::runtime(format!("tree-sitter: {lang}: parse failed")))
+    tree.ok_or_else(|| parse_failed(lang))
 }
 
 /// The tree-sitter `Point` of `byte` in `text`: its line, and its byte column in that line.
@@ -2510,9 +2520,33 @@ fn checkout_parser(
     Ok(p)
 }
 
+/// A parse's progress callback (ADR-491): cancel when the calling process has an interrupt
+/// due. A full parse of a large file is the longest single builtin an editor makes (half a
+/// second at 250 KB), and the one place a C-g most needs to reach inside one; tree-sitter
+/// asks often, and the answer is one thread-local borrow and a relaxed load.
+#[cfg(feature = "treesit")]
+fn interruptible(_: &tree_sitter::ParseState) -> std::ops::ControlFlow<()> {
+    if crate::process::current_interrupt_due() {
+        std::ops::ControlFlow::Break(())
+    } else {
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+/// Why a parse returned no tree: an interrupt cancelled it (raised as one), else a failure.
+#[cfg(feature = "treesit")]
+fn parse_failed(lang: &str) -> LispError {
+    match crate::process::take_current_interrupt() {
+        Some(by_ceiling) => crate::eval::interrupted_error(by_ceiling),
+        None => LispError::runtime(format!("tree-sitter: {lang}: parse failed")),
+    }
+}
+
 /// Return a parser to the pool for re-use (dropping it if the pool is full).
 #[cfg(feature = "treesit")]
-fn return_parser(lang: &str, parser: tree_sitter::Parser) {
+fn return_parser(lang: &str, mut parser: tree_sitter::Parser) {
+    // a parse an interrupt cancelled would otherwise RESUME on this parser's next use
+    parser.reset();
     // Poison-tolerant like every lock here: a parse that panicked must not make every
     // later parse in the runtime panic too.
     let mut pool = crate::core::sync::lock(&PARSER_POOL);

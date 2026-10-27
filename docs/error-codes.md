@@ -17,7 +17,7 @@ tool's `:value`/`:error` result).
 When `catch` rebinds a kernel error (`(try expr (catch e …))`), `e` is a map:
 
 ```lisp
-{:kind <keyword>           ; :parse | :unbound | :arity | :type | :runtime | :user
+{:kind <keyword>           ; :parse | :unbound | :arity | :type | :runtime | :user | :interrupted
  :message <string>         ; the rendered text
  :code <string>            ; stable, "E00xx"; absent for user-thrown values
  :file <string>            ; when known (set by load / file runner)
@@ -59,6 +59,7 @@ Codes are grouped by [`ErrorKind`]:
 | `E0044` | `:runtime` | runaway *non-tail* recursion: the VM's call-frame cap (`MAX_BC_FRAMES`, 1048576 frames — `recursion too deep: exceeded the VM's 1048576-frame non-tail-call limit`), the tree-walker's frame cap (262144 frames — `exceeded the tree-walker's 262144-frame non-tail-call limit`), or, for recursion that re-enters the evaluator through native code (`eval`, a callback), the native-stack byte budget (tune via `BROOD_STACK_BUDGET`). Clean and catchable either way — never a SIGSEGV | `(defn boom (n) (+ 1 (boom (+ n 1)))) (boom 0)` |
 | `E0045` | `:runtime` | this process's live heap stayed over its own `(proc/flag :max-heap n)` limit after a collection; raised in that process only (uncaught, it retires just the offender) | `(spawn (do (proc/flag :max-heap 1000000) (grow-forever)))` |
 | `E0046` | `:runtime` | this process's mailbox grew past its `(proc/flag :max-mailbox n)` bound (ADR-307); raised in the flooded process only, senders never blocked, nothing dropped | flood a process that set `(proc/flag :max-mailbox 8)` |
+| `E0047` | `:interrupted` | the running process was interrupted at a safepoint (ADR-491): its quit key arrived while it was busy (`proc/set-quit-key`), another process called `proc/interrupt`, or its interrupt window's ceiling passed (`proc/allow-interrupt ms`). Raised only inside an open window, which closes as it is raised | `(try (do (proc/allow-interrupt 0) (spin)) (catch e (:kind e)))` |
 | `E0050` | `:runtime` | file IO (`load`, `file/slurp`, `file/spit`, `file/mkdir`, `file/ls`, `file/cwd`, `check-file`, `check-file-structured`) | `(file/slurp "/no/such/file")` |
 | `E0051` | `:runtime` | `os/run-process` couldn't start the subprocess (with a `:hint` about PATH) | `(os/run-process "nope" [])` |
 | `E0060` | `:runtime` | distribution layer: `node/start` / `node/connect` failed, or a `send` to an unreachable node under `(proc/flag :send-errors true)` | `(node/start "a" "no.such.host:1")` |

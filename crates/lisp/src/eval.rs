@@ -963,16 +963,14 @@ pub(crate) fn passthrough_redirect_ok(inner: Value) -> Result<bool, LispError> {
         return Ok(false);
     }
     // The same tick also honours an untrappable hard `:kill` (checked only on the
-    // reduction rollover — `tick_reporting_hard_kill`). This site is load-bearing for
+    // reduction rollover — `tick_nested`). This site is load-bearing for
     // killability: in a tree-walked loop whose
     // operators are thin wrappers (`>`/`-`/`+` are Brood defns over `%`-prims), the
     // hot path ticks *here*, so a check only at the `'tail:` loop top can be starved —
     // which is how a process spinning inside `eval`/`reflect/eval-string` escaped `(exit pid
     // :kill)` entirely. The raised control signal is untrappable (`%try` re-raises)
     // and the body driver converts it to process death.
-    if crate::process::tick_reporting_hard_kill() {
-        return Err(LispError::kill_signal());
-    }
+    crate::process::tick_nested()?;
     Ok(true)
 }
 
@@ -1066,6 +1064,29 @@ pub(crate) fn proc_mailbox_limit_error(len: usize, limit: usize) -> LispError {
          (proc/flag :max-mailbox n), or let it crash under a supervisor; \
          senders are never blocked and nothing was dropped",
     )
+}
+
+/// The error an interrupt raises at a safepoint (ADR-491) — `{:kind :interrupted …}` to a
+/// `catch`. `by_ceiling`: the interrupt window's own ceiling passed, rather than a quit key
+/// or `proc/interrupt`.
+pub(crate) fn interrupted_error(by_ceiling: bool) -> LispError {
+    let message = if by_ceiling {
+        "the interrupt window's ceiling passed"
+    } else {
+        "quit"
+    };
+    LispError::new(crate::error::ErrorKind::Interrupted, message)
+        .with_code(crate::error::error_codes::INTERRUPTED)
+}
+
+/// Raise the calling process's due interrupt, if any — the probe every safepoint that can
+/// raise makes once per quantum (ADR-491).
+#[inline]
+pub(crate) fn check_interrupt() -> Result<(), LispError> {
+    match crate::process::take_current_interrupt() {
+        Some(by_ceiling) => Err(interrupted_error(by_ceiling)),
+        None => Ok(()),
+    }
 }
 
 pub(crate) fn memory_limit_error(used: usize) -> LispError {

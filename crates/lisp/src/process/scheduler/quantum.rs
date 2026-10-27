@@ -221,16 +221,20 @@ pub(crate) fn refill_nested_quantum() {
     REDUCTIONS.with(|r| r.set(reduction_budget()));
 }
 
-/// [`tick`], additionally reporting whether an untrappable hard `:kill` is pending — the tick
-/// for every eval path that cannot capture, so a process looping under
-/// `reflect/eval-string` stays killable. Checked only on rollover (once per quantum), and
-/// always `false` on the root thread, so the REPL can never kill itself.
-pub(crate) fn tick_reporting_hard_kill() -> bool {
+/// [`tick`], additionally raising an untrappable hard `:kill` that is pending, or a due
+/// interrupt (ADR-491) — the tick for every eval path that cannot capture, so a process
+/// looping under `reflect/eval-string` stays killable and interruptible. Checked only on
+/// rollover (once per quantum); a kill never reaches the root thread, so the REPL can never
+/// kill itself.
+pub(crate) fn tick_nested() -> Result<(), crate::error::LispError> {
     if !tick_capture() {
-        return false;
+        return Ok(());
     }
     refill_nested_quantum();
-    capture_hard_kill_pending()
+    if capture_hard_kill_pending() {
+        return Err(crate::error::LispError::kill_signal());
+    }
+    crate::eval::check_interrupt()
 }
 
 /// What a native activation's reduction poll decided ([`native_poll`]).
@@ -255,7 +259,10 @@ pub(crate) enum NativePoll {
 #[cfg(feature = "jit")]
 pub(crate) fn native_poll(n: u32, unwind: bool) -> NativePoll {
     if !in_capture_run() {
-        return NativePoll::Run; // the root thread never preempts (matches the VM)
+        // The root thread never preempts (matches the VM), but its quantum still rolls
+        // over, and the rollover is where an interrupt (ADR-491) is noticed: leave for the
+        // interpreter, whose safepoint raises it.
+        return root_native_poll(n);
     }
     let spent = REDUCTIONS.with(|r| {
         let left = r.get();
@@ -279,11 +286,32 @@ pub(crate) fn native_poll(n: u32, unwind: bool) -> NativePoll {
         // `:long-schedule` report a worker this process had to itself.
         crate::process::sysmon::quantum_restart();
     }
-    if capture_hard_kill_pending() {
+    if capture_hard_kill_pending() || crate::process::current_interrupt_due() {
         return NativePoll::Leave;
     }
     refill_nested_quantum();
     NativePoll::RunOnFreshQuantum
+}
+
+/// [`native_poll`] on the root thread: charge `n`, and on the rollover leave for the
+/// interpreter if an interrupt is due — the budget left spent, so the interpreter's next
+/// safepoint is a quantum boundary and raises it. Otherwise run on a fresh budget.
+#[cfg(feature = "jit")]
+#[inline]
+fn root_native_poll(n: u32) -> NativePoll {
+    let spent = REDUCTIONS.with(|r| {
+        let left = r.get();
+        r.set(left.saturating_sub(n));
+        left < n
+    });
+    if !spent {
+        return NativePoll::Run;
+    }
+    if crate::process::current_interrupt_due() {
+        return NativePoll::Leave;
+    }
+    REDUCTIONS.with(|r| r.set(reduction_budget()));
+    NativePoll::Run
 }
 
 /// Charge `n` reductions for work a native loop did without ticking — a fold's span of

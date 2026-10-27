@@ -1030,7 +1030,7 @@ impl<'e> Machine<'e> {
         // thread-local decrement; a no-op for the root thread. See `process::tick`.
         //
         // On the rollover the tick also honours a pending hard `:kill`
-        // (`tick_reporting_hard_kill`): the tree-walker runs nested behind native frames
+        // (`tick_nested`): the tree-walker runs nested behind native frames
         // (`eval`/`reflect/eval-string`), so it can't return a `Killed` outcome — but it can
         // *unwind*, and the untrappable kill signal is converted to process death by the
         // body driver. Without this (and the same check in the passthrough redirect, where
@@ -1050,6 +1050,7 @@ impl<'e> Machine<'e> {
                 if crate::process::capture_hard_kill_pending() {
                     return Err(LispError::kill_signal());
                 }
+                crate::eval::check_interrupt()?;
                 if yield_now {
                     let marks = Marks::take(heap);
                     let redo = Redo::Step {
@@ -1064,10 +1065,10 @@ impl<'e> Machine<'e> {
                     return Err(LispError::suspend(None));
                 }
             }
-        } else if crate::process::tick_reporting_hard_kill() {
-            // Deliberately undecorated (no `or_form_pos`): a control signal is not a
-            // user-visible error — it never prints, it only unwinds to the driver.
-            return Err(LispError::kill_signal());
+        } else {
+            // A kill is deliberately undecorated (no `or_form_pos`): a control signal is
+            // not a user-visible error — it never prints, it only unwinds to the driver.
+            crate::process::tick_nested()?;
         }
 
         let expr = self.expr;

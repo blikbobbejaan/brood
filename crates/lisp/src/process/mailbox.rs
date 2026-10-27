@@ -196,6 +196,9 @@ pub(super) struct Mailbox {
     /// the duration and puts the old one back. Kept apart from `isolate_owner` so running
     /// an isolate does not erase the stamp our own parent's isolate reaps us by.
     pub(super) isolate_scope: AtomicU64,
+    /// The interrupt window (ADR-491): written by an interrupter or a quit-key delivery
+    /// on another thread, probed by the process at its quantum-boundary safepoints.
+    pub(super) interrupt: super::interrupt::Interrupt,
 }
 
 /// What a queued envelope carries. Two shapes, because a *local* send to a **parked**
@@ -448,6 +451,11 @@ pub(super) struct MailboxState {
     /// a missed message (it is never LOW — only a push raises it, before the message is
     /// visible).
     pub(super) priority_hint: usize,
+    /// The quit key (`proc/set-quit-key`, ADR-491): a PRIORITY-lane message equal to it
+    /// interrupts this process when its interrupt window has been open long enough.
+    /// Checked by the delivery, which holds this lock anyway; `None` (the default) costs
+    /// a priority delivery one test and an ordinary one nothing.
+    pub(super) quit_key: Option<Box<super::interrupt::QuitKey>>,
 }
 
 /// How many deactivated aliases one mailbox remembers. Fixed and small — the whole
@@ -624,6 +632,7 @@ impl Mailbox {
                 cv_waiters: 0,
                 wake_pending: false,
                 priority_hint: 0,
+                quit_key: None,
             }),
             cv: Condvar::new(),
             // The root (which never goes through enqueue/run_one) keeps this; a
@@ -645,6 +654,7 @@ impl Mailbox {
             parent: AtomicU64::new(0),
             isolate_owner: AtomicU64::new(0),
             isolate_scope: AtomicU64::new(0),
+            interrupt: Default::default(),
         })
     }
 
@@ -1109,6 +1119,52 @@ pub fn take_priority(heap: &mut Heap) -> LispResult {
     Ok(heap.alloc_vector(vec![value]))
 }
 
+/// `(proc/set-quit-key key busy-ms)` (ADR-491): `key` — a keyword, string or integer, what a
+/// frontend delivers as a keystroke — arriving on the calling process's PRIORITY lane while
+/// it has been running in an interrupt window for `busy-ms` interrupts it. nil clears it.
+pub(crate) fn set_quit_key(key: Option<(super::interrupt::QuitAtom, u64)>) {
+    let ctx = current_process();
+    crate::core::sync::lock(&ctx.mailbox.state).quit_key = key.map(|(key, busy_ms)| {
+        Box::new(super::interrupt::QuitKey {
+            key,
+            busy_us: busy_ms.saturating_mul(1000),
+        })
+    });
+}
+
+/// `(proc/allow-interrupt ceiling-ms)` / `(proc/inhibit-interrupt)` (ADR-491): open or close
+/// the calling process's interrupt window.
+pub fn set_interrupt_window(open: Option<Option<u64>>) {
+    let ctx = current_process();
+    match open {
+        Some(ceiling_ms) => ctx.mailbox.interrupt.open(ceiling_ms),
+        None => ctx.mailbox.interrupt.close(),
+    }
+}
+
+/// `(proc/interrupt pid)` (ADR-491): interrupt `pid` at its next safepoint, if it is a live
+/// local process RUNNING in an open interrupt window. True when the request landed; a
+/// parked, closed, dead or remote target is a no-op answering false.
+pub fn interrupt_process(pid: u64) -> bool {
+    let Some(mailbox) = REGISTRY.get(pid) else {
+        return false;
+    };
+    mailbox.status.load(Ordering::Relaxed) != ST_WAITING && mailbox.interrupt.request(0)
+}
+
+/// The safepoint probe (ADR-491): take the calling process's due interrupt, if any —
+/// `Some(by_ceiling)`. One thread-local borrow and a relaxed load when nothing is armed.
+pub(crate) fn take_current_interrupt() -> Option<bool> {
+    super::scheduler::with_current_mailbox(|mailbox| mailbox.interrupt.take()).flatten()
+}
+
+/// Is an interrupt due for the calling process? A peek for code that cannot raise where it
+/// stands — a native loop's poll, a long builtin's own loop, a parser's progress callback —
+/// and leaves it for the next safepoint (or raises [`take_current_interrupt`]'s itself).
+pub(crate) fn current_interrupt_due() -> bool {
+    super::scheduler::with_current_mailbox(|mailbox| mailbox.interrupt.due()).unwrap_or(false)
+}
+
 /// L1 hit/decline accounting, printed at exit under `BROOD_L1_STATS=1`. Plain relaxed
 /// counters — diagnostic only, never read by the runtime.
 pub mod l1_stats {
@@ -1287,6 +1343,17 @@ fn push_and_wake(mb: &Mailbox, env: Envelope) {
         && st.dead_aliases.take(id)
     {
         return;
+    }
+    // The quit key (ADR-491): the message is queued either way — the app still sees its
+    // C-g — and, when the owner is running in an interrupt window open long enough, also
+    // interrupts it. A parked owner is not running: nothing to interrupt.
+    if let Some(quit) = st.quit_key.as_deref()
+        && matches!(env.lane, Lane::Priority)
+        && let Payload::Wire(msg) = &env.msg
+        && quit.matches(msg)
+        && mb.status.load(Ordering::Relaxed) != ST_WAITING
+    {
+        mb.interrupt.request(quit.busy_us);
     }
     st.push(env);
     mb.note_mailbox_bound(st.queue.len());

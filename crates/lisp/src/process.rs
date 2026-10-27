@@ -70,6 +70,7 @@
 //! `runtime_code.rs`), and `promote_lock` → the published table's lock (`promote.rs`).
 
 pub(crate) mod cputime;
+pub(crate) mod interrupt;
 mod io_source;
 pub(crate) mod keywords;
 mod links;
@@ -95,11 +96,13 @@ pub use timer::SchedDeadline;
 /// for `timer`'s lazy cancellation.
 pub use timer::pending_timer_count;
 
+pub(crate) use mailbox::{current_interrupt_due, set_quit_key, take_current_interrupt};
 pub use mailbox::{
     deactivate_alias, list_local_pids, mailbox_len, max_mailbox, process_cpu_ns, process_gc_runs,
     process_mem, process_reductions, process_status, receive_lane, receive_match, send,
     send_in_lane, set_max_mailbox, take_priority,
 };
+pub use mailbox::{interrupt_process, set_interrupt_window};
 pub use message::{ClosureArmMsg, ClosureMsg, Message, from_message, to_message};
 pub(crate) use message::{chunk_flush, chunk_payload, error_reason};
 pub(crate) use scheduler::exit_reason_phrase;
@@ -148,7 +151,7 @@ pub fn parked_process_count() -> usize {
 pub(crate) use scheduler::{
     Safepoint, TreeWalkGuard, capture_hard_kill_pending, capture_top_level,
     charge as charge_reductions, charge_native, dirty_block, driver_safepoint, expire_quantum,
-    in_capture_run, set_capture_top_level, stop_between_elements, tick_reporting_hard_kill,
+    in_capture_run, set_capture_top_level, stop_between_elements, tick_nested,
 };
 // A native activation's poll is called only from the JIT's runtime callback (`crate::jit`),
 // so its re-export is feature-gated to keep the no-`jit` build warning-free.

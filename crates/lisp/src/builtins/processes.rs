@@ -85,6 +85,34 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["target", "key", "msg"],
         "Send msg to target, REPLACING any message sent with the same key that target has not received yet — for state that only matters at its newest value (a file's diagnostics, a progress figure, a status chip), so a fast producer cannot bury a slow receiver in stale copies (ADR-490). The replacement queues at the back, in its own arrival order; a message already received is never touched. key is compared by its printed form: a keyword, string, number or a vector of them. Messages without a key are never replaced. A local registered name (`:editor`, or a `{:name :node}` address naming this node) keeps the lane; a remote or dead target gets a plain `send`. Returns nil.\n\n    (do (proc/send-latest (self) :progress 1) (send (self) :other) (proc/send-latest (self) :progress 2) [(receive (m m)) (receive (m m)) (receive (m m) (after 0 :empty))])   → [:other 2 :empty]",
         send_latest);
+    primitives.def(
+        "proc/allow-interrupt",
+        Arity::exact(1),
+        Sig::new(vec![int.union(nil_ty.clone())], nil_ty.clone()),
+        &["ceiling-ms"],
+        "Open the calling process's INTERRUPT WINDOW (ADR-491): until `proc/inhibit-interrupt` closes it, the process may be stopped mid-computation — by `proc/interrupt`, by its quit key (`proc/set-quit-key`), or, when ceiling-ms is a number, by itself once that many ms have passed. The stop is a catchable error of kind `:interrupted`, raised at the next safepoint (within about a millisecond of work, at every tier, and inside a tree-sitter parse); raising it closes the window, so the handler runs uninterrupted. Open the window INSIDE the `try` that will catch it, and close it there too, so an interrupt can never land in code that does not expect one. A process blocked in `receive` is not interrupted until it runs again (a ceiling) or at all (a request). Returns nil.\n\n    (try (do (proc/allow-interrupt 0) (letrec (spin (fn (n) (spin (inc n)))) (spin 0))) (catch e (:kind e)))   → :interrupted",
+        allow_interrupt);
+    primitives.def(
+        "proc/inhibit-interrupt",
+        Arity::exact(0),
+        Sig::nullary(nil_ty.clone()),
+        &[],
+        "Close the calling process's interrupt window (ADR-491), dropping an interrupt that was requested but not yet raised and disarming its ceiling. Idempotent. Returns nil.\n\n    (do (proc/allow-interrupt nil) (proc/inhibit-interrupt) (proc/interrupt (self)))   → false",
+        inhibit_interrupt);
+    primitives.def(
+        "proc/interrupt",
+        Arity::exact(1),
+        Sig::new(vec![pid_ty], bool_ty),
+        &["pid"],
+        "Interrupt pid at its next safepoint (ADR-491) — Emacs's quit, from outside: its running computation raises a catchable `{:kind :interrupted …}` there. Only a local process RUNNING inside an open interrupt window (`proc/allow-interrupt`) is interrupted; a process blocked in `receive`, one with its window closed, a dead or a remote pid is left alone, and nothing is remembered for later. True when the interrupt landed.\n\n    (try (do (proc/allow-interrupt nil) (proc/interrupt (self)) (letrec (spin (fn (n) (spin (inc n)))) (spin 0))) (catch e (:kind e)))   → :interrupted",
+        interrupt_proc);
+    primitives.def(
+        "proc/set-quit-key",
+        Arity::exact(2),
+        Sig::new(vec![kw.union(string).union(int).union(nil_ty.clone()), int], nil_ty.clone()),
+        &["key", "busy-ms"],
+        "Declare the calling process's QUIT KEY (ADR-491), Emacs's `quit-char`: when key — a keyword, string or integer, the shape a frontend delivers a keystroke in (a window's C-g is `:ctrl-g`) — arrives on its PRIORITY lane (`proc/send-priority`) while it has been running in an open interrupt window for at least busy-ms, the kernel interrupts it as `proc/interrupt` does. The message is queued as well, so the app still sees its key. nil clears it; with none set a delivery pays nothing. Returns nil.\n\n    (do (proc/set-quit-key :ctrl-g 0) (let (r (try (do (proc/allow-interrupt nil) (proc/send-priority (self) :ctrl-g) (letrec (spin (fn (n) (spin (inc n)))) (spin 0))) (catch e [(:kind e) (receive (m m))]))) (proc/set-quit-key nil 0) r))   → [:interrupted :ctrl-g]",
+        set_quit_key);
     // Arg shape: (matcher: callable|spec vector, timeout: int|nil, tags: vector|nil). The
     // `receive` macro in `std/prelude.blsp` expands to exactly this. The matcher
     // answers `[idx var…]` for the clause that matched (nil = no match) — a closure, or
@@ -395,6 +423,67 @@ pub(super) fn receive_lane(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
 /// `(proc/take-priority)` — the oldest priority-lane message as `[msg]`, or nil.
 pub(super) fn take_priority(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     crate::process::take_priority(heap)
+}
+
+/// A non-negative millisecond count, or nil.
+fn optional_ms(heap: &Heap, who: &str, value: Value) -> Result<Option<u64>, LispError> {
+    match value {
+        Value::Int(n) if n >= 0 => Ok(Some(n as u64)),
+        Value::Nil => Ok(None),
+        other => Err(LispError::type_err(format!(
+            "{who}: expected a non-negative number of ms or nil, got {}",
+            crate::syntax::printer::print(heap, other)
+        ))),
+    }
+}
+
+/// `(proc/allow-interrupt ceiling-ms)` — open the interrupt window (ADR-491).
+pub(super) fn allow_interrupt(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let ceiling = optional_ms(heap, "proc/allow-interrupt", arg(args, 0))?;
+    crate::process::set_interrupt_window(Some(ceiling));
+    Ok(Value::nil())
+}
+
+/// `(proc/inhibit-interrupt)` — close the interrupt window (ADR-491).
+pub(super) fn inhibit_interrupt(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
+    crate::process::set_interrupt_window(None);
+    Ok(Value::nil())
+}
+
+/// `(proc/interrupt pid)` — interrupt a running local process in its window (ADR-491).
+pub(super) fn interrupt_proc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    match arg(args, 0) {
+        Value::Pid { node, id } if crate::dist::is_local(node) => {
+            Ok(Value::boolean(crate::process::interrupt_process(id)))
+        }
+        Value::Pid { .. } => Ok(Value::boolean(false)),
+        other => Err(LispError::type_err(format!(
+            "proc/interrupt: expected a pid, got {}",
+            crate::syntax::printer::print(heap, other)
+        ))),
+    }
+}
+
+/// `(proc/set-quit-key key busy-ms)` — the message that interrupts this process (ADR-491).
+pub(super) fn set_quit_key(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    use crate::process::interrupt::QuitAtom;
+    let busy_ms = optional_ms(heap, "proc/set-quit-key", arg(args, 1))?.unwrap_or(0);
+    let key = match arg(args, 0) {
+        Value::Nil => None,
+        Value::Keyword(name) => Some(QuitAtom::Keyword(name)),
+        Value::Int(n) => Some(QuitAtom::Int(n)),
+        value @ Value::Str(_) => Some(QuitAtom::Str(
+            super::args::expect_string_ref(heap, "proc/set-quit-key", value)?.to_string(),
+        )),
+        other => {
+            return Err(LispError::type_err(format!(
+                "proc/set-quit-key: expected a keyword, string, integer or nil, got {}",
+                crate::syntax::printer::print(heap, other)
+            )));
+        }
+    };
+    crate::process::set_quit_key(key.map(|key| (key, busy_ms)));
+    Ok(Value::nil())
 }
 
 /// `(exit pid reason)` — send an exit signal to a local green process.

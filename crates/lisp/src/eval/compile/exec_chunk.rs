@@ -1663,9 +1663,9 @@ pub(crate) fn attach_vm_trace_callers(e: &mut LispError, frames: &[BcFrame]) {
 ///
 /// Per iteration: the process heap limit (a heap field) and the deadline (a `Cell` read).
 /// Once per quantum, at the reduction rollover: the soft memory limit (it sums 64 allocator
-/// shards when armed), the mailbox bound and a pending hard kill (each a thread-local
-/// `RefCell` borrow plus an atomic), and the drain report. A kill or an overflow is honoured
-/// within one quantum — the latency the capture-mode preempt has anyway.
+/// shards when armed), the mailbox bound, an interrupt (ADR-491) and a pending hard kill (each
+/// a thread-local `RefCell` borrow plus an atomic), and the drain report. A kill, an interrupt
+/// or an overflow is honoured within one quantum — the latency the capture-mode preempt has anyway.
 #[inline(always)]
 fn loop_safepoint(heap: &mut Heap, capture: bool) -> Result<Option<ChunkExit>, LispError> {
     if let Some(live) = heap.take_proc_limit_hit() {
@@ -1710,6 +1710,9 @@ pub(super) fn quantum_checks(heap: &Heap) -> Result<(), LispError> {
     if let Some((len, limit)) = crate::process::take_current_mailbox_overflow() {
         return Err(crate::eval::proc_mailbox_limit_error(len, limit));
     }
+    // An interrupt (ADR-491) is honoured here, once per quantum like the mailbox bound: a
+    // relaxed load when nothing is armed.
+    crate::eval::check_interrupt()?;
     if heap.drain_active() {
         crate::process::report_drain_liveness(heap);
     }
