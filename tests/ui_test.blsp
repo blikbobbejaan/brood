@@ -1119,6 +1119,10 @@ error a catch-all sees, so the kernel keeps raising it (sticky) until the window
   "Count to `limit` — a fold that runs a while and then finishes."
   (if (= n limit) n (quit-count-to (inc n) limit)))
 
+(defn- quit-busy-until (deadline)
+  "Keep busy until the wall clock reaches `deadline` (ms) — a command that takes a while."
+  (if (>= (os/now) deadline) nil (quit-busy-until deadline)))
+
 (defn- quit-await (tag)
   (receive ([^tag value] value) (after 20000 :timed-out)))
 
@@ -1224,6 +1228,32 @@ error a catch-all sees, so the kernel keeps raising it (sticky) until the window
       (proc/send-priority loop "after")
       (proc/send-priority loop :quit)
       (assert= (lane-await-seen) [:ctrl-g "after"])))
+  (test "a display that cannot tell input calls a burst's every key input: no ceiling stops one"
+    ;; No `:poll-input`: everything its `:poll` gives is the user's, as before ADR-490. The
+    ;; second key of a coalesced burst is folded by the drain's budget branch, which must
+    ;; pass that on, or the background ceiling stops the user's own command.
+    (let (me (self)
+          step (fn (model input cols rows)
+                 (cond
+                   (= input :quit) (do (send me [:seen (:seen model)]) (assoc model :done true))
+                   (= input "slow")
+                     (do (quit-busy-until (+ (os/now) 150)) (lane-record model :slow-done))
+                   (= input :tick) model
+                   else (lane-record model input)))
+          loop (spawn (receive
+                        (:go (ui-run {:seen []
+                                      :coalesce-input? true
+                                      :event-ceiling-ms 50
+                                      :on-slow (fn (report) (send me [:slow report]))}
+                               (fn (model cols rows) [])
+                               step
+                               (dissoc (lane-display) :poll-input :poll-tagged))))))
+      (send loop "a")
+      (send loop "slow")
+      (send loop :quit)
+      (send loop :go)
+      (assert= (lane-await-seen) ["a" :slow-done])
+      (is (not (:interrupted (receive ([:slow report] report) (after 0 {})))))))
   (test "a background event past the ceiling is interrupted by the loop and reported"
     (let (me (self)
           step (fn (model input cols rows)

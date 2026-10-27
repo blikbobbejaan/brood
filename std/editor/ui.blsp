@@ -938,7 +938,9 @@ the ceiling on any one turn, and `:done` stops it early."
                       fuel
                       deadline
                       :budget (first tagged)
-                      false)))
+                      ;; not input to serve first, but still the user's when the display
+                      ;; cannot tell (no `:poll-input`): no background ceiling for it
+                      (second tagged))))
             else [model nil state]))))))
 
 (defn- ui-render (model last-good clock view display cols rows)
