@@ -3980,6 +3980,41 @@ state agrees with the old line's; a stateless lexer keeps a memo by line text.
 `tests/highlight_test.blsp`, `tests/lexer_test.blsp`, `doc_examples`, all run here; the suites
 run in CI.
 
+2026-10-27 (a JIT-refusal sweep over every benchmark row finds no cheap lowering left): every
+row run with `BROOD_JIT_BAIL_TRACE=1` on `9e5866f3`, each refusal ranked by whether its arm is
+hot. None is the `nbody` kind (one call to a variadic native keeping a hot arm off the native
+tier). By class: (1) `MakeClosure` in the arm — `nqueens`' `solve` (its row ~20% in the VM
+loop), the spawn loops, `latency`'s `dispatch`, two `matmul` closures; the native callback was
+removed as a dead lever on 2026-10-12, and the profitability gate refuses `solve` anyway
+(`call-mediated-boxed`), so this class needs partial lowering (compute-frontier §2c). (2)
+`hosts-receive` — by design; the send-then-receive native loop measured slower (ADR-410's
+amendment). (3) `errors`' self-loop around `try` — the row's cost is the throw and unwind,
+which run in the runtime on either tier. (4) `call-mediated-boxed` on prelude and std arms —
+`seq`, `reverse`, `map`, `into`, `get`, the supervisor and regex internals run at setup, and
+`%match-count-sym` only during macro expansion; `json-slice` forwards to two natives, so
+lowering it moves nothing. (5) Zero-slot wrappers and `module-load-in-flight` retries.
+
+2026-10-27 (the call-mediated gate admits a short arm; `regex` −6%): the JIT's profitability gate
+refused every named function with a non-tail call and no inline vector or self loop
+(`call-mediated-boxed`), on 2026-08-29's measurement that admitting them regressed every row.
+Re-measured with the gate bypassed on `9e5866f3`: elapsed flat on every row but `regex` (−5%),
+and `matmul` +5–10% CPU — the compiler thread compiling `into`/`seq`/`reverse` (~35–100
+instructions, run only at setup). A native call is ~218 instructions against the VM's ~1 400
+(compute-frontier §7.12), so a short arm that is mostly calls wins; a long branchy one costs its
+compile. The gate now admits an arm of at most 24 bytecode instructions. Swept 0/16/24/48/all:
+`regex`'s win is `regex/regex-whole-src` (21 instructions) — at 16 it is gone — and `matmul`'s
+CPU is flat to 24, +5% at 48. Result against `9e5866f3`: `regex` −5.4% instructions, 34.5 → 32.4
+ms; `make ab --floor` over every row, nothing flagged, `matmul` 77 → 77 ms. The cost: programs
+that expand `match` forms now compile `%match-count-sym` (19 instructions, hot during macro
+expansion) once per run, a constant +7–16M instructions on the compiler thread (+0.7% `nbody`,
++1.1% `errors`, +2.3% `errors-deep`; elapsed within noise; constant across `BENCH_N`). Guard:
+`jit_small_call_arm_test` — a 4-instruction call arm settles `:native` (it was refused on
+`9e5866f3`, checked with `BROOD_JIT_BAIL_TRACE`), a ~40-instruction one stays `:bailed` for
+`call-mediated-boxed`, and both answer the same in eight workers. Risk the suite must clear in
+CI: contract shims and small `receive`-adjacent helpers are this size, so the suspend latch
+(compute-frontier §7.1, latent until now) and `contracts_mode`'s depth case get real arms. Not
+run on this machine: the suites run in CI.
+
 2026-10-27 (a gate for the 2026-08-06 naming scrub): `scripts/banned-names.sh`, run by CI's
 rustfmt job and the pre-push hook, fails when a forward-facing file names another runtime; the
 scrub had only a memory note behind it. History (the devlog, decisions, archive, changelog and

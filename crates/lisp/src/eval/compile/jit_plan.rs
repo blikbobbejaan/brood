@@ -864,14 +864,12 @@ pub(super) mod codegen {
     /// `BROOD_JIT_DUMP_IR` cannot distinguish a refused arm from one never hot or never tried.
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     pub enum BailReason {
-        /// **Call-mediated boxed work does not win natively.** The general lowering only beats
-        /// the bytecode VM when it keeps hot values *unboxed* — an inline small-vector read
-        /// (`VectorRef`/`MakeVector`, bintree) or a register-carried self-tail loop
-        /// (loop/collatz/mandelbrot). An arm whose values flow through function calls and heap
-        /// reads gains nothing: it must box/unbox a `Value` around each op *and* pay native-entry
-        /// + FFI-callback + deopt cost, which the VM does without. This is `nbody`'s shape
-        /// (`f`=`(nth (nth b i) k)`, plus `newvel`/`potential`/`advance-body`'s `f64` arith over
-        /// `f` calls), where tiering **regresses** the benchmark 15–20%.
+        /// **Call-mediated boxed work does not win natively — past a small size.** The general
+        /// lowering beats the bytecode VM when it keeps hot values *unboxed* — an inline
+        /// small-vector read (`VectorRef`/`MakeVector`, bintree) or a register-carried self-tail
+        /// loop (loop/collatz/mandelbrot). A large arm whose values flow through function calls
+        /// and heap reads gains nothing for its compile: it boxes/unboxes a `Value` around each
+        /// op. A short one is admitted: its calls are cheaper native than on the VM.
         CallMediatedBoxed,
     }
 
@@ -882,6 +880,10 @@ pub(super) mod codegen {
             }
         }
     }
+
+    /// The largest named call-mediated arm, in bytecode instructions, that the gate admits
+    /// anyway — see the comment at its use in [`plan_general_lowering`].
+    const CALL_MEDIATED_ADMIT_MAX_INSTS: usize = 24;
 
     /// The backend-independent go/no-go for the **general** (boxed) lowering of `arm`.
     ///
@@ -900,8 +902,9 @@ pub(super) mod codegen {
     ///
     /// **This gate encodes a COST model, so deopt feedback cannot replace it**: an admitted
     /// call-mediated arm compiles correctly and never type-deopts, so feedback has no signal.
-    /// Removing the gate regresses every benchmark row (docs/compute-frontier.md §7.1); the
-    /// design that can beat it is partial lowering, not admission-plus-feedback.
+    /// It regressed every benchmark row when removed on 2026-08-29 (docs/compute-frontier.md
+    /// §7.1); re-measured on 2026-10-27, removing it was flat on wall time everywhere but
+    /// `regex` (−5%) and cost `matmul` 10% CPU in compiles, hence the size cap.
     pub fn plan_general_lowering(arm: &CompiledArm) -> Result<(), BailReason> {
         let Some(chunk) = arm.chunk.as_ref() else {
             return Ok(()); // no chunk to judge — the lowerer's own pre-bail handles it
@@ -940,7 +943,15 @@ pub(super) mod codegen {
         // The unboxing signals that earn the general lowering:
         //   * a `VectorRef`/`MakeVector` (rules bintree/matmul back in — they lower and win), or
         //   * a self-tail loop (`fold--loop`, hence `reduce`/`pipeline`; `row-sum`).
+        //
+        // And a **small** arm is admitted without either (2026-10-27). A native call costs ~218
+        // instructions against the VM's ~1 400 (compute-frontier §7.12), so a short arm that is
+        // mostly calls wins natively — `regex/matches?` (4 instructions, 2 calls) made `regex`
+        // −5% — while what the gate still saves is compiling big, branchy, rarely-hot prelude
+        // arms (`into`, `seq`, `reverse`: ~35–100 instructions). Measured on `matmul`, the row
+        // that compiles them: CPU flat up to this size, +5% at 48, +10% admitting everything.
         if arm.dbg_name.is_some()
+            && code.len() > CALL_MEDIATED_ADMIT_MAX_INSTS
             && non_tail_call_count(code) >= 1
             && !has_inline_vec
             && !has_self_loop
