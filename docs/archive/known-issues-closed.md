@@ -15461,3 +15461,32 @@ whose guard follows the new binding and, if the canonical predicate comes back, 
 checks the answer and that the arm left the native tier, then restores it and checks again.
 The first push asserted the arm went native again after the restore; the latch never allows
 that, and CI said so.
+
+## KI-306 — two JIT tier tests read a native arm off the native tier, intermittently ✅ FIXED 2026-10-27
+
+**Seen:** CI on `6ff080db` (both tests) and `f37fcdf7` (the first), passing between them.
+`receive_loop_jit_test` "a loop that parks on EVERY message still goes native" read `:untried`;
+`jit_unrelated_rebind_test` "a hot arm goes native and stays there while another process keeps
+rebinding" failed `(assert (> rebinds 0))`.
+
+**Cause, the first.** A runtime collection that moves shared code bumps the runtime-wide
+`code_relocations` counter, and `native_still_valid` resets every arm compiled before it — the
+counter does not say which handles moved, so `lonely-loop`, `inc`, `dec` and `%reverse-acc` reset
+together (named by a temporary trace in `native_still_valid`). The loop re-tiers on its next 128
+entries. The test read the tier once after 400 one-at-a-time round trips, so a collection in the
+last ~128 read `:untried`. Reproduced on demand: a second process rebinding a global to fresh
+closures (`(def noise (fn () (str "x" i)))`), never with integer rebinds. Not a lost arm — under
+steady churn the loop stays `:native` across eight batches of 400, and after a reset it is
+`:queued` and then native again.
+
+**Cause, the second.** The rebinder is a fresh process; on a loaded runner it could first run
+after the arm had settled and `stop` was set, and return 0.
+
+**Fix.** The first test reads the tier through `lonely-tier`, which gives the loop up to five
+more batches of 200 one-at-a-time messages; a loop parked mid-arm (the bug the test guards)
+never gets hot, so it still reads `:untried` after every batch. The second test waits for the
+rebinder's first rebind before settling.
+
+**Left as an observation:** `code_relocations` is coarse — one collection resets every native arm
+in the runtime, whether or not anything it baked moved. A per-arm check would spare the
+recompiles; nothing measured asks for it yet.

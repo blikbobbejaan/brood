@@ -32,6 +32,22 @@
   (send pid [:get (self)])
   (receive ([:total t] t) (after 20000 :timeout)))
 
+;; `k` messages one at a time, each answered before the next is sent, so the loop parks
+;; between every pair.
+(defn one-at-a-time (pid k)
+  (if (= k 0) nil (do (send pid [:add 1]) (ask-total pid) (one-at-a-time pid (dec k)))))
+
+;; `lonely-loop`'s tier, given up to `batches` more rounds of one-at-a-time traffic to get
+;; there. A runtime collection that moves shared code resets every native arm
+;; (`code_relocations`), and the loop re-tiers on its next 128 entries; one landing late in
+;; the first 400 read `:untried` (KI-306). A loop parked mid-arm never gets hot, so it reads
+;; `:untried` after every batch.
+(defn lonely-tier (pid batches)
+  (let (state (tier-of lonely-loop 1 500))
+    (if (or (= state :native) (= batches 0))
+      state
+      (do (one-at-a-time pid 200) (lonely-tier pid (dec batches))))))
+
 ;; Run `acc-loop` hot in a process of its own, so its arm (shared by every process) is native.
 (defn warm-acc-loop ()
   (let (warm (spawn (acc-loop 0)))
@@ -140,12 +156,10 @@
     ;; threshold; parked mid-arm, it never gets hot.
     ;; Its own loop function: the other tests make `acc-loop` hot with bursts.
     (let (pid (spawn (lonely-loop 0)))
-      (dotimes (k 400)
-        (send pid [:add 1])
-        (ask-total pid))
+      (one-at-a-time pid 400)
       (assert= 400 (ask-total pid))
       (when (%native-tier?)
-        (assert= :native (tier-of lonely-loop 1 500)))
+        (assert= :native (lonely-tier pid 5)))
       (send pid :stop)))
   (test "a native loop killed while parked dies, and its monitor hears of it"
     (warm-acc-loop)

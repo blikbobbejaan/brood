@@ -4059,3 +4059,12 @@ helpers on a parked process's path now native). A size rule cannot see that a sh
 through a callee, which is what the old gate fenced off by accident (compute-frontier §7.1:
 "the latch is LATENT on the shipped tree"). Reverted; the measurement stands — `regex` −6% is
 there for an admission rule that knows which arms can reach a receive.
+
+2026-10-27 (KI-306: two intermittent JIT tier tests, both test races): `receive_loop_jit_test`'s
+lonely loop read `:untried` when a runtime collection that moves shared code landed in the last
+~128 of its 400 round trips — `code_relocations` resets every native arm, and the loop re-tiers
+after, so the test now gives it up to five more batches. `jit_unrelated_rebind_test`'s rebinder
+could first run after the arm settled; the test now waits for its first rebind. Reproduced the
+first on demand (a process rebinding a global to fresh closures) and named the cause with a
+temporary trace in `native_still_valid`, since removed. Not run on this machine: the suites run
+in CI.
