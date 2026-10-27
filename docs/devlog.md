@@ -4125,3 +4125,19 @@ writer, registration prune and installer take the carried-module predicate and t
 bundle: first frame ~750 → ~185 ms, +5.3 MB. Run here: `release_bundle` (9, two new),
 `bundle::tests`, `startup_image`, `image`, `image_section_decode`, `project`; bedit bundled,
 booted and boot-checked twice.
+2026-10-27 (ADR-485, `nest check` re-checks what an edit reached): bedit's strict ratchet
+test spent 55 s re-checking 158 of 204 files after any edit, one at a time. Three causes. A
+user global's fingerprint fact was its defining file's mtime. The reuse test ran before
+`project-preload!` while the stamp was taken after it, so a lazily loaded std global read
+`U` against a stamped `F`. And 4.5 MB of expensive files stayed under the pool's 7 MB
+threshold. Now a closure's fact is a process-independent digest of its arms (symbols by
+name, gensyms by first appearance, maps order-free); a non-function contributes its kind,
+and a dynamic or earmuffed global only that it is bound. The expander records each macro
+it expands. `nest check` preloads every closure before the reuse test. The pool engages at
+1 MB, with chunks dealt by size. A replay prints the lines as printed, in order. bedit:
+touch 53.5 → 3.3 s (1 re-checked), a one-function edit 5.5 s (3), a hub edit 7.7 s (123),
+cold re-check 42 → 4.7 s. Verdicts byte-identical to the old binary's. Run here:
+`types::check::tests` (574, with the new digest test), `check_preload`, `project`,
+`checker_pass_agreement`, `checker_follows_live_image`, `nest check --strict` on
+`project-check.blsp`, and clippy. Not run here: `check_incremental.rs` and the suites, left
+to CI.

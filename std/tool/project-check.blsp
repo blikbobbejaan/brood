@@ -166,7 +166,7 @@ module included), built from the whole `files` universe — the KI-17 reachabili
 ;; the cost: a few hundred very large files are as much work as thousands of small ones and
 ;; must not check on one core. 7 MB ≈ 2000 files of ~180 lines, the point where the
 ;; per-worker setup below amortises.
-(def *check-min-parallel-bytes* 7000000)
+(def *check-min-parallel-bytes* 1000000)
 (sig *check-min-parallel-bytes* int)
 ; chunks per core (load-balancing headroom)
 (def *check-oversample* 2)
@@ -300,14 +300,28 @@ module included), built from the whole `files` universe — the KI-17 reachabili
       (>= (fold files 0 (fn (acc f) (+ acc (project-entry-bytes f))))
         *check-min-parallel-bytes*))))
 
+;; Deal `files` into at most `n` chunks HEAVIEST FIRST, round-robin by byte size — each
+;; chunk a list. The chunks used to be consecutive runs of the (alphabetical) file list,
+;; and a group waits for its slowest chunk: on bedit the six files that cost 1.4-1.8 s
+;; each (the big test suites) sat in neighbouring chunks of one wave while the rest of the
+;; pool idled. Dealt by size, every chunk carries about the same bytes, and bytes are what
+;; a check costs.
+(defn- project-deal-chunks (n files)
+  (let (heaviest (sort-by files (fn (f) (- 0 (project-entry-bytes f))))
+        dealt (fold heaviest
+                [(vec (repeat n nil)) 0]
+                (fn (acc f)
+                  (let ([chunks i] acc)
+                    [(update chunks (math/mod i n) (fn (chunk) (cons f chunk))) (inc i)]))))
+    (seq/filter (map (first dealt) reverse) (fn (chunk) (not (empty? chunk))))))
+
 (defn- project-pfold-files-shared (files shared op combine on-death init)
   (let (n (count files))
     (if (not (project-parallel-worth-it? files))
       (combine init (project-pfold-run op (cons shared files)))
       (let (cores (project-pool-size)
-            nchunks (math/min n (* cores *check-oversample*))
-            csize (math/quot (+ n nchunks -1) nchunks)
-            chunks (map (project-chunk-list csize files nil) (fn (c) (cons shared c))))
+            chunks (map (project-deal-chunks (math/min n (* cores *check-oversample*)) files)
+                     (fn (c) (cons shared c))))
         (project-pfold-groups (project-chunk-list cores chunks nil)
           op
           combine
@@ -320,10 +334,7 @@ module included), built from the whole `files` universe — the KI-17 reachabili
     (if (not (project-parallel-worth-it? files))
       (combine init (project-pfold-run op files))
       (let (cores (project-pool-size)
-            nchunks (math/min n (* cores *check-oversample*))
-            ; ceil(n / nchunks)
-            csize (math/quot (+ n nchunks -1) nchunks)
-            chunks (project-chunk-list csize files nil))
+            chunks (project-deal-chunks (math/min n (* cores *check-oversample*)) files))
         ;; Group size = `cores`: at most `cores` worker heaps live at once (bounds
         ;; peak memory), and with `*check-oversample*` chunks per core the groups
         ;; still keep every core fed. All cores busy, live set ≈ one core-wide wave.
@@ -384,12 +395,15 @@ module included), built from the whole `files` universe — the KI-17 reachabili
 (defn- project-unbound-warning? (w)
   (includes? w "unbound symbol: "))
 
+;; `w` as `nest check` prints it: an advisory warning carries its marker.
+(defn- project-printed-warning (w)
+  (if (project-advisory-warning? w) (str w "  (advisory — not gating)") w))
+
 (defn- project-tally-warning (tally w)
+  (io/puts (project-printed-warning w) :to *err*)
   (if (project-advisory-warning? w)
-    (do (io/puts (str w "  (advisory — not gating)") :to *err*) tally)
-    (do
-      (io/puts w :to *err*)
-      (project-tally-add tally [1 (if (project-unbound-warning? w) 1 0)]))))
+    tally
+    (project-tally-add tally [1 (if (project-unbound-warning? w) 1 0)])))
 
 ;; The `:check` op (runs in a worker): check every file in `chunk`, PRINT each
 ;; file's warnings, return the GATING count. A global (not a shipped closure) so
@@ -479,7 +493,19 @@ module included), built from the whole `files` universe — the KI-17 reachabili
   ;; and the pre-flight cost the whole launch — 2.2 s of 2.5 s on bedit. A dependent's
   ;; verdict that shifts without its own file changing is `nest check`'s to report;
   ;; the pre-flight is advisory and scoped to what is about to run.
-  (let (started (os/now-ns)
+  ;;
+  ;; `nest check` PRELOADS before the reuse test, every file's closure, not after it for
+  ;; the re-check set alone (ADR-485). A fingerprint is stamped after the re-check, in a
+  ;; preloaded heap; tested before the preload, a global of a std module only the preload
+  ;; brings in (`datetime/format`, reached through a project function's body) read `U`
+  ;; where it had been stamped `F`, so every file that observed one missed the cache on
+  ;; every run — on bedit most of them, whatever was edited. Preloading all of `files`
+  ;; costs what preloading the re-check set did (the closures overlap almost entirely)
+  ;; and makes the test read the heap the stamp was taken in.
+  (let (t0 (os/now-ns)
+        _ (when strict? (project-preload! files closures))
+        _ (project-check-trace "preload" t0)
+        started (os/now-ns)
         cache (project-read-cache root manifest)
         _ (project-check-trace "read-cache" started)
         t1 (os/now-ns)
@@ -505,8 +531,9 @@ module included), built from the whole `files` universe — the KI-17 reachabili
         [reuse recheck] parts
         _ (project-check-trace (str "reuse-test (" (count recheck) " to re-check)") t1)
         t2 (os/now-ns)
-        _ (when (not (empty? recheck)) (project-preload! (map recheck first) closures))
-        _ (project-check-trace "preload" t2)
+        _ (when (and (not strict?) (not (empty? recheck)))
+            (project-preload! (map recheck first) closures))
+        _ (when (not strict?) (project-check-trace "preload" t2))
         t3 (os/now-ns)
         ;; re-check the dirty set in PARALLEL across the worker pool — safe now that
         ;; the dependency recorder is per-process (Heap::check_dep_rec). Each entry is
@@ -536,10 +563,14 @@ module included), built from the whole `files` universe — the KI-17 reachabili
             (fn (n p)
               (let (e (%map-get entries p nil))
                 (if e (fold (nth e 1) n project-tally-warning) n))))
+        ;; AS PRINTED and in the order printed: a replay (ADR-382) prints these lines
+        ;; verbatim, and it had printed the raw warnings in reverse file order, an advisory
+        ;; note without its `(advisory — not gating)` marker
         lines (apply append
-                (reverse (map files
-                           (fn (path)
-                             (let (entry (%map-get entries path nil)) (and entry (nth entry 1))))))))
+                (map files
+                  (fn (path)
+                    (let (entry (%map-get entries path nil))
+                      (and entry (map (nth entry 1) project-printed-warning)))))))
     (when (not (empty? recheck))
       (let (t4 (os/now-ns))
         (project-write-cache root
@@ -927,7 +958,7 @@ Returns nil when there is nothing to report.
 ;; extract depends on the Rust `parse-source`, so it isn't portable across binaries).
 ;; Opt out with `BROOD_NO_CHECK_CACHE=1`.
 ; v2: check-result entries gained a 5th field, the KI-17 require-closure (ADR-189).
-(def *check-cache-version* "v3")
+(def *check-cache-version* "v4")
 ;; The stamp every manifest carries: the binary, the manifest format, and the values of
 ;; the flags that change what a walk does (`%check-walk-flags`, the list `brood file`'s
 ;; pre-flight cache keys on too, ADR-371) — a verdict taken under `BROOD_NO_IMAGE_SIGS=1`

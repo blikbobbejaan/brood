@@ -1700,11 +1700,11 @@ impl Heap {
         // A gensym is a macro-expansion temporary, never a global: its counter differs
         // in every process, so recording one made the dependency fingerprint
         // process-specific — `nest check` and `nest run` could never share a verdict.
-        if crate::core::value::is_gensym(sym) {
-            return;
-        }
+        // Asked only while recording: every macro expansion reaches here (ADR-485), and
+        // outside a check the answer is thrown away.
         if let Some(cell) = self.check.get()
             && let Some(d) = cell.borrow_mut().dep_rec.as_mut()
+            && !crate::core::value::is_gensym(sym)
         {
             d.syms.insert(sym);
         }

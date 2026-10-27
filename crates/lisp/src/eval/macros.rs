@@ -402,6 +402,12 @@ pub fn macroexpand_1(heap: &mut Heap, form: Value, env: EnvId) -> Result<(Value,
     let Some(mid) = head_macro else {
         return Ok((form, false));
     };
+    // A check that expands this call depends on the macro (ADR-485): the expansion is
+    // what it analyses, and no observation of the expanded tree names the macro. A no-op
+    // outside a recording check.
+    if let Some(name) = heap.closure(mid).name {
+        heap.rec_check_dep_sym(name);
+    }
     // Re-derive the tail from the (possibly relocated) form rather than reusing the
     // one read before the require.
     let ValueRef::Pair(p) = form.unpack() else {

@@ -153,13 +153,12 @@ surprise: almost none of the mechanism needs to be *built* — it needs to be
   `nest run --watch` session's own stderr, the same place its startup
   pre-flight already prints them. LSP push diagnostics and a REPL message on
   `def` remain open for whoever picks up those triggers.
-- **Invalidation precision, if it turns out to matter.** Phase 2's
-  fingerprint is coarse (a referenced global's *defining file's mtime* plus
-  its declared-sig hash — file-level, not per-refinement). This is
-  sufficient for "should this file be re-checked at all," which is all a
-  trigger needs; it does not distinguish *which* refinement of a global's
-  type a given call site relied on. Not a gap unless a future consumer needs
-  finer-than-file granularity.
+- **Invalidation precision.** Phase 2's fingerprint was file-level (a referenced global's
+  *defining file's mtime* plus its declared-sig hash) until ADR-485, which made it
+  per-definition: a closure's fact is a digest of its arms, so an edit elsewhere in its file
+  leaves a dependent alone. It still does not distinguish *which* refinement of a global's
+  type a given call site relied on — any change to the definition re-checks every file that
+  observed it. Not a gap unless a future consumer needs finer granularity.
 
 ## Relation to sibling designs
 
