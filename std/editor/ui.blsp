@@ -943,10 +943,15 @@ re-raises, surfacing a genuine startup bug instead of spinning."
                              :key-held? (display-key-held? display)))
                   poll-ms (if (nil? timers) (ui-tick-ms model) (ui-poll-ms timers clock1 now1))
                   ;; queued user input first, ahead of any background backlog (ADR-490);
-                  ;; then park for whatever comes, told whether it is input
-                  input (display-poll-input display)
+                  ;; then park for whatever comes, told whether it is input. A
+                  ;; non-coalescing app has no drain to make a turn's arrival-order fold,
+                  ;; so after a turn whose input jumped the queue, it makes one here:
+                  ;; background keeps moving however fast keys come
+                  input (if (get clock1 :jumped) nil (display-poll-input display))
                   tagged (if (nil? input) (display-poll-tagged display poll-ms) [input true])
-                  raw (display-untag tagged))
+                  raw (display-untag tagged)
+                  clock1 (assoc clock1
+                           :jumped (and (not (nil? input)) (not (get model :coalesce-input?)))))
               (cond
                 ;; the window's close button always quits; `ui-run` then runs `:leave`
                 (ui-close-quits? model raw) nil

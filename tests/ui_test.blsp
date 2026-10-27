@@ -520,8 +520,9 @@
                       (fn (input) (not (= (lane-tag input) :background)))))
         ["a" [:mouse :press :left 3 4 []] "b" :up :quit])))
   ;; every key folded queues the next one, so input is ALWAYS waiting: background
-  ;; progresses only through each turn's one arrival-order fold, and must still finish
-  (for (coalesce? [true])
+  ;; progresses only through each turn's one arrival-order fold — the drain's, or for a
+  ;; non-coalescing app the turn after one whose input jumped the queue — and must finish
+  (for (coalesce? [true false])
     (test (str "background still moves while input never stops (coalesce " coalesce? ")")
       (let (me (self)
             step (fn (model input cols rows)
