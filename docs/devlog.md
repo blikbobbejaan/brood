@@ -4331,3 +4331,16 @@ peer is refused at the magic. Run here: `serve_test` (21), `display`, `gui`,
 serve_attach` and the two new `distribution` tests; `nest check --strict` on `serve.blsp` /
 `display.blsp`; clippy (gui, treesit-grammars); cargo fmt. Painting every frame was
 sabotaged red. Nothing was measured.
+
+2026-10-27 (ADR-492, v10 peers keep linking; frames conflate in a link's writer queue): the
+v11 bump no longer strands older nodes. The magic is now the capability exchange: a v11
+responder answers a dialer in the dialer's version, and a v11 dialer that hears v10
+redials in v10. A lane send is a new `FRAME_SEND_LANE`, written only between two v11 ends,
+and is the plain `Send` to a v10 peer. `BROOD_DIST_V10=1` makes a runtime speak v10 for
+the mixed tests. A `send-latest` frame not yet written to a link's socket is replaced in
+the writer queue by the next one to the same target and key (a slot plus a ticket; the
+writer passes over replaced tickets). Run here: `cargo test -p cli --test distribution`
+(44, including both mixed-version directions; without the redial, the v11-dials-v10 one
+is red), `cargo test -p brood --lib dist:: mailbox::tests debug_flags`, `serve_attach`,
+`serve_test`, `mailbox_order`, the `receive_*` files, `doc_examples`, `audit`; clippy (gui,
+treesit-grammars); cargo fmt. Nothing was measured.

@@ -49,7 +49,7 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, SyncSender};
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Duration;
 use web_time::Instant;
 
@@ -329,10 +329,15 @@ struct Conn {
     /// per link instead of cloning a `Vec<u8>` each time — and an `Arc<Vec>`, not an
     /// `Arc<[u8]>`, so wrapping a freshly encoded frame takes its buffer as it is
     /// instead of copying it into a new allocation.
-    tx: SyncSender<Arc<Vec<u8>>>,
+    tx: SyncSender<Outbound>,
     /// Whether the peer speaks v11, so a send in a lane goes as `FRAME_SEND_LANE`
     /// (ADR-492). A v10 peer is sent every message as the plain `Send` it knows.
     lanes: bool,
+    /// The `proc/send-latest` frames queued on this link and not yet written, one per
+    /// target and key (ADR-492) — shared with the writer, which writes a ticket's frame
+    /// only if no newer one has replaced it. Whatever the peer speaks: replacing a frame
+    /// before it is written is this end's business.
+    latest: LatestSlots,
     /// A handle to the socket, for `shutdown` — the single teardown lever.
     sock: Arc<Stream>,
     /// Millis (on the `START` clock) of the last inbound frame. The heartbeat
@@ -357,7 +362,7 @@ impl Conn {
     /// `:noconnection`, while best-effort signals ignore it.
     /// The pieces [`enqueue_to`] needs, cloned so the caller can drop the `NODES`
     /// lock before enqueueing. Both clones are cheap (a channel handle and an `Arc`).
-    fn writer_handles(&self) -> (SyncSender<Arc<Vec<u8>>>, Arc<Stream>) {
+    fn writer_handles(&self) -> (SyncSender<Outbound>, Arc<Stream>) {
         (self.tx.clone(), self.sock.clone())
     }
 }
@@ -369,12 +374,83 @@ impl Conn {
 /// delays every concurrent link registration and teardown for the syscall's
 /// duration — the rule [`broadcast_peer_table`] documents. So never call
 /// `Conn::enqueue` straight out of a `read(&NODES).get(..)`.
-fn enqueue_to(tx: &SyncSender<Arc<Vec<u8>>>, sock: &Arc<Stream>, bytes: Arc<Vec<u8>>) -> bool {
-    match tx.try_send(bytes) {
+fn enqueue_to(tx: &SyncSender<Outbound>, sock: &Arc<Stream>, bytes: Arc<Vec<u8>>) -> bool {
+    match tx.try_send(bytes.into()) {
         Ok(()) => true,
         Err(_) => {
             let _ = sock.shutdown(Shutdown::Both);
             false
+        }
+    }
+}
+
+/// What a link's writer queue holds: a frame payload, or a ticket for the newest
+/// `proc/send-latest` frame to one target and key (ADR-492), whose payload waits in the
+/// link's [`LatestSlots`] so a newer one can replace it before it is written.
+pub(crate) enum Outbound {
+    Frame(Arc<Vec<u8>>),
+    Latest { slot: String, generation: u64 },
+}
+
+impl From<Arc<Vec<u8>>> for Outbound {
+    fn from(payload: Arc<Vec<u8>>) -> Self {
+        Outbound::Frame(payload)
+    }
+}
+
+/// A link's queued `proc/send-latest` frames: slot (target and key) → the generation
+/// and payload of the newest one sent and not yet written.
+type LatestSlots = Arc<Mutex<HashMap<String, (u64, Arc<Vec<u8>>)>>>;
+
+/// Source of [`Outbound::Latest`] generations.
+static NEXT_LATEST: AtomicU64 = AtomicU64::new(0);
+
+/// The slot a `proc/send-latest` to `target` with `key` (its printed form) is queued in:
+/// one per target, since two processes' keys are not each other's.
+fn latest_slot(target: &Target, key: &str) -> String {
+    match target {
+        Target::Pid(id) => format!("pid {id} {key}"),
+        Target::Name(name) => format!("name {} {key}", value::symbol_name(*name)),
+    }
+}
+
+/// Queue a `proc/send-latest` frame on a link: its payload replaces any for the same
+/// slot still unwritten, and its ticket goes to the back of the queue, so the frame is
+/// written after everything sent before it — what the receiving mailbox does with a
+/// LATEST message (ADR-490), done here before a slow link ships a stale copy. Severs the
+/// link when the queue is full, as [`enqueue_to`] does.
+fn enqueue_latest(
+    tx: &SyncSender<Outbound>,
+    sock: &Arc<Stream>,
+    latest: &LatestSlots,
+    slot: String,
+    payload: Arc<Vec<u8>>,
+) -> bool {
+    let generation = NEXT_LATEST.fetch_add(1, Ordering::Relaxed);
+    crate::core::sync::lock(latest).insert(slot.clone(), (generation, payload));
+    match tx.try_send(Outbound::Latest { slot, generation }) {
+        Ok(()) => true,
+        Err(_) => {
+            let _ = sock.shutdown(Shutdown::Both);
+            false
+        }
+    }
+}
+
+/// The payload the writer writes for `item`: a frame's own, or a ticket's when it is
+/// still the newest for its slot (which it then leaves). A ticket a later
+/// `send-latest` replaced writes nothing; the later one's ticket is behind it.
+fn claim_outbound(latest: &LatestSlots, item: Outbound) -> Option<Arc<Vec<u8>>> {
+    match item {
+        Outbound::Frame(payload) => Some(payload),
+        Outbound::Latest { slot, generation } => {
+            let mut slots = crate::core::sync::lock(latest);
+            match slots.get(&slot) {
+                Some((newest, _)) if *newest == generation => {
+                    slots.remove(&slot).map(|(_, payload)| payload)
+                }
+                _ => None,
+            }
         }
     }
 }
@@ -1119,14 +1195,24 @@ pub(crate) fn route_in_lane(
     // Remote: encode a Send frame and hand it to the peer's writer thread. Snapshot the
     // writer handles (and a guest link's standing), then release NODES before enqueueing —
     // see [`enqueue_to`] for why the shutdown syscall must not run under the lock.
-    let link = crate::core::sync::read(&NODES)
-        .get(&node)
-        .map(|conn| (conn.writer_handles(), conn.guest.clone(), conn.lanes));
-    let Some(((tx, sock), guest, lanes)) = link else {
+    let link = crate::core::sync::read(&NODES).get(&node).map(|conn| {
+        (
+            conn.writer_handles(),
+            conn.guest.clone(),
+            conn.lanes,
+            Arc::clone(&conn.latest),
+        )
+    });
+    let Some(((tx, sock), guest, lanes, latest)) = link else {
         return false;
     };
-    // The lane goes on the wire only to a v11 peer; to a v10 one the message is the plain
-    // `Send` it knows (ADR-492).
+    // A `send-latest` replaces its slot's unwritten frame on the link whatever the peer
+    // speaks; the lane itself goes on the wire only to a v11 peer, and to a v10 one the
+    // message is the plain `Send` it knows (ADR-492).
+    let slot = match &lane {
+        process::Lane::Latest(key) => Some(latest_slot(&target, key)),
+        _ => None,
+    };
     let lane = if lanes { lane } else { process::Lane::Normal };
     // A guest link is told about every local pid in the message, which is what lets it
     // reply to one (ADR-415) — noted on the link the message goes out on, before it is
@@ -1150,7 +1236,11 @@ pub(crate) fn route_in_lane(
             return true; // a link exists; the payload was the problem
         }
     };
-    let _ = enqueue_to(&tx, &sock, bytes); // severs the link if the writer is gone/stalled
+    // Either severs the link if the writer is gone or stalled.
+    let _ = match slot {
+        Some(slot) => enqueue_latest(&tx, &sock, &latest, slot, bytes),
+        None => enqueue_to(&tx, &sock, bytes),
+    };
     true
 }
 
@@ -1812,7 +1902,8 @@ fn establish(authenticated: handshake::Authenticated, stream: Stream, role: Role
         Role::Responder => peer,
     };
     let sock = Arc::new(stream);
-    let (tx, rx) = mpsc::sync_channel::<Arc<Vec<u8>>>(WRITER_QUEUE_CAP);
+    let (tx, rx) = mpsc::sync_channel::<Outbound>(WRITER_QUEUE_CAP);
+    let latest = LatestSlots::default();
     let last_seen = Arc::new(AtomicU64::new(now_millis()));
     let id = NEXT_LINK.fetch_add(1, Ordering::Relaxed);
     // A guest link's every frame is filtered (ADR-415), through a standing that belongs
@@ -1835,6 +1926,7 @@ fn establish(authenticated: handshake::Authenticated, stream: Stream, role: Role
         addr: peer_addr,
         tx: tx.clone(),
         lanes,
+        latest: Arc::clone(&latest),
         sock: Arc::clone(&sock),
         last_seen: Arc::clone(&last_seen),
         guest: guest.clone(),
@@ -1851,7 +1943,7 @@ fn establish(authenticated: handshake::Authenticated, stream: Stream, role: Role
     // directional ciphers (ADR-089) — the writer owns the send cipher, the reader the
     // receive cipher, so neither shares crypto state.
     let Session { send, recv } = session;
-    spawn_link_writer(peer, Arc::clone(&sock), rx, send);
+    spawn_link_writer(peer, Arc::clone(&sock), rx, latest, send);
     spawn_link_reader(peer, id, sock, tx, recv, last_seen, guest);
 
     // A brand-new peer just joined: tell the cluster (ADR-088) — one broadcast sends the
@@ -1940,7 +2032,8 @@ fn register_link(peer: Symbol, link: Conn) -> Option<bool> {
 fn spawn_link_writer(
     peer: Symbol,
     sock: Arc<Stream>,
-    queue: mpsc::Receiver<Arc<Vec<u8>>>,
+    queue: mpsc::Receiver<Outbound>,
+    latest: LatestSlots,
     mut seal: session::SealKey,
 ) {
     if let Err(error) = sock.set_write_timeout(Some(WRITE_TIMEOUT)) {
@@ -1958,12 +2051,20 @@ fn spawn_link_writer(
             // next nonce — in fewer syscalls; nothing waits for a batch to fill, since
             // only what is already queued joins it.
             let mut batch: Vec<u8> = Vec::new();
-            while let Ok(payload) = queue.recv() {
+            // A replaced `send-latest` ticket claims nothing and is passed over (ADR-492).
+            while let Ok(item) = queue.recv() {
+                let Some(payload) = claim_outbound(&latest, item) else {
+                    continue;
+                };
                 batch.clear();
                 let mut sealed = seal.seal_into(&payload, &mut batch).is_ok();
                 while sealed && batch.len() < WRITE_BATCH_BYTES {
                     match queue.try_recv() {
-                        Ok(next) => sealed = seal.seal_into(&next, &mut batch).is_ok(),
+                        Ok(next) => {
+                            if let Some(next) = claim_outbound(&latest, next) {
+                                sealed = seal.seal_into(&next, &mut batch).is_ok();
+                            }
+                        }
                         Err(_) => break,
                     }
                 }
@@ -1992,7 +2093,7 @@ fn spawn_link_reader(
     peer: Symbol,
     id: u64,
     sock: Arc<Stream>,
-    writer_queue: SyncSender<Arc<Vec<u8>>>,
+    writer_queue: SyncSender<Outbound>,
     mut open: session::OpenKey,
     last_seen: Arc<AtomicU64>,
     guest: Option<Arc<guest::GuestLink>>,
@@ -2014,7 +2115,7 @@ fn spawn_link_reader(
                     // Bounded queue: if we can't even enqueue a Pong, the writer is
                     // stalled (peer not draining) or gone — sever and let `drop_link`
                     // below deregister, rather than buffer.
-                    if writer_queue.try_send(Arc::clone(&pong)).is_err() {
+                    if writer_queue.try_send(Arc::clone(&pong).into()).is_err() {
                         let _ = sock.shutdown(Shutdown::Both);
                         break;
                     }
@@ -2141,7 +2242,7 @@ fn broadcast_peer_table() {
     struct PeerSnap {
         name: Symbol,
         addr: String,
-        tx: SyncSender<Arc<Vec<u8>>>,
+        tx: SyncSender<Outbound>,
         sock: Arc<Stream>,
     }
     let snaps: Vec<PeerSnap> = {
@@ -2168,7 +2269,7 @@ fn broadcast_peer_table() {
             continue;
         }
         if let Ok(bytes) = encode_payload(&Frame::Peers { peers })
-            && s.tx.try_send(Arc::new(bytes)).is_err()
+            && s.tx.try_send(Arc::new(bytes).into()).is_err()
         {
             let _ = s.sock.shutdown(Shutdown::Both);
         }
@@ -2864,6 +2965,48 @@ mod tests {
                 process::Lane::Latest(Box::new(":frame".to_string()))
             ]
         );
+    }
+
+    /// A `send-latest` replaces its slot's frame in a link's writer queue while it is
+    /// unwritten, its replacement written after everything queued before it; another
+    /// target's slot, a plain frame, and a slot already written are left alone (ADR-492).
+    #[test]
+    fn a_send_latest_replaces_its_unwritten_frame_in_the_link_queue() {
+        let (tx, rx) = mpsc::sync_channel::<Outbound>(16);
+        let (stream, _far_end) = stream_pair();
+        let sock = Arc::new(stream);
+        let latest = LatestSlots::default();
+        let payload = |byte: u8| Arc::new(vec![byte]);
+        let frame_slot = latest_slot(&Target::Pid(1), ":frame");
+        let other_slot = latest_slot(&Target::Pid(2), ":frame");
+        assert!(enqueue_latest(
+            &tx,
+            &sock,
+            &latest,
+            frame_slot.clone(),
+            payload(1)
+        ));
+        assert!(enqueue_to(&tx, &sock, payload(2)));
+        assert!(enqueue_latest(&tx, &sock, &latest, other_slot, payload(3)));
+        assert!(enqueue_latest(
+            &tx,
+            &sock,
+            &latest,
+            frame_slot.clone(),
+            payload(4)
+        ));
+        let written = |count: usize| -> Vec<u8> {
+            rx.try_iter()
+                .take(count)
+                .filter_map(|item| claim_outbound(&latest, item))
+                .map(|bytes| bytes[0])
+                .collect()
+        };
+        assert_eq!(written(4), vec![2, 3, 4]);
+        assert!(crate::core::sync::lock(&latest).is_empty());
+        // Written, the slot is free: the next one is queued and written in its turn.
+        assert!(enqueue_latest(&tx, &sock, &latest, frame_slot, payload(5)));
+        assert_eq!(written(1), vec![5]);
     }
 
     /// A peer that restarted (its old host vanished without a FIN, so the old link is

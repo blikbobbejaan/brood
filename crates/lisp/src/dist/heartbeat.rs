@@ -97,7 +97,7 @@ fn heartbeat_loop() {
         let now = now_millis();
         // Snapshot under the lock, then act without holding it (shutdown/send can block).
         // (sock, tx, last_seen_millis) per link.
-        type LinkSnapshot = (Arc<super::Stream>, SyncSender<Arc<Vec<u8>>>, u64);
+        type LinkSnapshot = (Arc<super::Stream>, SyncSender<super::Outbound>, u64);
         let links: Vec<LinkSnapshot> = {
             let nodes = crate::core::sync::read(&NODES);
             nodes
@@ -118,7 +118,7 @@ fn heartbeat_loop() {
                 let _ = sock.shutdown(Shutdown::Both);
             } else if elapsed > idle_after_ms {
                 // Idle for at least one interval → probe.
-                match tx.try_send(Arc::clone(&ping)) {
+                match tx.try_send(Arc::clone(&ping).into()) {
                     Ok(()) => {}
                     // Writer thread is gone — link is already dead.
                     Err(TrySendError::Disconnected(_)) => {

@@ -138,8 +138,8 @@ Silence it with `BROOD_NO_DROP_WARN=1`.
 `TcpListener` for `host:port` — and runs an acceptor thread; `connect` dials the
 matching carrier. A single `Stream { Tcp | Unix }` enum (ADR-068) carries the
 link, so everything below is transport-agnostic. Both ends perform the
-authenticated handshake (ADR-034 v2; wire **v10**, ADR-089): a 4-byte
-magic+version prefix (`b"BRD\x0b"`), then a `Hello { node, nonce, eph_pub, addr,
+authenticated handshake (ADR-034 v2; wire **v11**, ADR-089): a 4-byte
+magic+version prefix (`b"BRD\x0b"`, or v10's `b"BRD\x0a"` with a v10 peer, ADR-492), then a `Hello { node, nonce, eph_pub, addr,
 incarnation }` exchange (each side a fresh 32-byte nonce, a fresh **ephemeral X25519
 pubkey**, the address peers should dial it at, and its **incarnation** — a random id the
 runtime process mints once, so a peer can tell a restart from a duplicate link; it is
@@ -184,11 +184,16 @@ deep-copy that already crosses per-process heaps. The one cross-process subtlety
 their spelling and **re-interned on arrival**, because separate runtimes have
 independent symbol interners. (In-process messages keep the interned id.)
 
-A `Send` frame also carries its message's **mailbox lane** (ADR-492): ordinary,
-priority (`proc/send-priority`) or latest with its key's printed form
-(`proc/send-latest`), and the receiving node queues it in that lane, so a lane means
-the same thing to a remote pid as to a local one. Protocol v11; a v10 peer is refused
-at the magic.
+A send in a lane other than the normal one is a `FRAME_SEND_LANE`, which carries the
+**mailbox lane** (ADR-492): priority (`proc/send-priority`) or latest with its key's
+printed form (`proc/send-latest`), and the receiving node queues the message in it, so a
+lane means the same thing to a remote pid as to a local one. Only a v11 link carries it.
+A v11 node still links with a v10 one: its responder reads the dialer's magic first and
+answers in that version, and its dialer, answered in v10, redials offering v10. On a v10
+link every send is the plain `Send` v10 knows. A `send-latest` frame not yet written to
+the socket is also replaced in the link's writer queue by the next one to the same target
+and key, whatever the peer speaks. `BROOD_DIST_V10=1` makes a runtime speak exactly v10,
+for testing a mixed cluster.
 
 ## Scope & limitations (slice 1)
 
