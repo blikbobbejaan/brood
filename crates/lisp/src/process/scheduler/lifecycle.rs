@@ -169,7 +169,7 @@ pub(super) fn retire_root_ctx(pid: u64) {
     // one, or its heap would ride out the OS process in a mailbox nothing can reach.
     let waiter = {
         let mut st = crate::core::sync::lock(&mailbox.state);
-        st.queue.clear();
+        st.clear_queue();
         st.kill = None;
         st.waiter.take()
     };

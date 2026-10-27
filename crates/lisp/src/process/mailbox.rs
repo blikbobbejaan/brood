@@ -326,32 +326,80 @@ impl MailboxState {
     pub(super) fn push(&mut self, mut env: Envelope) {
         env.seq = self.next_seq;
         self.next_seq += 1;
-        match &env.lane {
-            Lane::Normal => {}
-            Lane::Priority => self.priority_hint += 1,
-            Lane::Latest(key) => self.drop_superseded(key),
+        if let Lane::Latest(key) = &env.lane {
+            self.drop_superseded(key);
         }
+        self.note_queued(&env);
         self.queue.push_back(env);
     }
 
+    /// Count `env`, entering the queue, in the lane bookkeeping: the PRIORITY count, the
+    /// LATEST index.
+    #[inline]
+    fn note_queued(&mut self, env: &Envelope) {
+        match &env.lane {
+            Lane::Normal => {}
+            Lane::Priority => self.priority_queued += 1,
+            Lane::Latest(key) => {
+                self.latest_queued.insert(key.as_str().into(), env.seq);
+            }
+        }
+    }
+
+    /// Uncount `env`, leaving the queue — [`note_queued`](Self::note_queued) undone.
+    #[inline]
+    fn note_unqueued(&mut self, env: &Envelope) {
+        match &env.lane {
+            Lane::Normal => {}
+            Lane::Priority => self.priority_queued -= 1,
+            Lane::Latest(key) => {
+                if self.latest_queued.get(key.as_str()) == Some(&env.seq) {
+                    self.latest_queued.remove(key.as_str());
+                }
+            }
+        }
+    }
+
+    /// Remove the envelope at `index`, keeping the lane bookkeeping exact. Every removal
+    /// from the queue goes through here.
+    pub(super) fn remove_at(&mut self, index: usize) -> Option<Envelope> {
+        let env = self.queue.remove(index)?;
+        self.note_unqueued(&env);
+        Some(env)
+    }
+
+    /// Insert `env` at `index` — a scan candidate put back in seq order — keeping the lane
+    /// bookkeeping exact.
+    fn insert_at(&mut self, index: usize, env: Envelope) {
+        self.note_queued(&env);
+        self.queue.insert(index, env);
+    }
+
+    /// Empty the queue, and its lane bookkeeping with it.
+    pub(super) fn clear_queue(&mut self) {
+        self.queue.clear();
+        self.priority_queued = 0;
+        self.latest_queued = Default::default();
+    }
+
     /// Drop the queued LATEST-lane envelope carrying `key`, which the one being pushed
-    /// supersedes (ADR-490). At most one can be queued — each push of a key drops the
-    /// previous — so the walk stops at the first, from the back, where a key that is
-    /// sent often was last put. Removing preserves the queue's seq order; `scanned` (the
-    /// park gate's count of messages a parked receive already rejected) shrinks with a
-    /// removal inside it, or the replacement would read as already scanned and the
-    /// receiver would sleep through it. The owner's own scan in progress re-anchors on
-    /// seq (`scan_mailbox`), so a removal under it is a shift it already handles. An
-    /// envelope the owner has OUT of the queue as a scan candidate is not here to find:
-    /// the scan asks [`holds_latest`](Self::holds_latest) before handing it over, and
-    /// drops it then.
+    /// supersedes (ADR-490). At most one is queued — each push of a key drops the previous
+    /// — and `latest_queued` says which, by seq, so it is found by a binary search on the
+    /// seq-ordered queue rather than a walk of the backlog. Removing preserves the queue's
+    /// seq order; `scanned` (the park gate's count of messages a parked receive already
+    /// rejected) shrinks with a removal inside it, or the replacement would read as already
+    /// scanned and the receiver would sleep through it. The owner's own scan in progress
+    /// re-anchors on seq (`scan_mailbox`), so a removal under it is a shift it already
+    /// handles. An envelope the owner has OUT of the queue as a scan candidate is not
+    /// indexed: the scan asks [`holds_latest`](Self::holds_latest) before handing it over,
+    /// and drops it then.
     fn drop_superseded(&mut self, key: &str) {
-        let found = self
-            .queue
-            .iter()
-            .rposition(|e| matches!(&e.lane, Lane::Latest(k) if k.as_str() == key));
-        if let Some(index) = found {
-            drop(self.queue.remove(index));
+        let Some(&seq) = self.latest_queued.get(key) else {
+            return;
+        };
+        let index = self.queue.partition_point(|e| e.seq < seq);
+        if self.queue.get(index).is_some_and(|e| e.seq == seq) {
+            drop(self.remove_at(index));
             if index < self.scanned {
                 self.scanned -= 1;
             }
@@ -360,11 +408,9 @@ impl MailboxState {
 
     /// Whether a LATEST envelope with `key` is queued. Asked about a candidate the scan
     /// took OUT of the queue: at most one envelope per key is ever queued, so one queued
-    /// now arrived while the candidate was out, and supersedes it.
+    /// now arrived while the candidate was out, and supersedes it. O(1).
     fn holds_latest(&self, key: &str) -> bool {
-        self.queue
-            .iter()
-            .any(|e| matches!(&e.lane, Lane::Latest(k) if k.as_str() == key))
+        self.latest_queued.contains_key(key)
     }
 }
 
@@ -445,14 +491,14 @@ pub(super) struct MailboxState {
     /// to `Condvar::wait`. Belt to `cv_waiters`' braces — a latch's failure mode is one
     /// extra rescan, a miscounted protocol's is a process asleep forever (KI-88). Both stay.
     pub(super) wake_pending: bool,
-    /// An upper bound on the PRIORITY-lane envelopes queued (ADR-490), so
-    /// `proc/take-priority` answers "none" in O(1) for the overwhelming majority of
-    /// mailboxes, which never see one. Incremented at every priority push, decremented
-    /// when `take-priority` takes one, and reset to 0 when its walk finds none: a priority
-    /// message an ordinary `receive` consumed leaves it high, which costs one walk, never
-    /// a missed message (it is never LOW — only a push raises it, before the message is
-    /// visible).
-    pub(super) priority_hint: usize,
+    /// How many PRIORITY-lane envelopes are queued (ADR-490), exactly: counted in and out
+    /// by every push, removal and re-insert, so `proc/take-priority` answers "none" in O(1)
+    /// — also for a loop whose plain `receive` consumed the priority messages it had.
+    pub(super) priority_queued: usize,
+    /// The LATEST-lane envelopes queued (ADR-490), by key: the seq of the one envelope per
+    /// key, so a `proc/send-latest` finds the one it supersedes, and a receive asks whether
+    /// its candidate was superseded, without walking the backlog.
+    pub(super) latest_queued: std::collections::HashMap<Box<str>, u64>,
     /// The quit key (`proc/set-quit-key`, ADR-491): a PRIORITY-lane message equal to it
     /// interrupts this process when its interrupt window has been open long enough.
     /// Checked by the delivery, which holds this lock anyway; `None` (the default) costs
@@ -633,7 +679,8 @@ impl Mailbox {
                 dead_aliases: DeadAliases::default(),
                 cv_waiters: 0,
                 wake_pending: false,
-                priority_hint: 0,
+                priority_queued: 0,
+                latest_queued: Default::default(),
                 quit_key: None,
             }),
             cv: Condvar::new(),
@@ -1085,14 +1132,14 @@ pub fn receive_lane(heap: &mut Heap, timeout: Value) -> LispResult {
 /// `(proc/take-priority)`: the calling process's oldest PRIORITY-lane message, removed
 /// from its mailbox and answered as `[msg]`, or nil when none is queued — without
 /// waiting and without looking at a single ordinary message (ADR-490). O(1) when the
-/// mailbox has never held one (`priority_hint`); otherwise a walk of the queue's lane
+/// mailbox holds none (`priority_queued`); otherwise a walk of the queue's lane
 /// tags, which never rebuilds a message it passes. A priority message its source took
 /// back (a key repeat released before it was read) is dropped on the way, as a scan does.
 pub fn take_priority(heap: &mut Heap) -> LispResult {
     let ctx = current_process();
     let taken = {
         let mut st = crate::core::sync::lock(&ctx.mailbox.state);
-        if st.priority_hint == 0 {
+        if st.priority_queued == 0 {
             return Ok(Value::nil());
         }
         let mut index = 0;
@@ -1102,8 +1149,7 @@ pub fn take_priority(heap: &mut Heap) -> LispResult {
                 index += 1;
                 continue;
             }
-            let envelope = st.queue.remove(index).expect("bounds checked above");
-            st.priority_hint = st.priority_hint.saturating_sub(1);
+            let envelope = st.remove_at(index).expect("bounds checked above");
             if index < st.scanned {
                 st.scanned -= 1;
             }
@@ -1116,9 +1162,6 @@ pub fn take_priority(heap: &mut Heap) -> LispResult {
             }
             taken = Some(envelope);
             break;
-        }
-        if taken.is_none() {
-            st.priority_hint = 0;
         }
         taken
     };
@@ -2072,7 +2115,7 @@ fn scan_mailbox(
                     .as_ref()
                     .is_some_and(|credit| credit.withdrawn())
                 {
-                    st.queue.remove(*i);
+                    st.remove_at(*i);
                     continue;
                 }
                 let rejected = match &st.queue[*i].msg {
@@ -2103,7 +2146,7 @@ fn scan_mailbox(
             // (removed) by a delivery in that window; the consume path checks for that.
             let cand_latest = matches!(st.queue[*i].lane, Lane::Latest(_));
             if optimistic {
-                let m = st.queue.remove(*i).expect("bounds checked above");
+                let m = st.remove_at(*i).expect("bounds checked above");
                 drop(st);
                 // A Local payload is already in this heap — read it from its traced slot.
                 // A Wire one is rebuilt as before.
@@ -2131,7 +2174,7 @@ fn scan_mailbox(
                     Payload::Local { .. } => false,
                 };
                 if over {
-                    let m = st.queue.remove(*i).expect("bounds checked above");
+                    let m = st.remove_at(*i).expect("bounds checked above");
                     drop(st);
                     let v = match &m.msg {
                         Payload::Wire(w) => from_message(heap, w),
@@ -2219,7 +2262,7 @@ fn scan_mailbox(
                             .is_some_and(|e| e.seq == cand_seq)
                             .then_some(j)
                     };
-                    let removed = j.and_then(|j| st.queue.remove(j));
+                    let removed = j.and_then(|j| st.remove_at(j));
                     // A LATEST candidate gone from the queue was superseded by a newer
                     // delivery while it was matched (or a guard's nested receive took it):
                     // either way it is not this receive's to hand over.
@@ -2291,7 +2334,7 @@ fn reinsert_at_seq(st: &mut MailboxState, i: usize, m: Envelope) -> usize {
         // what maintains), so the predicate really is partitioned here.
         st.queue.partition_point(|e| e.seq < seq)
     };
-    st.queue.insert(idx, m);
+    st.insert_at(idx, m);
     debug_assert!(
         idx == 0 || st.queue[idx - 1].seq < seq,
         "mailbox queue left out of seq order by a reinsert"
@@ -2622,28 +2665,49 @@ mod tests {
         assert!(st.queue.len() > st.scanned, "the replacement is unscanned");
     }
 
-    /// The priority hint counts pushes, so a mailbox that never held a priority message
-    /// answers "none" without a walk, and one whose priority message an ordinary receive
-    /// took is corrected by the next walk rather than trusted.
+    /// The lane bookkeeping is exact through every way a message leaves and comes back:
+    /// the PRIORITY count after a plain receive consumed one (so `take-priority` answers
+    /// "none" without a walk), and the LATEST index after a candidate was taken out and put
+    /// back, superseded, or consumed (ADR-490).
     #[test]
-    fn the_priority_hint_is_never_low() {
+    fn the_lane_bookkeeping_is_exact() {
         let mb = Mailbox::new();
         let mut st = crate::core::sync::lock(&mb.state);
         st.push(Envelope::plain(Message::Int(1)));
-        assert_eq!(st.priority_hint, 0);
+        assert_eq!(st.priority_queued, 0);
         st.push(in_lane(2, Lane::Priority));
         st.push(in_lane(3, Lane::Priority));
-        assert_eq!(st.priority_hint, 2);
-        // an ordinary receive consumed one: the hint is high, which only costs a walk
-        st.queue.retain(|e| e.seq != 1);
-        assert!(
-            st.priority_hint
-                >= st
-                    .queue
-                    .iter()
-                    .filter(|e| matches!(e.lane, Lane::Priority))
-                    .count()
+        assert_eq!(st.priority_queued, 2);
+        // a plain receive consumed one, by its index
+        let index = st.queue.iter().position(|e| e.seq == 1).expect("queued");
+        drop(st.remove_at(index));
+        assert_eq!(st.priority_queued, 1);
+        let count = |st: &MailboxState| {
+            st.queue
+                .iter()
+                .filter(|e| matches!(e.lane, Lane::Priority))
+                .count()
+        };
+        assert_eq!(st.priority_queued, count(&st));
+        // a LATEST candidate out of the queue is not indexed; put back, it is again
+        st.push(latest(4, ":a"));
+        assert!(st.holds_latest(":a"));
+        let index = st.queue.len() - 1;
+        let candidate = st.remove_at(index).expect("queued");
+        assert!(!st.holds_latest(":a"), "out for a match");
+        reinsert_at_seq(&mut st, index, candidate);
+        assert!(st.holds_latest(":a"), "back in the queue");
+        // superseded: the index follows the newer one, and a consume of it clears it
+        st.push(latest(5, ":a"));
+        assert_eq!(
+            st.latest_queued.get(":a"),
+            Some(&st.queue.back().expect("queued").seq)
         );
+        let index = st.queue.len() - 1;
+        drop(st.remove_at(index));
+        assert!(!st.holds_latest(":a"));
+        st.clear_queue();
+        assert_eq!((st.priority_queued, st.latest_queued.len()), (0, 0));
     }
 
     /// The dead-alias set allocates only while it holds something, and keeps its
