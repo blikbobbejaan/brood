@@ -920,3 +920,105 @@ fn major_keeps_nursery_form_positions() {
         "a major lost the re-keyed position of a surviving OLD form",
     );
 }
+
+/// The contract's verdict memo (ADR-480) keys on a handle's raw bits, so everything that
+/// lets those bits name a different object must forget what they named. `reset_local_to`
+/// truncates the nursery and mints the SAME slot at the SAME epoch for the next allocation:
+/// a verdict kept across it would answer for an object it never saw.
+#[test]
+fn reset_local_to_forgets_verdicts_about_reclaimed_slots() {
+    use crate::core::heap::KnownVerdict;
+    let mut h = Heap::new();
+    let type_expression = Value::Sym(crate::core::value::intern("verdict-test-type"));
+    let checkpoint = h.checkpoint();
+    let first = h.alloc_vector(vec![Value::int(1)]);
+    h.record_type_verdict(type_expression, first, true);
+    assert!(matches!(
+        h.type_verdict(type_expression, first),
+        KnownVerdict::Known(true)
+    ));
+    h.reset_local_to(checkpoint);
+    let reused = h.alloc_vector(vec![Value::nil()]);
+    assert_eq!(
+        format!("{first:?}"),
+        format!("{reused:?}"),
+        "the reclaimed slot should be minted again — the case this guards",
+    );
+    assert!(
+        matches!(
+            h.type_verdict(type_expression, reused),
+            KnownVerdict::Unknown
+        ),
+        "a verdict about the reclaimed vector answered for the one now in its slot",
+    );
+}
+
+/// A minor collection moves every nursery survivor, so a verdict about a nursery object is
+/// dropped; one about an OLD object stays, because a minor never moves it — which is what
+/// lets an editor's tenured model answer from the memo across collections. A major
+/// compacts the old generation, and its verdicts go too.
+#[test]
+fn collections_forget_exactly_the_verdicts_whose_objects_move() {
+    use crate::core::heap::KnownVerdict;
+    let mut h = Heap::new();
+    let type_expression = Value::Sym(crate::core::value::intern("verdict-test-type"));
+    let tenured = h.alloc_vector(vec![Value::int(1)]);
+    let mut roots = vec![tenured];
+    h.minor_collect(true, &mut roots, &mut []);
+    let tenured = roots[0];
+    let young = h.alloc_vector(vec![Value::int(2)]);
+    h.record_type_verdict(type_expression, tenured, true);
+    h.record_type_verdict(type_expression, young, false);
+    assert_eq!(h.type_verdict_counts().entries, 2);
+
+    let mut roots = vec![tenured, young];
+    h.minor_collect(false, &mut roots, &mut []);
+    let (tenured, young) = (roots[0], roots[1]);
+    assert_eq!(
+        h.type_verdict_counts().entries,
+        1,
+        "the nursery verdict survived a minor"
+    );
+    assert!(matches!(
+        h.type_verdict(type_expression, tenured),
+        KnownVerdict::Known(true)
+    ));
+    assert!(matches!(
+        h.type_verdict(type_expression, young),
+        KnownVerdict::Unknown
+    ));
+
+    let mut roots = vec![tenured, young];
+    h.major_collect(&mut roots, &mut []);
+    assert_eq!(
+        h.type_verdict_counts().entries,
+        0,
+        "an old-generation verdict survived a major"
+    );
+}
+
+/// A declared type changing (a new or redefined `deftype`) or any global rebinding (a
+/// `defrecord` growing `*record-ids*`, a sealed ability gaining members) can change the
+/// verdict for the very same pair, so either starts the memo over.
+#[test]
+fn a_declaration_or_a_rebinding_starts_the_verdicts_over() {
+    use crate::core::heap::KnownVerdict;
+    use std::sync::atomic::Ordering;
+    let mut h = Heap::new();
+    let type_expression = Value::Sym(crate::core::value::intern("verdict-test-type"));
+    let value = h.alloc_vector(vec![Value::int(1)]);
+    h.record_type_verdict(type_expression, value, true);
+    h.runtime
+        .declared_sigs_version
+        .fetch_add(1, Ordering::AcqRel);
+    assert!(matches!(
+        h.type_verdict(type_expression, value),
+        KnownVerdict::Unknown
+    ));
+    h.record_type_verdict(type_expression, value, true);
+    h.runtime.version.fetch_add(1, Ordering::Relaxed);
+    assert!(matches!(
+        h.type_verdict(type_expression, value),
+        KnownVerdict::Unknown
+    ));
+}

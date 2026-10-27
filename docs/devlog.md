@@ -4059,3 +4059,16 @@ helpers on a parked process's path now native). A size rule cannot see that a sh
 through a callee, which is what the old gate fenced off by accident (compute-frontier §7.1:
 "the latch is LATENT on the shipped tree"). Reverted; the measurement stands — `regex` −6% is
 there for an admission rule that knows which arms can reach a receive.
+2026-10-27 (ADR-480, a contract check costs what changed): `type-matches?` remembers verdicts
+about compound values by the identity of type and value (`core/heap/type_verdicts.rs`, per
+heap; pruned by minor/major collections and `reset_local_to`, cleared by a stamp of the
+global version, declared sigs, RUNTIME relocation/free and the resolving namespace), and the
+kernel decides tags, `?A`, arrows, `or`s and one level of record/vector over decided parts
+without the walk. The shim templates ask `%contract-args-known?` with their arguments and
+`%type-verdict` on their result before any Brood runs; the record branch no longer
+`partition`s; `%type-names-record?` replaces a per-check scan of `*record-ids*`. bedit's
+typed character armed 7.7 → 1.8 ms (1.3 unarmed). Guard: three `gc::tests` verdict tests,
+`tests/contract_memo_test.blsp`; run here with `contract`, `ability`, `typed_params`,
+`sig_adoption`, `doc_examples`, `doctest`, `audit`, `std_check` and eight bedit test files,
+plus `type_grammar_agreement`, `contract_error_position`, `process_wide_statics`; the suites
+run in CI.

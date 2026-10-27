@@ -333,10 +333,17 @@ pub(super) fn type_alias(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispRe
     let Some(sym) = existing_name_arg(heap, "%type-alias", arg(args, 0))? else {
         return Ok(Value::nil());
     };
+    Ok(alias_expansion(heap, sym).unwrap_or_else(Value::nil))
+}
+
+/// The type expression the alias `sym` names, resolved as `%type-alias` resolves it, or
+/// `None`. Also asked by the contract's verdict memo (ADR-480), which answers a record
+/// one level deep without leaving the kernel.
+pub(crate) fn alias_expansion(heap: &Heap, sym: value::Symbol) -> Option<Value> {
     let rooted = rooted_name(heap, sym);
     for key in [rooted, sym] {
         if let Some(inner) = alias_form_at(heap, key) {
-            return Ok(inner);
+            return Some(inner);
         }
     }
     // Neither exact key hit. A contract runs wherever the VALUE is checked, which is not
@@ -349,12 +356,10 @@ pub(super) fn type_alias(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispRe
     // is not a base type — an alias, an ability name, a `?A` type variable — per checked
     // value, and unmemoised it was three full scans per `conj` under contracts.
     if value::symbol_name_ref(sym).contains('/') {
-        return Ok(Value::nil());
+        return None;
     }
-    let found = heap.alias_key_by_suffix(sym, |heap, key| alias_form_at(heap, key).is_some());
-    Ok(found
+    heap.alias_key_by_suffix(sym, |heap, key| alias_form_at(heap, key).is_some())
         .and_then(|key| alias_form_at(heap, key))
-        .unwrap_or_else(Value::nil))
 }
 
 /// The type expression of the alias stored under exactly `key`, or `None`. An alias rides

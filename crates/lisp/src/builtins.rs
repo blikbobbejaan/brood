@@ -105,6 +105,7 @@ pub(crate) use sequences::{first_without_eval, is_empty_without_eval, rest_witho
 // directly once its guard has proved the head is the native (`exec_chunk`).
 pub(crate) use sequences::{first, is_empty, rest};
 pub use terminal::{restore_raw, restore_terminal, restore_terminal_on_exit};
+pub(crate) use tooling::alias_expansion;
 pub use tooling::{DOC_FORMS, SPECIAL_FORMS};
 
 pub fn realize_seqview(heap: &mut Heap, env: EnvId, sv: Value) -> LispResult {
