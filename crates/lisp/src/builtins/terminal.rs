@@ -61,6 +61,13 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "The key held down in the terminal now — the same value its press delivered (a 1-char string, or a keyword like :ctrl-n / :up) — or nil when none is. Reported by a terminal that speaks the kitty keyboard protocol (kitty, foot, WezTerm, Ghostty, Alacritty 0.13+), which term-enter turns on; inferred in any other, and for the keys the protocol still sends as text: a key is held once its repeats arrive faster than a hand presses one key, until they stop. Always nil outside term-enter.",
         term_held_key);
     primitives.def(
+        "%term-forward-input",
+        Arity::exact(1),
+        Sig::new(vec![pid_ty.union(nil_ty.clone())], nil_ty.clone()),
+        &["pid"],
+        "Deliver every terminal input event — what term-poll would answer — to pid's PRIORITY lane from now on, from a reader thread, as a window delivers its input; nil stops it and waits for the thread. ADR-491.",
+        term_forward_input);
+    primitives.def(
         "%term-draw",
         Arity::exact(1),
         Sig::new(vec![vec_ty], nil_ty),

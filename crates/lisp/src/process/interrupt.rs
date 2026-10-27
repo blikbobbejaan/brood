@@ -174,12 +174,23 @@ impl Interrupt {
     }
 }
 
-/// A process's quit key (`proc/set-quit-key`): the message that interrupts it when it
-/// arrives on the PRIORITY lane, and how long the window must have been open first. An
-/// atom — what a frontend delivers as a key — so the delivery compares without a heap.
+/// A process's quit key (`proc/set-quit-key`): the message that interrupts it, and how long
+/// the window must have been open first. Two shapes, both compared without a heap:
+///
+/// - an ATOM (keyword, string or integer) — a key as a window or the terminal forwarder
+///   delivers it — matched on the PRIORITY lane only, where the frontend says it is input;
+/// - a VECTOR of atoms — a key as a wire frontend ships it (`[:key :ctrl-g]` from a thin
+///   client) — matched as the leading elements of a vector message on ANY lane: lanes do
+///   not cross a node link, and the message's own tag says it is input, as ADR-490's
+///   `:poll-tagged` reads it.
 pub(super) struct QuitKey {
-    pub(super) key: QuitAtom,
+    pub(super) key: QuitPattern,
     pub(super) busy_us: u64,
+}
+
+pub(crate) enum QuitPattern {
+    Atom(QuitAtom),
+    Prefix(Vec<QuitAtom>),
 }
 
 #[derive(PartialEq)]
@@ -189,15 +200,30 @@ pub(crate) enum QuitAtom {
     Int(i64),
 }
 
-impl QuitKey {
-    /// Is the queued `msg` this key?
-    pub(super) fn matches(&self, msg: &super::Message) -> bool {
+impl QuitAtom {
+    fn matches(&self, msg: &super::Message) -> bool {
         use super::Message;
-        match (&self.key, msg) {
+        match (self, msg) {
             (QuitAtom::Keyword(a), Message::Keyword(b)) => a == b,
             (QuitAtom::Str(a), Message::Str(b)) => a == b,
             (QuitAtom::Int(a), Message::Int(b)) => a == b,
             _ => false,
+        }
+    }
+}
+
+impl QuitKey {
+    /// Is `msg`, queued on the priority lane or not (`priority`), this key?
+    pub(super) fn matches(&self, msg: &super::Message, priority: bool) -> bool {
+        match &self.key {
+            QuitPattern::Atom(atom) => priority && atom.matches(msg),
+            QuitPattern::Prefix(atoms) => match msg {
+                super::Message::Vector(items) => {
+                    items.len() >= atoms.len()
+                        && atoms.iter().zip(items.iter()).all(|(atom, item)| atom.matches(item))
+                }
+                _ => false,
+            },
         }
     }
 }

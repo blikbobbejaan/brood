@@ -47,16 +47,24 @@ beat. The observer and the editor are both `ui-run` clients — see
   ;; terminal), so it's a fixed display map of the 0-arg `term-*` primitives.
   ;; `:key-held?` is reported by a terminal speaking the kitty keyboard protocol and
   ;; inferred from the repeats in any other (`term/held-key`).
-  {:enter term/enter
-   :leave term/leave
+  ;; While it is entered, a reader thread delivers the terminal's keys and mouse to the
+  ;; loop's PRIORITY lane (`term/forward-input`, ADR-491), as a window delivers its input:
+  ;; a key typed while the loop is busy is queued where the kernel's quit key sees it, so a
+  ;; terminal C-g stops a stuck turn. So the terminal polls the mailbox as the window does —
+  ;; input first, and the loop's background messages arrive tagged as such (ADR-490).
+  {:enter (fn ()
+            (do
+              (term/enter)
+              (term/forward-input (self))))
+   :leave (fn ()
+            (do
+              (term/forward-input nil)
+              (term/leave)))
    :size term/size
    :draw term/draw
-   :poll term/poll
-   ;; the terminal's keys never share the mailbox with background messages: the
-   ;; keyboard IS the input source, asked without waiting (ADR-490)
-   :poll-input (fn () (term/poll 0))
-   ;; and so everything the terminal's poll returns is input
-   :poll-tagged (fn (ms) (let (key (term/poll ms)) (if (nil? key) nil [key true])))
+   :poll (fn (ms) (display-untag (ui-receive-tagged ms)))
+   :poll-input (fn () (ui-take-input))
+   :poll-tagged (fn (ms) (ui-receive-tagged ms))
    :key-held? (fn () (not (nil? (term/held-key))))})
 
 (defn- ui-coalesce-motion (msg)
@@ -713,6 +721,14 @@ model's `:event-ceiling-ms` when it has the key (nil: never), else `*ui-event-ce
 else `*ui-quit-key*`."
   (if (contains? model :quit-key) (get model :quit-key) *ui-quit-key*))
 
+(defn- ui-quit-message (display key)
+  "The message the kernel watches for as `display`'s quit `key`: the key itself — what a
+window or the terminal delivers on the priority lane — unless the display ships keys in
+another shape, which its `:quit-message` `(fn (key) …)` gives (a served session's
+`[:key key]`, which arrives from a thin client on the ordinary lane). nil for no key."
+  (let (shape (get display :quit-message))
+    (if (or (nil? key) (nil? shape)) key (shape key))))
+
 (defn- ui-fold (update model input cols rows input?)
   "`(update model input cols rows)`, timed and traced as `update` — and survived: a
 throwing `update` is logged (`ui-log-error`) and drops that one input, returning
@@ -1221,7 +1237,8 @@ non-blocking window. The shared loop behind the observer (and the editor)."
   (do
     ((get display :enter))
     ;; the quit key (ADR-491): a C-g that arrives while a turn is busy interrupts it
-    (proc/set-quit-key (ui-quit-key model) (or (get model :quit-busy-ms) *ui-quit-busy-ms*))
+    (proc/set-quit-key (ui-quit-message display (ui-quit-key model))
+      (or (get model :quit-busy-ms) *ui-quit-busy-ms*))
     (try
       (do
         ;; nil last-good: first render must succeed. {} clock: a fresh timer bookkeeping

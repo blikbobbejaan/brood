@@ -2258,6 +2258,98 @@ pub(in crate::builtins) fn gui_font_register(
     Ok(Value::keyword(name))
 }
 
+
+/// The terminal's input forwarder (ADR-491): a thread that reads the keyboard and the mouse
+/// and delivers each event to one process's PRIORITY lane, as a window delivers its input —
+/// so a key typed while that process is busy is queued where the kernel's quit key can see
+/// it, rather than waiting in the tty until the busy loop next polls. One per OS process
+/// (one terminal). The stop flag is checked between polls of at most [`FORWARD_POLL`].
+struct Forwarder {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+static FORWARDER: std::sync::Mutex<Option<Forwarder>> = std::sync::Mutex::new(None);
+
+/// How long the forwarder waits for input before it looks at its stop flag again: what
+/// stopping it can cost.
+const FORWARD_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// `(term/forward-input pid)` — deliver every terminal input event to `pid`'s priority lane
+/// from now on (replacing any earlier target); `(term/forward-input nil)` stops, and waits
+/// for the reader thread to finish, so `term/poll` reads the keyboard again. See
+/// [`Forwarder`].
+pub(in crate::builtins) fn term_forward_input(
+    args: &[Value],
+    _: EnvId,
+    heap: &mut Heap,
+) -> LispResult {
+    let target = match arg(args, 0) {
+        Value::Nil => None,
+        Value::Pid { node, id } if crate::dist::is_local(node) => Some(id),
+        other => {
+            return Err(LispError::wrong_type(
+                heap,
+                "term/forward-input",
+                "a local pid or nil",
+                other,
+            ));
+        }
+    };
+    let mut slot = FORWARDER.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(previous) = slot.take() {
+        previous
+            .stop
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = previous.thread.join();
+    }
+    let Some(pid) = target else {
+        return Ok(Value::nil());
+    };
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let thread_stop = std::sync::Arc::clone(&stop);
+    let thread = std::thread::Builder::new()
+        .name("brood-term-input".into())
+        .spawn(move || forward_input(pid, &thread_stop))
+        .map_err(|e| LispError::runtime(format!("term/forward-input: {e}")))?;
+    *slot = Some(Forwarder { stop, thread });
+    Ok(Value::nil())
+}
+
+/// The forwarder's loop: each event built as `term/poll` answers it (in a scratch heap of
+/// the thread's own) and delivered on `pid`'s priority lane, until stopped, the terminal
+/// fails, or `pid` is gone.
+fn forward_input(pid: u64, stop: &std::sync::atomic::AtomicBool) {
+    let mut heap = Heap::new();
+    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+        if !crate::process::is_alive(pid) {
+            return;
+        }
+        let event = match keyboard::next(FORWARD_POLL) {
+            Ok(Some(event)) => event,
+            Ok(None) => continue,
+            Err(_) => return,
+        };
+        let value = match event {
+            keyboard::Polled::Key(keyboard::KeyDelivery::Press(event)) => {
+                key_to_value(&mut heap, event)
+            }
+            keyboard::Polled::Key(keyboard::KeyDelivery::Release(press)) => {
+                key_up_value(&mut heap, press)
+            }
+            keyboard::Polled::Mouse(mouse) => mouse_to_value(&mut heap, mouse),
+            keyboard::Polled::Other => Value::nil(),
+        };
+        if matches!(value, Value::Nil) {
+            continue;
+        }
+        if let Ok(message) = crate::process::to_message(&heap, value) {
+            crate::process::deliver_priority(pid, message);
+        }
+        // the scratch heap only ever holds the event in flight
+        heap = Heap::new();
+    }
+}
 #[cfg(test)]
 mod gui_face_tests {
     use super::gui_face;

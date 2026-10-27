@@ -1162,6 +1162,18 @@ error a catch-all sees, so the kernel keeps raising it (sticky) until the window
       (is (not (proc/interrupt parked)))
       (send parked :go)
       (assert= (quit-await :finished) [:ok 100000])))
+  (test "a vector quit key matches a tagged message on the ordinary lane, as a wire key arrives"
+    (let (me (self)
+          worker (spawn (do
+                          (proc/set-quit-key [:key :ctrl-g] 0)
+                          (let (r (proc/interruptible nil
+                                    (fn () (do (send me [:spinning true]) (quit-spin 0)))))
+                            (send me [:outer [(first r) (receive ([:key k held?] [k held?]))]])))))
+      (quit-await :spinning)
+      ; an atom on the ordinary lane is not a key: nothing happens
+      (send worker :ctrl-g)
+      (send worker [:key :ctrl-g true])
+      (assert= (quit-await :outer) [:interrupted [:ctrl-g true]])))
   (test "a closed window is never interrupted"
     (is (not (proc/interrupt (self))))))
 
@@ -1261,6 +1273,32 @@ error a catch-all sees, so the kernel keeps raising it (sticky) until the window
       (proc/send-priority loop :ctrl-g)
       (proc/send-priority loop :quit)
       (assert= (lane-await-seen) [[:long 3000000] :ctrl-g])))
+  (test "a display that ships keys as [:key k] (a served session) gets its C-g in that shape"
+    (let (me (self)
+          step (fn (model input cols rows)
+                 (cond
+                   (= input :quit) (do (send me [:seen (:seen model)]) (assoc model :done true))
+                   (= input :spin) (do (send me [:spinning true]) (quit-spin 0))
+                   (= input :tick) model
+                   else (lane-record model input)))
+          display (assoc (lane-display) :quit-message (fn (key) [:key key]))
+          loop (spawn (receive
+                        (:go (ui-run {:seen []
+                                      :quit-busy-ms 0
+                                      :on-slow (fn (report) (send me [:slow report]))}
+                               (fn (model cols rows) [])
+                               step
+                               display)))))
+      (proc/send-priority loop :spin)
+      (send loop :go)
+      (quit-await :spinning)
+      ; the wire shape, on the ordinary lane: a thin client's key
+      (send loop [:key :ctrl-g true])
+      (let (report (quit-await :slow))
+        (assert= (:tag report) :spin)
+        (is (:interrupted report)))
+      (proc/send-priority loop :quit)
+      (assert= (lane-await-seen) [[:key :ctrl-g true]])))
   (test "an interrupted view keeps the last frame, and the next model is drawn"
     (let (me (self)
           loop (spawn (receive
@@ -1290,3 +1328,48 @@ error a catch-all sees, so the kernel keeps raising it (sticky) until the window
       ; the C-g is folded next, and its (fast) model is what the screen shows next
       (assert= (quit-await :drew) [[:clear]])
       (proc/send-priority loop :quit))))
+
+;; The terminal's quit key, end to end: a real `ui-run` over `*term-display*` under a
+;; pseudo-terminal. Its keys reach the loop through the reader thread `term/forward-input`
+;; starts, on the priority lane, so a C-g typed while `update` loops forever stops it —
+;; which the terminal, read by the loop itself, could not do before (ADR-491).
+(defn- term-quit-await-file (path ms)
+  "Poll for `path` to exist, every 10 ms, up to `ms`: true when it does."
+  (cond
+    (file/exists? path) true
+    (<= ms 0) false
+    else (do (sleep 10) (term-quit-await-file path (- ms 10)))))
+
+(describe "ui-run — a terminal C-g (ADR-491)"
+  :isolated (test "C-g in a terminal stops an update looping forever"
+    (let (dir (test/temp-dir "brood-term-quit-")
+          script (str dir "/app.blsp")
+          marker (fn (name) (str dir "/" name)))
+      (do
+        (file/mkdir dir)
+        (file/spit script
+          (str "(defmodule term-quit-app (:use editor/ui))\n"
+            "(defn spin (n) (spin (inc n)))\n"
+            "(defn mark (name) (file/spit (str "
+            (pr-str dir)
+            " \"/\" name) name))\n"
+            "(ui-run {:quit-busy-ms 0 "
+            ":on-slow (fn (r) (when (:interrupted r) (mark \"interrupted\")))}\n"
+            "  (fn (m c r) (do (mark \"drawn\") [[:clear]]))\n"
+            "  (fn (m input c r) (cond (= input \"s\") (do (mark \"spinning\") (spin 0))\n"
+            "                          (= input :ctrl-g) (do (mark \"quit-folded\") m)\n"
+            "                          (= input \"q\") (assoc m :done true)\n"
+            "                          :else m))\n"
+            "  *term-display*)\n"
+            "(mark \"exited\")\n"))
+        (let (p (os/spawn-pty (os/exe-path) ["run" script] {:cols 80 :rows 24}))
+          (is (term-quit-await-file (marker "drawn") 20000))
+          (os/write p "s")
+          (is (term-quit-await-file (marker "spinning") 20000))
+          (os/write p 7)
+          (is (term-quit-await-file (marker "interrupted") 20000))
+          (is (term-quit-await-file (marker "quit-folded") 20000))
+          (os/write p "q")
+          (is (term-quit-await-file (marker "exited") 20000))
+          (os/close p)
+          (file/rmdir dir))))))

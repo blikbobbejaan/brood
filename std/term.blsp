@@ -61,6 +61,18 @@ faster than a hand presses one key, until they stop. Always nil outside `term/en
     (term/held-key)   ;=> :down while the down arrow is held, nil when no key is"
   (%term-held-key))
 
+(defn forward-input (pid)
+  "Deliver every terminal input event to `pid`'s PRIORITY lane (`proc/send-priority`) from
+now on — keys, mouse, `[:key-up …]`, exactly what `term/poll` would answer — from a reader
+thread, as a window delivers its input (ADR-491); nil stops it. While it runs the keyboard
+is read for you: a process that is busy still has its keys queued where the kernel's quit
+key (`proc/set-quit-key`) sees them, so a terminal C-g interrupts a stuck `update` as a
+window's does. Take them with `proc/take-priority` / `proc/receive-lane`; `term/poll` sees
+nothing meanwhile. `*term-display*` turns it on for its loop.
+
+    (term/forward-input nil)   → nil"
+  (%term-forward-input pid))
+
 (defn draw (frame)
   "Paint a `frame` — a vector of render ops: [:clear], [:text row col str], [:text row col
 str face], [:rect row col w h face], [:cursor row col] / [:cursor row col style]. A face is

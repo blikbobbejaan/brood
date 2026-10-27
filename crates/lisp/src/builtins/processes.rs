@@ -102,9 +102,9 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     primitives.def(
         "proc/set-quit-key",
         Arity::exact(2),
-        Sig::new(vec![kw.union(string).union(int).union(nil_ty.clone()), int], nil_ty.clone()),
+        Sig::new(vec![kw.union(string).union(int).union(vec_ty.clone()).union(nil_ty.clone()), int], nil_ty.clone()),
         &["key", "busy-ms"],
-        "Declare the calling process's QUIT KEY (ADR-491), Emacs's `quit-char`: when key — a keyword, string or integer, the shape a frontend delivers a keystroke in (a window's C-g is `:ctrl-g`) — arrives on its PRIORITY lane (`proc/send-priority`) while it has been running in an open interrupt window for at least busy-ms, the kernel interrupts it as `proc/interrupt` does. The message is queued as well, so the app still sees its key. nil clears it; with none set a delivery pays nothing. Returns nil.\n\n    (do (proc/set-quit-key :ctrl-g 0) (let (r (proc/interruptible nil (fn () (proc/send-priority (self) :ctrl-g) (letrec (spin (fn (n) (spin (inc n)))) (spin 0))))) (proc/set-quit-key nil 0) [(first r) (receive (m m))]))   → [:interrupted :ctrl-g]",
+        "Declare the calling process's QUIT KEY (ADR-491), Emacs's `quit-char`: when key — a keyword, string or integer, the shape a frontend delivers a keystroke in (a window's C-g is `:ctrl-g`) — arrives on its PRIORITY lane (`proc/send-priority`) while it has been running in an open interrupt window for at least busy-ms, the kernel interrupts it as `proc/interrupt` does. key may instead be a VECTOR of such atoms, the shape a wire frontend ships a key in (`[:key :ctrl-g]` from a thin client): it then matches a vector message that BEGINS with them, on any lane — lanes do not cross a node link, and such a message's tag already says it is input. The message is queued as well, so the app still sees its key. nil clears it; with none set a delivery pays nothing. Returns nil.\n\n    (do (proc/set-quit-key :ctrl-g 0) (let (r (proc/interruptible nil (fn () (proc/send-priority (self) :ctrl-g) (letrec (spin (fn (n) (spin (inc n)))) (spin 0))))) (proc/set-quit-key nil 0) [(first r) (receive (m m))]))   → [:interrupted :ctrl-g]",
         set_quit_key);
     // Arg shape: (matcher: callable|spec vector, timeout: int|nil, tags: vector|nil). The
     // `receive` macro in `std/prelude.blsp` expands to exactly this. The matcher
@@ -473,24 +473,42 @@ pub(super) fn interrupt_proc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
 
 /// `(proc/set-quit-key key busy-ms)` — the message that interrupts this process (ADR-491).
 pub(super) fn set_quit_key(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    use crate::process::interrupt::QuitAtom;
+    use crate::process::interrupt::QuitPattern;
     let busy_ms = optional_ms(heap, "proc/set-quit-key", arg(args, 1))?.unwrap_or(0);
     let key = match arg(args, 0) {
         Value::Nil => None,
-        Value::Keyword(name) => Some(QuitAtom::Keyword(name)),
-        Value::Int(n) => Some(QuitAtom::Int(n)),
-        value @ Value::Str(_) => Some(QuitAtom::Str(
-            super::args::expect_string_ref(heap, "proc/set-quit-key", value)?.to_string(),
-        )),
-        other => {
-            return Err(LispError::type_err(format!(
-                "proc/set-quit-key: expected a keyword, string, integer or nil, got {}",
-                crate::syntax::printer::print(heap, other)
-            )));
+        Value::Vector(id) => {
+            let items = heap.vector(id).to_vec();
+            let atoms = items
+                .into_iter()
+                .map(|item| quit_atom(heap, item))
+                .collect::<Result<Vec<_>, _>>()?;
+            Some(QuitPattern::Prefix(atoms))
         }
+        atom => Some(QuitPattern::Atom(quit_atom(heap, atom)?)),
     };
     crate::process::set_quit_key(key.map(|key| (key, busy_ms)));
     Ok(Value::nil())
+}
+
+/// One atom of a quit key: a keyword, string or integer.
+fn quit_atom(
+    heap: &Heap,
+    value: Value,
+) -> Result<crate::process::interrupt::QuitAtom, LispError> {
+    use crate::process::interrupt::QuitAtom;
+    match value {
+        Value::Keyword(name) => Ok(QuitAtom::Keyword(name)),
+        Value::Int(n) => Ok(QuitAtom::Int(n)),
+        Value::Str(_) => Ok(QuitAtom::Str(
+            super::args::expect_string_ref(heap, "proc/set-quit-key", value)?.to_string(),
+        )),
+        other => Err(LispError::type_err(format!(
+            "proc/set-quit-key: expected a keyword, string, integer, a vector of them, or nil, \
+             got {}",
+            crate::syntax::printer::print(heap, other)
+        ))),
+    }
 }
 
 /// `(exit pid reason)` — send an exit signal to a local green process.

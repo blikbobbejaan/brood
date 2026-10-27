@@ -93,6 +93,9 @@ consumes them), leaving a served app deaf to everything but keys.
      ;; ahead of the session's background messages (ADR-490) — every clause is
      ;; tag-led, so the scan passes a backlog without rebuilding any of it.
      :poll-input (fn () (remote-take-input client held))
+     ;; the client ships a key as `[:key k held?]` over the link, where no lane survives:
+     ;; the quit key is that shape (ADR-491), so a C-g interrupts a busy session
+     :quit-message (fn (key) [:key key])
      ;; the oldest message of any kind, tagged: the client's input as above, anything
      ;; else async app input — the event bus, as local displays deliver it — but not the
      ;; USER's, so it holds no idle timer back
@@ -466,6 +469,7 @@ which is dropped (a nil ⇒ tick) rather than leaked to the app."
    :draw (fn (f) (send hub [:frame f]))
    ;; any client's key, ahead of the session's background messages (ADR-490)
    :poll-input (fn () (shared-take-key))
+   :quit-message (fn (key) [:key key])
    :poll-tagged shared-receive-tagged
    :poll (fn (ms) (serve-untag (shared-receive-tagged ms)))})
 
