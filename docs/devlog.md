@@ -3988,3 +3988,28 @@ editor edits through tree-sitter, so it is allowed as an identifier anywhere and
 the editor's language-support files, plus one paper title in `docs/types.md`. Two lines that read
 as prose were respelled as identifiers (a `known-issues.md` row, a `package-ci.yml` comment).
 Sabotaged: a banned word and a prose use in README each fail it, and an identifier use passes.
+
+2026-10-27 (a language review: three findings scoped, the cheap halves landed): a review of
+Brood as a language, apart from the runtime, wrote three docs, linked from the top of
+`handoff.md`'s open threads: [`failure-encoding-cleanup.md`](failure-encoding-cleanup.md),
+[`record-kind.md`](record-kind.md), [`empty-list-truthiness.md`](empty-list-truthiness.md).
+Landed the same day:
+- **Record leaks:** `(into {} r)` returned `r` itself, and `(merge {:z 1} r)` came out as an `r`.
+  Both were confirmed on the pre-fix binary. `into` now reads a record SOURCE through `seq`
+  (its fields), never `%map-pairs`. `merge` is seeded with its first map rather than `{}`, so
+  `(merge r m)` keeps `r` a record, as the docs promise.
+- **The last public tuple failures:** `supervisor/start-child`/`restart-child` reply a
+  `failure` naming the child and the cause (it used to be the bare `[:error "supervisor:
+  :start failed"]`, with the cause only on stderr), and `stream/next`'s error arm is a `failure`.
+  `[:ok v]` stays, because a value may be `nil` or `:done`.
+- **Docs:** ADR-163's tagged-vector clause is marked superseded by ADR-310.
+  `brood-for-claude.md` (embedded in every `nest new`) stopped teaching it. ADR-310 clause 6
+  records its 2026-09-01 reversal, and `types.md` gained a `failure` entry.
+
+Guard: new cases in `tests/record_test.blsp` (including one across processes),
+`tests/supervisor_test.blsp` and `tests/stream_test.blsp`. Each record assertion is an
+expression observed wrong on the pre-fix binary, which is the inverse sabotage. Run here: `nest format --check`, `nest check` and
+`--strict` (zero warnings), `banned-names.sh`. The suites run in CI. Still open: `assoc` of
+`:__id__` forges an identity; refusing it costs the hottest path, so it waits for the
+`Record` kind (record-kind.md §4). A payload on `failure`, and the `()`/`nil` decision, are
+open too.
