@@ -907,9 +907,11 @@ code paints to a terminal or a GUI window unchanged.
   turn — say "Quit" only then). Model keys: `:quit-key` (nil: none), `:quit-busy-ms`,
   `:event-ceiling-ms` (nil: none). Outside `ui-run`: `(proc/interruptible ceiling-ms
   thunk)` → `[:ok v]` or `[:interrupted e]`; `(proc/interrupt pid)`; `(proc/set-quit-key key
-  busy-ms)`. The error is `{:kind :interrupted :code "E0047"}` and it is STICKY: a
-  `(catch e …)` inside the window is interrupted again at its next safepoint, so a catch-all
-  cannot swallow quit. A process parked in `receive` is never interrupted.
+  busy-ms)`; `(proc/busy? pid)` (true past busy-ms in one window, nil when idle). The error
+  is `{:kind :interrupted :code "E0047"}` and it is STICKY: a `(catch e …)` inside the window
+  is interrupted again at its next safepoint, so a catch-all cannot swallow quit. A process
+  parked in `receive` is never interrupted; a `receive` inside the window PARKS (the VM runs
+  the call as a region on its own frame stack), so `update` may wait on a reply.
 - **A fragment that need not re-render** = `(ui-memo key deps thunk)` (ADR-336): inside
   a running loop the previous turn's ops are reused while `deps` are `=` — a buffer
   line of its rope and spans, a status bar of its segments — else `(thunk)` runs. Name

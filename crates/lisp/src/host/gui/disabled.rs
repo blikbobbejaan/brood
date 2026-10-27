@@ -31,6 +31,9 @@ pub fn focus(_id: u64) -> Result<(), String> {
 pub fn grab(_id: u64, _on: bool) -> Result<(), String> {
     Err(NOT_COMPILED.into())
 }
+pub fn busy(_id: u64, _on: bool) -> Result<(), String> {
+    Err(NOT_COMPILED.into())
+}
 pub fn maximize(_id: u64, _on: bool) -> Result<(), String> {
     Err(NOT_COMPILED.into())
 }

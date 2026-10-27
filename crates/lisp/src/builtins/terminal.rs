@@ -177,6 +177,13 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "Confine the pointer to window id while `on` is truthy, release it otherwise — for mouse-look that shouldn't let the cursor slip out of the window and click another app. Uses the platform's `Confined` grab (cursor stays inside but keeps moving, so an absolute position-based look maps edge-to-edge), falling back to `Locked` where that's all the platform offers. Off by default; an app opts in. Errors only if id isn't a live window. Needs --features gui. Returns nil.",
         gui_grab_cursor);
     primitives.def(
+        "%gui-busy",
+        Arity::exact(2),
+        Sig::new(vec![int, bool_ty], nil_ty),
+        &["id", "on"],
+        "Show window id's busy (wait) cursor while `on` is truthy, as if the loop its input feeds were past its quit key's busy-ms (ADR-491) — for a thin client whose loop runs on another node (`editor/serve`), which the window cannot ask itself. Off restores the hover shape, unless the window's own loop is busy. Errors only if id isn't a live window. Needs --features gui. Returns nil.",
+        gui_busy);
+    primitives.def(
         "%gui-fullscreen!",
         Arity::exact(2),
         Sig::new(vec![int, bool_ty], nil_ty),

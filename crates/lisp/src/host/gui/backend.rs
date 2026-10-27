@@ -234,7 +234,19 @@ fn busy_cursor(w: &mut Win, now: Instant) -> Option<Instant> {
         return Some(due);
     }
     let busy = crate::process::interrupt_busy(w.subscriber);
-    let show = busy == Some(true);
+    w.busy_local = busy == Some(true);
+    show_busy(w);
+    // idle (no window open): stop asking until the next input; a busy cursor showing is
+    // never left behind, since that answer also cleared it above
+    w.busy_check = busy.map(|_| now + BUSY_PROBE);
+    w.busy_check
+}
+
+/// Show the wait cursor while the loop is busy — the one this window asks (`busy_local`) or
+/// a thin client's daemon, which says so over the link (`busy_remote`) — and the hover
+/// shape otherwise. Only a change calls `set_cursor`.
+fn show_busy(w: &mut Win) {
+    let show = w.busy_local || w.busy_remote;
     if show != w.busy_shown {
         w.busy_shown = show;
         w.window.set_cursor(if show {
@@ -243,10 +255,6 @@ fn busy_cursor(w: &mut Win, now: Instant) -> Option<Instant> {
             w.shape.map(cursor_icon).unwrap_or(CursorIcon::Default)
         });
     }
-    // idle (no window open): stop asking until the next input; a busy cursor showing is
-    // never left behind, since that answer also cleared it above
-    w.busy_check = busy.map(|_| now + BUSY_PROBE);
-    w.busy_check
 }
 
 /// Deliver a `{:wheel :lines}` window's wheel backlog as ONE scroll message, unless the
@@ -348,6 +356,9 @@ enum UserEvent {
     /// `gui-grab-cursor` — keeps the cursor inside the window for mouse-look so
     /// it can't slip out and click another app.
     Grab { id: u64, on: bool },
+    /// The loop this window's input feeds is busy elsewhere (`on`) or no longer — a thin
+    /// client's daemon, which says so over the link (ADR-491). Behind `%gui-busy`.
+    Busy { id: u64, on: bool },
     /// Maximise window `id` (`on`) or restore it. Unlike fullscreen this keeps
     /// the title bar / decorations — it just fills the screen's work area. Behind
     /// `gui-maximize!` — what an editor `init.blsp` toggles to open big.
@@ -753,6 +764,13 @@ fn dispatch(id: u64, event: UserEvent) -> Result<(), String> {
 /// release it. Dispatched to the GUI thread like `focus`.
 pub fn grab(id: u64, on: bool) -> Result<(), String> {
     dispatch(id, UserEvent::Grab { id, on })
+}
+
+/// `(%gui-busy id on)` — show window `id`'s busy cursor because the loop it feeds is busy
+/// somewhere this window cannot ask (a served session's daemon), or stop. Dispatched like
+/// `grab`.
+pub fn busy(id: u64, on: bool) -> Result<(), String> {
+    dispatch(id, UserEvent::Busy { id, on })
 }
 
 /// `(gui-maximize! id on)` — maximise window `id` (`on` true) or restore it,
@@ -1350,6 +1368,11 @@ struct Win {
     /// Whether the busy (wait) cursor is showing, because the loop has been in one turn
     /// past its quit key's busy-ms.
     busy_shown: bool,
+    /// The loop this window asks has been in one turn past its busy-ms (`busy_cursor`).
+    busy_local: bool,
+    /// A thin client's daemon said its loop is busy (`%gui-busy`, ADR-491): the loop this
+    /// window feeds runs on another node, where `busy_cursor` cannot ask.
+    busy_remote: bool,
     /// EMA of the scroll velocity (signed lines/step) tracked during a trackpad gesture.
     /// On `TouchPhase::Ended` this seeds the kinetic-momentum animation driven by
     /// `about_to_wait`. On `Started`, any existing momentum velocity is carried forward
@@ -1568,6 +1591,8 @@ fn build_window(
         shape: None,
         busy_check: None,
         busy_shown: false,
+        busy_local: false,
+        busy_remote: false,
         scroll_velocity: 0.0,
         scroll_momentum_active: false,
         scroll_decay: TRACKPAD_DECAY,
@@ -1909,6 +1934,13 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     } else if !on {
                         let _ = w.window.set_cursor_grab(CursorGrabMode::None);
                     }
+                }
+            }
+            // A thin client's daemon says its loop is busy, or not (ADR-491).
+            UserEvent::Busy { id, on } => {
+                if let Some(w) = self.ids.get(&id).and_then(|wid| self.wins.get_mut(wid)) {
+                    w.busy_remote = on;
+                    show_busy(w);
                 }
             }
             // Maximise the window (fill the work area, keep the title bar) or

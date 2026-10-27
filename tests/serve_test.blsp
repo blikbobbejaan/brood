@@ -428,3 +428,60 @@
         (assert= (receive ([:cframe _ t] t) (after *test-wait-ms* :none)) "n=0")
         (send session [:note 7])
         (assert= (receive ([:cframe _ t] t) (after *test-wait-ms* :none)) "n=7")))))
+
+;; ---- the busy cursor across the link (ADR-491) ----------------------------------
+;; A served loop busy past its quit key's busy-ms tells its client, which shows it in its
+;; window; a thin client's own window cannot ask a loop on another node.
+
+;; Spin until the wall clock reaches `deadline` (ms): a turn that keeps its loop busy.
+(defn busy-until (deadline) (if (>= (os/now) deadline) nil (busy-until deadline)))
+
+;; The counter app, whose "slow" key keeps its update busy for 700 ms.
+(defn slow-up (m input c r)
+  (if (= input "slow") (do (busy-until (+ (os/now) 700)) (assoc m :n 99)) (up m input c r)))
+
+;; The `[:busy on]` words the client is sent, in order, until `want` of them came.
+(defn busy-words (want acc)
+  (if (= (count acc) want)
+    acc
+    (receive
+      ([:busy on] (busy-words want (conj acc on)))
+      (after *test-wait-ms* (conj acc :timeout)))))
+
+(describe "editor/serve — the busy cursor of a served session"
+  (test "a served loop busy past its busy-ms tells its client so, and again when it is done"
+    (let (me (self)
+          session (spawn (ui-run (mk) vw slow-up (remote-display me 80 24))))
+      (receive ([:frame _] nil) (after *test-wait-ms* nil))
+      (send session [:key "slow" false])
+      (assert= (busy-words 2 []) [true false])
+      ;; a quick key after it says nothing: the loop never passes its busy-ms
+      (send session [:key "+" false])
+      (assert= (receive ([:busy on] on) (after 600 :quiet)) :quiet)
+      (send session [:key "q" false])))
+
+  (test "a shared session's busy word reaches every client"
+    (let (me (self)
+          hub (spawn (editor/serve/shared-hub () nil [80 24]))
+          session (spawn (ui-run (mk) vw slow-up (editor/serve/shared-display hub))))
+      (send hub [:add me])
+      (send session [:key "slow"])
+      (assert= (busy-words 2 []) [true false])
+      (send session [:key "q"])))
+
+  (test "the window client shows the daemon's busy word through its display's :busy"
+    (let (log (table/new)
+          display {:draw (fn (f) nil)
+                   :busy (fn (on) (table/put log :busy (conj (table/get log :busy []) on)))
+                   :leave (fn () nil)})
+      (send (self) [:busy true])
+      (send (self) [:frame [:clear]])
+      (send (self) [:busy false])
+      (send (self) [:bye])
+      (editor/serve/attach-display-loop nil (self) display)
+      (assert= (table/get log :busy) [true false])
+      ;; a display with no :busy (a terminal) drops it
+      (send (self) [:busy true])
+      (send (self) [:bye])
+      (assert= (editor/serve/attach-display-loop nil (self) {:draw (fn (f) nil) :leave (fn () nil)})
+        nil))))

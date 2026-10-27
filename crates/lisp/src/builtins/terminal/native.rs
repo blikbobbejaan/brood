@@ -1201,6 +1201,14 @@ pub(in crate::builtins) fn gui_grab_cursor(
     Ok(Value::nil())
 }
 
+/// `(%gui-busy id on)` — show window `id`'s busy cursor for a loop on another node (ADR-491).
+pub(in crate::builtins) fn gui_busy(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let id = gui_window_id(heap, "%gui-busy", arg(args, 0))?;
+    let on = crate::eval::truthy(arg(args, 1));
+    crate::host::gui::busy(id, on).map_err(LispError::runtime)?;
+    Ok(Value::nil())
+}
+
 /// `(gui-fullscreen! id on)` — make window `id` borderless-fullscreen (`on` truthy)
 /// or restore it to a normal window.
 pub(in crate::builtins) fn gui_fullscreen(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {

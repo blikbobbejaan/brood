@@ -1190,7 +1190,6 @@ pub(crate) fn interrupt_caught() {
 /// quit key's busy-ms (300 ms without one)? What a window's busy cursor asks of the loop it
 /// delivers to (ADR-491): `None` when no window is open (the loop is idle, or gone), so the
 /// frontend can stop asking; `Some(busy)` while one is.
-#[cfg(feature = "gui")]
 pub(crate) fn interrupt_busy(pid: u64) -> Option<bool> {
     let mailbox = REGISTRY.get(pid)?;
     let open_us = mailbox.interrupt.open_for_us()?;

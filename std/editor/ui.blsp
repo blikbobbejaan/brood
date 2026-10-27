@@ -240,6 +240,9 @@ their input. Both are deferred trade-offs (ADR-059), fine for the observer.
      ;; a turn the loop skipped (ADR-444): the window still learns the app is done with
      ;; it — its wheel glide paces on that, and the latency trace drops the input
      :settle (fn () (gui/settle id))
+     ;; a thin client's daemon says its loop is busy (ADR-491): the wait cursor, as for
+     ;; this window's own loop
+     :busy (fn (on) (%gui-busy id on))
      ;; a key is down: the loop holds its idle timers until it comes up
      :key-held? (fn () (not (nil? (gui/held-key id))))
      ;; The pixel-space seam (ADR-374), for a game: a texture under a handle the app

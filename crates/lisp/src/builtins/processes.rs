@@ -100,6 +100,13 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "Interrupt pid at its next safepoint (ADR-491) — Emacs's quit, from outside: its running computation raises a catchable `{:kind :interrupted …}` there. Only a local process RUNNING inside an open interrupt window (`proc/interruptible`) is interrupted; a process blocked in `receive`, one with its window closed, a dead or a remote pid is left alone, and nothing is remembered for later. True when the interrupt landed.\n\n    (first (proc/interruptible nil (fn () (proc/interrupt (self)) (letrec (spin (fn (n) (spin (inc n)))) (spin 0)))))   → :interrupted\n    (proc/interrupt (self))   → false",
         interrupt_proc);
     primitives.def(
+        "proc/busy?",
+        Arity::exact(1),
+        Sig::new(vec![pid_ty], bool_ty.union(nil_ty.clone())),
+        &["pid"],
+        "Whether pid is BUSY (ADR-491): true while it has been running in one open interrupt window (`proc/interruptible`) for at least its quit key's busy-ms (300 without one), false while its window is open but younger, nil when none is open — it is idle, gone, or remote. What a frontend's busy cursor asks of the loop it feeds: nil says stop asking until the next input.\n\n    (proc/busy? (self))   → nil\n    (proc/interruptible nil (fn () (proc/busy? (self))))   → [:ok false]",
+        busy_proc);
+    primitives.def(
         "proc/set-quit-key",
         Arity::exact(2),
         Sig::new(vec![kw.union(string).union(int).union(vec_ty.clone()).union(nil_ty.clone()), int], nil_ty.clone()),
@@ -480,6 +487,20 @@ pub(super) fn interrupt_proc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
         Value::Pid { .. } => Ok(Value::boolean(false)),
         other => Err(LispError::type_err(format!(
             "proc/interrupt: expected a pid, got {}",
+            crate::syntax::printer::print(heap, other)
+        ))),
+    }
+}
+
+/// `(proc/busy? pid)` — is a local process past its busy-ms in one interrupt window (ADR-491)?
+pub(super) fn busy_proc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    match arg(args, 0) {
+        Value::Pid { node, id } if crate::dist::is_local(node) => {
+            Ok(crate::process::interrupt_busy(id).map_or(Value::nil(), Value::boolean))
+        }
+        Value::Pid { .. } => Ok(Value::nil()),
+        other => Err(LispError::type_err(format!(
+            "proc/busy?: expected a pid, got {}",
             crate::syntax::printer::print(heap, other)
         ))),
     }

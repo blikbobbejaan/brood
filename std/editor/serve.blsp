@@ -71,7 +71,7 @@ consumes them), leaving a served app deaf to everything but keys.
 
     (editor/serve/remote-display client 80 24)   ;=> {:enter … :leave … :size … :draw … :poll …} shipping frames to `client`"
   (let (held (table/new))
-    {:enter (fn () nil)
+    {:enter (fn () (serve-busy-start held (fn (on) (serve-send-busy client on))))
      ; the *client* owns the real terminal, not us
      :leave (fn () (send client [:bye]))
      :size (fn () [cols rows])
@@ -94,15 +94,16 @@ consumes them), leaving a served app deaf to everything but keys.
      ;; The client's input is what it ships: its keys, its detach, its death. Taken
      ;; ahead of the session's background messages (ADR-490) — every clause is
      ;; tag-led, so the scan passes a backlog without rebuilding any of it.
-     :poll-input (fn () (remote-take-input client held))
+     :poll-input (fn () (serve-busy-kick held (remote-take-input client held)))
      ;; the client ships a key as `[:key k held?]` over the link, where no lane survives:
      ;; the quit key is that shape (ADR-491), so a C-g interrupts a busy session
      :quit-message (fn (key) [:key key])
      ;; the oldest message of any kind, tagged: the client's input as above, anything
      ;; else async app input — the event bus, as local displays deliver it — but not the
      ;; USER's, so it holds no idle timer back
-     :poll-tagged (fn (ms) (remote-receive-tagged client held ms))
-     :poll (fn (ms) (serve-untag (remote-receive-tagged client held ms)))}))
+     :poll-tagged (fn (ms) (serve-busy-kick-tagged held (remote-receive-tagged client held ms)))
+     :poll (fn (ms)
+             (serve-untag (serve-busy-kick-tagged held (remote-receive-tagged client held ms))))}))
 
 (defn- serve-send-frame (client frame)
   "Ship `frame` to `client` as `[:frame frame]`, superseding one still queued for it
@@ -115,6 +116,70 @@ since the one it replaced, which is the order the daemon sent them in relative t
   (if (empty? (editor/display/frame-one-shots frame))
     (proc/send-latest client :editor/serve/frame [:frame frame])
     (send client [:frame frame])))
+
+;; ---- the busy cursor across the link (ADR-491) ---------------------------------
+;; A window shows the wait cursor while the loop that takes its input has been in one turn
+;; past its quit key's busy-ms. A thin client's window feeds a loop on the DAEMON, which it
+;; cannot ask, so the session asks for it: a watcher process beside the loop, kicked by each
+;; input the loop takes, asks `proc/busy?` every `serve-busy-probe-ms` until the loop is idle
+;; again, and tells the client each change as `[:busy on]`, newest-wins. As in the window,
+;; nothing is asked at rest.
+
+;; How often the watcher asks whether the loop is busy, from an input until it is idle —
+;; the window's own `BUSY_PROBE`.
+(def- serve-busy-probe-ms 100)
+
+(defn- serve-send-busy (client on)
+  "Tell `client` whether its session's loop is busy (`[:busy on]`), superseding a busy word
+still queued for it (`proc/send-latest`): only the newest matters."
+  (proc/send-latest client :editor/serve/busy [:busy on]))
+
+(defn- serve-busy-start (state notify)
+  "Start the calling loop's busy watcher, telling `notify` each change, and keep it in
+`state` (under `:busy-watcher`) for the display's polls to kick. Runs in the loop process —
+a display's `:enter` — so the watcher watches the loop. Returns nil."
+  (let (loop (self))
+    (table/put state :busy-watcher (spawn (serve-busy-watch loop notify))))
+  nil)
+
+(defn- serve-busy-kick (state input)
+  "`input`, unchanged — and, when it is one (not nil), the busy watcher in `state` told the
+loop may now be busy with it. Newest-wins, so a burst of keys queues one kick."
+  (when (not (nil? input))
+    (let (watcher (table/get state :busy-watcher nil))
+      (when watcher (proc/send-latest watcher :editor/serve/kick :kick))))
+  input)
+
+(defn- serve-busy-kick-tagged (state tagged)
+  "A `[message input?]` poll result, unchanged — kicking the busy watcher in `state` when
+the message is the user's input (`serve-busy-kick`)."
+  (when (and (not (nil? tagged)) (second tagged)) (serve-busy-kick state (first tagged)))
+  tagged)
+
+(defn- serve-busy-watch (loop notify)
+  "The busy watcher of `loop`: monitor it, and end when it does."
+  (monitor loop)
+  (serve-busy-wait loop notify false))
+
+(defn- serve-busy-wait (loop notify shown)
+  "Idle: wait for a kick (the loop took an input) or the loop's end. `shown`: what `notify`
+was last told."
+  (receive
+    (:kick (serve-busy-probe loop notify shown))
+    ([:down _ ^loop _] nil)))
+
+(defn- serve-busy-probe (loop notify shown)
+  "Ask `loop` whether it is busy every `serve-busy-probe-ms`, telling `notify` each change,
+until it is idle (no interrupt window open) — then wait for the next kick."
+  (receive
+    ([:down _ ^loop _] nil)
+    (after serve-busy-probe-ms
+      (let (busy (proc/busy? loop)
+            show (= busy true))
+        (when (not (= show shown)) (notify show))
+        (if (nil? busy)
+          (serve-busy-wait loop notify show)
+          (serve-busy-probe loop notify show))))))
 
 (defn- serve-untag (tagged)
   "The message of a `[message input?]` poll result, nil for nil."
@@ -242,6 +307,8 @@ over, while a key waits (ADR-490) — returning `:open`, or `:closed` if the dae
 frame taken so far, nil at the start."
   (receive
     ([:frame f] (attach-drain peer f))
+    ;; a terminal has no busy cursor to show (ADR-491)
+    ([:busy _] (attach-drain peer latest))
     ([:bye] :closed)
     ([:nodedown ^peer] :closed)
     ([:down _ _ _] :closed)
@@ -362,6 +429,8 @@ backlog (`attach-display-backlog`), which paints only the newest."
                                                                                                            (attach-display-loop peer
                                                                                                              session
                                                                                                              display)))
+    ;; the daemon's loop is busy, or no longer (ADR-491): the window's wait cursor
+    ([:busy on] (do (attach-display-busy display on) (attach-display-loop peer session display)))
     ([:bye] nil)
     ([:nodedown ^peer] nil)
     ([:down _ _ _] nil)
@@ -378,6 +447,12 @@ entry (a terminal) drops it. Returns nil."
     ([:sound-data snd pcm rate channels] (when (get display :sound)
                                            ((get display :sound) snd pcm rate channels)))
     ([:sound-free snd] (when (get display :sound-free) ((get display :sound-free) snd))))
+  nil)
+
+(defn- attach-display-busy (display on)
+  "Show `display`'s busy cursor while the daemon's loop is busy (`on`), through its `:busy`
+  entry (a window); a display without one drops it. Returns nil."
+  (when (get display :busy) ((get display :busy) on))
   nil)
 
 (defn- attach-display-apply-all (display messages)
@@ -415,6 +490,9 @@ Window input is not taken here: `attach-display-paint` ships it before the paint
                                                                                                            carried
                                                                                                            (conj after
                                                                                                              m)))
+    ([:busy on] (do
+                  (attach-display-busy display on)
+                  (attach-display-backlog peer session display latest carried after)))
     ([:bye] (attach-display-show display latest carried after))
     ([:nodedown ^peer] nil)
     ([:down _ _ _] nil)
@@ -525,6 +603,8 @@ close (`[:bye]`). Tail-recursive; one hub per shared session."
                   (shared-hub (cons pid clients) frame size)))
     ([:remove pid] (shared-hub (seq/reject clients (fn (p) (= p pid))) frame size))
     ([:frame f] (do (doseq (p clients) (serve-send-frame p f)) (shared-hub clients f size)))
+    ;; the shared loop is busy, or no longer: every client's window shows it (ADR-491)
+    ([:busy on] (do (doseq (p clients) (serve-send-busy p on)) (shared-hub clients frame size)))
     ([:size reply] (do
                      (send reply [:hub-size (first size) (second size)])
                      (shared-hub clients frame size)))
@@ -545,15 +625,16 @@ asks the hub; `:leave` shuts the hub (and thus every client) down. As with
 `remote-display`, any other mailbox message is returned as async app input (the event
 bus) — except a stale `[:hub-size …]` reply that outlived its `shared-hub-size` window,
 which is dropped (a nil ⇒ tick) rather than leaked to the app."
-  {:enter (fn () nil)
-   :leave (fn () (send hub [:shutdown]))
-   :size (fn () (shared-hub-size hub))
-   :draw (fn (f) (send hub [:frame f]))
-   ;; any client's key, ahead of the session's background messages (ADR-490)
-   :poll-input (fn () (shared-take-key))
-   :quit-message (fn (key) [:key key])
-   :poll-tagged shared-receive-tagged
-   :poll (fn (ms) (serve-untag (shared-receive-tagged ms)))})
+  (let (state (table/new))
+    {:enter (fn () (serve-busy-start state (fn (on) (send hub [:busy on]))))
+     :leave (fn () (send hub [:shutdown]))
+     :size (fn () (shared-hub-size hub))
+     :draw (fn (f) (send hub [:frame f]))
+     ;; any client's key, ahead of the session's background messages (ADR-490)
+     :poll-input (fn () (serve-busy-kick state (shared-take-key)))
+     :quit-message (fn (key) [:key key])
+     :poll-tagged (fn (ms) (serve-busy-kick-tagged state (shared-receive-tagged ms)))
+     :poll (fn (ms) (serve-untag (serve-busy-kick-tagged state (shared-receive-tagged ms))))}))
 
 (defn- shared-receive-tagged (ms)
   "A shared session's `:poll-tagged`: the oldest message, waiting up to `ms`, as
