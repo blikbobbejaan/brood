@@ -71,39 +71,38 @@ consumes them), leaving a served app deaf to everything but keys.
 
     (editor/serve/remote-display client 80 24)   ;=> {:enter … :leave … :size … :draw … :poll …} shipping frames to `client`"
   (let (held (table/new))
-    {:enter (fn () (serve-busy-start held (fn (on) (serve-send-busy client on))))
-     ; the *client* owns the real terminal, not us
-     :leave (fn () (send client [:bye]))
-     :size (fn () [cols rows])
-     ;; whether a key is down in the CLIENT's window, as its last key said: every change
-     ;; to it comes with a key, so this is as current as the input the loop has taken.
-     ;; The table dies with the session process, which made it
-     :key-held? (fn () (table/get held :held? false))
-     ;; newest-wins at the source (ADR-492): a frame still queued for a client that has
-     ;; not taken it is replaced by the next, here or in the client node's mailbox
-     :draw (fn (f) (serve-send-frame client f))
-     ;; The pixel-space seam (ADR-374) over the wire: a texture, its release, and the
-     ;; window options an app asks for after attaching (`:input :pixels`, a title) each
-     ;; go to the client as a message its loop applies to its own display — so a game
-     ;; written against a display map serves to a thin client's window unchanged.
-     :texture (fn (tex rgba w h) (send client [:texture tex rgba w h]))
-     :texture-free (fn (tex) (send client [:texture-free tex]))
-     :sound (fn (snd pcm rate channels) (send client [:sound-data snd pcm rate channels]))
-     :sound-free (fn (snd) (send client [:sound-free snd]))
-     :configure (fn (o) (send client [:window o]))
-     ;; The client's input is what it ships: its keys, its detach, its death. Taken
-     ;; ahead of the session's background messages (ADR-490) — every clause is
-     ;; tag-led, so the scan passes a backlog without rebuilding any of it.
-     :poll-input (fn () (serve-busy-kick held (remote-take-input client held)))
-     ;; the client ships a key as `[:key k held?]` over the link, where no lane survives:
-     ;; the quit key is that shape (ADR-491), so a C-g interrupts a busy session
-     :quit-message (fn (key) [:key key])
-     ;; the oldest message of any kind, tagged: the client's input as above, anything
-     ;; else async app input — the event bus, as local displays deliver it — but not the
-     ;; USER's, so it holds no idle timer back
-     :poll-tagged (fn (ms) (serve-busy-kick-tagged held (remote-receive-tagged client held ms)))
-     :poll (fn (ms)
-             (serve-untag (serve-busy-kick-tagged held (remote-receive-tagged client held ms))))}))
+    (merge
+      {:enter (fn () (serve-busy-start held (fn (on) (serve-send-busy client on))))
+       ; the *client* owns the real terminal, not us
+       :leave (fn () (send client [:bye]))
+       :size (fn () [cols rows])
+       ;; whether a key is down in the CLIENT's window, as its last key said: every change
+       ;; to it comes with a key, so this is as current as the input the loop has taken.
+       ;; The table dies with the session process, which made it
+       :key-held? (fn () (table/get held :held? false))
+       ;; newest-wins at the source (ADR-492): a frame still queued for a client that has
+       ;; not taken it is replaced by the next, here or in the client node's mailbox
+       :draw (fn (f) (serve-send-frame client f))
+       ;; The pixel-space seam (ADR-374) over the wire: a texture, its release, and the
+       ;; window options an app asks for after attaching (`:input :pixels`, a title) each
+       ;; go to the client as a message its loop applies to its own display — so a game
+       ;; written against a display map serves to a thin client's window unchanged.
+       :texture (fn (tex rgba w h) (send client [:texture tex rgba w h]))
+       :texture-free (fn (tex) (send client [:texture-free tex]))
+       :sound (fn (snd pcm rate channels) (send client [:sound-data snd pcm rate channels]))
+       :sound-free (fn (snd) (send client [:sound-free snd]))
+       :configure (fn (o) (send client [:window o]))
+       ;; The client's input is what it ships: its keys, its detach, its death. Taken
+       ;; ahead of the session's background messages (ADR-490) — every clause is
+       ;; tag-led, so the scan passes a backlog without rebuilding any of it.
+       :poll-input (fn () (serve-busy-kick held (remote-take-input client held)))
+       ;; the client ships a key as `[:key k held?]` over the link, where no lane survives:
+       ;; the quit key is that shape (ADR-491), so a C-g interrupts a busy session
+       :quit-message (fn (key) [:key key])}
+      ;; the oldest message of any kind, tagged: the client's input as above, anything
+      ;; else async app input — the event bus, as local displays deliver it — but not the
+      ;; USER's, so it holds no idle timer back
+      (display-polls (fn (ms) (serve-busy-kick-tagged held (remote-receive-tagged client held ms)))))))
 
 (defn- serve-send-frame (client frame)
   "Ship `frame` to `client` as `[:frame frame]`, superseding one still queued for it
@@ -180,10 +179,6 @@ until it is idle (no interrupt window open) — then wait for the next kick."
         (if (nil? busy)
           (serve-busy-wait loop notify show)
           (serve-busy-probe loop notify show))))))
-
-(defn- serve-untag (tagged)
-  "The message of a `[message input?]` poll result, nil for nil."
-  (if (nil? tagged) nil (first tagged)))
 
 (defn- remote-receive-tagged (client held ms)
   "A remote display's `:poll-tagged`: the oldest message, waiting up to `ms`, as
@@ -626,15 +621,15 @@ asks the hub; `:leave` shuts the hub (and thus every client) down. As with
 bus) — except a stale `[:hub-size …]` reply that outlived its `shared-hub-size` window,
 which is dropped (a nil ⇒ tick) rather than leaked to the app."
   (let (state (table/new))
-    {:enter (fn () (serve-busy-start state (fn (on) (send hub [:busy on]))))
-     :leave (fn () (send hub [:shutdown]))
-     :size (fn () (shared-hub-size hub))
-     :draw (fn (f) (send hub [:frame f]))
-     ;; any client's key, ahead of the session's background messages (ADR-490)
-     :poll-input (fn () (serve-busy-kick state (shared-take-key)))
-     :quit-message (fn (key) [:key key])
-     :poll-tagged (fn (ms) (serve-busy-kick-tagged state (shared-receive-tagged ms)))
-     :poll (fn (ms) (serve-untag (serve-busy-kick-tagged state (shared-receive-tagged ms))))}))
+    (merge
+      {:enter (fn () (serve-busy-start state (fn (on) (send hub [:busy on]))))
+       :leave (fn () (send hub [:shutdown]))
+       :size (fn () (shared-hub-size hub))
+       :draw (fn (f) (send hub [:frame f]))
+       ;; any client's key, ahead of the session's background messages (ADR-490)
+       :poll-input (fn () (serve-busy-kick state (shared-take-key)))
+       :quit-message (fn (key) [:key key])}
+      (display-polls (fn (ms) (serve-busy-kick-tagged state (shared-receive-tagged ms)))))))
 
 (defn- shared-receive-tagged (ms)
   "A shared session's `:poll-tagged`: the oldest message, waiting up to `ms`, as

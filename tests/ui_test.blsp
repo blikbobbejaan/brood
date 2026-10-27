@@ -481,6 +481,22 @@
 (defn- lane-position (seen input)
   (index-of seen input))
 
+(describe "display-poll-tagged — a wrapper that replaces :poll"
+  (test "a display's own :poll-tagged answers while its :poll is the one it was made with"
+    (let (display (display-polls (fn (ms) ["queued" false])))
+      (assert= (display-poll-tagged display 0) ["queued" false])
+      (assert= ((get display :poll) 0) "queued")))
+  (test "a :poll replaced over a std display is what the loop asks, not the bypassed :poll-tagged"
+    ;; the pre-ADR-490 wrapping idiom: `(assoc display :poll …)` to see a message first
+    (let (display (assoc (merge {:poll-input (fn () nil)}
+                           (display-polls (fn (ms) ["queued" false])))
+                    :poll (fn (ms) "the wrapper's")))
+      (assert= (display-poll-tagged display 0) ["the wrapper's" false])))
+  (test "with-events over a std display still sees its events first"
+    (let (display (with-events (display-polls (fn (ms) nil))))
+      (send (self) [:sse "pushed"])
+      (assert= (display-poll-tagged display 0) [[:sse "pushed"] false]))))
+
 (describe "ui-run — input before background (ADR-490)"
   (test "a key sent AFTER 5000 background messages is folded before them (coalescing)"
     (let (me (self)
