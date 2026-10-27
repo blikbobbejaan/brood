@@ -667,6 +667,31 @@
         (assert= (:tag report) :sleepy)
         (is (>= (:ms report) 10)))
       (assert= (receive ([:slow report] report) (after 100 :none)) :none)))
+  (test "a run of slow updates is reported once per quiet period, an interrupted one always"
+    (let (me (self)
+          step (fn (model input cols rows)
+                 (cond
+                   (= input :quit) (assoc model :done true)
+                   (= (lane-tag input) :sleepy) (do (sleep 30) model)
+                   (= (lane-tag input) :stuck) (quit-spin 0)
+                   else model))
+          loop (lane-start me
+                 {:slow-ms 10
+                  :event-ceiling-ms 50
+                  :on-slow (fn (report) (send me [:slow report]))}
+                 step))
+      (send loop [:sleepy 1])
+      (send loop [:sleepy 2])
+      (send loop [:sleepy 3])
+      (send loop [:stuck 4])
+      (send loop :quit)
+      (send loop :go)
+      (assert= (:tag (receive ([:slow report] report) (after 5000 :none))) :sleepy)
+      ; three slow folds, one report — and the interrupted one is still reported
+      (let (next (receive ([:slow report] report) (after 5000 :none)))
+        (assert= (:tag next) :stuck)
+        (is (:interrupted next)))
+      (assert= (receive ([:slow report] report) (after 100 :none)) :none)))
   (test "a slow view is reported, at most once per quiet period"
     (let (me (self)
           loop (spawn (receive

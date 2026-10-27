@@ -426,6 +426,16 @@ synthesized back-compat timer below and any app that hasn't moved to named timer
 ;; only C-g stops it, as in Emacs. A model's `:event-ceiling-ms` overrides it, nil
 ;; turning it off.
 
+(def *ui-slow-update-quiet-ms* 1000)
+;; At most one slow-UPDATE report per this many ms (an interrupted one is always reported:
+;; it is what an editor says "Quit" for). A run of slow folds — a reply stream each of
+;; whose folds is just over the line — would otherwise report once per fold, and an app
+;; that logs the report into its model makes the next fold slower still.
+
+(defdyn *ui-slow-reports* nil)
+;; The loop's watchdog bookkeeping, a table bound for the loop's life: when it last reported
+;; a slow update (`:update-at`). nil outside a loop, where nothing is rate-limited.
+
 (def *ui-slow-view-quiet-ms* 5000)
 ;; At most one slow-VIEW report per this many ms. A view has no input to name and is
 ;; slow for as long as what it draws is big, so a report per frame would be a flood of
@@ -754,7 +764,7 @@ previous model, and is reported through the watchdog with `:interrupted true`."
       (when (not (nil? cost)) (ui-trace "update" ms (ui-abbrev (pr-str input)) cost))
       (cond
         (= how :interrupted) (ui-report-slow model "update" (ui-input-tag input) ms true input?)
-        (> ms (ui-slow-ms model))
+        (and (> ms (ui-slow-ms model)) (ui-slow-update-due?))
           (ui-report-slow model "update" (ui-input-tag input) ms false input?))
       (if (= how :ok) value model))))
 
@@ -813,6 +823,17 @@ crash of its own. nil."
           :to *err*)
         (try (hook report) (catch e (ui-log-error "on-slow" e))))
       nil)))
+
+(defn- ui-slow-update-due? ()
+  "Whether a slow update may be reported now: none was in the last
+`*ui-slow-update-quiet-ms*` (wall clock) — stamping now as the last when so. Always true
+outside a loop (`*ui-slow-reports*` nil)."
+  (let (reports *ui-slow-reports*
+        now (os/now)
+        last (if (nil? reports) nil (table/get reports :update-at nil)))
+    (if (or (nil? last) (>= (- now last) *ui-slow-update-quiet-ms*))
+      (do (when reports (table/put reports :update-at now)) true)
+      false)))
 
 (defn- ui-watch-view (model clock ms)
   "The watchdog on a `view` of `ms`: report it when it is slow and no view report was
@@ -1193,7 +1214,8 @@ newest value sends it with `proc/send-latest`, so a newer one replaces it while 
 **The watchdog (ADR-490).** An `update` fold or a `view` slower than `*ui-slow-ms*` (the
 model's `:slow-ms`) is reported, naming the input it folded by its tag (`ui-input-tag`) —
 to the model's `:on-slow` hook, `(fn (report) …)` with `report` a `{:phase :tag :ms :input}` map (`:input` true for the user's own input),
-or as a line on stderr. A slow view is reported at most every `*ui-slow-view-quiet-ms*`.
+or as a line on stderr. A slow view is reported at most every `*ui-slow-view-quiet-ms*`, a
+slow update every `*ui-slow-update-quiet-ms*`; an interrupted one always.
 
 **Quit (ADR-491).** Each `update` and `view` runs in an interrupt window
 (`proc/interruptible`), and the loop arms the kernel's quit key: the frontend's C-g
@@ -1255,7 +1277,8 @@ non-blocking window. The shared loop behind the observer (and the editor)."
       (do
         ;; nil last-good: first render must succeed. {} clock: a fresh timer bookkeeping
         ;; map (last-input/armed/fired filled lazily on the first iteration).
-        (binding (*ui-loop* (self)) (ui-loop model nil {} view update display))
+        (binding (*ui-loop* (self) *ui-slow-reports* (table/new))
+          (ui-loop model nil {} view update display))
         (proc/set-quit-key nil 0)
         ((get display :leave)))
       (catch e
