@@ -1017,7 +1017,11 @@ re-raises, surfacing a genuine startup bug instead of spinning."
           rendered (if unchanged
                      [:unchanged nil nil 0.0]
                      (ui-render model last-good clock view display cols rows))
-          drawn (and (vector? rendered) (= (first rendered) :frame)))
+          drawn (and (vector? rendered) (= (first rendered) :frame))
+          ;; the fallback for the turns after this one: `model` when it is on screen (drawn
+          ;; now, or unchanged since it was), the previous fallback when its view was
+          ;; interrupted — a model that never rendered is no point to roll back to
+          good (if (and (vector? rendered) (= (first rendered) :interrupted)) last-good model))
       (if (= rendered :failed)
         ;; couldn't render `model` — roll back to the last model that did, and re-render it
         ;; (the clock keeps advancing — it's wall-clock reality, not model state).
@@ -1072,20 +1076,20 @@ re-raises, surfacing a genuine startup bug instead of spinning."
                   (let (f (get display :focus))
                     (do
                       (when f (f))
-                      (ui-loop model model clock1 view update display)))
+                      (ui-loop model good clock1 view update display)))
                 ;; poll timed out (nil). Legacy: deliver the bare `:tick`. Timers: fire the
                 ;; earliest due timer (if any), else re-park without folding.
                 (nil? raw)
                   (if (nil? timers)
                     (let (next (ui-fold update model :tick cols rows false))
-                      (ui-loop next model clock1 view update display))
+                      (ui-loop next good clock1 view update display))
                     (let (fr (ui-fire timers clock1 (ui-now model))
                           event (first fr)
                           clock2 (second fr))
                       (if (nil? event)
-                        (ui-loop model model clock2 view update display)
+                        (ui-loop model good clock2 view update display)
                         (let (next (ui-fold update model event cols rows false))
-                          (ui-loop next model clock2 view update display)))))
+                          (ui-loop next good clock2 view update display)))))
                 ;; a message: fold it, drain, then — with timers — stamp `:last-input` if
                 ;; the turn folded USER input (ADR-490): only input resets idle timers, so
                 ;; an idle beat still comes during a flood of background replies. A
@@ -1141,8 +1145,8 @@ re-raises, surfacing a genuine startup bug instead of spinning."
                         (let (f (get display :focus))
                           (do
                             (when f (f))
-                            (ui-loop next next clock3 view update display)))
-                      else (ui-loop next model clock3 view update display)))))))))))
+                            (ui-loop next good clock3 view update display)))
+                      else (ui-loop next good clock3 view update display)))))))))))
 
 (defn ui-run (model view update display)
   "Run a UI app over `display` (a frontend map): enter it, then loop —

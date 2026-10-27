@@ -1359,6 +1359,40 @@ error a catch-all sees, so the kernel keeps raising it (sticky) until the window
         (is (:interrupted report)))
       ; the C-g is folded next, and its (fast) model is what the screen shows next
       (assert= (quit-await :drew) [[:clear]])
+      (proc/send-priority loop :quit)))
+  (test "a view that throws rolls back to the last model that RENDERED, not one interrupted"
+    ;; :n 1's view is stopped by a C-g (once: a second render of it would draw), the C-g
+    ;; moves the model to :n 2, whose view throws. The rollback must land on :n 0, the
+    ;; last model drawn — the interrupted :n 1 never was.
+    (let (me (self)
+          spun (table/new)
+          loop (spawn (receive
+                        (:go (ui-run {:n 0 :quit-busy-ms 0}
+                               (fn (model cols rows)
+                                 (cond
+                                   (and (= (:n model) 1) (not (table/get spun :once false)))
+                                     (do
+                                       (table/put spun :once true)
+                                       (send me [:viewing true])
+                                       (quit-spin 0))
+                                   (= (:n model) 2) (error "view: a model that cannot be drawn")
+                                   else [[:text 0 0 (str (:n model))]]))
+                               (fn (model input cols rows)
+                                 (cond
+                                   (= input :inc) (assoc model :n 1)
+                                   (= input :ctrl-g) (assoc model :n 2)
+                                   (= input :quit) (assoc model :done true)
+                                   else model))
+                               (assoc (lane-display)
+                                 :draw (fn (frame) (send me [:drew frame]))))))))
+      (send loop :go)
+      (assert= (quit-await :drew) [[:text 0 0 "0"]])
+      (proc/send-priority loop :inc)
+      (quit-await :viewing)
+      (proc/send-priority loop :ctrl-g)
+      ;; :n 0 is still on screen, so the rollback has nothing to draw; rolled back to the
+      ;; interrupted :n 1, the loop drew it
+      (assert= (receive ([:drew frame] frame) (after 300 :nothing-new)) :nothing-new)
       (proc/send-priority loop :quit))))
 
 ;; The terminal's quit key, end to end: a real `ui-run` over `*term-display*` under a
