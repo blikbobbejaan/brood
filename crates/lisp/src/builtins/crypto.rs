@@ -127,6 +127,38 @@ fn hash_algo(name: &'static str, kw: Value, heap: &mut Heap) -> Result<HashAlgo,
     }
 }
 
+/// Bytes hashed between interrupt polls (ADR-491): a digest is one pass, but over a whole
+/// file or buffer it is long enough to want stopping.
+const HASH_PIECE: usize = 64 * 1024;
+
+/// Feed `data` to `update` a piece at a time, polling for an interrupt between (ADR-491).
+fn feed_polled(data: &[u8], mut update: impl FnMut(&[u8])) -> Result<(), LispError> {
+    let mut poll = crate::eval::InterruptPoll::new();
+    for piece in data.chunks(HASH_PIECE) {
+        update(piece);
+        poll.advance(crate::eval::InterruptPoll::EVERY)?;
+    }
+    Ok(())
+}
+
+/// The `D` digest of `data`, fed through [`feed_polled`].
+fn digest_polled<D: sha2::Digest>(data: &[u8]) -> Result<Vec<u8>, LispError> {
+    let mut hasher = D::new();
+    feed_polled(data, |piece| hasher.update(piece))?;
+    Ok(hasher.finalize().to_vec())
+}
+
+/// The HMAC of `$msg` under `$key` with digest `$digest`, fed through [`feed_polled`].
+macro_rules! hmac_polled {
+    ($digest:ty, $key:expr, $msg:expr) => {{
+        use hmac::{Hmac, KeyInit, Mac};
+        let mut mac = Hmac::<$digest>::new_from_slice($key)
+            .map_err(|e| LispError::runtime(format!("%hmac: {e}")))?;
+        feed_polled($msg, |piece| mac.update(piece))?;
+        mac.finalize().into_bytes().to_vec()
+    }};
+}
+
 /// `(%digest algo bytes)` — raw digest of a byte sequence (`bytes` value, vector,
 /// or list of byte ints) under algorithm keyword `algo`, returned as a bytes
 /// value. The single digest primitive: string-input and hex-output variants are
@@ -136,27 +168,18 @@ pub(super) fn digest(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let algo = hash_algo("%digest", arg(args, 0), heap)?;
     let bytes = collect_bytes("%digest", arg(args, 1), heap)?;
     let out: Vec<u8> = match algo {
-        HashAlgo::Md5 => {
-            use md5::{Digest, Md5};
-            Md5::digest(&bytes).to_vec()
+        HashAlgo::Md5 => digest_polled::<md5::Md5>(&bytes)?,
+        HashAlgo::Sha1 => digest_polled::<sha1::Sha1>(&bytes)?,
+        HashAlgo::Sha256 => digest_polled::<sha2::Sha256>(&bytes)?,
+        HashAlgo::Sha384 => digest_polled::<sha2::Sha384>(&bytes)?,
+        HashAlgo::Sha512 => digest_polled::<sha2::Sha512>(&bytes)?,
+        HashAlgo::Blake3 => {
+            let mut hasher = blake3::Hasher::new();
+            feed_polled(&bytes, |piece| {
+                hasher.update(piece);
+            })?;
+            hasher.finalize().as_bytes().to_vec()
         }
-        HashAlgo::Sha1 => {
-            use sha1::{Digest, Sha1};
-            Sha1::digest(&bytes).to_vec()
-        }
-        HashAlgo::Sha256 => {
-            use sha2::{Digest, Sha256};
-            Sha256::digest(&bytes).to_vec()
-        }
-        HashAlgo::Sha384 => {
-            use sha2::{Digest, Sha384};
-            Sha384::digest(&bytes).to_vec()
-        }
-        HashAlgo::Sha512 => {
-            use sha2::{Digest, Sha512};
-            Sha512::digest(&bytes).to_vec()
-        }
-        HashAlgo::Blake3 => blake3::hash(&bytes).as_bytes().to_vec(),
     };
     Ok(bytes_to_value(&out, heap))
 }
@@ -166,42 +189,15 @@ pub(super) fn digest(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 /// value. String-keyed / hex-output variants are Brood wrappers in
 /// `std/hash.blsp` (collapsed the former 6 `%hmac-*` prims to this one).
 pub(super) fn hmac(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    use hmac::{Hmac, KeyInit, Mac};
     let algo = hash_algo("%hmac", arg(args, 0), heap)?;
     let key = collect_bytes("%hmac", arg(args, 1), heap)?;
     let msg = collect_bytes("%hmac", arg(args, 2), heap)?;
-    let mac_err = |e| LispError::runtime(format!("%hmac: {e}"));
     let out: Vec<u8> = match algo {
-        HashAlgo::Md5 => {
-            use md5::Md5;
-            let mut mac = Hmac::<Md5>::new_from_slice(&key).map_err(mac_err)?;
-            mac.update(&msg);
-            mac.finalize().into_bytes().to_vec()
-        }
-        HashAlgo::Sha1 => {
-            use sha1::Sha1;
-            let mut mac = Hmac::<Sha1>::new_from_slice(&key).map_err(mac_err)?;
-            mac.update(&msg);
-            mac.finalize().into_bytes().to_vec()
-        }
-        HashAlgo::Sha256 => {
-            use sha2::Sha256;
-            let mut mac = Hmac::<Sha256>::new_from_slice(&key).map_err(mac_err)?;
-            mac.update(&msg);
-            mac.finalize().into_bytes().to_vec()
-        }
-        HashAlgo::Sha384 => {
-            use sha2::Sha384;
-            let mut mac = Hmac::<Sha384>::new_from_slice(&key).map_err(mac_err)?;
-            mac.update(&msg);
-            mac.finalize().into_bytes().to_vec()
-        }
-        HashAlgo::Sha512 => {
-            use sha2::Sha512;
-            let mut mac = Hmac::<Sha512>::new_from_slice(&key).map_err(mac_err)?;
-            mac.update(&msg);
-            mac.finalize().into_bytes().to_vec()
-        }
+        HashAlgo::Md5 => hmac_polled!(md5::Md5, &key, &msg),
+        HashAlgo::Sha1 => hmac_polled!(sha1::Sha1, &key, &msg),
+        HashAlgo::Sha256 => hmac_polled!(sha2::Sha256, &key, &msg),
+        HashAlgo::Sha384 => hmac_polled!(sha2::Sha384, &key, &msg),
+        HashAlgo::Sha512 => hmac_polled!(sha2::Sha512, &key, &msg),
         HashAlgo::Blake3 => {
             return Err(LispError::runtime(
                 "%hmac: :blake3 has no HMAC (BLAKE3 has its own keyed mode); want :md5 :sha1 :sha256 :sha384 :sha512",
@@ -391,8 +387,11 @@ pub(super) fn pbkdf2_sha256_fn(args: &[Value], _: EnvId, heap: &mut Heap) -> Lis
         mac.update(&i.to_be_bytes());
         let mut u: Vec<u8> = mac.finalize().into_bytes().to_vec();
         let mut t = u.clone();
+        // One HMAC per iteration, polled (ADR-491): 600 000 of them is a long call.
+        let mut poll = crate::eval::InterruptPoll::new();
         // U_n = HMAC(password, U_{n-1}); T_i = XOR of all U_j
         for _ in 1..iterations {
+            poll.tick()?;
             let mut mac2 = HmacSha256::new_from_slice(&pw)
                 .map_err(|e| LispError::runtime(format!("%pbkdf2-sha256-bytes: {e}")))?;
             mac2.update(&u);

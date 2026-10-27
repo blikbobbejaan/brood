@@ -21,6 +21,7 @@ use flate2::write::{DeflateEncoder, GzEncoder, ZlibEncoder};
 use crate::core::heap::Heap;
 use crate::core::value::{EnvId, Value};
 use crate::error::{LispError, LispResult};
+use crate::eval::InterruptPoll;
 
 use super::args::{arg, expect_int};
 use super::bytes::{bytes_to_value, collect_bytes};
@@ -118,9 +119,24 @@ fn encode<W: Write>(
     data: &[u8],
     finish: fn(W) -> std::io::Result<Vec<u8>>,
 ) -> Result<Vec<u8>, LispError> {
-    enc.write_all(data)
-        .map_err(|e| LispError::runtime(format!("{name}: {e}")))?;
+    write_polled(name, &mut enc, data)?;
     finish(enc).map_err(|e| LispError::runtime(format!("{name}: {e}")))
+}
+
+/// Bytes a coder takes or yields between interrupt polls (ADR-491): a whole payload is one
+/// pass, but a large one at a high level runs long enough to want stopping.
+const CODER_PIECE: usize = 64 * 1024;
+
+/// Write `data` to `writer` a piece at a time, polling for an interrupt between (ADR-491).
+fn write_polled<W: Write>(name: &str, writer: &mut W, data: &[u8]) -> Result<(), LispError> {
+    let mut poll = InterruptPoll::new();
+    for piece in data.chunks(CODER_PIECE) {
+        writer
+            .write_all(piece)
+            .map_err(|e| LispError::runtime(format!("{name}: {e}")))?;
+        poll.advance(InterruptPoll::EVERY)?;
+    }
+    Ok(())
 }
 
 /// The most a decoder prim will produce when the caller names no `max-bytes`. A few
@@ -151,9 +167,19 @@ fn decompress_limit(name: &str, args: &[Value], heap: &Heap) -> Result<usize, Li
 /// one byte, never its full expansion.
 fn decode<R: Read>(name: &str, dec: R, limit: usize) -> Result<Vec<u8>, LispError> {
     let mut out = Vec::new();
-    dec.take(limit as u64 + 1)
-        .read_to_end(&mut out)
-        .map_err(|e| LispError::runtime(format!("{name}: not valid compressed data: {e}")))?;
+    let mut bounded = dec.take(limit as u64 + 1);
+    let mut poll = InterruptPoll::new();
+    loop {
+        // A piece at a time, polling between (ADR-491).
+        let read = (&mut bounded)
+            .take(CODER_PIECE as u64)
+            .read_to_end(&mut out)
+            .map_err(|e| LispError::runtime(format!("{name}: not valid compressed data: {e}")))?;
+        if read == 0 {
+            break;
+        }
+        poll.advance(InterruptPoll::EVERY)?;
+    }
     if out.len() > limit {
         return Err(LispError::runtime(format!(
             "{name}: decompressed output exceeds max-bytes ({limit} bytes); pass a larger max-bytes if the data is trusted"
@@ -256,9 +282,7 @@ pub(super) fn brotli(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let data = collect_bytes("%brotli", arg(args, 0), heap)?;
     // lgwin 22 is brotli's common default window (RFC 7932 allows 10..=24).
     let mut writer = brotli::CompressorWriter::new(Vec::new(), 4096, quality, 22);
-    writer
-        .write_all(&data)
-        .map_err(|e| LispError::runtime(format!("%brotli: {e}")))?;
+    write_polled("%brotli", &mut writer, &data)?;
     writer
         .flush()
         .map_err(|e| LispError::runtime(format!("%brotli: {e}")))?;

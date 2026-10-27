@@ -175,6 +175,8 @@ fn a_ui_harvest_is_interrupted_inside() {
     );
 }
 
+// Compiled only with a Ruby grammar linked (`--features treesit-ruby`, or `treesit-grammars`):
+// a plain `cargo test --test interrupt` runs one test fewer, and that is this one.
 #[cfg(feature = "treesit-ruby")]
 #[test]
 fn a_tree_sitter_parse_is_cancelled_from_inside() {
@@ -183,5 +185,91 @@ fn a_tree_sitter_parse_is_cancelled_from_inside() {
     builtin_is_stopped_inside(
         "(string/repeat \"def f(x)\\n  x + 1\\nend\\n\" 200000)",
         "(%tree-sitter-parse big :ruby)",
+    );
+}
+
+#[test]
+fn case_maps_and_normalisation_are_interrupted_inside() {
+    builtin_is_stopped_inside("(string/repeat \"ab \" 400000)", "(string/upper big)");
+    builtin_is_stopped_inside("(string/repeat \"AB \" 400000)", "(string/lower big)");
+    // A `Σ` makes lower-casing cut only after whitespace; it still polls.
+    builtin_is_stopped_inside("(string/repeat \"ΑΣ \" 400000)", "(string/lower big)");
+    builtin_is_stopped_inside(
+        "(string/repeat \"é \" 400000)",
+        "(string/normalize big :nfd)",
+    );
+}
+
+#[test]
+fn a_piecewise_case_map_answers_what_the_whole_string_would() {
+    // `Σ` lower-cases to `ς` at a word's end and `σ` elsewhere, by its neighbours: pieces cut
+    // anywhere else would answer differently near a cut.
+    let text = "ΑΣ ΣΑ ΣΣ.Σ x".repeat(2000);
+    let src = format!("(string/lower \"{text}\")");
+    assert_eq!(
+        run_at(Tier::Bytecode, src),
+        format!("\"{}\"", text.to_lowercase())
+    );
+    let src = format!("(string/upper \"{text}ß\")");
+    assert_eq!(
+        run_at(Tier::Bytecode, src),
+        format!("\"{}\"", format!("{text}ß").to_uppercase())
+    );
+}
+
+#[test]
+fn a_string_search_is_interrupted_inside() {
+    builtin_is_stopped_inside("(string/repeat \"a\" 1000000)", "(%str-index-of big \"z\")");
+    builtin_is_stopped_inside(
+        "(string/repeat \"a\" 1000000)",
+        "(%str-last-index-of big \"z\" nil)",
+    );
+}
+
+#[test]
+fn a_windowed_string_search_finds_a_match_across_a_window_edge() {
+    // The search runs 16 KB windows; a needle straddling an edge, after multi-byte text,
+    // is found at the char index a whole-string search gives, forwards and backwards.
+    for pad in [16_382usize, 16_383, 16_384, 32_767] {
+        let text = format!(
+            "{}é{}bcd{}",
+            "a".repeat(pad),
+            "a".repeat(5),
+            "a".repeat(40_000)
+        );
+        let expected = text.chars().count() - 40_000 - 3;
+        let src = format!(
+            "[(%str-index-of \"{text}\" \"bcd\") (%str-last-index-of \"{text}\" \"bcd\" nil) (%str-index-of \"{text}\" \"zz\") (%str-last-index-of \"{text}\" \"zz\" nil)]"
+        );
+        assert_eq!(
+            run_at(Tier::Bytecode, src),
+            format!("[{expected} {expected} -1 -1]"),
+            "pad {pad}"
+        );
+    }
+}
+
+#[test]
+fn compression_is_interrupted_inside() {
+    let big = "(%string->utf8-bytes (string/repeat \"abcdefgh\" 400000))";
+    builtin_is_stopped_inside(big, "(%gzip big 9)");
+    builtin_is_stopped_inside(big, "(%zlib-compress big)");
+    builtin_is_stopped_inside(big, "(%deflate big)");
+    builtin_is_stopped_inside(big, "(%brotli big)");
+    builtin_is_stopped_inside(
+        "(%gzip (%string->utf8-bytes (string/repeat \"abcdefgh\" 400000)))",
+        "(%gunzip big)",
+    );
+}
+
+#[test]
+fn hashing_is_interrupted_inside() {
+    let big = "(%string->utf8-bytes (string/repeat \"abcdefgh\" 400000))";
+    builtin_is_stopped_inside(big, "(%digest :sha256 big)");
+    builtin_is_stopped_inside(big, "(%digest :blake3 big)");
+    builtin_is_stopped_inside(big, "(%hmac :sha256 (%string->utf8-bytes \"k\") big)");
+    builtin_is_stopped_inside(
+        "(%string->utf8-bytes \"salt\")",
+        "(%pbkdf2-sha256-bytes big big 100000000 32)",
     );
 }

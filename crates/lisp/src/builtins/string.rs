@@ -581,6 +581,67 @@ pub(super) fn scan_bar(chars: &[char], n: usize, from: usize) -> usize {
     j.min(n)
 }
 
+/// Bytes of haystack searched between interrupt polls (ADR-491).
+const SEARCH_WINDOW: usize = 16 * 1024;
+
+/// The smallest char boundary of `s` at or after `at` (clamped to its length).
+fn boundary_up(s: &str, at: usize) -> usize {
+    let mut at = at.min(s.len());
+    while !s.is_char_boundary(at) {
+        at += 1;
+    }
+    at
+}
+
+/// The largest char boundary of `s` at or before `at`.
+fn boundary_down(s: &str, at: usize) -> usize {
+    let mut at = at.min(s.len());
+    while !s.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
+}
+
+/// `hay.find(needle)`, a window at a time with an interrupt poll between (ADR-491). A window
+/// takes every match STARTING in its first `SEARCH_WINDOW` bytes, so it reaches a needle's
+/// length past that, and the next window starts where those starts end.
+fn find_polled(hay: &str, needle: &str) -> Result<Option<usize>, LispError> {
+    let mut poll = InterruptPoll::new();
+    let mut from = 0;
+    loop {
+        let starts_end = boundary_up(hay, from + SEARCH_WINDOW);
+        let window_end = boundary_up(hay, starts_end + needle.len());
+        if let Some(at) = hay[from..window_end].find(needle) {
+            return Ok(Some(from + at));
+        }
+        if starts_end >= hay.len() {
+            return Ok(None);
+        }
+        poll.advance(SEARCH_WINDOW as u32)?;
+        from = starts_end;
+    }
+}
+
+/// `hay.rfind(needle)`, a window at a time from the end, polling between (ADR-491) — the
+/// mirror of [`find_polled`]: a window takes the matches starting in its last
+/// `SEARCH_WINDOW` bytes, every later start having been searched already.
+fn rfind_polled(hay: &str, needle: &str) -> Result<Option<usize>, LispError> {
+    let mut poll = InterruptPoll::new();
+    let mut starts_end = hay.len();
+    loop {
+        let from = boundary_down(hay, starts_end.saturating_sub(SEARCH_WINDOW));
+        let window_end = boundary_up(hay, starts_end + needle.len());
+        if let Some(at) = hay[from..window_end].rfind(needle) {
+            return Ok(Some(from + at));
+        }
+        if from == 0 {
+            return Ok(None);
+        }
+        poll.advance(SEARCH_WINDOW as u32)?;
+        starts_end = from;
+    }
+}
+
 /// `(%str-index-of s needle)` — the 0-based **char** index of the first
 /// occurrence of `needle` in `s`, or -1 if absent. Linear: Rust's byte-level
 /// `str::find`, then a one-pass byte→char-index conversion of the prefix. The
@@ -618,7 +679,7 @@ pub(super) fn str_index_of(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
     } else {
         a.char_to_byte(h, start)
     };
-    let idx = match a.s[byte_start..].find(needle) {
+    let idx = match find_polled(&a.s[byte_start..], needle)? {
         Some(rel) => a.byte_to_char(h, byte_start + rel) as i64,
         None => -1,
     };
@@ -687,7 +748,7 @@ pub(super) fn str_last_index_of(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
     } else {
         a.char_to_byte(h, end_char)
     };
-    Ok(Value::int(match a.s[..end].rfind(needle) {
+    Ok(Value::int(match rfind_polled(&a.s[..end], needle)? {
         Some(b) => a.byte_to_char(h, b) as i64,
         None => -1,
     }))
@@ -1030,11 +1091,21 @@ pub(super) fn string_normalize(args: &[Value], _: EnvId, heap: &mut Heap) -> Lis
             ));
         }
     };
+    // Polled per character (ADR-491): a normalisation is one pass, but over a whole buffer.
+    let mut poll = InterruptPoll::new();
+    let mut collect = |chars: &mut dyn Iterator<Item = char>| -> Result<String, LispError> {
+        let mut out = String::with_capacity(s.len());
+        for c in chars {
+            poll.tick()?;
+            out.push(c);
+        }
+        Ok(out)
+    };
     let out: String = match name.as_str() {
-        "nfc" => s.nfc().collect(),
-        "nfd" => s.nfd().collect(),
-        "nfkc" => s.nfkc().collect(),
-        "nfkd" => s.nfkd().collect(),
+        "nfc" => collect(&mut s.nfc())?,
+        "nfd" => collect(&mut s.nfd())?,
+        "nfkc" => collect(&mut s.nfkc())?,
+        "nfkd" => collect(&mut s.nfkd())?,
         other => {
             return Err(LispError::runtime(format!(
                 "string/normalize: unknown form :{other} (expected :nfc, :nfd, :nfkc or :nfkd)"
@@ -1081,13 +1152,43 @@ pub(super) fn to_fixed(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
 /// rather than being expressible in Brood.
 pub(super) fn upper(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let s = expect_string_ref(heap, "string/upper", arg(args, 0))?;
-    Ok(heap.alloc_string_owned(s.to_uppercase()))
+    let out = case_map(s, str::to_uppercase)?;
+    Ok(heap.alloc_string_owned(out))
 }
 
 /// `(string/lower s)` — `s` with every character lower-cased (Unicode-aware, like `upper`).
 pub(super) fn lower(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let s = expect_string_ref(heap, "string/lower", arg(args, 0))?;
-    Ok(heap.alloc_string_owned(s.to_lowercase()))
+    let out = case_map(s, str::to_lowercase)?;
+    Ok(heap.alloc_string_owned(out))
+}
+
+/// Bytes of `s` case-mapped between interrupt polls (ADR-491).
+const CASE_MAP_PIECE: usize = 4096;
+
+/// `map` (`str::to_uppercase` / `to_lowercase`) over `s` a piece at a time, polling for an
+/// interrupt between pieces (ADR-491), with the result the whole-string call would give.
+/// Upper-casing is per character. Lower-casing is too except for `Σ`, whose final form
+/// depends on its neighbours — so a string holding one is cut only just after ASCII
+/// whitespace, which is neither cased nor case-ignorable and so ends the neighbour scan on
+/// both sides of the cut exactly as in the whole string.
+fn case_map(s: &str, map: fn(&str) -> String) -> Result<String, LispError> {
+    let context_free = !s.contains('Σ');
+    let mut poll = InterruptPoll::new();
+    let mut out = String::with_capacity(s.len());
+    let mut start = 0;
+    while start < s.len() {
+        let mut end = boundary_up(s, start + CASE_MAP_PIECE);
+        if !context_free && end < s.len() {
+            end = s[end..]
+                .find(|c: char| c.is_ascii_whitespace())
+                .map_or(s.len(), |at| end + at + 1);
+        }
+        out.push_str(&map(&s[start..end]));
+        poll.advance((end - start).min(u32::MAX as usize) as u32)?;
+        start = end;
+    }
+    Ok(out)
 }
 
 pub(super) fn char_to_int(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
