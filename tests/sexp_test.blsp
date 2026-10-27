@@ -337,3 +337,108 @@
     (let (text "(a)\n(b) (c)\n(d)"
           pos (index-of text "(c)"))
       (assert= (+ pos 3) (point-kill-end text pos)))))
+
+;; ---- the same answers over a rope (ADR-488) -------------------------------------------------
+;; An editor holds a rope, and every query here takes one: the scans read it in place and carry
+;; their safepoint table from the last rope across the edit. The answer must be the string's,
+;; exactly, wherever point is — including a rope that was EDITED into shape (its chunks and the
+;; carried table are not what a fresh `from-string` gives) and one long enough that the table
+;; is real (past 4 KB).
+
+(def- rope-fixtures
+  ["(defn f (x)\n  (+ x 1))"
+    "(a \"(not a form\n(still not)\" b)\n(c [d {:e \"é\"}])\n"
+    "; (comment) with [brackets]\n(a) ; trailing (\n(b \\( c)\n"
+    "(defn g\n  \"Doc whose line\n(starts with a bracket) at column 0.\"\n  [x] x)\n(h)"
+    "(a\n(b)\n(c)" ")\n(a)\n" "(x)" "\"unterminated (string\n(a)" "🙂\n(a)\n🙂(b \"🙂\")\n"])
+
+(defn- rope-motions ()
+  [point-forward
+    point-backward point-forward-out point-backward-out point-up point-up-forward point-down
+    point-list-forward point-list-backward point-defun-start point-defun-end point-kill-end])
+
+(defn- rope-disagreements (text rope)
+  "Every `[what point]` where a query over `rope` differs from the same query over `text`."
+  (fold (range 0 (inc (string/length text)))
+    '()
+    (fn (acc p)
+      (let (scans [[:start (reflect/scan-form-start text p) (reflect/scan-form-start rope p)]
+                    [:start-2 (reflect/scan-form-start-2 text p) (reflect/scan-form-start-2 rope p)]
+                    [:end (reflect/scan-form-end text p 2) (reflect/scan-form-end rope p 2)]
+                    [:narrow (narrow text p) (narrow rope p)]
+                    [:closer
+                      (editor/highlight/closer-redundant? text p ")")
+                      (editor/highlight/closer-redundant? rope p ")")]]
+            motions (map (rope-motions) (fn (motion) [motion (motion text p) (motion rope p)]))
+            bad (seq/filter (append scans motions) (fn (row) (not (= (nth row 1) (nth row 2))))))
+        (append acc (map bad (fn (row) [(first row) p])))))))
+
+(defn- rope-by-edits (text)
+  "A rope holding `text`, built a few characters at a time (a marker typed, deleted, the piece
+typed in its place) with a stretch in the middle cut out and typed back — a rope that went
+through edits, as an editor's does."
+  (let (pieces (seq/chunk-every (string/->list text) 7)
+        built (fold pieces
+                (text/from-string "")
+                (fn (rope piece)
+                  (let (end (text/length rope))
+                    ;; type a marker, then replace it with the real piece
+                    (text/insert (text/delete (text/insert rope end "#") end (inc end))
+                      end
+                      (string/join piece "")))))
+        middle (math/quot (text/length built) 2)
+        moved (text/slice built middle (math/min (text/length built) (+ middle 5))))
+    ;; and a stretch in the middle cut out and typed back
+    (text/insert (text/delete built middle (+ middle (string/length moved))) middle moved)))
+
+(describe "sexp over a rope — the string's answers, at every point"
+  (test "every scan, motion and the closer test agree on a rope from a string"
+    (assert= '()
+      (mapcat rope-fixtures (fn (text) (rope-disagreements text (text/from-string text))))))
+  (test "and on a rope built by edits"
+    (assert= '() (mapcat rope-fixtures (fn (text) (rope-disagreements text (rope-by-edits text))))))
+  (test "a document past the table's threshold, edited and re-asked: the carried table agrees"
+    (let (unit "(defn f (a b)\n  \"Doc with a\n(column-0 bracket) and a ; semicolon\"\n  ; (comment)\n  (+ a [b {:k \"é\"}]))\n\n"
+          doc (string/join (map (range 0 80) (fn (_) unit)) "")
+          start (text/from-string doc)
+          ;; each edit is asked about at points around it and far from it; the rope's table
+          ;; is carried from the previous rope's
+          edits [[(math/quot (string/length doc) 2) 0 "x"]
+                  [40 0 "\""]
+                  [40 1 ""]
+                  [(math/quot (string/length doc) 2) 0 "("]
+                  [0 0 "(new)\n"]
+                  [3000 5 ""]]
+          probes (fn (n at)
+                   (seq/filter (seq/distinct [0
+                                               1
+                                               (dec at)
+                                               at
+                                               (inc at)
+                                               (+ at 200)
+                                               (math/quot n 3)
+                                               (- n 100)
+                                               (dec n)
+                                               n])
+                     (fn (p) (and (>= p 0) (<= p n)))))
+          bad (nth (fold edits
+                     [start '()]
+                     (fn (state edit)
+                       (let ([rope acc] state
+                             [at removed inserted] edit
+                             next (text/insert (text/delete rope at (+ at removed)) at inserted)
+                             s (text/->string next)
+                             wrong (seq/filter (probes (string/length s) at)
+                                     (fn (p)
+                                       (not (and (= (reflect/scan-form-start-2 s p)
+                                                   (reflect/scan-form-start-2 next p))
+                                              (= (narrow s p) (narrow next p))
+                                              (= (point-forward s p) (point-forward next p)))))))
+                         [next (append acc (map wrong (fn (p) [edit p])))])))
+                1))
+      (assert= '() bad)))
+  (test "the buffer motions read the rope"
+    (let (b (goto-char (make-buffer "(a (b c))\n(d)") 4))
+      (assert= 8 (buffer-point (sexp/up-forward b nil)))
+      (assert= 5 (buffer-point (sexp/forward b nil)))
+      (assert= 3 (buffer-point (sexp/up b nil))))))

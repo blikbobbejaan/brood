@@ -4202,3 +4202,14 @@ carry and drop), `paint::strip_diff_tests` (typing repaints its cells; every op 
 full raster; a rect-confined raster is exact inside and untouched outside). Run here: the
 filtered `cargo test -p brood --lib host::gui` (128) and `debug_flags`, headless; two guards
 sabotaged red. Not covered: `GpuWindow::expand_fragment` against a device; nothing measured.
+
+2026-10-27 (ADR-488, the reader-family form scans over a rope): `%scan-form-start` / `-2` /
+`%scan-form-end` take a rope as well as a string, lexed in place through a chunk cursor (one
+`ScanText` lexer for both). A rope's safepoint table is carried from the nearest of the last
+four ropes scanned: kept before the edit, re-scanned across it, and the old tail taken from the
+first safepoint whose state the new pass reproduces, so a keystroke re-scans about a form, not
+the document. `text/slice` / `text/length` accept a string; `sexp/narrow`, the sexp motion
+commands, `point-kill-end` and `editor/highlight/closer-redundant?` read the rope. Run here:
+`cargo test -p brood --lib form_scan_tests`, `sexp_test`, `highlight_test`, `rope_test`,
+`treesit_module_test`, `memo_test`, `doc_examples`, `audit`, `nest check --strict` on the
+touched std, clippy (gui, treesit-grammars). Nothing timed.

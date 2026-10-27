@@ -31,23 +31,23 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     primitives.def(
         "%scan-form-start",
         Arity::exact(2),
-        Sig::new(vec![string, int], int),
+        Sig::new(vec![string.union(rope), int], int),
         &["s", "pos"],
-        "The greatest char offset <= pos of a top-level (bracket depth 0) open bracket in s lying OUTSIDE any string or ; comment, else 0 — the string/comment-aware beginning-of-defun behind highlight/safe-restart and tool/sexp narrowing. Depth-tracked, not the Emacs column-0 heuristic, so a mis-indented open bracket at column 0 inside an unclosed form is not a form start. The required forward lexical pass (a backward scan cannot know string state) runs natively: O(pos) at native speed instead of interpreted per-char cost on every eldoc/fontify-restart in a large buffer.",
+        "The greatest char offset <= pos of a top-level (bracket depth 0) open bracket in s lying OUTSIDE any string or ; comment, else 0 — the string/comment-aware beginning-of-defun behind highlight/safe-restart and tool/sexp narrowing. Depth-tracked, not the Emacs column-0 heuristic, so a mis-indented open bracket at column 0 inside an unclosed form is not a form start. The required forward lexical pass (a backward scan cannot know string state) runs natively: O(pos) at native speed instead of interpreted per-char cost on every eldoc/fontify-restart in a large buffer. s may be a string or a rope (ADR-488): a rope is read in place, and its safepoint table is carried across edits from the last ropes scanned, so a query after a keystroke re-scans about one form rather than the document.",
         scan_form_start);
     primitives.def(
         "%scan-form-start-2",
         Arity::exact(2),
-        Sig::new(vec![string, int], Ty::vector_of(int)),
+        Sig::new(vec![string.union(rope), int], Ty::vector_of(int)),
         &["s", "pos"],
-        "[prev start] — the greatest top-level (depth-0) form-start offset <= pos AND the one before it, from a SINGLE forward pass. What tool/sexp narrowing actually wants: computing the pair as two scan-form-start calls runs the O(pos) lexical pass twice over the same prefix. prev is 0 when there is no earlier form start, matching what the second call returned there.",
+        "[prev start] — the greatest top-level (depth-0) form-start offset <= pos AND the one before it, from a SINGLE forward pass. What tool/sexp narrowing actually wants: computing the pair as two scan-form-start calls runs the O(pos) lexical pass twice over the same prefix. prev is 0 when there is no earlier form start, matching what the second call returned there. s may be a string or a rope, as for scan-form-start.",
         scan_form_start_2);
     primitives.def(
         "%scan-form-end",
         Arity::exact(3),
-        Sig::new(vec![string, int, int], int),
+        Sig::new(vec![string.union(rope), int, int], int),
         &["s", "from", "n-forms"],
-        "The char offset just after n-forms top-level forms starting at char offset from, skipping strings/comments and tracking bracket depth, or (string/length s) if the text ends first. The forward window-end companion to scan-form-start: tool/sexp narrowing uses the pair to bound structural motion to the neighbourhood of point in ONE native pass, replacing an interpreted char-at loop that was the dominant cost of every keystroke-driven motion.",
+        "The char offset just after n-forms top-level forms starting at char offset from, skipping strings/comments and tracking bracket depth, or the length of s if the text ends first. s may be a string or a rope, read in place from from. The forward window-end companion to scan-form-start: tool/sexp narrowing uses the pair to bound structural motion to the neighbourhood of point in ONE native pass, replacing an interpreted char-at loop that was the dominant cost of every keystroke-driven motion.",
         scan_form_end);
 }
 
@@ -208,19 +208,13 @@ pub(super) fn scan_tokens(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
 //     string or comment is skipped atomically within one step, and one inside a long
 //     literal simply gets no safepoint of its own.
 //
-// What this does NOT fix, deliberately recorded because it looks like it should: the
-// buffer-command path (`sexp/forward` and friends) calls `(buffer-text buf)`, which is
-// `rope->string` — a FRESH string value per motion, so this table (and the char↔byte
-// index) can never hit there. The residual cost is that MISS, not the copy (a minor
-// share of a buffer-path motion): the table miss makes `scan-form-start-2` re-scan
-// O(pos) from the top every keystroke — so a buffer-path motion stays O(buffer) even
-// though `narrow`'s forward window scan is native (`scan-form-end`) and the held-text
-// path is flat. Making the buffer path flat
-// needs the cache to survive across motions — rope-native scanning, or a GC-safe
-// `rope->string` memo so an unchanged rope yields the same string value — a separate
-// piece of work. The shapes this DOES fix are the ones that hold one text value across
-// many queries: the sweep row, `nest check`-style tooling, and an LSP/eldoc pass over an
-// unchanged document.
+// A string's table lives on the string, which helps whatever holds one text value across
+// many queries: the sweep row, `nest check`-style tooling, an LSP/eldoc pass over an
+// unchanged document. An editor is the other shape: its document is a ROPE, a new one per
+// keystroke, and handing the scan `(buffer-text buf)` built a fresh string — and so missed
+// the table — on every motion. The scans therefore read a rope in place too (ADR-488), and a
+// rope's table is carried from the previous rope across the edit rather than cached on a
+// value the next keystroke discards (see "the rope's table, carried across edits" below).
 
 /// Bytes between safepoints. A 1 MB source gets ~256 of them (~5 KB of table), and a
 /// query's residual scan is bounded by one stride rather than by `pos`.
@@ -233,7 +227,7 @@ const SCAN_TABLE_MIN_BYTES: usize = 4096;
 /// The lexer's state at a point it can resume from. `depth` is the bracket depth that
 /// decides whether an open bracket starts a top-level form; `best`/`prev` are the answer
 /// so far, so a resume needs no history before this point.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 struct ScanPoint {
     byte: u32,
     ch: u32,
@@ -278,11 +272,116 @@ fn utf8_width(b: u8) -> usize {
     }
 }
 
+/// The text a form scan reads, by byte: a string, or a rope read in place (ADR-488). The
+/// lexer is written once against this, so a string and a rope of the same text give the
+/// same answer by construction rather than by a second implementation kept in step.
+trait ScanText {
+    /// The length in bytes.
+    fn len(&self) -> usize;
+    /// The byte at `at` (`at < len`).
+    fn byte(&mut self, at: usize) -> u8;
+    /// Whether the character starting at byte `at` (`at < len`) ends an atom.
+    fn delimiter_at(&mut self, at: usize) -> bool;
+}
+
+impl ScanText for &str {
+    #[inline]
+    fn len(&self) -> usize {
+        str::len(self)
+    }
+    #[inline]
+    fn byte(&mut self, at: usize) -> u8 {
+        self.as_bytes()[at]
+    }
+    #[inline]
+    fn delimiter_at(&mut self, at: usize) -> bool {
+        self[at..]
+            .chars()
+            .next()
+            .is_some_and(crate::syntax::atom::is_delimiter)
+    }
+}
+
+/// A rope read through the chunk holding the last byte asked for. A scan moves forward a
+/// byte at a time, so it looks a chunk up once per chunk it crosses and never copies the
+/// text. ropey splits chunks on character boundaries, so a character never straddles two.
+struct RopeCursor<'r> {
+    rope: &'r ropey::Rope,
+    chunk: &'r str,
+    chunk_start: usize,
+}
+
+impl<'r> RopeCursor<'r> {
+    fn new(rope: &'r ropey::Rope) -> RopeCursor<'r> {
+        RopeCursor {
+            rope,
+            chunk: "",
+            chunk_start: 0,
+        }
+    }
+
+    /// The offset of byte `at` within the current chunk, moving to the chunk holding it.
+    #[inline]
+    fn local(&mut self, at: usize) -> usize {
+        let offset = at.wrapping_sub(self.chunk_start);
+        if offset < self.chunk.len() {
+            return offset;
+        }
+        let (chunk, chunk_start, _, _) = self.rope.chunk_at_byte(at);
+        self.chunk = chunk;
+        self.chunk_start = chunk_start;
+        at - chunk_start
+    }
+}
+
+impl ScanText for RopeCursor<'_> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.rope.len_bytes()
+    }
+    #[inline]
+    fn byte(&mut self, at: usize) -> u8 {
+        let offset = self.local(at);
+        self.chunk.as_bytes()[offset]
+    }
+    #[inline]
+    fn delimiter_at(&mut self, at: usize) -> bool {
+        let offset = self.local(at);
+        self.chunk[offset..]
+            .chars()
+            .next()
+            .is_some_and(crate::syntax::atom::is_delimiter)
+    }
+}
+
 /// What [`lex`] stepped over: a bracket, or anything else (which never changes depth).
 enum Lexeme {
     Open,
     Close,
     Other,
+}
+
+/// Step the cursor one character.
+#[inline]
+fn lex_step<T: ScanText>(text: &mut T, byte: &mut usize, ch: &mut usize) {
+    *byte += utf8_width(text.byte(*byte));
+    *ch += 1;
+}
+
+/// Step the cursor past a quoted run to its `close` byte (`\` escaping the next
+/// character); an unterminated one runs to the end.
+fn lex_quoted<T: ScanText>(text: &mut T, byte: &mut usize, ch: &mut usize, close: u8) {
+    let len = text.len();
+    while *byte < len {
+        let c = text.byte(*byte);
+        lex_step(text, byte, ch);
+        if c == close {
+            break;
+        }
+        if c == b'\\' && *byte < len {
+            lex_step(text, byte, ch);
+        }
+    }
 }
 
 /// Step the cursor (`byte` and its char index `ch`, kept in step) past the token at it,
@@ -294,58 +393,35 @@ enum Lexeme {
 /// since an atom is consumed whole, the cursor always rests between tokens, where a scan
 /// may safely resume (a `|` *inside* an atom is not a bar). Every byte it matches is
 /// ASCII; only an atom decodes characters, to know where it ends.
-fn lex(s: &str, byte: &mut usize, ch: &mut usize) -> Lexeme {
-    let b = s.as_bytes();
-    let step = |byte: &mut usize, ch: &mut usize| {
-        *byte += utf8_width(b[*byte]);
-        *ch += 1;
-    };
-    let quoted = |byte: &mut usize, ch: &mut usize, close: u8| {
-        while *byte < b.len() {
-            let c = b[*byte];
-            step(byte, ch);
-            if c == close {
-                break;
-            }
-            if c == b'\\' && *byte < b.len() {
-                step(byte, ch);
-            }
-        }
-    };
-    let delimiter_at = |byte: usize| {
-        s[byte..]
-            .chars()
-            .next()
-            .is_some_and(crate::syntax::atom::is_delimiter)
-    };
-    match b[*byte] {
+fn lex<T: ScanText>(text: &mut T, byte: &mut usize, ch: &mut usize) -> Lexeme {
+    let len = text.len();
+    match text.byte(*byte) {
         b'(' | b'[' | b'{' => {
-            step(byte, ch);
+            lex_step(text, byte, ch);
             return Lexeme::Open;
         }
         b')' | b']' | b'}' => {
-            step(byte, ch);
+            lex_step(text, byte, ch);
             return Lexeme::Close;
         }
-        b'"' | b'|' => {
-            let close = b[*byte];
-            step(byte, ch);
-            quoted(byte, ch, close);
+        close @ (b'"' | b'|') => {
+            lex_step(text, byte, ch);
+            lex_quoted(text, byte, ch, close);
         }
-        b':' if b.get(*byte + 1) == Some(&b'|') => {
-            step(byte, ch);
-            step(byte, ch);
-            quoted(byte, ch, b'|');
+        b':' if *byte + 1 < len && text.byte(*byte + 1) == b'|' => {
+            lex_step(text, byte, ch);
+            lex_step(text, byte, ch);
+            lex_quoted(text, byte, ch, b'|');
         }
         b';' => {
-            while *byte < b.len() && b[*byte] != b'\n' {
-                step(byte, ch);
+            while *byte < len && text.byte(*byte) != b'\n' {
+                lex_step(text, byte, ch);
             }
         }
-        _ if delimiter_at(*byte) => step(byte, ch),
+        _ if text.delimiter_at(*byte) => lex_step(text, byte, ch),
         _ => {
-            while *byte < b.len() && !delimiter_at(*byte) {
-                step(byte, ch);
+            while *byte < len && !text.delimiter_at(*byte) {
+                lex_step(text, byte, ch);
             }
         }
     }
@@ -354,7 +430,9 @@ fn lex(s: &str, byte: &mut usize, ch: &mut usize) -> Lexeme {
 
 /// The lexical pass, resumed from `from` and stopped at the first token past char index
 /// `upto`. `emit` is called before each token (a safepoint-eligible position) so one pass
-/// can both answer a query and build the table. Returns the state reached.
+/// can both answer a query and build the table; it returns whether to go on, so a table
+/// carried across an edit can stop where the old one takes over. Returns the state
+/// reached.
 ///
 /// Tokens are [`lex`]'s; an open bracket at bracket **depth 0** is a form start, where
 /// the previous `best` becomes `prev`. Depth — not column 0 — is what makes the answer
@@ -362,13 +440,20 @@ fn lex(s: &str, byte: &mut usize, ch: &mut usize) -> Lexeme {
 /// (the classic Emacs beginning-of-defun trap) is not a start, and an indented top-level
 /// open is one. A stray close at depth 0 is ignored (saturating), so unbalanced text
 /// degrades gracefully.
-fn form_scan(s: &str, from: ScanPoint, upto: usize, mut emit: impl FnMut(ScanPoint)) -> ScanPoint {
+fn form_scan<T: ScanText>(
+    text: &mut T,
+    from: ScanPoint,
+    upto: usize,
+    mut emit: impl FnMut(ScanPoint) -> bool,
+) -> ScanPoint {
     let mut state = from;
     let (mut byte, mut ch) = (from.byte as usize, from.ch as usize);
-    while byte < s.len() && ch <= upto {
+    while byte < text.len() && ch <= upto {
         (state.byte, state.ch) = (byte as u32, ch as u32);
-        emit(state);
-        match lex(s, &mut byte, &mut ch) {
+        if !emit(state) {
+            return state;
+        }
+        match lex(text, &mut byte, &mut ch) {
             Lexeme::Open => {
                 if state.depth == 0 {
                     if state.ch > 0 {
@@ -386,9 +471,13 @@ fn form_scan(s: &str, from: ScanPoint, upto: usize, mut emit: impl FnMut(ScanPoi
     state
 }
 
-/// `(best, prev)` for char index `pos` in `s`, resuming from `table`'s last safepoint at
+/// `(best, prev)` for char index `pos` in `text`, resuming from `table`'s last safepoint at
 /// or before `pos` when there is one.
-fn form_start_pair(s: &str, table: Option<&FormScanIndex>, pos: usize) -> (usize, usize) {
+fn form_start_pair<T: ScanText>(
+    text: &mut T,
+    table: Option<&FormScanIndex>,
+    pos: usize,
+) -> (usize, usize) {
     let from = match table {
         Some(t) => {
             let k = t.points.partition_point(|p| (p.ch as usize) <= pos);
@@ -400,8 +489,22 @@ fn form_start_pair(s: &str, table: Option<&FormScanIndex>, pos: usize) -> (usize
         }
         None => ScanPoint::start(),
     };
-    let end = form_scan(s, from, pos, |_| {});
+    let end = form_scan(text, from, pos, |_| true);
     (end.best as usize, end.prev as usize)
+}
+
+/// Every safepoint of `text`, a stride apart, from one pass.
+fn build_form_scan_index<T: ScanText>(text: &mut T) -> FormScanIndex {
+    let mut points: Vec<ScanPoint> = Vec::with_capacity(text.len() / SCAN_POINT_STRIDE + 1);
+    let mut next_at = 0usize;
+    form_scan(text, ScanPoint::start(), usize::MAX, |p| {
+        if (p.byte as usize) >= next_at {
+            points.push(p);
+            next_at = p.byte as usize + SCAN_POINT_STRIDE;
+        }
+        true
+    });
+    FormScanIndex { points }
 }
 
 /// The safepoint table for string `id`, or `None` for a text short enough to rescan. Built
@@ -411,53 +514,214 @@ fn form_scan_table(heap: &Heap, v: Value, len: usize) -> Option<std::sync::Arc<F
         return None;
     }
     let Value::Str(id) = v else { return None };
-    let any = heap.str_scan_table(id, |s| {
-        let mut points: Vec<ScanPoint> = Vec::with_capacity(s.len() / SCAN_POINT_STRIDE + 1);
-        let mut next_at = 0usize;
-        form_scan(s, ScanPoint::start(), usize::MAX, |p| {
-            if (p.byte as usize) >= next_at {
-                points.push(p);
-                next_at = p.byte as usize + SCAN_POINT_STRIDE;
-            }
-        });
-        std::sync::Arc::new(FormScanIndex { points })
+    let any = heap.str_scan_table(id, |mut s| {
+        std::sync::Arc::new(build_form_scan_index(&mut s))
     });
     any.downcast::<FormScanIndex>().ok()
 }
 
-pub(super) fn scan_form_start_2(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let pos = expect_int(heap, "reflect/scan-form-start-2", arg(args, 1))?;
-    let (best, prev) = {
-        let h: &Heap = heap;
-        let v = arg(args, 0);
-        let s = expect_string_ref(h, "reflect/scan-form-start-2", v)?;
-        if s.is_empty() || pos < 0 {
-            (0, 0)
+// ---- the rope's table, carried across edits (ADR-488) -------------------------
+//
+// A string's table lives on the string, and an editor never asks the same string twice: its
+// document is a rope, and every keystroke makes a new one. Building the table afresh per rope
+// would make each query O(document) again — the cost this exists to remove. So the process
+// keeps the tables of the last few ropes it scanned (`HeapExtras::form_scan_ropes`), and a new
+// rope's table is DERIVED from the nearest of them: the changed range (common prefix and
+// suffix, compared chunk by chunk — `%rope-changed-range`'s comparison) says which safepoints
+// still hold. Those before the change are kept; the scan resumes at the last of them, runs
+// over the change, and stops at the first old safepoint after it whose state it reproduces —
+// the same depth, and the same last two form starts once moved by the edit. From an identical
+// state over identical text the rest of the pass is identical, so the old table's remainder is
+// taken, shifted. A keystroke inside a form re-scans to the start of the next form plus at
+// most one stride, whatever the document's size. An edit that unbalances the text (a lone
+// `(`) never reconverges and re-scans to the end: one native pass, exact, and no worse than
+// building the table.
+
+/// How many ropes' tables a process keeps: one per buffer being edited in it, give or take.
+const FORM_SCAN_ROPES_KEPT: usize = 4;
+
+/// `old`'s table moved onto `rope`, which differs from `old`'s text in chars
+/// `[start, old_end)` → `[start, new_end)` (see the section comment). Also returns how many
+/// states the pass visited — what a test reads to see the re-scan stayed local.
+fn carry_form_scan_index(
+    old: &FormScanIndex,
+    old_rope: &ropey::Rope,
+    rope: &ropey::Rope,
+    (start, old_end, new_end): (usize, usize, usize),
+) -> (FormScanIndex, usize) {
+    let char_delta = rope.len_chars() as i64 - old_rope.len_chars() as i64;
+    let byte_delta = rope.len_bytes() as i64 - old_rope.len_bytes() as i64;
+    // A safepoint's state is decided by the text up to AND including the character at it
+    // (the token before it ended there), so one AT `start` is not kept.
+    let kept = old.points.partition_point(|p| (p.ch as usize) < start);
+    let mut points: Vec<ScanPoint> = old.points[..kept].to_vec();
+    let from = points.last().copied().unwrap_or_else(ScanPoint::start);
+    let mut next_at = if kept > 0 {
+        from.byte as usize + SCAN_POINT_STRIDE
+    } else {
+        0
+    };
+    // A form start the old table recorded, as an offset in the new text: unchanged before
+    // the edit, shifted after it, and unknown inside it — or at 0 when the edit is at 0,
+    // where 0 means "none yet" and a moved form start alike.
+    let moved = |offset: u32| -> Option<u32> {
+        let offset = offset as usize;
+        if offset < start {
+            Some(offset as u32)
+        } else if offset >= old_end && offset > 0 {
+            Some((offset as i64 + char_delta) as u32)
         } else {
-            let table = form_scan_table(h, v, s.len());
-            form_start_pair(s, table.as_deref(), pos as usize)
+            None
         }
     };
+    let mut candidate = old.points.partition_point(|p| (p.ch as usize) < old_end);
+    let mut takeover: Option<usize> = None;
+    let mut visited = 0usize;
+    form_scan(&mut RopeCursor::new(rope), from, usize::MAX, |p| {
+        visited += 1;
+        if (p.ch as usize) >= new_end {
+            let old_ch = (p.ch as i64 - char_delta) as u32;
+            while candidate < old.points.len() && old.points[candidate].ch < old_ch {
+                candidate += 1;
+            }
+            if let Some(q) = old.points.get(candidate)
+                && q.ch == old_ch
+                && q.depth == p.depth
+                && (q.byte as i64 + byte_delta) as u32 == p.byte
+                && moved(q.best) == Some(p.best)
+                && moved(q.prev) == Some(p.prev)
+            {
+                takeover = Some(candidate);
+                return false;
+            }
+        }
+        if (p.byte as usize) >= next_at {
+            points.push(p);
+            next_at = p.byte as usize + SCAN_POINT_STRIDE;
+        }
+        true
+    });
+    if let Some(first) = takeover {
+        points.extend(old.points[first..].iter().map(|q| ScanPoint {
+            byte: (q.byte as i64 + byte_delta) as u32,
+            ch: (q.ch as i64 + char_delta) as u32,
+            depth: q.depth,
+            best: moved(q.best).unwrap_or(q.best),
+            prev: moved(q.prev).unwrap_or(q.prev),
+        }));
+    }
+    (FormScanIndex { points }, visited)
+}
+
+/// The safepoint table for `rope`, or `None` for a text short enough to rescan: this
+/// process's table for the same text when it has one, else one carried from the nearest
+/// rope it kept (see the section comment), else a fresh pass.
+fn rope_form_scan_table(
+    heap: &mut Heap,
+    rope: &ropey::Rope,
+) -> Option<std::sync::Arc<FormScanIndex>> {
+    if rope.len_bytes() < SCAN_TABLE_MIN_BYTES {
+        return None;
+    }
+    let kept = &mut heap.extras_mut().form_scan_ropes;
+    let mut nearest: Option<(usize, (usize, usize, usize))> = None;
+    for (at, (old_rope, _)) in kept.iter().enumerate() {
+        match super::editor_native::changed_chars(old_rope, rope) {
+            None => {
+                let entry = kept.remove(at);
+                let table = entry.1.clone();
+                kept.insert(0, entry);
+                return table.downcast::<FormScanIndex>().ok();
+            }
+            Some(change) => {
+                let span = |(start, _, new_end): (usize, usize, usize)| new_end - start;
+                if nearest.is_none_or(|(_, best)| span(change) < span(best)) {
+                    nearest = Some((at, change));
+                }
+            }
+        }
+    }
+    let carried = nearest.and_then(|(at, change)| {
+        let (old_rope, old_table) = &kept[at];
+        let old = old_table.downcast_ref::<FormScanIndex>()?;
+        Some(carry_form_scan_index(old, old_rope, rope, change).0)
+    });
+    let table = std::sync::Arc::new(
+        carried.unwrap_or_else(|| build_form_scan_index(&mut RopeCursor::new(rope))),
+    );
+    kept.insert(0, (rope.clone(), table.clone()));
+    kept.truncate(FORM_SCAN_ROPES_KEPT);
+    Some(table)
+}
+
+/// `(best, prev)` for `pos` in the text `v` — a string (its table cached on it) or a rope
+/// (its table carried across edits). `who` names the caller in a type error.
+fn form_start_pair_of(
+    heap: &mut Heap,
+    who: &str,
+    v: Value,
+    pos: i64,
+) -> Result<(usize, usize), LispError> {
+    if let Value::Rope(id) = v {
+        // An `Arc` clone, so the heap is free for the table cache.
+        let rope = heap.rope(id).clone();
+        if rope.len_bytes() == 0 || pos < 0 {
+            return Ok((0, 0));
+        }
+        let table = rope_form_scan_table(heap, &rope);
+        return Ok(form_start_pair(
+            &mut RopeCursor::new(&rope),
+            table.as_deref(),
+            pos as usize,
+        ));
+    }
+    let h: &Heap = heap;
+    let mut s = expect_text_string(h, who, v)?;
+    if s.is_empty() || pos < 0 {
+        return Ok((0, 0));
+    }
+    let table = form_scan_table(h, v, s.len());
+    Ok(form_start_pair(&mut s, table.as_deref(), pos as usize))
+}
+
+/// The string `v`, or a type error naming both texts a form scan reads.
+fn expect_text_string<'h>(heap: &'h Heap, who: &str, v: Value) -> Result<&'h str, LispError> {
+    match v {
+        Value::Str(_) => expect_string_ref(heap, who, v),
+        other => Err(LispError::wrong_type(heap, who, "string or rope", other)),
+    }
+}
+
+pub(super) fn scan_form_start_2(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let who = "reflect/scan-form-start-2";
+    let pos = expect_int(heap, who, arg(args, 1))?;
+    let (best, prev) = form_start_pair_of(heap, who, arg(args, 0), pos)?;
     let items = vec![Value::int(prev as i64), Value::int(best as i64)];
     Ok(heap.alloc_vector(items))
 }
 
-/// Forward from byte offset `start_byte` (whose char index is `start_ch`) in `s` over
+/// Forward from byte offset `start_byte` (whose char index is `start_ch`) in `text` over
 /// [`lex`]'s tokens, tracking bracket depth. Returns the char offset just after `nforms`
-/// top-level (depth-returns-to-0) forms have completed, or the char length of `s` if it
+/// top-level (depth-returns-to-0) forms have completed, or the char length of `text` if it
 /// ends first. A depth-0 open bracket begins a form; the close that returns depth to 0
 /// completes it.
 ///
 /// This is the byte-native form of `tool/sexp`'s interpreted `sexp-scan` — one native
 /// pass over the ~3-form window instead of an O(window) `char-at` loop in Brood, which
 /// was ~85% of every structural motion.
-fn scan_form_end_bytes(s: &str, start_byte: usize, start_ch: usize, nforms: i64) -> usize {
-    let mut byte = start_byte.min(s.len());
+fn scan_form_end_bytes<T: ScanText>(
+    text: &mut T,
+    start_byte: usize,
+    start_ch: usize,
+    nforms: i64,
+) -> usize {
+    let len = text.len();
+    let mut byte = start_byte.min(len);
     let mut ch = start_ch;
     let mut depth: i64 = 0;
     let mut left = nforms;
-    while byte < s.len() && !(depth == 0 && left <= 0) {
-        match lex(s, &mut byte, &mut ch) {
+    while byte < len && !(depth == 0 && left <= 0) {
+        match lex(text, &mut byte, &mut ch) {
             Lexeme::Open => depth += 1,
             Lexeme::Close => {
                 depth = (depth - 1).max(0);
@@ -473,38 +737,44 @@ fn scan_form_end_bytes(s: &str, start_byte: usize, start_ch: usize, nforms: i64)
 
 /// `(scan-form-end s from n-forms)` — the char offset just after `n-forms` top-level forms
 /// starting at char offset `from`, skipping strings/comments and tracking bracket depth, or
-/// `(string/length s)` if the text ends first. The forward window-end companion to
+/// the text's length if it ends first. The forward window-end companion to
 /// `scan-form-start`: `tool/sexp`'s `narrow` uses the pair to bound structural motion to the
 /// neighbourhood of point (previous, enclosing, next form) in one native pass, where it used
-/// an interpreted `char-at` loop — the dominant cost of every keystroke-driven motion.
+/// an interpreted `char-at` loop — the dominant cost of every keystroke-driven motion. A
+/// rope is read in place from `from`, so the cost is the window's, not the document's.
 pub(super) fn scan_form_end(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let from = expect_int(heap, "reflect/scan-form-end", arg(args, 1))?.max(0) as usize;
-    let nforms = expect_int(heap, "reflect/scan-form-end", arg(args, 2))?;
+    let who = "reflect/scan-form-end";
+    let from = expect_int(heap, who, arg(args, 1))?.max(0) as usize;
+    let nforms = expect_int(heap, who, arg(args, 2))?;
     let h: &Heap = heap;
     let v = arg(args, 0);
-    let s = expect_string_ref(h, "reflect/scan-form-end", v)?;
+    if let Value::Rope(id) = v {
+        let rope = h.rope(id);
+        let from = from.min(rope.len_chars());
+        let end = scan_form_end_bytes(
+            &mut RopeCursor::new(rope),
+            rope.char_to_byte(from),
+            from,
+            nforms,
+        );
+        return Ok(Value::int(end as i64));
+    }
+    let mut s = expect_text_string(h, who, v)?;
     // `from` is a char index; convert to a byte offset in O(1)+bounded via the string's
     // ADR-213 char↔byte index (a fresh `Vec<char>` walk would reintroduce the O(pos) cost
-    // this primitive exists to remove). A non-`Str` value can't reach here — the ref check
-    // already errored — but fall back to a linear conversion to keep the match total.
+    // this primitive exists to remove).
     let start_byte = match v {
         Value::Str(id) => h.str_char_to_byte(id, from),
         _ => s.char_indices().nth(from).map_or(s.len(), |(b, _)| b),
     };
-    let end = scan_form_end_bytes(s, start_byte, from, nforms);
+    let end = scan_form_end_bytes(&mut s, start_byte, from, nforms);
     Ok(Value::int(end as i64))
 }
 
 pub(super) fn scan_form_start(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let pos = expect_int(heap, "reflect/scan-form-start", arg(args, 1))?;
-    let h: &Heap = heap;
-    let v = arg(args, 0);
-    let s = expect_string_ref(h, "reflect/scan-form-start", v)?;
-    if s.is_empty() || pos < 0 {
-        return Ok(Value::int(0));
-    }
-    let table = form_scan_table(h, v, s.len());
-    let (best, _) = form_start_pair(s, table.as_deref(), pos as usize);
+    let who = "reflect/scan-form-start";
+    let pos = expect_int(heap, who, arg(args, 1))?;
+    let (best, _) = form_start_pair_of(heap, who, arg(args, 0), pos)?;
     Ok(Value::int(best as i64))
 }
 
@@ -745,37 +1015,69 @@ mod form_scan_tests {
         (best, prev)
     }
 
-    /// Both engines at every char index of `text`: no table (the short-text path), and
-    /// with a table built at a deliberately tiny stride so a resume happens between
-    /// almost every pair of positions — the case a 4 KB stride would never reach in a
-    /// test-sized fixture.
-    fn agrees_everywhere(text: &str) {
-        let nchars = text.chars().count();
+    /// The table `form_scan` builds over `text` at a `stride` of bytes.
+    fn index_at_stride<T: ScanText>(text: &mut T, stride: usize) -> FormScanIndex {
         let mut points: Vec<ScanPoint> = Vec::new();
         let mut next_at = 0usize;
         form_scan(text, ScanPoint::start(), usize::MAX, |p| {
             if (p.byte as usize) >= next_at {
                 points.push(p);
-                next_at = p.byte as usize + 3; // 3-byte stride: resume constantly
+                next_at = p.byte as usize + stride;
             }
+            true
         });
-        let table = FormScanIndex { points };
+        FormScanIndex { points }
+    }
+
+    /// Both engines at every char index of `text`, over the string and over a rope of it:
+    /// no table (the short-text path), and with a table built at a deliberately tiny stride
+    /// so a resume happens between almost every pair of positions — the case a 4 KB stride
+    /// would never reach in a test-sized fixture.
+    fn agrees_everywhere(text: &str) {
+        let nchars = text.chars().count();
+        let rope = ropey::Rope::from_str(text);
+        // 3-byte stride: resume constantly
+        let table = index_at_stride(&mut &*text, 3);
+        let rope_table = index_at_stride(&mut RopeCursor::new(&rope), 3);
         for pos in 0..=nchars + 1 {
             let want = oracle(text, pos);
             assert_eq!(
-                form_start_pair(text, None, pos),
+                form_start_pair(&mut &*text, None, pos),
                 want,
                 "no table, pos {} of {:?}",
                 pos,
                 text
             );
             assert_eq!(
-                form_start_pair(text, Some(&table), pos),
+                form_start_pair(&mut &*text, Some(&table), pos),
                 want,
                 "resumed from a safepoint, pos {} of {:?}",
                 pos,
                 text
             );
+            assert_eq!(
+                form_start_pair(&mut RopeCursor::new(&rope), Some(&rope_table), pos),
+                want,
+                "a rope, resumed from a safepoint, pos {} of {:?}",
+                pos,
+                text
+            );
+            let start_byte = text.char_indices().nth(pos).map_or(text.len(), |(b, _)| b);
+            for forms in 1..=3 {
+                assert_eq!(
+                    scan_form_end_bytes(
+                        &mut RopeCursor::new(&rope),
+                        start_byte,
+                        pos.min(nchars),
+                        forms
+                    ),
+                    scan_form_end_bytes(&mut &*text, start_byte, pos.min(nchars), forms),
+                    "form end over a rope, {} forms from {} of {:?}",
+                    forms,
+                    pos,
+                    text
+                );
+            }
         }
     }
 
@@ -823,24 +1125,143 @@ mod form_scan_tests {
             );
         }
         let nchars = text.chars().count();
-        let mut points: Vec<ScanPoint> = Vec::new();
-        let mut next_at = 0usize;
-        form_scan(&text, ScanPoint::start(), usize::MAX, |p| {
-            if (p.byte as usize) >= next_at {
-                points.push(p);
-                next_at = p.byte as usize + SCAN_POINT_STRIDE;
-            }
-        });
-        assert!(points.len() >= 3, "the fixture spans several strides");
-        let table = FormScanIndex { points };
+        let rope = ropey::Rope::from_str(&text);
+        let table = build_form_scan_index(&mut text.as_str());
+        let rope_table = build_form_scan_index(&mut RopeCursor::new(&rope));
+        assert!(table.points.len() >= 3, "the fixture spans several strides");
+        assert_eq!(
+            table.points, rope_table.points,
+            "a rope's table is the string's"
+        );
         // Every 7th position (an exhaustive sweep of 4 K chars x the oracle is needless).
         for pos in (0..nchars).step_by(7) {
             assert_eq!(
-                form_start_pair(&text, Some(&table), pos),
+                form_start_pair(&mut text.as_str(), Some(&table), pos),
                 oracle(&text, pos),
                 "pos {}",
                 pos
             );
+            assert_eq!(
+                form_start_pair(&mut RopeCursor::new(&rope), Some(&rope_table), pos),
+                oracle(&text, pos),
+                "rope, pos {}",
+                pos
+            );
         }
+    }
+
+    /// A Brood-ish document past several strides, with the shapes a column-0 guess gets
+    /// wrong: a docstring whose lines start with `(`, a comment holding brackets, and an
+    /// escaped quote.
+    fn carry_fixture(strides: usize) -> String {
+        let mut text = String::new();
+        let mut n = 0;
+        while text.len() < SCAN_POINT_STRIDE * strides {
+            text.push_str(&format!(
+                "(defn f{n} (a b)\n  \"Doc for f{n}, with a\n(column-0 bracket) and a \\\" quote.\"\n  ; a (comment) here\n  (+ a [b {{:k \"é\"}}]))\n\n"
+            ));
+            n += 1;
+        }
+        text
+    }
+
+    /// Every state a fresh pass over `rope` passes through, by byte.
+    fn true_states(rope: &ropey::Rope) -> std::collections::HashMap<u32, ScanPoint> {
+        let mut states = std::collections::HashMap::new();
+        form_scan(
+            &mut RopeCursor::new(rope),
+            ScanPoint::start(),
+            usize::MAX,
+            |p| {
+                states.insert(p.byte, p);
+                true
+            },
+        );
+        states
+    }
+
+    /// A table carried across an edit holds only true states and answers as a fresh one.
+    fn assert_carried(table: &FormScanIndex, rope: &ropey::Rope, label: &str) {
+        let states = true_states(rope);
+        for p in &table.points {
+            assert_eq!(
+                states.get(&p.byte),
+                Some(p),
+                "{label}: safepoint at byte {}",
+                p.byte
+            );
+        }
+        let text = rope.to_string();
+        let nchars = rope.len_chars();
+        for pos in (0..=nchars)
+            .step_by(11)
+            .chain([nchars.saturating_sub(1), nchars])
+        {
+            assert_eq!(
+                form_start_pair(&mut RopeCursor::new(rope), Some(table), pos),
+                form_start_pair(&mut text.as_str(), None, pos),
+                "{label}: pos {pos}"
+            );
+        }
+    }
+
+    /// Edits made one after another, each table carried from the last: typing inside a
+    /// form (the table takes over again at the next form), a `"` that turns the rest of the
+    /// document into a string and the `"` that closes it, a lone `(` that never rebalances,
+    /// a whole form inserted at the very start and removed from the very end, and a
+    /// multi-byte character. Every carried table must hold only true states and answer as a
+    /// fresh scan does.
+    #[test]
+    fn a_carried_table_matches_a_fresh_one() {
+        let mut rope = ropey::Rope::from_str(&carry_fixture(4));
+        let mut table = build_form_scan_index(&mut RopeCursor::new(&rope));
+        let middle = rope.len_chars() / 2;
+        let edits: Vec<(&str, usize, usize, &str)> = vec![
+            ("type inside a form", middle, 0, "x"),
+            ("delete inside a form", middle, 1, ""),
+            ("open a string", 40, 0, "\""),
+            ("close it again", 40, 1, ""),
+            ("a lone open", middle, 0, "("),
+            ("remove it", middle, 1, ""),
+            ("a form at the start", 0, 0, "(new form)\n"),
+            ("drop the start's form", 0, 11, ""),
+            ("multi-byte", middle + 3, 0, "🙂é"),
+            ("trim the end", usize::MAX, 30, ""),
+            ("a column-0 bracket in a docstring", 100, 0, "\n(not a form"),
+        ];
+        for (label, at, removed, inserted) in edits {
+            let old = rope.clone();
+            let at = if at == usize::MAX {
+                rope.len_chars() - removed
+            } else {
+                at
+            };
+            rope.remove(at..at + removed);
+            rope.insert(at, inserted);
+            let Some(change) = super::super::editor_native::changed_chars(&old, &rope) else {
+                continue;
+            };
+            table = carry_form_scan_index(&table, &old, &rope, change).0;
+            assert_carried(&table, &rope, label);
+        }
+    }
+
+    /// The point of carrying: a keystroke inside one form re-scans that form and at most a
+    /// stride, not the document — counted as the states the carried pass visits.
+    #[test]
+    fn a_keystroke_rescans_a_form_not_the_document() {
+        let old = ropey::Rope::from_str(&carry_fixture(32));
+        let table = build_form_scan_index(&mut RopeCursor::new(&old));
+        let mut rope = old.clone();
+        let at = old.len_chars() / 3;
+        rope.insert(at, "x");
+        let change = super::super::editor_native::changed_chars(&old, &rope).unwrap();
+        let (carried, visited) = carry_form_scan_index(&table, &old, &rope, change);
+        let total = true_states(&rope).len();
+        assert!(
+            visited * 8 < total,
+            "a keystroke re-scanned {visited} of {total} states"
+        );
+        assert_carried(&carried, &rope, "one keystroke");
     }
 }

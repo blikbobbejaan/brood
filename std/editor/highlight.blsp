@@ -807,7 +807,7 @@ happens to sit inside one."
         (hl-close? c) (hl-close-scan full (inc i) pos n (rest stack))
         else (hl-close-scan full (inc i) pos n stack)))))
 
-(defn closer-redundant? (full:string pos:int c:string -> bool)
+(defn closer-redundant? (full: (or string rope) pos:int c:string -> bool)
   "Would typing the closing delimiter `c` at offset `pos` in `full` be redundant — is the
 character already there that same closer, and is it the one closing the innermost form `pos`
 sits in?
@@ -822,18 +822,26 @@ level a stray `)` closes nothing and must be typed; and `[1 2|)` is a mismatch, 
 the character the reader will complain about is more honest than silently stepping over it.
 
 False inside a string or a comment — `\";)\"` is text — and false at the end of the buffer.
+`full` is a string or the rope an editor holds (ADR-488); only the top-level form up to `pos`
+is read from a rope.
 
     (editor/highlight/closer-redundant? \"(a)\" 2 \")\")   → true
-    (editor/highlight/closer-redundant? \"(a\" 2 \")\")    → false"
-  (and (< pos (string/length full))
-    (= (string/char-at full pos) c)
+    (editor/highlight/closer-redundant? \"(a\" 2 \")\")    → false
+    (editor/highlight/closer-redundant? (text/from-string \"(a)\") 2 \")\")   → true"
+  (and (< pos (text/length full))
+    (= (text/slice full pos (inc pos)) c)
     ;; From the start of the top-level form `pos` is in, not from 0: there nothing is open and
     ;; no string or comment is, so the scan answers exactly what one from 0 would — and a
     ;; `)` typed near the end of a 44k-line file stopped costing 1.2 s of interpreted scan.
-    (let (open (hl-close-scan full (reflect/scan-form-start full pos) pos (string/length full) '()))
+    ;; The scan reads only that form up to and including `pos`: a string or comment that
+    ;; runs past `pos` still runs past it when the text is cut just after `pos`.
+    (let (start (reflect/scan-form-start full pos)
+          window (text/slice full start (inc pos))
+          at (- pos start)
+          open (hl-close-scan window 0 at (string/length window) '()))
       (and (int? open)
         (>= open 0)
-        (= (hl-closer-of (string/char-at full open)) c)))))
+        (= (hl-closer-of (string/char-at window open)) c)))))
 
 (defn bracket-match (full:string pos:int -> (or nil (vector any)))
   "Given source `full` and cursor offset `pos`, return `[a b]` (the offsets of the

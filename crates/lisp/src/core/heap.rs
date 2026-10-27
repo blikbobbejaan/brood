@@ -584,6 +584,13 @@ pub(crate) struct HeapExtras {
     /// GC-traced where `dynamics` is, so no other value can come to share the handle while
     /// it is kept.
     pub(crate) caught: Vec<crate::error::CaughtOrigin>,
+    /// The top-level form scan's safepoint tables for the last few ropes this process
+    /// scanned, most recent first (ADR-488). A string's table is cached on the string, but
+    /// an editor's document is a new rope per keystroke; keeping the recent ones lets the
+    /// next rope's table be carried across the edit instead of rebuilt. The heap does not
+    /// interpret the table — `builtins::syntax_scan` downcasts it. Holds no handles, so
+    /// nothing here is traced.
+    pub(crate) form_scan_ropes: Vec<(ropey::Rope, Arc<dyn std::any::Any + Send + Sync>)>,
 }
 
 /// [`Heap::type_alias_cache`]'s contents: `(declared_sigs_version, name → alias key)`.

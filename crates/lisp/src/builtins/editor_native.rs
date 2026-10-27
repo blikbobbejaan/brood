@@ -295,7 +295,7 @@ fn rope_changed_range(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 /// The char range `(start, old_end, new_end)` that differs between `old` and `new`, or
 /// `None` when they are equal: the common prefix and (non-overlapping) common suffix, in
 /// bytes, rounded outward to whole chars.
-fn changed_chars(old: &ropey::Rope, new: &ropey::Rope) -> Option<(usize, usize, usize)> {
+pub(super) fn changed_chars(old: &ropey::Rope, new: &ropey::Rope) -> Option<(usize, usize, usize)> {
     let prefix = common_bytes(old.chunks(), new.chunks(), usize::MAX, false);
     if prefix == old.len_bytes() && prefix == new.len_bytes() {
         return None;
