@@ -4344,3 +4344,31 @@ writer passes over replaced tickets). Run here: `cargo test -p cli --test distri
 is red), `cargo test -p brood --lib dist:: mailbox::tests debug_flags`, `serve_attach`,
 `serve_test`, `mailbox_order`, the `receive_*` files, `doc_examples`, `audit`; clippy (gui,
 treesit-grammars); cargo fmt. Nothing was measured.
+
+2026-10-27 (ADR-491 finished; review fixes to ADR-490/491/492): `proc/interruptible` over a
+VM thunk is now an interrupt REGION on the bytecode driver's own frame stack — a handler kind
+beside the inline `try`, found by its frame's index — so a `receive` in `update` or `view`
+parks instead of blocking its worker; the builtin stays for the tree-walker, `apply` and
+native thunks, and the JIT fences the call out. The last one-pass natives poll: the case maps
+(a `Σ` string is cut only after whitespace, so the answer is the whole string's),
+`string/normalize`, `%str-index-of` / `%str-last-index-of`, the four coders, `%digest`,
+`%hmac`, pbkdf2; rope edits are tree edits and need nothing; a bounded-length regex is
+searched in 64 KB windows (`Input::range`), an unbounded one stays one capped search. A
+served session tells its thin client when its loop is busy (`proc/busy?`, a watcher kicked
+per input, `[:busy on]` newest-wins, `%gui-busy`). The interrupt test file runs one test
+fewer without a Ruby grammar — the `cfg`-gated parse test; nothing was lost. From the review:
+a hard kill is checked before an interrupt; a burst's later keys keep their input tag; an
+interrupted view is never the rollback point; slow updates are rate-limited; a `:poll`
+replaced over a std display is asked (`display-polls`); the remote observer takes its link's
+messages as the link's; a skipped frame's sound plays before a free sent after it; the
+face-table and injection validators agree with the kernel; a guest link cannot stop a turn
+with a wire quit key (`proc/set-quit-key`'s `from`, `:quit-from`); `send-latest` and
+`take-priority` use an exact index and count instead of walking the backlog; a rope diff
+skips shared leaves. Run here: `cargo test -p brood --test interrupt` (27, with
+treesit-grammars), `--lib` filters `interrupt`, `mailbox`, `quantum`, `preempt`, `string`,
+`compress`, `changed_range`, `quit_key`; `preemption`, `reductions`, `jit`,
+`natives_never_mutate`, `primitive_naming`; `ui_test` (103), `serve`, `display`, `gui`,
+`observer`, `treesit_module`, `regex`, `zlib`, `hash`, `crypto`, `strings`, the `receive_*`
+files, `mailbox_order`, `doc_examples`, `audit`; `cargo test -p cli --test serve_attach --test
+distribution` (46); clippy (gui, treesit-grammars, all targets); `nest check` over
+std/tests/examples and `--strict` over std+tests, zero warnings. Nothing was measured.
