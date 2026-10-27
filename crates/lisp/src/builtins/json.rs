@@ -8,7 +8,8 @@
 
 use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, Value};
-use crate::error::LispResult;
+use crate::error::{LispError, LispResult};
+use crate::eval::InterruptPoll;
 
 use super::args::arg;
 
@@ -32,7 +33,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
 
 fn json_encode_plain(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let mut out = String::new();
-    if encode(heap, arg(args, 0), &mut out, 0) {
+    if encode(heap, arg(args, 0), &mut out, 0, &mut InterruptPoll::new())? {
         Ok(heap.alloc_string(&out))
     } else {
         Ok(Value::nil())
@@ -40,9 +41,18 @@ fn json_encode_plain(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 }
 
 /// Append `v`'s JSON to `out`; false when `v` holds anything the plain rules do not cover.
-fn encode(heap: &Heap, v: Value, out: &mut String, depth: usize) -> bool {
+/// `poll` probes for an interrupt every few thousand values (ADR-491): a large document is
+/// walked here in one native call.
+fn encode(
+    heap: &Heap,
+    v: Value,
+    out: &mut String,
+    depth: usize,
+    poll: &mut InterruptPoll,
+) -> Result<bool, LispError> {
+    poll.tick()?;
     if depth > MAX_DEPTH {
-        return false;
+        return Ok(false);
     }
     match v {
         Value::Nil => out.push_str("null"),
@@ -57,8 +67,8 @@ fn encode(heap: &Heap, v: Value, out: &mut String, depth: usize) -> bool {
                 if i > 0 {
                     out.push(',');
                 }
-                if !encode(heap, *item, out, depth + 1) {
-                    return false;
+                if !encode(heap, *item, out, depth + 1, poll)? {
+                    return Ok(false);
                 }
             }
             out.push(']');
@@ -76,13 +86,13 @@ fn encode(heap: &Heap, v: Value, out: &mut String, depth: usize) -> bool {
                             out.push(',');
                         }
                         first = false;
-                        if !encode(heap, head, out, depth + 1) {
-                            return false;
+                        if !encode(heap, head, out, depth + 1, poll)? {
+                            return Ok(false);
                         }
                         cur = tail;
                     }
                     // an improper tail, or a lazy one: the Brood encoder's to judge
-                    _ => return false,
+                    _ => return Ok(false),
                 }
             }
             out.push(']');
@@ -93,7 +103,7 @@ fn encode(heap: &Heap, v: Value, out: &mut String, depth: usize) -> bool {
                 .map_get(id, value::kw("__id__"))
                 .is_some_and(|tag| !matches!(tag, Value::Nil | Value::Bool(false)))
             {
-                return false;
+                return Ok(false);
             }
             out.push('{');
             for (i, (key, item)) in heap.map_entries(id).into_iter().enumerate() {
@@ -104,18 +114,18 @@ fn encode(heap: &Heap, v: Value, out: &mut String, depth: usize) -> bool {
                     Value::Str(s) => escape(heap.string(s), out),
                     Value::Keyword(s) | Value::Sym(s) => escape(value::symbol_name_ref(s), out),
                     Value::Int(n) => escape(&n.to_string(), out),
-                    _ => return false,
+                    _ => return Ok(false),
                 }
                 out.push(':');
-                if !encode(heap, item, out, depth + 1) {
-                    return false;
+                if !encode(heap, item, out, depth + 1, poll)? {
+                    return Ok(false);
                 }
             }
             out.push('}');
         }
-        _ => return false,
+        _ => return Ok(false),
     }
-    true
+    Ok(true)
 }
 
 /// `s` as a JSON string: `json.blsp`'s `enc-string` — the named escapes, every other

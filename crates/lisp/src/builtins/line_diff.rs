@@ -47,6 +47,8 @@ pub(super) fn diff_line_hunks(args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
     let old = text_of(heap, who, arg(args, 0))?;
     let new = text_of(heap, who, arg(args, 1))?;
     let hunks = line_hunks(&old, &new);
+    // an interrupt cut the diff short: what it answered is not the diff, so raise it
+    crate::eval::check_interrupt()?;
     let rows: Vec<Value> = hunks
         .into_iter()
         .map(|(old_start, old_count, new_start, new_count)| {
@@ -159,6 +161,11 @@ fn middle_snake(a: &[u32], b: &[u32]) -> Option<(usize, usize)> {
     let (mut k1_start, mut k1_end, mut k2_start, mut k2_end) = (0isize, 0isize, 0isize, 0isize);
     for d in 0..max_d {
         if (d as u64) * ((n + m) as u64) > COST_LIMIT {
+            return None;
+        }
+        // An interrupt (ADR-491) ends the search the way the cost limit does: every region
+        // still to diff then gives up at once, and `diff_line_hunks` raises the interrupt.
+        if d % 64 == 0 && crate::process::current_interrupt_due() {
             return None;
         }
         let mut k1 = -d + k1_start;

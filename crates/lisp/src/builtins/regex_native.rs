@@ -25,6 +25,12 @@
 //! UTF-8 byte offsets and they are converted with the string's own char index (O(1) for
 //! ASCII) before anything reaches the language.
 //!
+//! **Interrupts (ADR-491).** The engine cannot be stopped inside one search, but one search
+//! is linear in the text (regex-automata has no backtracking) and its compiled size is
+//! capped, so a single search is bounded by a pass over its input. The loops OVER searches —
+//! every match of `find-all`, every token, the shrinking windows of the longest-match walk
+//! (quadratic at worst) — poll for an interrupt between searches.
+//!
 //! Compiled patterns are cached by their text, process-wide. A `meta::Regex` is
 //! `Sync` and keeps a pool of per-thread search caches, so the map hands out the SAME `Arc`
 //! to every worker thread — a fresh `Regex` per call would rebuild its lazy DFA from
@@ -33,6 +39,7 @@
 use super::args::{arg, expect_int, expect_string_ref};
 use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, StrId, Value};
+use crate::eval::InterruptPoll;
 use crate::error::{LispError, LispResult};
 use regex_automata::meta::Regex;
 use regex_automata::util::captures::Captures;
@@ -170,10 +177,13 @@ fn longest_at(rx: &Regex, s: &str, at: usize, limit: usize) -> Option<usize> {
 
 /// Every end of a match of `rx` anchored at byte `at`, LONGEST first: the longest, then
 /// the longest that stops short of it, and so on down to the empty match if there is one.
-fn ends_at(rx: &Regex, s: &str, at: usize) -> Vec<usize> {
+fn ends_at(rx: &Regex, s: &str, at: usize) -> Result<Vec<usize>, LispError> {
     let mut ends = Vec::new();
     let mut limit = s.len();
+    // one search per end: quadratic in the worst case, so it polls for an interrupt (ADR-491)
+    let mut poll = InterruptPoll::new();
     while let Some(end) = longest_at(rx, s, at, limit) {
+        poll.advance(64)?;
         ends.push(end);
         if end == at {
             break;
@@ -181,7 +191,7 @@ fn ends_at(rx: &Regex, s: &str, at: usize) -> Vec<usize> {
         // the longest end strictly before this one: shrink the window by one character
         limit = s[..end].char_indices().next_back().map_or(at, |(b, _)| b);
     }
-    ends
+    Ok(ends)
 }
 
 /// A span found in string `id`, held as plain data until the heap is free to allocate:
@@ -283,7 +293,9 @@ fn regex_find_all(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         let mut caps = rx.create_captures();
         let mut all = Vec::new();
         let mut at = 0usize;
+        let mut poll = InterruptPoll::new();
         while at <= s.len() {
+            poll.advance(16)?;
             rx.search_captures(&Input::new(s).range(at..), &mut caps);
             let Some(whole) = caps.get_match() else { break };
             at = if whole.is_empty() {
@@ -365,7 +377,9 @@ fn regex_tokens(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         let s = heap.string(id);
         let mut tokens: Vec<(Span, usize)> = Vec::new();
         let mut at = 0usize;
+        let mut poll = InterruptPoll::new();
         while at < s.len() {
+            poll.advance(16)?;
             // the earliest place ANY rule matches; nothing before it can start a token
             let Some(hit) = lex.any_rule.search(&Input::new(s).range(at..)) else {
                 break;
@@ -410,15 +424,21 @@ fn regex_paint(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         if s.is_empty() {
             return Ok(Value::Nil);
         }
-        ends_at(&prefix, s, 0).into_iter().find_map(|p| {
-            let mut ends = ends_at(&pattern, s, p);
+        let mut found = None;
+        for p in ends_at(&prefix, s, 0)? {
+            let mut ends = ends_at(&pattern, s, p)?;
             if lazy {
                 ends.reverse();
             }
-            ends.into_iter()
+            if let Some(e) = ends
+                .into_iter()
                 .find(|&e| longest_at(&suffix, s, e, s.len()).is_some())
-                .map(|e| (p, e))
-        })
+            {
+                found = Some((p, e));
+                break;
+            }
+        }
+        found
     };
     Ok(match found {
         Some((start, end)) => {

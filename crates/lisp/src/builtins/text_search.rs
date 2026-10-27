@@ -21,7 +21,8 @@
 use super::args::{arg, expect_int, expect_rope_ref, expect_string_ref};
 use crate::core::heap::Heap;
 use crate::core::value::{EnvId, Value};
-use crate::error::LispResult;
+use crate::error::{LispError, LispResult};
+use crate::eval::InterruptPoll;
 
 pub(super) fn register(primitives: &mut super::Primitives) {
     use super::signature_types::*;
@@ -99,15 +100,22 @@ fn fold_case(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 ///
 /// Folding is one char to one char ([`fold_char`]), so a folded leaf has exactly the char
 /// count of the original and a char index found in it is an index into the rope.
-fn find_from(rope: &ropey::Rope, needle: &[char], from: usize, fold: bool) -> Option<usize> {
+fn find_from(
+    rope: &ropey::Rope,
+    needle: &[char],
+    from: usize,
+    fold: bool,
+) -> Result<Option<usize>, LispError> {
     let n = rope.len_chars();
     let m = needle.len();
     if m == 0 {
-        return Some(from.min(n));
+        return Ok(Some(from.min(n)));
     }
     if from >= n || n - from < m {
-        return None;
+        return Ok(None);
     }
+    // a missed search over a large rope reads all of it: poll per leaf (ADR-491)
+    let mut poll = InterruptPoll::new();
     let pattern: String = needle.iter().collect();
     let (chunks, _, chunk_char_start, _) = rope.chunks_at_char(from);
     // `window` is the carried tail of the previous leaf followed by this leaf (from `from`
@@ -116,6 +124,7 @@ fn find_from(rope: &ropey::Rope, needle: &[char], from: usize, fold: bool) -> Op
     let mut window_start = from;
     let mut first = true;
     for chunk in chunks {
+        poll.tick()?;
         let piece: &str = if first {
             first = false;
             // the first leaf may begin before `from`
@@ -137,7 +146,7 @@ fn find_from(rope: &ropey::Rope, needle: &[char], from: usize, fold: bool) -> Op
             window.push_str(piece);
         }
         if let Some(byte) = window.find(&pattern) {
-            return Some(window_start + window[..byte].chars().count());
+            return Ok(Some(window_start + window[..byte].chars().count()));
         }
         // Keep the last m-1 chars: a match that starts in them can finish in the next leaf.
         let window_chars = window.chars().count();
@@ -149,7 +158,7 @@ fn find_from(rope: &ropey::Rope, needle: &[char], from: usize, fold: bool) -> Op
         carry = window[cut..].to_string();
         window_start += window_chars - keep;
     }
-    None
+    Ok(None)
 }
 
 /// The last occurrence starting strictly before `before`.
@@ -167,14 +176,14 @@ fn find_last_before(
     needle: &[char],
     before: usize,
     fold: bool,
-) -> Option<usize> {
+) -> Result<Option<usize>, LispError> {
     const SLICE_CHARS: usize = 65_536;
     if before == 0 {
-        return None;
+        return Ok(None);
     }
     // An empty needle occurs at every index 0..=len.
     if needle.is_empty() {
-        return Some((before - 1).min(rope.len_chars()));
+        return Ok(Some((before - 1).min(rope.len_chars())));
     }
     let n = rope.len_chars();
     let m = needle.len();
@@ -183,6 +192,8 @@ fn find_last_before(
     let width = SLICE_CHARS.max(4 * m);
     let mut end = (before + m - 1).min(n);
     loop {
+        // a slice is 64K characters: probe for an interrupt before each (ADR-491)
+        crate::eval::check_interrupt()?;
         let start = end.saturating_sub(width);
         if end - start >= m {
             let slice = rope.slice(start..end);
@@ -192,11 +203,11 @@ fn find_last_before(
                 slice.to_string()
             };
             if let Some(byte) = text.rfind(&pattern) {
-                return Some(start + text[..byte].chars().count());
+                return Ok(Some(start + text[..byte].chars().count()));
             }
         }
         if start == 0 {
-            return None;
+            return Ok(None);
         }
         end = start + m - 1;
     }
@@ -224,7 +235,7 @@ fn rope_find(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let from = expect_int(heap, who, arg(args, 2))?.max(0) as usize;
     let rope = expect_rope_ref(heap, who, arg(args, 0))?;
     Ok(Value::Int(
-        find_from(rope, &needle, from, fold).map_or(-1, |i| i as i64),
+        find_from(rope, &needle, from, fold)?.map_or(-1, |i| i as i64),
     ))
 }
 
@@ -236,7 +247,7 @@ fn rope_rfind(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let before = expect_int(heap, who, arg(args, 2))?.max(0) as usize;
     let rope = expect_rope_ref(heap, who, arg(args, 0))?;
     Ok(Value::Int(
-        find_last_before(rope, &needle, before, fold).map_or(-1, |i| i as i64),
+        find_last_before(rope, &needle, before, fold)?.map_or(-1, |i| i as i64),
     ))
 }
 
@@ -245,29 +256,39 @@ fn rope_rfind(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 /// `at` such that every character between it and `at` does. Reads only the run itself
 /// (`chars_at` walks the rope's leaves, and `prev` steps back through them), so a word
 /// motion costs the word, not the document.
-fn skip_run(rope: &ropey::Rope, at: usize, forward: bool, set: &[char], inside: bool) -> usize {
+fn skip_run(
+    rope: &ropey::Rope,
+    at: usize,
+    forward: bool,
+    set: &[char],
+    inside: bool,
+) -> Result<usize, LispError> {
     let n = rope.len_chars();
     let at = at.min(n);
     let continues = |c: char| set.contains(&c) == inside;
+    // a run can be the whole document (a file of spaces): poll per character (ADR-491)
+    let mut poll = InterruptPoll::new();
     if forward {
         let mut index = at;
         for c in rope.chars_at(at) {
+            poll.tick()?;
             if !continues(c) {
                 break;
             }
             index += 1;
         }
-        index
+        Ok(index)
     } else {
         let mut index = at;
         let mut chars = rope.chars_at(at);
         while let Some(c) = chars.prev() {
+            poll.tick()?;
             if !continues(c) {
                 break;
             }
             index -= 1;
         }
-        index
+        Ok(index)
     }
 }
 
@@ -281,7 +302,7 @@ fn rope_skip(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         .collect();
     let at = expect_int(heap, who, arg(args, 1))?.max(0) as usize;
     let rope = expect_rope_ref(heap, who, arg(args, 0))?;
-    Ok(Value::Int(skip_run(rope, at, forward, &set, inside) as i64))
+    Ok(Value::Int(skip_run(rope, at, forward, &set, inside)? as i64))
 }
 
 #[cfg(test)]
@@ -340,7 +361,7 @@ mod find_tests {
                 };
                 for from in (0..total).step_by(97).chain([total - 7, total - 1]) {
                     assert_eq!(
-                        find_from(&rope, &needle_chars, from, fold),
+                        find_from(&rope, &needle_chars, from, fold).unwrap(),
                         naive(&text, needle, from, fold),
                         "needle {needle:?} fold {fold} from {from}"
                     );
@@ -387,7 +408,7 @@ mod find_tests {
                 for before in (0..=total).step_by(4_099).chain([65_536, 65_537, total]) {
                     let expected = starts.iter().rev().find(|&&at| at < before).copied();
                     assert_eq!(
-                        find_last_before(&rope, &needle_chars, before, fold),
+                        find_last_before(&rope, &needle_chars, before, fold).unwrap(),
                         expected,
                         "needle {needle:?} fold {fold} before {before}"
                     );

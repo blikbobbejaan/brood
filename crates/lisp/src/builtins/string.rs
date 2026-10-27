@@ -6,6 +6,7 @@
 use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, Value};
 use crate::error::{LispError, LispResult};
+use crate::eval::InterruptPoll;
 
 use super::args::{arg, expect_int, expect_string, expect_string_ref};
 use super::realize_seqview;
@@ -380,7 +381,9 @@ pub(super) fn string_join(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
         let mut s = String::new();
         let mut first = true;
         let mut i = lo;
+        let mut poll = InterruptPoll::new();
         while if step > 0 { i < hi } else { i > hi } {
+            poll.tick()?;
             if !first {
                 s.push_str(sep);
             }
@@ -397,7 +400,9 @@ pub(super) fn string_join(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     // Rough pre-size (separators + a small per-element allowance) to avoid most
     // re-grows without a second display pass just to compute the exact length.
     let mut s = String::with_capacity(sep.len() * items.len().saturating_sub(1) + items.len() * 8);
+    let mut poll = InterruptPoll::new();
     for (i, &item) in items.iter().enumerate() {
+        poll.tick()?;
         if i > 0 {
             s.push_str(sep);
         }
@@ -749,13 +754,21 @@ pub(super) fn string_split(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
         None => " ".to_string(),
     };
     let out: Vec<Value> = if sep.is_empty() {
+        let mut poll = InterruptPoll::new();
         s.chars()
-            .map(|c| heap.alloc_string_counted(c.to_string(), 1))
-            .collect()
+            .map(|c| {
+                poll.tick()?;
+                Ok(heap.alloc_string_counted(c.to_string(), 1))
+            })
+            .collect::<Result<_, LispError>>()?
     } else {
+        let mut poll = InterruptPoll::new();
         s.split(sep.as_str())
-            .map(|part| heap.alloc_string(part))
-            .collect()
+            .map(|part| {
+                poll.advance(1 + (part.len() >> 6) as u32)?;
+                Ok(heap.alloc_string(part))
+            })
+            .collect::<Result<_, LispError>>()?
     };
     Ok(heap.list_from_slice(&out))
 }
@@ -773,7 +786,13 @@ pub(super) fn string_to_codepoints(args: &[Value], _: EnvId, heap: &mut Heap) ->
     // live — one copy of the string saved per call, on the parsers' hot path.
     let codes: Vec<Value> = {
         let s = expect_string_ref(heap, "string/->codepoints", arg(args, 0))?;
-        s.chars().map(|c| Value::int(c as i64)).collect()
+        let mut poll = InterruptPoll::new();
+        s.chars()
+            .map(|c| {
+                poll.tick()?;
+                Ok(Value::int(c as i64))
+            })
+            .collect::<Result<_, LispError>>()?
     };
     Ok(heap.alloc_vector(codes))
 }
@@ -831,7 +850,9 @@ pub(super) fn codepoints_to_string(args: &[Value], _: EnvId, heap: &mut Heap) ->
         }
     };
     let mut out = String::with_capacity(codes.len());
+    let mut poll = InterruptPoll::new();
     for c in codes {
+        poll.tick()?;
         match u32::try_from(c).ok().and_then(char::from_u32) {
             Some(ch) => out.push(ch),
             None => {
@@ -871,7 +892,14 @@ pub(super) fn string_to_graphemes(args: &[Value], _: EnvId, heap: &mut Heap) -> 
     let s = expect_string(heap, "string/->graphemes", arg(args, 0))?;
     // `true` = *extended* grapheme clusters (UAX #29's recommended default, and
     // what the renderer and `string/display-width` use).
-    let parts: Vec<String> = s.graphemes(true).map(|g| g.to_string()).collect();
+    let mut poll = InterruptPoll::new();
+    let parts: Vec<String> = s
+        .graphemes(true)
+        .map(|g| {
+            poll.tick()?;
+            Ok(g.to_string())
+        })
+        .collect::<Result<_, LispError>>()?;
     let vals: Vec<Value> = parts.iter().map(|g| heap.alloc_string(g)).collect();
     Ok(heap.alloc_vector(vals))
 }

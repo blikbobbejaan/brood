@@ -1157,7 +1157,13 @@ pub(super) fn sort_asc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
     // Int and a Float can compare equal while remaining distinguishable
     // (`1` vs `1.0`), which is why only this branch drops stability.
     if all_int {
-        ints.sort_unstable();
+        if ints.len() > 2 * SORT_CHUNK {
+            // large: chunked so an interrupt can stop it (ADR-491), and the merge of the
+            // chunks wants the stable sort's run detection
+            sort_interruptibly(&mut ints, i64::cmp)?;
+        } else {
+            ints.sort_unstable();
+        }
         // Reuse the `items` allocation rather than building a second Vec.
         for (slot, n) in items.iter_mut().zip(ints) {
             *slot = Value::Int(n);
@@ -1169,7 +1175,7 @@ pub(super) fn sort_asc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
     // (exact for Int/BigInt/Ratio/Decimal; Int-vs-Float compares precisely in
     // base 10). Only reached once a non-`Int` number appeared, so the common
     // all-int case above never pays for it.
-    items.sort_by(|a, b| heap.value_cmp(*a, *b));
+    sort_interruptibly(&mut items, |a, b| heap.value_cmp(*a, *b))?;
 
     Ok(heap.list(items))
 }
@@ -1183,9 +1189,31 @@ pub(super) fn sort_cmp(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
     let mut items = heap.seq_items(arg(args, 0))?;
     // `value_cmp` reads heap data through `&Heap` only; the items are `Copy`
     // handles, so no GC root machinery is needed.
-    items.sort_by(|a, b| heap.value_cmp(*a, *b));
+    sort_interruptibly(&mut items, |a, b| heap.value_cmp(*a, *b))?;
     Ok(heap.list(items))
 }
+
+/// A stable sort of `items` by `compare` that an interrupt can stop (ADR-491). A large input
+/// is sorted in chunks of [`SORT_CHUNK`] with a probe between them, then the whole once
+/// more: the standard sort finds the sorted chunks as runs and only merges them, a few linear
+/// passes. No comparison pays anything for the probe; a small input is one plain sort.
+fn sort_interruptibly<T>(
+    items: &mut [T],
+    mut compare: impl FnMut(&T, &T) -> std::cmp::Ordering,
+) -> Result<(), LispError> {
+    if items.len() > 2 * SORT_CHUNK {
+        for chunk in items.chunks_mut(SORT_CHUNK) {
+            crate::eval::check_interrupt()?;
+            chunk.sort_by(&mut compare);
+        }
+        crate::eval::check_interrupt()?;
+    }
+    items.sort_by(compare);
+    Ok(())
+}
+
+/// Items per chunk of an interruptible sort: a few milliseconds of comparisons at most.
+const SORT_CHUNK: usize = 1 << 16;
 
 /// `(compare a b)` — the structural total order as a binary comparison: `-1` if
 /// `a` sorts before `b`, `0` if equal, `1` if after. Numbers compare

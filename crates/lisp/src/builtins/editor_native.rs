@@ -19,6 +19,7 @@ use super::sequences::tab_layout;
 use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, Value, ValueRef};
 use crate::error::{LispError, LispResult};
+use crate::eval::InterruptPoll;
 
 pub(super) fn register(primitives: &mut super::Primitives) {
     use super::signature_types::*;
@@ -101,8 +102,10 @@ fn harvest_into(
     tags: &Tags,
     out: &mut Vec<Value>,
     table: &mut Vec<(Value, Value)>,
-) {
+    poll: &mut InterruptPoll,
+) -> Result<(), LispError> {
     for op in ops {
+        poll.tick()?;
         let ValueRef::Vector(id) = op.unpack() else {
             out.push(op);
             continue;
@@ -121,7 +124,7 @@ fn harvest_into(
                 continue; // a marker whose ops are not a sequence paints nothing
             };
             let mut flat = Vec::with_capacity(inner_ops.len());
-            harvest_into(heap, inner_ops, tags, &mut flat, table);
+            harvest_into(heap, inner_ops, tags, &mut flat, table, poll)?;
             // The entry keeps the ops AS EMITTED — inner markers included — not the
             // flattened ones. A hit replays them inside a fresh marker, so this walk sees
             // the inner markers again and every inner fragment stays in the next table.
@@ -140,7 +143,7 @@ fn harvest_into(
                 continue;
             };
             let mut flat = Vec::with_capacity(inner_ops.len());
-            harvest_into(heap, inner_ops, tags, &mut flat, table);
+            harvest_into(heap, inner_ops, tags, &mut flat, table, poll)?;
             let flat_vec = heap.alloc_vector(flat);
             let mut rebuilt = parts.clone();
             rebuilt[at] = flat_vec;
@@ -150,6 +153,7 @@ fn harvest_into(
             out.push(op);
         }
     }
+    Ok(())
 }
 
 fn ui_harvest(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
@@ -170,11 +174,11 @@ fn ui_harvest(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let mut table = Vec::new();
     let keep_markers = crate::eval::truthy(arg(args, 1));
     let frame = if keep_markers {
-        collect_markers(heap, ops, &tags, &mut table);
+        collect_markers(heap, ops, &tags, &mut table, &mut InterruptPoll::new())?;
         frame
     } else {
         let mut out = Vec::with_capacity(ops.len());
-        harvest_into(heap, ops, &tags, &mut out, &mut table);
+        harvest_into(heap, ops, &tags, &mut out, &mut table, &mut InterruptPoll::new())?;
         heap.alloc_vector(out)
     };
     let map = heap.map_from_pairs(table);
@@ -183,8 +187,15 @@ fn ui_harvest(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 
 /// `harvest_into` without the splice: every marker of `ops` into `table`, the ops left
 /// as they are — the walk for a display that takes the markers (ADR-470).
-fn collect_markers(heap: &mut Heap, ops: Vec<Value>, tags: &Tags, table: &mut Vec<(Value, Value)>) {
+fn collect_markers(
+    heap: &mut Heap,
+    ops: Vec<Value>,
+    tags: &Tags,
+    table: &mut Vec<(Value, Value)>,
+    poll: &mut InterruptPoll,
+) -> Result<(), LispError> {
     for op in ops {
+        poll.tick()?;
         let ValueRef::Vector(id) = op.unpack() else {
             continue;
         };
@@ -200,9 +211,10 @@ fn collect_markers(heap: &mut Heap, ops: Vec<Value>, tags: &Tags, table: &mut Ve
             nested_ops_at(tag, tags, parts.len()).map(|at| parts[at])
         };
         if let Some(inner) = nested.and_then(|inner| heap.list_or_vector_items(inner)) {
-            collect_markers(heap, inner, tags, table);
+            collect_markers(heap, inner, tags, table, poll)?;
         }
     }
+    Ok(())
 }
 
 /// `(%gui-text-contrast! gamma)` — see the registration. GUI only; returns nil.
