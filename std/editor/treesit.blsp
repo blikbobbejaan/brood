@@ -91,6 +91,9 @@ load with the list rather than at the keypress that needed it.
       (empty? selector) "an empty selector {} would colour every node"
       (not (every? (keys selector) (fn (k) (contains? selector-constraints k))))
         (str (pr-str selector) " names a constraint other than :kind :parent :field :nth :text")
+      ;; the kernel reads every constraint the map has, so one present with no value is refused
+      (any? (keys selector) (fn (k) (nil? (get selector k))))
+        (str (pr-str selector) ": a constraint with no value — leave the key out instead")
       (not (every? [:kind :field] (fn (k) (or (nil? (get selector k)) (keyword? (get selector k))))))
         (str (pr-str selector) ": :kind and :field are keywords")
       (let (n (get selector :nth)) (not (or (nil? n) (and (int? n) (>= n 0)))))
@@ -141,6 +144,8 @@ misspelt selector fails at load rather than at the first frame drawn.
       (not (map? rule)) (list (str shown " is not an injection rule map"))
       (not (every? (keys rule) (fn (k) (contains? injection-rule-keys k))))
         (list (str shown " names a key other than :content :lang :lang-from :aliases"))
+      (any? (keys rule) (fn (k) (nil? (get rule k))))
+        (list (str shown ": a key with no value — leave the key out instead"))
       (nil? content) (list (str shown " names no :content selector"))
       (not (or (keyword? content) (map? content)))
         (list (str shown ": :content is a node kind or a selector map"))
@@ -149,7 +154,9 @@ misspelt selector fails at load rather than at the first frame drawn.
       (= (nil? fixed) (nil? from))
         (list (str shown " names its language with :lang or with :lang-from — exactly one"))
       (not (keyword? (or fixed from))) (list (str shown ": :lang and :lang-from are keywords"))
-      (and fixed aliases) (list (str shown ": :aliases goes with :lang-from, not :lang"))
+      ;; an empty :aliases names no language, so beside a fixed one it says nothing
+      (and fixed aliases (not (and (map? aliases) (empty? aliases))))
+        (list (str shown ": :aliases goes with :lang-from, not :lang"))
       (not (or (nil? aliases)
              (and (map? aliases)
                (every? (%map-pairs aliases) (fn ([word lang]) (and (string? word) (keyword? lang)))))))

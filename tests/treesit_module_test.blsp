@@ -575,7 +575,12 @@
                   {:kind :identifier :parent {}}
                   {:kind :identifier
                    :parent {:kind :call :parent {:kind :call :parent {:kind :call}}}}
-                  {:kind :identifier :parent {:feild :x}}])
+                  {:kind :identifier :parent {:feild :x}}
+                  ;; a constraint present with no value: the kernel reads every key it has
+                  {:kind :identifier :text nil}
+                  {:kind :identifier :parent nil}
+                  {:kind :identifier :nth nil}
+                  {:kind nil :field :name}])
         (is (every? bad
               (fn (selector)
                 (failure? (try
@@ -873,6 +878,21 @@
                           (try
                             (%tree-sitter-spans "x\n" :elixir {} false spec)
                             (catch e (failure (error-message e)))))))))
+      ;; and what the kernel takes, the validator takes: an empty :aliases beside a fixed
+      ;; :lang names no second language
+      (let (spec {:rules [{:content :x :lang :ruby :aliases {}}] :faces {:ruby {}}})
+        (assert= (editor/treesit/injection-problems spec) '())
+        (is (not (failure? (check-allow :discarded-catch
+                             (try
+                               (%tree-sitter-spans "x\n" :elixir {} false spec)
+                               (catch e (failure (error-message e)))))))))
+      ;; a rule key present with no value is refused by both
+      (let (spec {:rules [{:content :x :lang-from :y :lang nil}] :faces {}})
+        (assert= (count (editor/treesit/injection-problems spec)) 1)
+        (is (failure? (check-allow :discarded-catch
+                        (try
+                          (%tree-sitter-spans "x\n" :elixir {} false spec)
+                          (catch e (failure (error-message e))))))))
       ;; a fixed language with no table is legal to the kernel (it injects nothing) and a
       ;; problem to a registration, which can only have meant a table
       (assert= (count (editor/treesit/injection-problems {:rules [{:content :x :lang :sql}]
