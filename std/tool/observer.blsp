@@ -732,6 +732,16 @@ the minibuffer UI state. Paints to whatever frontend `ui-run` holds."
 
 (def- observe-key-overlays (list (command-overlay)))
 
+(defn- observe-link-message? (input)
+  "Whether `input` is the remote link's own traffic rather than the user's: a
+`[:nodedown node]`, or a snapshot, eval or kill reply (`[:observe-reply …]`, …)."
+  (and (vector? input)
+    (= (count input) 2)
+    (or (= (first input) :nodedown)
+      (= (first input) :observe-reply)
+      (= (first input) :eval-reply)
+      (= (first input) :kill-reply))))
+
 (defn- observe-update (model:map input:any cols:int rows:int -> any)
   "The observer's `ui-run` **update**: fold one input into the next model. `:tick`
 (the refresh beat) fetches a fresh snapshot from the backend's `:source` unless
@@ -739,13 +749,20 @@ paused, in the minibuffer, or awaiting a kill confirmation (so the list can't sh
 under a pending action); a `[:mouse …]` event selects/scrolls; a pending `:confirm`
 routes keys to y/n; otherwise keys flow through `overlay-route` — the eval minibuffer
 (`:command` mode) if open, else `*observe-keymap*` (quit sets `:done`, which `ui-run`
-honours). The backend rides in the model under `:backend`."
+honours). The backend rides in the model under `:backend`.
+
+A remote observer's loop polls the whole mailbox, so the link's own messages arrive here
+too: a `[:nodedown …]` marks the link down (sticky — no tick asks the peer again), and a
+reply that came after its request gave up is dropped, never read as a key."
   (let (backend (get model :backend)
         cap (math/max 1 (- rows 5)))
     ; visible body height (see observe-frame)
     (cond
+      (observe-link-message? input)
+        (if (= (first input) :nodedown) (observe-apply-result model :down) model)
       (= input :tick)
         (if (and (not (get model :paused))
+              (not (= (get model :link) :down))
               (not (= (get model :mode) :command))
               (not (get model :confirm)))
           (observe-apply-result model ((get backend :source)))

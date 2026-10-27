@@ -527,3 +527,34 @@
         (is (map? reply))
         (is (contains? reply :node))
         (is (contains? reply :procs))))))
+
+;; A remote observer's loop polls the whole mailbox (the terminal display, ADR-490), so the
+;; link's own messages reach `observe-update`: a `[:nodedown …]` the request no longer
+;; finds, a reply that came after its request timed out. They are the link's, never keys.
+(describe "observe-update — the link's messages are not input"
+  (test "a nodedown folds as a dropped link, and the ticks after it ask the peer nothing"
+    (let (me (self)
+          model {:sel-id nil
+                 :sort :id
+                 :paused false
+                 :last nil
+                 :link :ok
+                 :mode :nav
+                 :confirm nil
+                 :backend {:source (fn () (do (send me :asked) :timeout))}}
+          down (observer/observe-update model [:nodedown :peer@host] 80 24))
+      (assert= (:link down) :down)
+      (observer/observe-update down :tick 80 24)
+      (assert= (receive (:asked :asked) (after 0 :not-asked)) :not-asked)))
+  (test "a late reply neither answers a pending kill confirmation nor moves anything"
+    (let (model {:sel-id nil
+                 :sort :id
+                 :paused false
+                 :last nil
+                 :link :ok
+                 :mode :nav
+                 :confirm {:pid 1 :id 1 :name "x"}
+                 :backend {:kill (fn (c) "killed")}})
+      (assert= (observer/observe-update model [:eval-reply "late"] 80 24) model)
+      (assert= (observer/observe-update model [:observe-reply {}] 80 24) model)
+      (assert= (observer/observe-update model [:kill-reply "late"] 80 24) model))))

@@ -347,11 +347,12 @@ fits everywhere. Pure Brood over the `term-*`/`gui-*` mechanism.
     (display-polls (fn (ms) (display-poll-any displays ms)))))
 
 (defn with-events (display)
-  "Wrap `display` so its `:poll` first returns any queued `[:sse-open …]` / `[:sse …]` /
+  "Wrap `display` so its polls first return any queued `[:sse-open …]` / `[:sse …]` /
 `[:sse-closed …]` mailbox message (from an `sse/connect` whose subscriber is this
-process), else polls `display` as usual. So `ui-run` sees server-pushed events as loop *input* on BOTH the
-terminal (where the raw `:poll` reads only the keyboard) and the GUI — `update` folds
-an `[:sse ev]` in like any other input. The other display ops pass through unchanged.
+process), tagged as background, else poll `display` as usual. Every std display already
+polls the whole mailbox (the terminal too, since its keys come through it — ADR-491), so
+what this adds is ORDER: the pushed events are taken before whatever else is queued.
+`update` folds an `[:sse ev]` like any other message. The other display ops pass through unchanged.
 The display's `:poll-input` passes through too, so `ui-run` still takes a queued key
 ahead of a flood of pushes (ADR-490). Needs the `sse` module on the producing side
 (loaded by referencing `sse/…`).
