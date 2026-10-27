@@ -224,6 +224,31 @@ can splice in conditional ops inline. Pass the result to a frontend (`term/draw`
     (count (editor/display/frame (editor/display/clear)))   → 1"
   (into [] (seq/filter ops (fn (o) (not (nil? o))))))
 
+;; The ops a window acts on ONCE, when the frame carrying them arrives, rather than
+;; painting what they describe: a sound plays, a burst emits. Every other op is state the
+;; next frame repeats or drops (music and emitters included), so it is lost with nothing
+;; when a frame is skipped.
+(def- one-shot-tags #{:sound :burst})
+
+(defn frame-one-shots (frame)
+  "The ops in `frame` a window acts on once, when the frame arrives — every `[:sound …]`
+and `[:burst …]`, at any depth, in order — and nothing else. A frontend that skips a
+frame to paint a newer one (a thin client behind its daemon, ADR-492) carries these into
+the frame it paints, so skipping it costs a paint and never a sound; `[:music …]` and
+`[:emitter …]` are state the newer frame restates, and are not here.
+
+    (editor/display/frame-one-shots [[:clear] [:sound 3 0.5] [:text 0 0 \"x\"]])   → [[:sound 3 0.5]]
+    (editor/display/frame-one-shots [[:scroll-region 0 0 [[:burst 1 10]]] [:music 2]])   → [[:burst 1 10]]"
+  (fold frame [] frame-one-shots-into))
+
+(defn- frame-one-shots-into (found op)
+  "`found` with the one-shot ops in `op` appended: `op` itself when it is one, those
+nested in it when it holds ops (a region), nothing for anything else."
+  (cond
+    (not (vector? op)) found
+    (contains? one-shot-tags (first op)) (conj found op)
+    else (fold op found frame-one-shots-into)))
+
 ;; ---- interaction zones (hover / click hit-testing) --------------------------
 ;; `cursor-zone` (above) is a *render op* the frontend hit-tests to choose a pointer
 ;; shape. A `zone` is its model-side dual: a plain value the *editor* hit-tests

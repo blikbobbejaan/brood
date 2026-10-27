@@ -96,6 +96,25 @@
 (defn wait-drew (want)
   (receive ([:drew t] (if (= t want) :ok (wait-drew want))) (after *test-wait-ms* :timeout)))
 
+;; Every message already queued here, oldest first.
+(defn drain-mailbox (acc) (receive (m (drain-mailbox (conj acc m))) (after 0 acc)))
+
+;; Run the window client (`attach-display-loop`) in its own process over the display
+;; `(display-of me)` builds, with `messages` (a string is window input, on the priority
+;; lane) and then the daemon's `[:bye]` queued BEFORE it looks — a backlog — and answer
+;; what the display and the session were sent, in order, once the client has ended.
+(defn drive-backlog (display-of messages)
+  (let (me (self)
+        [client watch] (spawn-monitor (receive
+                                        (:go (editor/serve/attach-display-loop nil
+                                               me
+                                               (display-of me))))))
+    (doseq (m messages) (if (string? m) (proc/send-priority client m) (send client m)))
+    (send client [:bye])
+    (send client :go)
+    (receive ([:down ^watch _ _] nil) (after *test-wait-ms* nil))
+    (drain-mailbox [])))
+
 (describe "editor/serve — attach-display-local (the host's own window)"
   :isolated (test "the operator attaches a local display to the session it serves in the same runtime"
     ;; No node link: attach-display-local handshakes with the local manager (proc/whereis serve-name)
@@ -309,6 +328,64 @@
       (send client [:bye])
       (send client :go)
       (assert= (receive ([:key k _held?] k) ([:drew f] [:drew-first f]) (after 5000 :none)) "k")))
+
+  ;; ADR-492: a backlog paints once, the newest frame, with every seam message applied in
+  ;; the order the daemon sent it relative to that frame
+  (test "attach-display-loop paints only the newest of a backlog, every texture uploaded"
+    (let (seen (drive-backlog (fn (me)
+                                {:draw (fn (f) (send me [:drew f]))
+                                 :texture (fn (tex rgba w h) (send me [:uploaded tex]))
+                                 :leave (fn () nil)})
+                 (mapcat (range 20)
+                   (fn (i) [[:texture i [0 0 0 0] 1 1] [:frame [[:sprite i 0 0 1 1]]]]))))
+      (assert= (vec (seq/filter seen (fn (e) (= (first e) :drew))))
+        [[:drew [[:sprite 19 0 0 1 1]]]])
+      (assert= (vec (map (seq/filter seen (fn (e) (= (first e) :uploaded))) second))
+        (vec (range 20)))
+      ;; every upload, the newest frame's own included, before the one paint
+      (assert= (last seen) [:drew [[:sprite 19 0 0 1 1]]])))
+
+  (test "a texture freed after the newest frame is freed only after that frame is painted"
+    (assert= (drive-backlog (fn (me)
+                              {:draw (fn (f) (send me [:drew f]))
+                               :texture-free (fn (tex) (send me [:freed tex]))
+                               :leave (fn () nil)})
+               [[:frame [[:sprite 0 0 0 1 1]]]
+                 [:texture-free 0]
+                 [:frame [[:sprite 2 0 0 1 1]]]
+                 [:texture-free 2]])
+      [[:freed 0] [:drew [[:sprite 2 0 0 1 1]]] [:freed 2]]))
+
+  (test "a skipped frame's sound and burst ride on the frame painted"
+    (assert= (drive-backlog (fn (me) {:draw (fn (f) (send me [:drew f])) :leave (fn () nil)})
+               [[:frame [[:clear] [:sound 4 0.5]]]
+                 [:frame [[:clear] [:scroll-region 0 0 [[:burst 7 3]]] [:music 5]]]
+                 [:frame [[:text 0 0 "last"]]]])
+      [[:drew [[:text 0 0 "last"] [:sound 4 0.5] [:burst 7 3]]]]))
+
+  (test "a key queued behind a backlog still goes before its paint"
+    (assert= (drive-backlog (fn (me)
+                              {:draw (fn (f) (send me [:drew f]))
+                               :leave (fn () nil)
+                               :poll-input (fn ()
+                                             (let (taken (proc/take-priority))
+                                               (if (nil? taken) nil (first taken))))})
+               [[:frame [[:text 0 0 "1"]]] "k" [:frame [[:text 0 0 "2"]]]])
+      [[:key "k" false] [:drew [[:text 0 0 "2"]]]]))
+
+  (test "remote-display ships a frame newest-wins, and one carrying a sound plainly"
+    ;; the sink takes nothing until every send is queued, as a client behind its daemon
+    (let (me (self)
+          sink (spawn (receive (:go (send me [:got (drain-mailbox [])]))))
+          display (editor/serve/remote-display sink 80 24))
+      ((get display :draw) [[:text 0 0 "1"]])
+      ((get display :draw) [[:sound 1]])
+      ((get display :draw) [[:text 0 0 "2"]])
+      ((get display :texture) 3 [0 0 0 0] 1 1)
+      ((get display :draw) [[:text 0 0 "3"]])
+      (send sink :go)
+      (assert= (receive ([:got seen] seen) (after *test-wait-ms* :none))
+        [[:frame [[:sound 1]]] [:texture 3 [0 0 0 0] 1 1] [:frame [[:text 0 0 "3"]]]])))
 
   (test "an async (non-key) mailbox message reaches a served app's update — the event bus"
     ;; The editor pattern: a spawned task / buffer process sends `[:tag …]` straight to the

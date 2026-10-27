@@ -79,7 +79,9 @@ consumes them), leaving a served app deaf to everything but keys.
      ;; to it comes with a key, so this is as current as the input the loop has taken.
      ;; The table dies with the session process, which made it
      :key-held? (fn () (table/get held :held? false))
-     :draw (fn (f) (send client [:frame f]))
+     ;; newest-wins at the source (ADR-492): a frame still queued for a client that has
+     ;; not taken it is replaced by the next, here or in the client node's mailbox
+     :draw (fn (f) (serve-send-frame client f))
      ;; The pixel-space seam (ADR-374) over the wire: a texture, its release, and the
      ;; window options an app asks for after attaching (`:input :pixels`, a title) each
      ;; go to the client as a message its loop applies to its own display — so a game
@@ -101,6 +103,18 @@ consumes them), leaving a served app deaf to everything but keys.
      ;; USER's, so it holds no idle timer back
      :poll-tagged (fn (ms) (remote-receive-tagged client held ms))
      :poll (fn (ms) (serve-untag (remote-receive-tagged client held ms)))}))
+
+(defn- serve-send-frame (client frame)
+  "Ship `frame` to `client` as `[:frame frame]`, superseding one still queued for it
+(`proc/send-latest`, across the node link too — ADR-492): a daemon that renders faster
+than the link or the client drains it queues one frame, not a backlog. A frame with a
+one-shot op (`editor/display/frame-one-shots`: a sound, a burst) goes as a plain send,
+which nothing supersedes — the sound plays even if a newer frame lands before the client
+looks. Superseding moves the newest frame behind every texture and sound message sent
+since the one it replaced, which is the order the daemon sent them in relative to it."
+  (if (empty? (editor/display/frame-one-shots frame))
+    (proc/send-latest client :editor/serve/frame [:frame frame])
+    (send client [:frame frame])))
 
 (defn- serve-untag (tagged)
   "The message of a `[message input?]` poll result, nil for nil."
@@ -335,31 +349,99 @@ so the session learns of every change."
 
 (defn- attach-display-receive (peer session display)
   "One message for the client loop when no window input was queued: a frame or control
-from the daemon, or the window's next input (`attach-display-loop`)."
+from the daemon, or the window's next input (`attach-display-loop`). A frame starts a
+backlog (`attach-display-backlog`), which paints only the newest."
   (receive
-    ([:frame f] (do ((get display :draw) f) (attach-display-loop peer session display)))
+    ([:frame f] (attach-display-backlog peer session display f [] []))
     ;; The pixel-space seam: applied to the local display when it has the entry (a
     ;; window), dropped when it does not (a terminal cannot show a sprite anyway).
-    ([:texture tex rgba w h] (do
-                               (when (get display :texture) ((get display :texture) tex rgba w h))
-                               (attach-display-loop peer session display)))
-    ([:texture-free tex] (do
-                           (when (get display :texture-free) ((get display :texture-free) tex))
-                           (attach-display-loop peer session display)))
-    ([:window o] (do
-                   (when (get display :configure) ((get display :configure) o))
-                   (attach-display-loop peer session display)))
-    ([:sound-data snd pcm rate channels] (do
-                                           (when (get display :sound)
-                                             ((get display :sound) snd pcm rate channels))
-                                           (attach-display-loop peer session display)))
-    ([:sound-free snd] (do
-                         (when (get display :sound-free) ((get display :sound-free) snd))
-                         (attach-display-loop peer session display)))
+    ((and m
+       (or [:texture _ _ _ _] [:texture-free _] [:window _] [:sound-data _ _ _ _] [:sound-free _])) (do
+                                                                                                           (attach-display-apply display
+                                                                                                             m)
+                                                                                                           (attach-display-loop peer
+                                                                                                             session
+                                                                                                             display)))
     ([:bye] nil)
     ([:nodedown ^peer] nil)
     ([:down _ _ _] nil)
     (m (attach-ship-input peer session display m))))
+
+(defn- attach-display-apply (display message)
+  "Apply one of the daemon's seam messages — a texture or its release, a sound or its
+release, window options — to `display` through its entry for it; a display without the
+entry (a terminal) drops it. Returns nil."
+  (match message
+    ([:texture tex rgba w h] (when (get display :texture) ((get display :texture) tex rgba w h)))
+    ([:texture-free tex] (when (get display :texture-free) ((get display :texture-free) tex)))
+    ([:window o] (when (get display :configure) ((get display :configure) o)))
+    ([:sound-data snd pcm rate channels] (when (get display :sound)
+                                           ((get display :sound) snd pcm rate channels)))
+    ([:sound-free snd] (when (get display :sound-free) ((get display :sound-free) snd))))
+  nil)
+
+(defn- attach-display-apply-all (display messages)
+  "Apply every seam message in `messages` to `display`, in order."
+  (doseq (message messages) (attach-display-apply display message)))
+
+(defn- attach-display-backlog (peer session display latest carried after)
+  "Take the rest of the daemon's backlog without waiting and paint only its NEWEST frame
+(ADR-492): a frame is the whole window, so one painted only to be painted over costs a
+paint while the window's next input waits behind it.
+
+`latest` is the newest frame taken; `after` the seam messages (textures, sounds, window
+options) taken since it, in arrival order; `carried` the one-shot ops (`[:sound …]`,
+`[:burst …]`) of the frames skipped so far. A newer frame applies `after` — everything the
+daemon sent before it — and carries `latest`'s one-shots. So the backlog leaves the window
+as painting every frame in order would: each seam message before the painted frame is
+applied before it, one after it (a texture freed once that frame was drawn) only after
+it is painted, and every skipped sound still plays. The daemon's `[:bye]` paints the
+backlog and ends; the link's or the session's end just ends, as in `attach-display-loop`.
+Window input is not taken here: `attach-display-paint` ships it before the paint."
+  (receive
+    ([:frame f] (do
+                  (attach-display-apply-all display after)
+                  (attach-display-backlog peer
+                    session
+                    display
+                    f
+                    (into carried (editor/display/frame-one-shots latest))
+                    [])))
+    ((and m
+       (or [:texture _ _ _ _] [:texture-free _] [:window _] [:sound-data _ _ _ _] [:sound-free _])) (attach-display-backlog peer
+                                                                                                           session
+                                                                                                           display
+                                                                                                           latest
+                                                                                                           carried
+                                                                                                           (conj after
+                                                                                                             m)))
+    ([:bye] (attach-display-show display latest carried after))
+    ([:nodedown ^peer] nil)
+    ([:down _ _ _] nil)
+    (after 0 (attach-display-paint peer session display latest carried after))))
+
+(defn- attach-display-paint (peer session display latest carried after)
+  "Ship the window's queued input to `session` FIRST (ADR-490), then paint the backlog
+(`attach-display-show`) and go on (`attach-display-loop`) — or, when the input is the
+window's `:close`, detach and end without painting."
+  (let (input (display-poll-input display))
+    (cond
+      (nil? input)
+        (do
+          (attach-display-show display latest carried after)
+          (attach-display-loop peer session display))
+      (= input :close) (send session [:detach])
+      else
+        (do
+          (send session [:key input (display-key-held? display)])
+          (attach-display-paint peer session display latest carried after)))))
+
+(defn- attach-display-show (display latest carried after)
+  "Paint `latest` with the skipped frames' one-shot ops `carried` appended, then apply the
+seam messages that came `after` it. Returns nil."
+  ((get display :draw) (if (empty? carried) latest (into latest carried)))
+  (attach-display-apply-all display after)
+  nil)
 
 (defn attach-display (spec display &optional cookie opts)
   "Attach `display` — any `ui-run` frontend map, e.g. `(gui-display)` (a native window)
@@ -442,7 +524,7 @@ close (`[:bye]`). Tail-recursive; one hub per shared session."
                   (when frame (send pid [:frame frame]))
                   (shared-hub (cons pid clients) frame size)))
     ([:remove pid] (shared-hub (seq/reject clients (fn (p) (= p pid))) frame size))
-    ([:frame f] (do (doseq (p clients) (send p [:frame f])) (shared-hub clients f size)))
+    ([:frame f] (do (doseq (p clients) (serve-send-frame p f)) (shared-hub clients f size)))
     ([:size reply] (do
                      (send reply [:hub-size (first size) (second size)])
                      (shared-hub clients frame size)))

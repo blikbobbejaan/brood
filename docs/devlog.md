@@ -4317,3 +4317,17 @@ busy-ms. Watchdog reports carry `:input`. Run here: `cargo test -p brood --test 
 `sse`, the `receive_*` and `mailbox_order` tests, `doc_examples`, `audit`, `nest check
 --strict` on `ui.blsp` / `term.blsp` / `serve.blsp`, clippy (gui, treesit-grammars, all
 targets). Nothing was measured.
+
+2026-10-27 (ADR-492, the thin window client's backlog; lanes over a node link): the window
+client drains its daemon's queue and paints only the newest frame. It applies every
+texture, sound and window message in the order the daemon sent it relative to that frame,
+ships queued keys first, and carries a skipped frame's one-shot ops (`[:sound …]`,
+`[:burst …]`, listed by the new `editor/display/frame-one-shots`). The daemon sends frames
+with `proc/send-latest` (plainly when they carry a one-shot). `Send` frames carry their
+mailbox lane, and the receiving node queues in it; the dist protocol is v11, and a v10
+peer is refused at the magic. Run here: `serve_test` (21), `display`, `gui`,
+`gui_robustness`, `observer`, `ui`, `mailbox_order`, the `receive_*` files, `doc_examples`,
+`audit`; `cargo test -p brood --lib dist::` and `mailbox::tests`; `cargo test -p cli --test
+serve_attach` and the two new `distribution` tests; `nest check --strict` on `serve.blsp` /
+`display.blsp`; clippy (gui, treesit-grammars); cargo fmt. Painting every frame was
+sabotaged red. Nothing was measured.
