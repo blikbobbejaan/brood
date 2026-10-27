@@ -4281,3 +4281,22 @@ painting; the terminal client draws only the newest queued frame. Run here: `ui_
 `cargo test -p cli --test serve_attach`, `nest check --strict` on `ui.blsp` / `serve.blsp`,
 clippy (gui, treesit-grammars). The supersession and idle-timer guards were sabotaged red.
 Nothing was measured.
+
+2026-10-27 (ADR-491, quit): a fold or a view that ran for seconds froze the editor and
+nothing could stop it. A process now opens an interrupt window (`proc/allow-interrupt
+ceiling-ms` / `proc/inhibit-interrupt`); inside it, `proc/interrupt pid`, the window's own
+ceiling, or a quit key (`proc/set-quit-key key busy-ms`, matched on the PRIORITY lane at
+delivery) raises a catchable `{:kind :interrupted :code "E0047"}` at the next safepoint —
+the once-per-quantum check every tier already makes, so the hot path pays nothing new. A
+parked process is never interrupted. A tree-sitter parse cancels from inside through its
+progress callback. `ui-run` arms `:ctrl-g` with 300 ms busy, runs `update` and `view` in a
+window (an interrupted fold keeps the old model, an interrupted view the last frame), and
+stops a BACKGROUND fold past 2000 ms itself; a user's command only C-g stops. Reported
+through the watchdog with `:interrupted true`. Not done: the terminal and a served session
+have no quit key mid-turn (their keys do not arrive on a priority lane); no busy cursor.
+Run here: `cargo test -p brood --test interrupt` (all tiers, a tree-sitter parse; the root
+native poll's check sabotaged red), `--lib` filters `interrupt`, `mailbox`, `quantum`,
+`preempt`, the `preemption` / `reductions` / `jit` / `primitive_naming` /
+`natives_never_mutate` test binaries, `ui_test` (92), `display`, `gui`, `observer`, `serve`,
+the `receive_*` and `mailbox_order` tests, `doc_examples`, `audit`, `nest check --strict` on
+`ui.blsp`, clippy (gui, treesit-grammars). Nothing was measured.

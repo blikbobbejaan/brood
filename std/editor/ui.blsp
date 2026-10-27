@@ -396,6 +396,25 @@ synthesized back-compat timer below and any app that hasn't moved to named timer
 ;; stall is something a user sees, and below it the report would be noise from GC
 ;; pauses and a busy machine. A model's `:slow-ms` overrides it.
 
+(def *ui-quit-key* :ctrl-g)
+;; The input that QUITS a turn stuck in `update` or `view` (ADR-491) — Emacs's
+;; `quit-char`. A window delivers C-g as `:ctrl-g` on the priority lane; `ui-run` hands it
+;; to the kernel (`proc/set-quit-key`), which interrupts the running fold or view when it
+;; arrives while the turn is past `*ui-quit-busy-ms*`. A model's `:quit-key` overrides it,
+;; nil turning it off.
+
+(def *ui-quit-busy-ms* 300)
+;; How long a turn must have been running before its quit key interrupts it rather than
+;; just queueing (ADR-491): a C-g typed during a normal fast turn is an ordinary key for
+;; the app. A model's `:quit-busy-ms` overrides it.
+
+(def *ui-event-ceiling-ms* 2000)
+;; The longest the loop lets the fold of a BACKGROUND message (a reply, a stream line, a
+;; timer) run before it interrupts it itself (ADR-491): no user asked for that work, so
+;; nobody is there to press C-g for it. A user's own command is never stopped this way —
+;; only C-g stops it, as in Emacs. A model's `:event-ceiling-ms` overrides it, nil
+;; turning it off.
+
 (def *ui-slow-view-quiet-ms* 5000)
 ;; At most one slow-VIEW report per this many ms. A view has no input to name and is
 ;; slow for as long as what it draws is big, so a report per frame would be a flood of
@@ -676,20 +695,58 @@ collection, and the lever is what the process keeps alive, not the code that ran
   "`s` cut to 72 characters for a trace line (an input can carry a paste or a task reply)."
   (if (> (string/length s) 72) (str (string/substring s 0 72) "…") s))
 
-(defn- ui-fold (update model input cols rows)
+(defn- ui-interrupted? (e)
+  "Whether the caught `e` is an interrupt (ADR-491) rather than a failure."
+  (and (map? e) (= (get e :kind) :interrupted)))
+
+(defn- ui-interruptible (ceiling thunk)
+  "`(thunk)` inside an interrupt window (ADR-491, `proc/allow-interrupt`), with `ceiling`
+ms (nil: none) after which it interrupts itself, as `[:ok value]`, `[:interrupted e]` or
+`[:threw e]`. The window opens and closes INSIDE the `try`, so an interrupt can land only
+where this catches it — never in the loop's own glue."
+  (try
+    (do
+      (proc/allow-interrupt ceiling)
+      (let (value (thunk))
+        (do (proc/inhibit-interrupt) [:ok value])))
+    (catch e
+      (proc/inhibit-interrupt)
+      [(if (ui-interrupted? e) :interrupted :threw) e])))
+
+(defn- ui-event-ceiling-ms (model)
+  "How long the fold of a background message may run before the loop interrupts it: the
+model's `:event-ceiling-ms` when it has the key (nil: never), else `*ui-event-ceiling-ms*`."
+  (if (contains? model :event-ceiling-ms) (get model :event-ceiling-ms) *ui-event-ceiling-ms*))
+
+(defn- ui-quit-key (model)
+  "The quit key `ui-run` arms for `model`: its `:quit-key` when it has the key (nil: none),
+else `*ui-quit-key*`."
+  (if (contains? model :quit-key) (get model :quit-key) *ui-quit-key*))
+
+(defn- ui-fold (update model input cols rows input?)
   "`(update model input cols rows)`, timed and traced as `update` — and survived: a
 throwing `update` is logged (`ui-log-error`) and drops that one input, returning
-`model` unchanged. Every fold in the loop and the drain goes through here."
-  (let ([next ms cost] (ui-timed (fn ()
-                                   (try
-                                     (update model input cols rows)
-                                     (catch e (ui-log-error "update" e) model)))))
-    ;; `cost` is non-nil exactly when tracing is on, and it gates the `pr-str`: printing
-    ;; every input to throw it away cost O(its size) per event — a paste, a git status
-    ;; reply, a diagnostics batch — with tracing off.
-    (when (not (nil? cost)) (ui-trace "update" ms (ui-abbrev (pr-str input)) cost))
-    (when (> ms (ui-slow-ms model)) (ui-report-slow model "update" (ui-input-tag input) ms))
-    next))
+`model` unchanged. Every fold in the loop and the drain goes through here.
+
+**Interruptible (ADR-491).** The fold runs in an interrupt window: the quit key (a
+window's C-g) stops it once the turn is past `*ui-quit-busy-ms*`, and the fold of a
+BACKGROUND message (`input?` false) is stopped by the loop itself past
+`ui-event-ceiling-ms`. An interrupted fold drops its input like a throwing one, keeps the
+previous model, and is reported through the watchdog with `:interrupted true`."
+  (let ([outcome ms cost] (ui-timed (fn ()
+                                      (ui-interruptible (if input? nil (ui-event-ceiling-ms model))
+                                        (fn () (update model input cols rows)))))
+        [how value] outcome)
+    (do
+      (when (= how :threw) (ui-log-error "update" value))
+      ;; `cost` is non-nil exactly when tracing is on, and it gates the `pr-str`: printing
+      ;; every input to throw it away cost O(its size) per event — a paste, a git status
+      ;; reply, a diagnostics batch — with tracing off.
+      (when (not (nil? cost)) (ui-trace "update" ms (ui-abbrev (pr-str input)) cost))
+      (cond
+        (= how :interrupted) (ui-report-slow model "update" (ui-input-tag input) ms true)
+        (> ms (ui-slow-ms model)) (ui-report-slow model "update" (ui-input-tag input) ms false))
+      (if (= how :ok) value model))))
 
 ;; ---- the watchdog (ADR-490) ---------------------------------------------------
 ;; A stall is reported as it happens, naming its cause, so the next one does not have to
@@ -720,18 +777,27 @@ itself, a vector by its leading keyword — and its second, when that is one too
         (first input))
     else (type-of input)))
 
-(defn- ui-report-slow (model phase tag ms)
-  "Report one slow `phase` (\"update\" / \"view\") of `ms` on `tag`: to the model's
-`:on-slow` hook — `(fn (report) …)`, `report` a `{:phase :tag :ms}` map, its result
-ignored — or, without one, a line on stderr. A hook is how an app puts the report where
-its user looks (an editor's *Messages*); one that throws is logged and dropped, since the
-watchdog must not become a crash of its own. nil."
+(defn- ui-report-slow (model phase tag ms interrupted?)
+  "Report one slow `phase` (\"update\" / \"view\") of `ms` on `tag` — or one the loop
+INTERRUPTED (ADR-491, `interrupted?`): to the model's `:on-slow` hook — `(fn (report) …)`,
+`report` a `{:phase :tag :ms}` map, with `:interrupted true` for an interrupted one, its
+result ignored — or, without one, a line on stderr. A hook is how an app puts the report
+where its user looks (an editor's *Messages*, its echo area's \"Quit\"); one that throws is
+logged and dropped, since the watchdog must not become a crash of its own. nil."
   (let (hook (get model :on-slow)
-        report {:phase phase :tag tag :ms ms})
-    (if (nil? hook)
-      (io/puts (string/format "ui-run: slow %s %.1fms on %s" phase ms (pr-str tag)) :to *err*)
-      (try (hook report) (catch e (ui-log-error "on-slow" e))))
-    nil))
+        report (if interrupted?
+                 {:phase phase :tag tag :ms ms :interrupted true}
+                 {:phase phase :tag tag :ms ms}))
+    (do
+      (if (nil? hook)
+        (io/puts (string/format "ui-run: %s %s %.1fms on %s"
+                   (if interrupted? "interrupted" "slow")
+                   phase
+                   ms
+                   (pr-str tag))
+          :to *err*)
+        (try (hook report) (catch e (ui-log-error "on-slow" e))))
+      nil)))
 
 (defn- ui-watch-view (model clock ms)
   "The watchdog on a `view` of `ms`: report it when it is slow and no view report was
@@ -740,7 +806,7 @@ time on `clock` (`:slow-view-at`). The clock, unchanged when nothing was reporte
   (let (now (os/now)
         last (get clock :slow-view-at))
     (if (and (> ms (ui-slow-ms model)) (or (nil? last) (>= (- now last) *ui-slow-view-quiet-ms*)))
-      (do (ui-report-slow model "view" :view ms) (assoc clock :slow-view-at now))
+      (do (ui-report-slow model "view" :view ms false) (assoc clock :slow-view-at now))
       clock)))
 
 (defn- ui-fold-budget-ns (model)
@@ -775,12 +841,13 @@ which holds idle timers back as before but must not close a turn's background."
   "Whether a drain that ended in `state` folded user input (`:owed` / `:closed`)."
   (or (= state :owed) (= state :closed)))
 
-(defn- ui-drain-step (model update display cols rows fuel deadline state raw)
+(defn- ui-drain-step (model update display cols rows fuel deadline state raw input?)
   "Fold `raw`, which the drain pulled and which leaves it in `state`, and drain on — or
-hand back a control message `raw` is (`ui-pending?`) as `pending`."
+hand back a control message `raw` is (`ui-pending?`) as `pending`. `input?`: `raw` is the
+user's input, which no ceiling interrupts (`ui-fold`)."
   (if (ui-pending? model raw)
     [model raw state]
-    (ui-drain-input (ui-fold update model raw cols rows)
+    (ui-drain-input (ui-fold update model raw cols rows input?)
       update
       display
       cols
@@ -817,11 +884,19 @@ the ceiling on any one turn, and `:done` stops it early."
         (let (tagged (display-poll-tagged display 0))
           (if (nil? tagged)
             [model nil state]
-            (ui-drain-step model update display cols rows fuel deadline :closed (first tagged))))
+            (ui-drain-step model
+              update
+              display
+              cols
+              rows
+              fuel
+              deadline
+              :closed (first tagged)
+              (second tagged))))
         (let (input (if in-time (display-poll-input display) nil))
           (cond
             (not (nil? input))
-              (ui-drain-step model update display cols rows fuel deadline :closed input)
+              (ui-drain-step model update display cols rows fuel deadline :closed input true)
             ;; background, on the budget
             (and (= state :budget) in-time)
               (let (tagged (display-poll-tagged display 0))
@@ -837,7 +912,8 @@ the ceiling on any one turn, and `:done` stops it early."
                       rows
                       fuel
                       deadline
-                      :closed (first tagged))
+                      :closed (first tagged)
+                      true)
                   else
                     (ui-drain-step model
                       update
@@ -846,8 +922,37 @@ the ceiling on any one turn, and `:done` stops it early."
                       rows
                       fuel
                       deadline
-                      :budget (first tagged))))
+                      :budget (first tagged)
+                      false)))
             else [model nil state]))))))
+
+(defn- ui-render (model last-good clock view display cols rows)
+  "`(view model cols rows)` for one turn, as `[:frame ops memo-table ms]`; `:failed` when
+`view` threw (logged), unless there is no `last-good` frame to fall back to (the first
+render), when the error re-raises; `[:interrupted nil nil ms]` when the quit key stopped it
+(ADR-491) — reported through the watchdog, and the screen keeps its last frame. The
+previous turn's memoised fragments are in scope for `ui-memo` (ADR-336) — nil outside a
+loop, `{}` on the first turn."
+  (let ([outcome ms cost] (ui-timed (fn ()
+                                      (ui-interruptible nil
+                                        (fn ()
+                                          (binding (*ui-memo* (or (get clock :memo) {}))
+                                            (view model cols rows))))))
+        [how value] outcome)
+    (if (= how :interrupted)
+      (do (ui-report-slow model "view" :view ms true) [:interrupted nil nil ms])
+      (try
+        (if (= how :threw)
+          (throw value)
+          (let ([flat table] (ui-harvest value (get display :fragments?)))
+            (do
+              (ui-trace "view" ms (str (count flat) " ops, " (count table) " memo") cost)
+              [:frame flat table ms])))
+        (catch e
+          (if (nil? last-good)
+            ; first render failed — a real startup bug, not a wedge
+            (throw e)
+            (do (ui-log-error "view" e) :failed)))))))
 
 (defn- ui-loop (model last-good clock view update display)
   "The inner recursion of `ui-run` (own function so each turn is a proper tail call —
@@ -886,28 +991,13 @@ re-raises, surfacing a genuine startup bug instead of spinning."
           unchanged (= (get clock :shown) [model cols rows])
           ;; render this model; a `[:frame …]` result is the frame to draw, `:failed`
           ;; means `view` threw (already logged) and we must fall back to `last-good`,
-          ;; `[:unchanged …]` means there is nothing new to draw.
+          ;; `[:unchanged …]` means there is nothing new to draw, and `[:interrupted …]`
+          ;; that the quit key stopped a slow view (ADR-491): the screen keeps the last
+          ;; frame and the loop goes on to read the input that is waiting.
           rendered (if unchanged
                      [:unchanged nil nil 0.0]
-                     (try
-                       ;; the previous turn's memoised fragments are in scope for `ui-memo`
-                       ;; (ADR-336) — nil outside a loop, `{}` on the first turn
-                       (let ([frame ms cost] (ui-timed (fn ()
-                                                         (binding (*ui-memo* (or (get clock :memo)
-                                                                               {}))
-                                                           (view model cols rows))))
-                             [flat table] (ui-harvest frame (get display :fragments?)))
-                         (do
-                           (ui-trace "view"
-                             ms
-                             (str (count flat) " ops, " (count table) " memo")
-                             cost)
-                           [:frame flat table ms]))
-                       (catch e
-                         (if (nil? last-good)
-                           ; first render failed — a real startup bug, not a wedge
-                           (throw e)
-                           (do (ui-log-error "view" e) :failed))))))
+                     (ui-render model last-good clock view display cols rows))
+          drawn (and (vector? rendered) (= (first rendered) :frame)))
       (if (= rendered :failed)
         ;; couldn't render `model` — roll back to the last model that did, and re-render it
         ;; (the clock keeps advancing — it's wall-clock reality, not model state).
@@ -915,13 +1005,13 @@ re-raises, surfacing a genuine startup bug instead of spinning."
         (let (
               ;; this turn's fragments become next turn's memo table — loop bookkeeping
               ;; on `clock`, like the timers: never rolled back with the model
-              clock0 (if unchanged
+              clock0 (if (not drawn)
                        clock
                        (assoc clock :memo (nth rendered 2) :shown [model cols rows]))
               ;; the watchdog on the view: rate-limited, its last report on the clock
-              clock (if unchanged clock0 (ui-watch-view model clock0 (nth rendered 3))))
+              clock (if (not drawn) clock0 (ui-watch-view model clock0 (nth rendered 3))))
           (do
-            (if unchanged
+            (if (not drawn)
               ;; nothing to draw, but a display that paces on its frames (the GUI's
               ;; wheel glide) is still told the turn is over
               (when (get display :settle) ((get display :settle)))
@@ -967,14 +1057,14 @@ re-raises, surfacing a genuine startup bug instead of spinning."
                 ;; earliest due timer (if any), else re-park without folding.
                 (nil? raw)
                   (if (nil? timers)
-                    (let (next (ui-fold update model :tick cols rows))
+                    (let (next (ui-fold update model :tick cols rows false))
                       (ui-loop next model clock1 view update display))
                     (let (fr (ui-fire timers clock1 (ui-now model))
                           event (first fr)
                           clock2 (second fr))
                       (if (nil? event)
                         (ui-loop model model clock2 view update display)
-                        (let (next (ui-fold update model event cols rows))
+                        (let (next (ui-fold update model event cols rows false))
                           (ui-loop next model clock2 view update display)))))
                 ;; a message: fold it, drain, then — with timers — stamp `:last-input` if
                 ;; the turn folded USER input (ADR-490): only input resets idle timers, so
@@ -984,7 +1074,7 @@ re-raises, surfacing a genuine startup bug instead of spinning."
                   (let (
                         ;; the turn's background budget runs from its first fold
                         deadline (+ (os/now-ns) (ui-fold-budget-ns model))
-                        next0 (ui-fold update model raw cols rows)
+                        next0 (ui-fold update model raw cols rows (second tagged))
                         ;; a `:coalesce-input?` app also drains what is ALREADY queued into
                         ;; this same turn, so a burst renders once instead of once per event
                         ;; (`ui-drain-input`): input first, background on the budget. A
@@ -1024,7 +1114,7 @@ re-raises, surfacing a genuine startup bug instead of spinning."
                                    (ui-fire timers clock2 (ui-now next1)))
                         tevent (first serviced)
                         clock3 (second serviced)
-                        next (if (nil? tevent) next1 (ui-fold update next1 tevent cols rows)))
+                        next (if (nil? tevent) next1 (ui-fold update next1 tevent cols rows false)))
                     (cond
                       (ui-close-quits? next pending) nil
                       (focus-request? pending)
@@ -1081,6 +1171,20 @@ model's `:slow-ms`) is reported, naming the input it folded by its tag (`ui-inpu
 to the model's `:on-slow` hook, `(fn (report) …)` with `report` a `{:phase :tag :ms}` map,
 or as a line on stderr. A slow view is reported at most every `*ui-slow-view-quiet-ms*`.
 
+**Quit (ADR-491).** Each `update` and `view` runs in an interrupt window
+(`proc/allow-interrupt`), and the loop arms the kernel's quit key: the frontend's C-g
+(`*ui-quit-key*`, `:ctrl-g`; the model's `:quit-key`, nil for none) arriving while a turn
+has run past `*ui-quit-busy-ms*` (the model's `:quit-busy-ms`) STOPS it, wherever it is —
+deep in a loop, inside a tree-sitter parse. An interrupted `update` drops its input and
+keeps the previous model; an interrupted `view` keeps the last frame on screen. The fold of
+a BACKGROUND message is also stopped by the loop itself past `*ui-event-ceiling-ms*` (the
+model's `:event-ceiling-ms`, nil for none); a user's own command never is — only C-g stops
+that, as in Emacs. Either is reported like a slow turn, with `:interrupted true` in the
+report. The C-g is queued as well, so the app still folds it next (its keyboard-quit).
+A window delivers C-g on the priority lane, where the kernel can see it while the loop
+is busy; the terminal's keys are read by the loop itself, so a terminal app has no quit
+key mid-turn (the ceiling still applies).
+
 **A turn that changes nothing renders nothing (ADR-444).** When the model after a turn
 is `=` to the one last drawn, at the same grid, the loop skips `view` and `:draw` and goes
 straight back to the poll. A key release or a timer that found no work costs no frame.
@@ -1117,14 +1221,18 @@ Modal: control returns to the caller on quit — run it in a spawned process for
 non-blocking window. The shared loop behind the observer (and the editor)."
   (do
     ((get display :enter))
+    ;; the quit key (ADR-491): a C-g that arrives while a turn is busy interrupts it
+    (proc/set-quit-key (ui-quit-key model) (or (get model :quit-busy-ms) *ui-quit-busy-ms*))
     (try
       (do
         ;; nil last-good: first render must succeed. {} clock: a fresh timer bookkeeping
         ;; map (last-input/armed/fired filled lazily on the first iteration).
         (binding (*ui-loop* (self)) (ui-loop model nil {} view update display))
+        (proc/set-quit-key nil 0)
         ((get display :leave)))
       (catch e
         ; restore the terminal even on a frontend/startup error
+        (proc/set-quit-key nil 0)
         ((get display :leave))
         (throw e)))))
 

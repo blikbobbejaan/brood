@@ -1101,3 +1101,149 @@
   (test "stereo halves the seconds per byte; a display without :sound still hands back a handle"
     (let (snd (display-sound {} [0 0 0 0 0 0 0 0] 4 2))
       (assert= (gui/sound-seconds snd) 0.5))))
+
+;; ---- quit (ADR-491) ----------------------------------------------------------------
+
+(defn- quit-spin (n)
+  "A loop that never ends: only an interrupt stops it."
+  (quit-spin (inc n)))
+
+(defn- quit-count-to (n limit)
+  "Count to `limit` — a fold that runs a while and then finishes."
+  (if (= n limit) n (quit-count-to (inc n) limit)))
+
+(defn- quit-await (tag)
+  (receive ([^tag value] value) (after 20000 :timed-out)))
+
+(describe "proc/interrupt — the kernel's quit (ADR-491)"
+  (test "a running process in its window is stopped, and its try sees :interrupted"
+    (let (me (self)
+          spinner (spawn (try
+                           (do (proc/allow-interrupt nil) (send me [:spinning true]) (quit-spin 0))
+                           (catch e (send me [:caught [(:kind e) (:code e)]])))))
+      (quit-await :spinning)
+      (is (proc/interrupt spinner))
+      (assert= (quit-await :caught) [:interrupted "E0047"])))
+  (test "a process blocked in receive is not interrupted, now or later"
+    (let (me (self)
+          parked (spawn (try
+                          (do
+                            (proc/allow-interrupt nil)
+                            (send me [:parked true])
+                            (receive (:go (quit-count-to 0 100000)))
+                            (send me [:finished :ran-to-the-end]))
+                          (catch e (send me [:finished (:kind e)])))))
+      (quit-await :parked)
+      ; it may not have reached its receive yet: wait until it is parked there
+      (letrec (wait (fn ()
+                      (when (not (= (get (proc/info parked) :status) :waiting))
+                        (do (sleep 1) (wait)))))
+        (wait))
+      (is (not (proc/interrupt parked)))
+      (send parked :go)
+      (assert= (quit-await :finished) :ran-to-the-end)))
+  (test "a closed window is never interrupted"
+    (is (not (proc/interrupt (self))))))
+
+(describe "ui-run — quit (ADR-491)"
+  (test "C-g on the priority lane stops an update looping forever; the model is the old one"
+    (let (me (self)
+          step (fn (model input cols rows)
+                 (cond
+                   (= input :quit) (do (send me [:seen (:seen model)]) (assoc model :done true))
+                   (= input :spin) (do (send me [:spinning true]) (quit-spin 0))
+                   (= input :tick) model
+                   else (lane-record model input)))
+          loop (lane-start me
+                 {:quit-busy-ms 0 :on-slow (fn (report) (send me [:slow report]))}
+                 step))
+      (proc/send-priority loop :spin)
+      (send loop :go)
+      (quit-await :spinning)
+      (proc/send-priority loop :ctrl-g)
+      (let (report (quit-await :slow))
+        (assert= (:phase report) "update")
+        (assert= (:tag report) :spin)
+        (is (:interrupted report)))
+      (proc/send-priority loop :quit)
+      ; the spin never reached the model; the C-g is still folded, as the app's own key
+      (assert= (lane-await-seen) [:ctrl-g])))
+  (test "a background event past the ceiling is interrupted by the loop and reported"
+    (let (me (self)
+          step (fn (model input cols rows)
+                 (cond
+                   (= input :quit) (do (send me [:seen (:seen model)]) (assoc model :done true))
+                   (= (lane-tag input) :stuck) (quit-spin 0)
+                   (= input :tick) model
+                   else (lane-record model input)))
+          loop (lane-start me
+                 {:event-ceiling-ms 50 :on-slow (fn (report) (send me [:slow report]))}
+                 step))
+      (send loop [:stuck "a reply whose fold never ends"])
+      (send loop [:after 1])
+      (send loop :quit)
+      (send loop :go)
+      (let (report (quit-await :slow))
+        (assert= (:phase report) "update")
+        (assert= (:tag report) :stuck)
+        (is (:interrupted report))
+        (is (>= (:ms report) 50)))
+      (assert= (lane-await-seen) [[:after 1]])))
+  (test "a fast fold is untouched: C-g is an ordinary key, and nothing is reported"
+    (let (me (self)
+          loop (lane-start me
+                 {:on-slow (fn (report) (send me [:slow report]))}
+                 (lane-update me)))
+      (proc/send-priority loop :ctrl-g)
+      (proc/send-priority loop "x")
+      (send loop :quit)
+      (send loop :go)
+      (assert= (lane-await-seen) [:ctrl-g "x" :quit])
+      (assert= (receive ([:slow report] report) (after 50 :none)) :none)))
+  (test "with no quit key a C-g stops nothing: a long user command runs to its end"
+    (let (me (self)
+          step (fn (model input cols rows)
+                 (cond
+                   (= input :quit) (do (send me [:seen (:seen model)]) (assoc model :done true))
+                   (= input :long)
+                     (do
+                       (send me [:started true])
+                       (lane-record model [:long (quit-count-to 0 3000000)]))
+                   (= input :tick) model
+                   else (lane-record model input)))
+          loop (lane-start me {:quit-key nil :quit-busy-ms 0 :slow-ms 60000} step))
+      (proc/send-priority loop :long)
+      (send loop :go)
+      (quit-await :started)
+      (proc/send-priority loop :ctrl-g)
+      (proc/send-priority loop :quit)
+      (assert= (lane-await-seen) [[:long 3000000] :ctrl-g])))
+  (test "an interrupted view keeps the last frame, and the next model is drawn"
+    (let (me (self)
+          loop (spawn (receive
+                        (:go (ui-run {:slow false
+                                      :quit-busy-ms 0
+                                      :on-slow (fn (report) (send me [:slow report]))}
+                               (fn (model cols rows)
+                                 (if (:slow model)
+                                   (do (send me [:viewing true]) (quit-spin 0))
+                                   [[:clear]]))
+                               (fn (model input cols rows)
+                                 (cond
+                                   (= input :slow) (assoc model :slow true)
+                                   (= input :ctrl-g) (assoc model :slow false :quit-seen true)
+                                   (= input :quit) (assoc model :done true)
+                                   else model))
+                               (assoc (lane-display)
+                                 :draw (fn (frame) (send me [:drew frame]))))))))
+      (send loop :go)
+      (assert= (quit-await :drew) [[:clear]])
+      (proc/send-priority loop :slow)
+      (quit-await :viewing)
+      (proc/send-priority loop :ctrl-g)
+      (let (report (quit-await :slow))
+        (assert= (:phase report) "view")
+        (is (:interrupted report)))
+      ; the C-g is folded next, and its (fast) model is what the screen shows next
+      (assert= (quit-await :drew) [[:clear]])
+      (proc/send-priority loop :quit))))
