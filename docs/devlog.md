@@ -4048,3 +4048,14 @@ expression observed wrong on the pre-fix binary, which is the inverse sabotage. 
 `:__id__` forges an identity; refusing it costs the hottest path, so it waits for the
 `Record` kind (record-kind.md §4). A payload on `failure`, and the `()`/`nil` decision, are
 open too.
+
+2026-10-27 (the short-arm admission is reverted: it lets a small helper block a worker): CI on
+`7169e806` failed two tests the change reached. `lazy_load_wait_parks`: `%lazy-call`, a short
+std helper the new rule admitted, ran natively while waiting for another process's module load,
+and six processes blocked their OS worker (`dirty-receive-block`) before the suspend latch
+caught the arm (`suspend-latched`) — the latch heals an arm only after it has blocked once.
+`process_floor`: a parked process cost 2 927 B against the 2 800 B floor, the same class (short
+helpers on a parked process's path now native). A size rule cannot see that a short arm waits
+through a callee, which is what the old gate fenced off by accident (compute-frontier §7.1:
+"the latch is LATENT on the shipped tree"). Reverted; the measurement stands — `regex` −6% is
+there for an admission rule that knows which arms can reach a receive.
