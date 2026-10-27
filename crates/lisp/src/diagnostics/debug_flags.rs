@@ -217,6 +217,11 @@ pub const FLAGS: &[DebugFlag] = &[
         "opt OUT of the stdlib startup image (ADR-281, default ON): `require` materialises a module's bindings from ~/.cache/brood instead of evaluating its source (json 6.5 -> 1.7 ms; a three-module script 46.5 -> 36.2 ms). Set it to A/B, to bisect a suspected materialise fault, or as the stopgap if one is found",
     ),
     f(
+        "BROOD_NO_BUNDLE_IMAGE",
+        OPTOUT,
+        "opt OUT of a released bundle's own startup image (ADR-484, default ON): the bundle loads every module from source instead. The lever that compares the two on one binary, as BROOD_NO_STDIMAGE is for the stdlib's",
+    ),
+    f(
         "BROOD_STDIMAGE",
         ENGINE,
         "ask for the image explicitly. Redundant now that it is the default, and kept for one reason: an explicit request that goes UNMET prints a line, where the default path falls back to source in silence. Use it when measuring — `(stdimage/status)` says which of absent/stale/unreadable it was",

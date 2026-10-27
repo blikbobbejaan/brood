@@ -382,6 +382,16 @@ filter = 'binary(suite)'
 slow-timeout = { period = "60s", terminate-after = 25 }
 retries = 1
 
+## The JIT tests warm with billions of calls so their arms tier; at BROOD_TIER=0 there is no
+## tier to reach and every call is interpreted. `inlined_two_stage_swap_then_deopt_stays_correct`
+## (~5e9 calls) measured 31-64 s across thirteen CI runs (2026-10-26/27) against the default
+## 120 s cap, and timed out on `02ef0c34` on a runner whose whole tree-walker suite ran 27%
+## slower, `inlined_recursive_fib_under_jit` 3x slower — no evaluator change between the two
+## commits. 6 min is ~5.6x the worst passing figure; the VM jobs keep the default cap.
+[[profile.tree-walker.overrides]]
+filter = 'package(brood) & binary(jit)'
+slow-timeout = { period = "60s", terminate-after = 6 }
+
 ## The nightly ASAN job's profile (`make asan`). ASAN roughly doubles every frame and slows
 ## everything several-fold; the JIT cases warm with real iteration counts and run for
 ## minutes instrumented, and `brood_suite_passes` is the whole in-language suite. Longer
