@@ -931,6 +931,28 @@ telling someone a file's mode has none.
     (vector? (editor/treesit/languages))   → true"
   (%tree-sitter-languages))
 
+(defn declare-grammar (path:string lang:keyword -> bool)
+  "Say that `lang`'s grammar is the library at `path` without loading it (ADR-481): the
+first parse, query or tree that names `lang` loads it, once. Declaring costs a table entry,
+so an application declares every grammar it has at startup and pays a dlopen only for the
+languages its files use — rather than loading them all before its first frame, or loading
+them later and leaving a file opened in between uncoloured. Declaring a language that is
+already loaded reloads it from `path` at its next use: replace the library, declare it
+again. A load that fails is reported by `grammar-status` and not retried until the next
+declaration.
+
+    (editor/treesit/declare-grammar \"/nonexistent/libtree-sitter-docexample.so\" :docexample)   → true"
+  (%tree-sitter-declare-grammar path lang))
+
+(defn grammar-status (lang:keyword)
+  "Where `lang`'s grammar stands, loading nothing: `:declared` (declared, not used yet),
+`:loaded`, `:built-in`, a failure carrying the load's message when the last declaration
+did not load, or nil when the runtime has no grammar for it. What a grammar list shows
+without opening every library to ask.
+
+    (editor/treesit/grammar-status :no-grammar-has-this-name)   → nil"
+  (%tree-sitter-grammar-status lang))
+
 (defn grammar-library-name (lang)
   "The file name a grammar for `lang` is loaded from: `libtree-sitter-<lang>.so`.
 

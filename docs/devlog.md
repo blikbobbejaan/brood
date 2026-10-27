@@ -4072,3 +4072,11 @@ typed character armed 7.7 → 1.8 ms (1.3 unarmed). Guard: three `gc::tests` ver
 `sig_adoption`, `doc_examples`, `doctest`, `audit`, `std_check` and eight bedit test files,
 plus `type_grammar_agreement`, `contract_error_position`, `process_wide_statics`; the suites
 run in CI.
+2026-10-27 (ADR-481, a grammar declared by path, loaded at its first use):
+`%tree-sitter-declare-grammar path lang` records the library and opens nothing; the first
+parse, query or tree naming the language loads it, once (the table's lock is held across the
+dlopen). A re-declaration is a reload at the next use; a failed load is kept as a failure
+(`%tree-sitter-grammar-status`) and not retried, and a language that still has a grammar keeps
+parsing with it. The text-keyed parse and `tree-reparse` now resolve the grammar before the
+cache and the epoch. `std/editor/treesit` wraps both (`declare-grammar`, `grammar-status`).
+Guard: `declared_grammar_tests`, `tests/tree_sitter_test.blsp`, run here; the suites run in CI.

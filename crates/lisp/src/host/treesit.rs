@@ -115,6 +115,10 @@ fn derive_edit(old: &str, new: &str) -> Option<tree_sitter::InputEdit> {
 /// reparsing incrementally from it when the text merely changed.
 #[cfg(feature = "treesit")]
 fn parse_cached(src: &str, lang: &str) -> Result<tree_sitter::Tree, LispError> {
+    // The grammar first, before the cache is consulted: a declared grammar that has not
+    // loaded yet is a (re)load waiting for this call, and the load clears the trees the
+    // cache holds for the language — an exact hit taken before it would be the old grammar's.
+    let language = language_for(lang)?;
     // An exact hit is free; a NEAR hit — the same buffer one keystroke later — is the
     // common case while typing, and is what decides how a large file feels. A full parse
     // of 250 KB of source is ~500 ms, so paying it per edit is the whole of "the editor
@@ -158,7 +162,6 @@ fn parse_cached(src: &str, lang: &str) -> Result<tree_sitter::Tree, LispError> {
                 (i, t)
             })
     };
-    let language = language_for(lang)?;
     let mut parser = checkout_parser(lang, &language)?;
     let tree = parser.parse(src, reuse.as_ref().map(|(_, t)| t));
     return_parser(lang, parser);
@@ -886,6 +889,9 @@ pub fn tree_reparse(
     lang: &str,
     edits: Option<Vec<(usize, usize, usize)>>,
 ) -> Result<u64, LispError> {
+    // Resolved before the epoch is read: a declared grammar's first use (re)loads it here and
+    // moves the epoch, and the old tree must then not be handed to the new grammar's parser.
+    language_for(lang)?;
     let previous = tree_entry(old).filter(|e| e.lang == lang && e.epoch == grammar_epoch());
     let Some(previous) = previous else {
         return tree_open(text, lang); // gone, another language, or another grammar
@@ -1152,6 +1158,24 @@ pub fn spans(
 /// so an application should load only from a directory its user controls.
 #[cfg(feature = "treesit")]
 pub fn load_grammar(path: &str, lang: &str) -> LispResult {
+    let (abi, _) = load_library("%tree-sitter-load-grammar", path, lang)?;
+    // An eager load supersedes a declaration of the same language: the caller has just
+    // said which library is the grammar, and a pending one must not replace it at the next
+    // parse, nor a failed one shadow it.
+    crate::core::sync::lock(&DECLARED).remove(lang);
+    Ok(Value::int(abi))
+}
+
+/// dlopen `path`, check the grammar's ABI and register it under `lang` — the work of
+/// [`load_grammar`], shared with the lazy load of a declared grammar
+/// ([`declared_language`]). `who` is the primitive the caller's errors name. Answers the ABI
+/// version and the registered language.
+#[cfg(feature = "treesit")]
+fn load_library(
+    who: &str,
+    path: &str,
+    lang: &str,
+) -> Result<(i64, tree_sitter::Language), LispError> {
     // Brood keywords are spelled with hyphens and C identifiers cannot be, so `:c-sharp`
     // asks for `tree_sitter_c_sharp` — which is exactly what the tree-sitter-c-sharp grammar
     // exports. The library's entry point is named for the GRAMMAR, so `lang` names the
@@ -1163,13 +1187,10 @@ pub fn load_grammar(path: &str, lang: &str) -> LispResult {
     // Language it yields is validated against the host's ABI range below before any use.
     let language = unsafe {
         let lib = libloading::Library::new(path)
-            .map_err(|e| LispError::runtime(format!("%tree-sitter-load-grammar:{path}: {e}")))?;
-        let entry: libloading::Symbol<unsafe extern "C" fn() -> *const ()> =
-            lib.get(symbol.as_bytes()).map_err(|e| {
-                LispError::runtime(format!(
-                    "%tree-sitter-load-grammar:{path} exports no {symbol}: {e}"
-                ))
-            })?;
+            .map_err(|e| LispError::runtime(format!("{who}:{path}: {e}")))?;
+        let entry: libloading::Symbol<unsafe extern "C" fn() -> *const ()> = lib
+            .get(symbol.as_bytes())
+            .map_err(|e| LispError::runtime(format!("{who}:{path} exports no {symbol}: {e}")))?;
         let f = *entry;
         std::mem::forget(lib); // the grammar's tables must stay mapped — see above
         tree_sitter::Language::new(tree_sitter_language::LanguageFn::from_raw(f))
@@ -1180,7 +1201,7 @@ pub fn load_grammar(path: &str, lang: &str) -> LispResult {
         .set_language(&language)
         .map_err(|e| {
             LispError::runtime(format!(
-                "%tree-sitter-load-grammar:{path}: {lang} is not usable by this runtime \
+                "{who}:{path}: {lang} is not usable by this runtime \
                  (grammar ABI {}, this build drives {}..={}): {e}",
                 language.abi_version(),
                 tree_sitter::MIN_COMPATIBLE_LANGUAGE_VERSION,
@@ -1188,7 +1209,7 @@ pub fn load_grammar(path: &str, lang: &str) -> LispResult {
             ))
         })?;
     let abi = language.abi_version() as i64;
-    crate::core::sync::lock(&DYNAMIC).insert(lang.to_string(), language);
+    crate::core::sync::lock(&DYNAMIC).insert(lang.to_string(), language.clone());
     // A re-load replaces the entry, so a grammar can be swapped without restarting; the
     // parser pool is keyed by language name and holds parsers bound to the OLD language, so
     // it is cleared for this one rather than left to hand out stale parsers.
@@ -1203,7 +1224,7 @@ pub fn load_grammar(path: &str, lang: &str) -> LispResult {
     // trees, merely from the old grammar — but none is reparsed FROM again, for the reason
     // above: a reparse after this sees a newer epoch and parses afresh.
     GRAMMAR_EPOCH.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    Ok(Value::int(abi))
+    Ok((abi, language))
 }
 
 /// Grammars loaded at runtime by [`load_grammar`], keyed by language name. Consulted
@@ -1219,14 +1240,153 @@ fn dynamic_language(lang: &str) -> Option<tree_sitter::Language> {
     crate::core::sync::lock(&DYNAMIC).get(lang).cloned()
 }
 
+/// What a declared grammar is waiting on: its library, or the reason it did not load.
+#[cfg(feature = "treesit")]
+enum Declared {
+    /// Declared and not yet asked for: nothing has been opened.
+    Pending { path: String },
+    /// Asked for, and the load failed. Kept, not retried: a parse per keystroke would
+    /// otherwise dlopen the same broken library per keystroke. A new declaration replaces it.
+    Failed { message: String },
+}
+
+/// Grammars DECLARED by [`declare_grammar`] and not yet loaded (ADR-481), keyed by language
+/// name. The first parse, query or tree that names one loads it ([`declared_language`]),
+/// which moves it to [`DYNAMIC`]; a failed load stays here as the reason.
+///
+/// Lock order: this before [`DYNAMIC`] (and the pool and cache a load clears) — a lazy load
+/// holds this lock across the dlopen, which is what makes it happen once.
+#[cfg(feature = "treesit")]
+static DECLARED: LazyLock<Mutex<HashMap<String, Declared>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// `(%tree-sitter-declare-grammar path lang)` — say that `lang`'s grammar is the library at
+/// `path`, WITHOUT loading it (ADR-481). The first parse, structural query or tree handle that
+/// names `lang` dlopens it, once; until then the declaration costs a map entry. An editor
+/// can therefore declare every grammar it has at startup and pay for the one the file it
+/// opened needs, instead of dlopening them all before its first frame or racing a file
+/// opened before a deferred loader got there.
+///
+/// A declaration replaces any earlier one of the same name, and a declaration of a language
+/// already loaded is a RELOAD at its next use — the same swap [`load_grammar`] makes (parser
+/// pool, tree cache and epoch), so replacing a library and declaring it again is how a
+/// grammar is upgraded without a restart, lazily. A load that fails leaves the grammar the
+/// language had before, if any, exactly as a failed [`load_grammar`] does; with none, the
+/// parse fails with the load's message. [`grammar_status`] reports which.
+#[cfg(feature = "treesit")]
+pub fn declare_grammar(path: &str, lang: &str) -> LispResult {
+    crate::core::sync::lock(&DECLARED).insert(
+        lang.to_string(),
+        Declared::Pending {
+            path: path.to_string(),
+        },
+    );
+    Ok(Value::Bool(true))
+}
+
+#[cfg(not(feature = "treesit"))]
+pub fn declare_grammar(_path: &str, lang: &str) -> LispResult {
+    Err(LispError::runtime(format!(
+        "%tree-sitter-declare-grammar::{lang}: this runtime was built without tree-sitter \
+         (rebuild with --features treesit)"
+    )))
+}
+
+/// The grammar a DECLARATION of `lang` supplies, loading it if this is its first use:
+/// `Ok(None)` when there is no declaration to honour (none, or one that failed while an
+/// older grammar still serves), `Err` when the declared library failed and nothing else can
+/// parse `lang`. The lock is held across the load, so two processes asking at once load it
+/// once — the second finds it loaded.
+#[cfg(feature = "treesit")]
+fn declared_language(lang: &str) -> Result<Option<tree_sitter::Language>, LispError> {
+    let mut declared = crate::core::sync::lock(&DECLARED);
+    let path = match declared.get(lang) {
+        None => return Ok(None),
+        Some(Declared::Failed { message }) => {
+            return if has_grammar_without_declaration(lang) {
+                Ok(None)
+            } else {
+                Err(LispError::runtime(message.clone()))
+            };
+        }
+        Some(Declared::Pending { path }) => path.clone(),
+    };
+    match load_library("%tree-sitter-declare-grammar", &path, lang) {
+        Ok((_, language)) => {
+            declared.remove(lang);
+            Ok(Some(language))
+        }
+        Err(error) => {
+            let message = format!(
+                "the :{lang} grammar declared at {path} did not load: {}",
+                error.message
+            );
+            declared.insert(
+                lang.to_string(),
+                Declared::Failed {
+                    message: message.clone(),
+                },
+            );
+            if has_grammar_without_declaration(lang) {
+                Ok(None)
+            } else {
+                Err(LispError::runtime(message))
+            }
+        }
+    }
+}
+
+/// Whether `lang` parses without consulting a declaration: loaded earlier, or built in.
+#[cfg(feature = "treesit")]
+fn has_grammar_without_declaration(lang: &str) -> bool {
+    dynamic_language(lang).is_some() || built_in_language(lang).is_some()
+}
+
+/// `(%tree-sitter-grammar-status lang)` — where `lang`'s grammar stands: `:declared`
+/// (declared, not loaded yet), `:loaded` (loaded at runtime), `:built-in`, a failure value
+/// carrying the load's message when the last declaration did not load, or `nil` when the
+/// runtime has no grammar for it. Asks; never loads.
+#[cfg(feature = "treesit")]
+pub fn grammar_status(heap: &mut Heap, lang: &str) -> LispResult {
+    let keyword = |name: &str| Value::keyword(value::intern(name));
+    let failed = match crate::core::sync::lock(&DECLARED).get(lang) {
+        Some(Declared::Pending { .. }) => return Ok(keyword("declared")),
+        Some(Declared::Failed { message }) => Some(message.clone()),
+        None => None,
+    };
+    if let Some(message) = failed {
+        return Ok(heap.alloc_failure(&message));
+    }
+    if dynamic_language(lang).is_some() {
+        return Ok(keyword("loaded"));
+    }
+    if built_in_language(lang).is_some() {
+        return Ok(keyword("built-in"));
+    }
+    Ok(Value::Nil)
+}
+
+#[cfg(not(feature = "treesit"))]
+pub fn grammar_status(_heap: &mut crate::core::heap::Heap, _lang: &str) -> LispResult {
+    Ok(crate::core::value::Value::Nil)
+}
+
 /// `(%tree-sitter-languages)` — the languages this runtime can parse right now: every
-/// grammar loaded at runtime plus the ones built in, sorted. The question an editor asks
-/// before it offers to fetch a grammar, or tells you a file's mode has none: without it the
-/// only way to find out was to parse something and read the error.
+/// grammar loaded at runtime, declared and not yet loaded, or built in, sorted. The question
+/// an editor asks before it offers to fetch a grammar, or tells you a file's mode has none:
+/// without it the only way to find out was to parse something and read the error. A
+/// declared grammar counts — asking must not load it — and one whose load failed does not,
+/// unless something else still parses its language.
 #[cfg(feature = "treesit")]
 pub fn languages(heap: &mut Heap) -> LispResult {
     #[allow(unused_mut)] // a build with no grammar feature never pushes a built-in
     let mut names: Vec<String> = crate::core::sync::lock(&DYNAMIC).keys().cloned().collect();
+    names.extend(
+        crate::core::sync::lock(&DECLARED)
+            .iter()
+            .filter(|(_, declared)| matches!(declared, Declared::Pending { .. }))
+            .map(|(name, _)| name.clone()),
+    );
     #[cfg(feature = "treesit-ruby")]
     names.push("ruby".to_string());
     #[cfg(feature = "treesit-elixir")]
@@ -1253,28 +1413,42 @@ pub fn load_grammar(_path: &str, lang: &str) -> LispResult {
     )))
 }
 
-/// The grammar for a language keyword's name. Each arm is gated on its own
-/// `treesit-<lang>` feature — the kernel ships no grammar by default (a `treesit`
-/// build with no grammar feature has zero arms and reports every language as not
-/// built in). One cfg'd arm per language is the single place a grammar plugs in
-/// (plus its `Cargo.toml` dep).
+/// The grammar for a language keyword's name: a declared one first (loading it on this, its
+/// first use), then one loaded at runtime, then one built in.
 #[cfg(feature = "treesit")]
 fn language_for(lang: &str) -> Result<tree_sitter::Language, LispError> {
+    // A declaration is the newest word on what `lang`'s grammar is — a pending one is a
+    // load or a reload waiting for its first use.
+    if let Some(language) = declared_language(lang)? {
+        return Ok(language);
+    }
     // A grammar loaded at runtime wins over a bundled one of the same name: loading one is a
     // deliberate act, and the reason to do it is usually that the bundled grammar is behind.
-    if let Some(l) = dynamic_language(lang) {
-        return Ok(l);
+    if let Some(language) = dynamic_language(lang) {
+        return Ok(language);
     }
+    built_in_language(lang).ok_or_else(|| {
+        LispError::runtime(format!(
+            "%tree-sitter-parse:no grammar for :{lang} — declare one with \
+             (%tree-sitter-declare-grammar \"/path/to/libtree-sitter-{lang}.so\" :{lang}) \
+             or load it now with %tree-sitter-load-grammar, or build it in with \
+             --features treesit-{lang}"
+        ))
+    })
+}
+
+/// The grammar compiled into this runtime for `lang`, if any. Each arm is gated on its own
+/// `treesit-<lang>` feature — the kernel ships no grammar by default (a `treesit` build with
+/// no grammar feature has zero arms and reports every language as not built in). One cfg'd
+/// arm per language is the single place a grammar plugs in (plus its `Cargo.toml` dep).
+#[cfg(feature = "treesit")]
+fn built_in_language(lang: &str) -> Option<tree_sitter::Language> {
     match lang {
         #[cfg(feature = "treesit-ruby")]
-        "ruby" => Ok(tree_sitter_ruby::LANGUAGE.into()),
+        "ruby" => Some(tree_sitter_ruby::LANGUAGE.into()),
         #[cfg(feature = "treesit-elixir")]
-        "elixir" => Ok(tree_sitter_elixir::LANGUAGE.into()),
-        other => Err(LispError::runtime(format!(
-            "%tree-sitter-parse:no grammar for :{other} — load one at runtime with \
-             (%tree-sitter-load-grammar \"/path/to/libtree-sitter-{other}.so\" :{other}), \
-             or build it in with --features treesit-{other}"
-        ))),
+        "elixir" => Some(tree_sitter_elixir::LANGUAGE.into()),
+        _ => None,
     }
 }
 
@@ -1564,5 +1738,95 @@ mod tree_handle_tests {
         let mut heap = Heap::new();
         let gone = tree_spans(&mut heap, fresh, Vec::new(), false, 0, 10).expect("answers");
         assert!(matches!(gone, Value::Nil), "a freed handle reads as nil");
+    }
+}
+
+/// Declared grammars (ADR-481). Each test uses a language name of its own: the tables are
+/// process-wide and the tests run in parallel. A real library's first-use load is covered by
+/// `tests/tree_sitter_test.blsp`, which has one to load when a C compiler built it.
+#[cfg(all(test, feature = "treesit"))]
+mod declared_grammar_tests {
+    use super::*;
+
+    fn status(lang: &str) -> Value {
+        let mut heap = Heap::new();
+        grammar_status(&mut heap, lang).expect("status answers")
+    }
+
+    fn is_keyword(candidate: Value, name: &str) -> bool {
+        matches!(candidate, Value::Keyword(symbol) if symbol == value::intern(name))
+    }
+
+    #[test]
+    fn declaring_opens_nothing() {
+        let lang = "declared-probe-unused";
+        declare_grammar("/nonexistent/libtree-sitter-unused.so", lang).expect("declares");
+        assert!(is_keyword(status(lang), "declared"));
+        assert!(
+            dynamic_language(lang).is_none(),
+            "a declaration loaded its library before anything asked for it"
+        );
+        let mut heap = Heap::new();
+        let listed = languages(&mut heap).expect("lists");
+        let Value::Vector(listed) = listed else {
+            panic!("languages answers a vector");
+        };
+        let listed = heap.vector(listed).to_vec();
+        assert!(
+            listed.iter().any(|item| is_keyword(*item, lang)),
+            "a declared grammar is one the runtime can parse"
+        );
+    }
+
+    #[test]
+    fn a_library_that_does_not_load_is_a_failure_and_is_not_retried() {
+        let lang = "declared-probe-missing";
+        let path = "/nonexistent/libtree-sitter-missing.so";
+        declare_grammar(path, lang).expect("declares");
+        let error = parse_cached("x", lang).expect_err("nothing parses this language");
+        assert!(error.message.contains("did not load"), "{}", error.message);
+        assert!(error.message.contains(path), "{}", error.message);
+        let mut heap = Heap::new();
+        let reported = grammar_status(&mut heap, lang).expect("status answers");
+        assert_eq!(
+            heap.failure_message(reported).as_deref(),
+            Some(error.message.as_str()),
+            "the status carries the load's message as a failure value"
+        );
+        // Kept, not retried: the second use answers the same message from the table.
+        assert!(matches!(
+            crate::core::sync::lock(&DECLARED).get(lang),
+            Some(Declared::Failed { .. })
+        ));
+        let again = parse_cached("x", lang).expect_err("still nothing parses it");
+        assert_eq!(again.message, error.message);
+        // A new declaration is a new attempt.
+        declare_grammar(path, lang).expect("declares again");
+        assert!(is_keyword(status(lang), "declared"));
+    }
+
+    #[test]
+    fn a_failed_eager_load_leaves_the_declaration() {
+        let lang = "declared-probe-eager";
+        declare_grammar("/nonexistent/libtree-sitter-eager.so", lang).expect("declares");
+        // The eager load fails too (no library), and a failed eager load changes nothing.
+        assert!(load_grammar("/nonexistent/libtree-sitter-eager.so", lang).is_err());
+        assert!(is_keyword(status(lang), "declared"));
+    }
+
+    #[cfg(feature = "treesit-ruby")]
+    #[test]
+    fn a_failed_declaration_keeps_the_grammar_the_language_had() {
+        // The declaration is ruby's own (a re-declaration of a built-in language), so it is
+        // withdrawn at the end; until then, a parallel ruby test meets the failed declaration
+        // and parses with the built-in grammar, which is the behaviour under test.
+        declare_grammar("/nonexistent/libtree-sitter-ruby.so", "ruby").expect("declares");
+        let tree = parse_cached("def a; end\n", "ruby").expect("the built-in grammar parses");
+        assert_eq!(tree.root_node().kind(), "program");
+        let mut heap = Heap::new();
+        let reported = grammar_status(&mut heap, "ruby").expect("status answers");
+        assert!(heap.failure_message(reported).is_some());
+        crate::core::sync::lock(&DECLARED).remove("ruby");
+        assert!(is_keyword(status("ruby"), "built-in"));
     }
 }

@@ -204,6 +204,8 @@ pub fn register(heap: &mut Heap, root: EnvId) {
     line_diff::register(&mut primitives);
     // And again: the structural queries over a held tree (ADR-467).
     treesit::register_tree_queries(&mut primitives);
+    // And again: declaring a grammar without loading it (ADR-481).
+    treesit::register_grammar_declarations(&mut primitives);
 }
 
 #[cfg(test)]

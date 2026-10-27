@@ -357,3 +357,40 @@ pub(super) fn tree_sitter_tree_alive(args: &[Value], _: EnvId, heap: &mut Heap) 
     let handle = ts_handle(heap, "%tree-sitter-tree-alive?", arg(args, 0))?;
     Ok(Value::boolean(crate::host::treesit::tree_alive(handle)))
 }
+
+/// Declaring a grammar without loading it (ADR-481) — registered LAST from
+/// `builtins::register`, for the intern-table order reason `register_tree_queries` gives.
+pub(super) fn register_grammar_declarations(primitives: &mut super::Primitives) {
+    use super::signature_types::*;
+    use crate::core::value::Arity;
+    use crate::types::Sig;
+    primitives.def(
+        "%tree-sitter-declare-grammar",
+        Arity::exact(2),
+        Sig::new(vec![string, kw], bool_ty),
+        &["path", "lang"],
+        "Declare that the tree-sitter grammar for the language keyword `lang` is the shared library at `path`, WITHOUT loading it: the first parse, structural query or tree handle that names `lang` loads it, once, and every later one uses it. Costs a table entry, so an application can declare every grammar it has at startup and dlopen only those its files use. A later declaration of the same name replaces this one; declaring a language that is already loaded reloads it from `path` at its next use (the swap %tree-sitter-load-grammar makes). A load that fails is not retried until the language is declared again: the parse raises the load's message when nothing else parses `lang`, and otherwise keeps the grammar it had; %tree-sitter-grammar-status reports the failure either way. Returns true; errors in a build without feature `treesit`.",
+        tree_sitter_declare_grammar,
+    );
+    primitives.def(
+        "%tree-sitter-grammar-status",
+        Arity::exact(1),
+        Sig::new(vec![kw], any),
+        &["lang"],
+        "Where the grammar for the language keyword `lang` stands, without loading anything: :declared (declared by %tree-sitter-declare-grammar, not used yet), :loaded (loaded at runtime), :built-in, a failure value carrying the load's message when the last declaration did not load, or nil when this runtime has no grammar for it.",
+        tree_sitter_grammar_status,
+    );
+}
+
+/// `(%tree-sitter-declare-grammar path lang)` — `crate::host::treesit::declare_grammar`.
+pub(super) fn tree_sitter_declare_grammar(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let path = expect_string(heap, "%tree-sitter-declare-grammar", arg(args, 0))?;
+    let lang = ts_lang(heap, "%tree-sitter-declare-grammar", arg(args, 1))?;
+    crate::host::treesit::declare_grammar(&path, &lang)
+}
+
+/// `(%tree-sitter-grammar-status lang)` — `crate::host::treesit::grammar_status`.
+pub(super) fn tree_sitter_grammar_status(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let lang = ts_lang(heap, "%tree-sitter-grammar-status", arg(args, 0))?;
+    crate::host::treesit::grammar_status(heap, &lang)
+}
