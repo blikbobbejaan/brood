@@ -44,6 +44,7 @@ wasm_unsupported_builtins!(
     gui_icon,
     gui_focus,
     gui_grab_cursor,
+    gui_busy,
     gui_fullscreen,
     gui_minimize,
     gui_drag_move,

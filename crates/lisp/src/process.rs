@@ -180,9 +180,10 @@ pub(crate) use mailbox::{
 // Inbound flow control (socket backpressure): a credit rides in the envelope and is
 // returned to its source when the message leaves the mailbox. Used by `host::net` and
 // `host::subprocess`.
-pub(crate) use mailbox::{
-    CreditSource, DeliveryCredit, deliver_credited, deliver_priority_credited,
-};
+pub(crate) use mailbox::{CreditSource, DeliveryCredit, deliver_credited};
+// Only a window delivers a credited message on the priority lane (its key repeats).
+#[cfg(feature = "gui")]
+pub(crate) use mailbox::deliver_priority_credited;
 pub(crate) use monitor::{
     Watcher, add_monitor, deliver_remote_down, demonitor_remote_fanout, drop_monitor,
     drop_pending_remote, fire_noconnection_if_pending, handle_node_down, record_pending_remote,
