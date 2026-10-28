@@ -1,0 +1,16 @@
+;; std/combinator.blsp — the less common functions over functions (ADR-506).
+;;
+;; Defined in the prelude under these qualified names; where a function is defined says
+;; nothing about what it is called. This file declares the module they belong to and
+;; documents the surface. `identity`, `partial` and `comp` stay bare: they are the language's
+;; own vocabulary. `(:use combinator)` brings these back bare.
+
+(defmodule combinator
+  "Adapters that build a function from functions or values.
+
+    ((combinator/complement nil?) 1)         ;=> true
+    ((combinator/constantly :x) 1 2)         ;=> :x
+    ((combinator/juxt first last) [1 2 3])   ;=> [1 3]
+    ((combinator/fnil inc 0) nil)            ;=> 1
+
+`combinator/memoize` caches a function's results by argument list in a table it owns.")

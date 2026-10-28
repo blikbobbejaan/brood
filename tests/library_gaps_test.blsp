@@ -5,23 +5,23 @@
 
 (describe "juxt / fnil"
   (test "juxt applies each function to the same arguments, as a vector in order"
-    (assert= [7 3] ((juxt first count) [7 8 9]))
-    (assert= [3 1] ((juxt + -) 2 1))
-    (assert= [] ((juxt) 1 2)))
+    (assert= [7 3] ((combinator/juxt first count) [7 8 9]))
+    (assert= [3 1] ((combinator/juxt + -) 2 1))
+    (assert= [] ((combinator/juxt) 1 2)))
   (test "juxt is the two-field sort key"
-    (assert= (list "a" "ab" "bb") (sort-by ["bb" "a" "ab"] (juxt count identity))))
+    (assert= (list "a" "ab" "bb") (sort-by ["bb" "a" "ab"] (combinator/juxt count identity))))
   (test "fnil patches a nil FIRST argument only"
-    (assert= 1 ((fnil inc 0) nil))
-    (assert= 6 ((fnil inc 0) 5))
-    (assert= [:a] ((fnil conj []) nil :a))
-    (assert= {:n 1} (update {} :n (fnil inc 0)))
+    (assert= 1 ((combinator/fnil inc 0) nil))
+    (assert= 6 ((combinator/fnil inc 0) 5))
+    (assert= [:a] ((combinator/fnil conj []) nil :a))
+    (assert= {:n 1} (update {} :n (combinator/fnil inc 0)))
     ;; a `false` is a value, not an absence
-    (assert= false ((fnil identity :d) false))))
+    (assert= false ((combinator/fnil identity :d) false))))
 
 (describe "memoize — a table the function captures"
   (test "the first call computes, the next with = arguments remembers"
     (let (t (table/new)
-          slow (memoize (fn (n) (table/incr t :calls) (* n n))))
+          slow (combinator/memoize (fn (n) (table/incr t :calls) (* n n))))
       (assert= 16 (slow 4))
       (assert= 16 (slow 4))
       (assert= 25 (slow 5))
@@ -29,7 +29,7 @@
       (table/drop t)))
   (test "keys are the whole argument list, compared structurally"
     (let (t (table/new)
-          f (memoize (fn (a b) (table/incr t :calls) [a b])))
+          f (combinator/memoize (fn (a b) (table/incr t :calls) [a b])))
       (assert= [1 {:k 2}] (f 1 {:k 2}))
       (assert= [1 {:k 2}] (f 1 {:k 2}))
       (assert= [2 {:k 2}] (f 2 {:k 2}))
@@ -37,14 +37,14 @@
       (table/drop t)))
   (test "a nil answer is remembered too — absence is not a miss"
     (let (t (table/new)
-          f (memoize (fn (x) (table/incr t :calls) nil)))
+          f (combinator/memoize (fn (x) (table/incr t :calls) nil)))
       (assert= nil (f 1))
       (assert= nil (f 1))
       (assert= 1 (table/get t :calls))
       (table/drop t)))
   :isolated (test "across processes: the cache is one, so a spawned caller hits what the parent computed"
     (def gaps-memo-calls (table/new))
-    (def gaps-memo (memoize (fn (n) (table/incr gaps-memo-calls :calls) (* 2 n))))
+    (def gaps-memo (combinator/memoize (fn (n) (table/incr gaps-memo-calls :calls) (* 2 n))))
     (assert= 10 (gaps-memo 5))
     (let (me (self))
       (spawn (send me [:memo (gaps-memo 5)]))

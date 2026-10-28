@@ -572,6 +572,10 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // are kernel primitives registered as `bit/*` (the `string/length` pattern); this
     // module declares the namespace they live in — ten names for one idea is what a
     // namespace is for, and bare is the scarce resource.
+    // The less common functions over functions (ADR-506): complement, constantly, juxt,
+    // fnil, memoize. Defined in the prelude under these names; this file declares the
+    // module they belong to. identity, partial and comp stay bare.
+    embedded_module!("combinator", "std/combinator.blsp"),
     embedded_module!("bit", "std/bit.blsp"),
     // Exact base-10 decimals — the `bit` story again: kernel primitives registered as
     // `decimal/*`, this module declares the namespace. `decimal?` stays bare with the

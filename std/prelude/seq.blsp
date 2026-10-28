@@ -615,14 +615,14 @@ The workhorse for handing a configured function to a higher-order op.
     ((partial + 10) 5)   ;=> 15"
   (fn (& later) (apply f (append bound later))))
 
-(defn complement (pred)
+(defn combinator/complement (pred)
   "A predicate that returns the logical negation of `pred`: `((complement odd?) 2)`
 is `true`. The named form of `(fn (& args) (not (apply pred args)))`.
 
     ((complement math/even?) 3)   ;=> true"
   (fn (& args) (not (apply pred args))))
 
-(defn constantly (x)
+(defn combinator/constantly (x)
   "A function of any arguments that always returns `x` — the placeholder callback
 for a higher-order op that wants a fixed answer.
 
@@ -630,7 +630,7 @@ for a higher-order op that wants a fixed answer.
   (fn (& _ignored) x))
 
 ;; The rest of the combinator family (ADR-379): `juxt`, `fnil`, `memoize`.
-(defn juxt (& fns)
+(defn combinator/juxt (& fns)
   "A function that applies each of `fns` to its arguments and returns the results as a
 vector, in order: `((juxt f g) x)` is `[(f x) (g x)]`. The named form of \"the same
 arguments, several views\" — a sort key of two fields, a split of a value into parts.
@@ -639,7 +639,7 @@ arguments, several views\" — a sort key of two fields, a split of a value into
     (sort-by [\"bb\" \"a\" \"ab\"] (juxt count identity))   ;=> (\"a\" \"ab\" \"bb\")"
   (fn (& args) (mapv fns (fn (f) (apply f args)))))
 
-(defn fnil (f default)
+(defn combinator/fnil (f default)
   "`f` with a `nil` FIRST argument replaced by `default` — the other arguments pass
 through. Reads a map's missing entry as a starting value without spelling the `or` at every
 call: `(update m :n (fnil inc 0))`.
@@ -649,7 +649,7 @@ call: `(update m :n (fnil inc 0))`.
     ((fnil conj []) nil :a)         ;=> [:a]"
   (fn (x & more) (apply f (if (nil? x) default x) more)))
 
-(defn memoize (f)
+(defn combinator/memoize (f)
   "`f` remembering every answer: the first call with given arguments runs `f`, every later
 call with `=` arguments returns the remembered value. The cache is a [[table]] the returned
 function captures (ADR-379): shared by every process that calls it, keys compared

@@ -3271,20 +3271,20 @@ kernel primitive), so neither walks nor materialises the entries.
 
 ### Higher-order
 `map`  `seq/filter`  `seq/reject`  `mapv`  `seq/filterv`  `seq/rejectv`  `reduce`  `fold`  `apply`
-`comp`  `partial`  `complement`  `constantly`  `identity`  `juxt`  `fnil`  `memoize`  `seq/pmap`
+`comp`  `partial`  `combinator/complement`  `combinator/constantly`  `identity`  `combinator/juxt`  `combinator/fnil`  `combinator/memoize`  `seq/pmap`
 
-`juxt` applies several functions to the same arguments and returns the results as a
-vector (`((juxt first count) [7 8 9])` is `[7 3]` — the two-field sort key); `fnil`
-patches a `nil` first argument with a default (`(update m :n (fnil inc 0))`); `seq/pmap`
+`combinator/juxt` applies several functions to the same arguments and returns the results as a
+vector (`((combinator/juxt first count) [7 8 9])` is `[7 3]` — the two-field sort key); `combinator/fnil`
+patches a `nil` first argument with a default (`(update m :n (combinator/fnil inc 0))`); `seq/pmap`
 is `map` with `(f x)` for every item in its own process, results in order, a worker's
 error re-raised in the caller (ADR-379).
 
-**`memoize`** returns `f` remembering every answer. Its cache is a `table` the returned
+**`combinator/memoize`** returns `f` remembering every answer. Its cache is a `table` the returned
 function captures — the one mutable structure, and the reason the rest of this list can
 stay pure — so: keys are the argument list compared structurally (memoize over values,
 never a pid or closure); every hit is a fresh copy, as a table read is; the cache is
 shared across processes; and a table has no finalizer, so bind the result with `def` — a
-`memoize` inside a loop leaks a table per call. A memoized global is an anonymous
+`combinator/memoize` inside a loop leaks a table per call. A memoized global is an anonymous
 closure: put a `(sig …)` beside the `def` to give its callers a type.
 
 ```clojure
@@ -3310,9 +3310,9 @@ The function combinators build the callbacks those ops take:
 
 ```clojure
 (map (list 1 2 3) (partial + 10))                ;=> (11 12 13)  ; fix the leading args
-(seq/filter (range 5) (complement math/odd?))    ;=> (0 2 4)     ; negate a predicate
+(seq/filter (range 5) (combinator/complement math/odd?))    ;=> (0 2 4)     ; negate a predicate
 (seq/reject (range 5) math/odd?)                 ;=> (0 2 4)     ; or just say reject
-(map (list 1 2) (constantly :x))                 ;=> (:x :x)     ; ignore the argument
+(map (list 1 2) (combinator/constantly :x))                 ;=> (:x :x)     ; ignore the argument
 ((comp inc (partial * 2)) 5)          ;=> 11          ; right-to-left composition
 ```
 

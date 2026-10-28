@@ -216,14 +216,12 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `comp`
 - `compare`
 - `compare-to`
-- `complement`
 - `cond`
 - `cond->`
 - `condp`
 - `conj`
 - `conj-onto`
 - `cons`
-- `constantly`
 - `count`
 - `dec`
 - `def-`
@@ -258,7 +256,6 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `failure`
 - `fields`
 - `first`
-- `fnil`
 - `fold`
 - `fold-for`
 - `for`
@@ -276,7 +273,6 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `index-of`
 - `inspect`
 - `into`
-- `juxt`
 - `keys`
 - `keyword`
 - `last`
@@ -291,7 +287,6 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `mapv`
 - `match`
 - `match*`
-- `memoize`
 - `merge`
 - `meta`
 - `monitor`

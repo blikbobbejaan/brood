@@ -31,7 +31,7 @@
     ;; the sequence ops built on that RNG
     (list 'seq/shuffle 'seq/sample 'seq/frequencies)
     ;; the combinators the skill tells you to reach for instead of a hand-written fn
-    (list 'comp 'partial 'complement 'constantly)
+    (list 'comp 'partial 'combinator/complement 'combinator/constantly)
     ;; the replacements named in the retired-names trap
     (list 'first 'rest 'append 'count 'any? 'mapcat)
     ;; collection protocol claimed to work with no import

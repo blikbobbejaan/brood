@@ -86,13 +86,13 @@
   (test "partial composes with a higher-order op (the reason it exists)"
     (assert= (list 11 12 13) (map (list 1 2 3) (partial + 10))))
   (test "complement negates a predicate"
-    (is ((complement odd?) 2))
-    (refute ((complement odd?) 3))
-    (assert= (list 2 4) (seq/filter (list 1 2 3 4) (complement odd?))))
+    (is ((combinator/complement odd?) 2))
+    (refute ((combinator/complement odd?) 3))
+    (assert= (list 2 4) (seq/filter (list 1 2 3 4) (combinator/complement odd?))))
   (test "constantly ignores its arguments"
-    (assert= :x ((constantly :x)))
-    (assert= :x ((constantly :x) 1 2 3))
-    (assert= (list :x :x) (map (list 1 2) (constantly :x)))))
+    (assert= :x ((combinator/constantly :x)))
+    (assert= :x ((combinator/constantly :x) 1 2 3))
+    (assert= (list :x :x) (map (list 1 2) (combinator/constantly :x)))))
 
 (describe "case — literal dispatch"
   (test "dispatches on the value, flat test/result pairs"

@@ -87,7 +87,7 @@ degrades to a plain case-insensitive name/docstring search, e.g.
 ;; pays a frame per level for every one of them.
 (defdyn *spy-sink* nil)
 
-(defn- %spy-indent (depth) (apply str (map (range depth) (constantly "  "))))
+(defn- %spy-indent (depth) (apply str (map (range depth) (combinator/constantly "  "))))
 (defn- %spy-default-sink (entry)
   "Default `*spy-sink*`: pretty-print one trace entry as an indented stderr line.
 `:call`/`:return` are the function-boundary entries `debug/trace-fn` emits.

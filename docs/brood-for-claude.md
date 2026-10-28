@@ -1080,9 +1080,9 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
   `seq/cycle` (bounded: `(seq/cycle [1 2] 5)`), the walkers `seq/prewalk`/`seq/postwalk`,
   `seq/pmap` (a process per item, order kept), and transducers — `seq/transduce`,
   with `seq/reduced` to stop early and `seq/xtake-while` as the built-in stopping stage.
-- **combinators & binding forms** (bare): `comp` `partial` `complement` `constantly`
-  `juxt` (`((juxt inc dec) 5)` → `[6 4]`) `fnil` (`((fnil inc 0) nil)` → `1`)
-  `memoize` (a `table`-backed cache — put it under a `def`, never in a loop; it hashes
+- **combinators & binding forms**: bare `comp` `partial` `identity`; `combinator/complement` `combinator/constantly`
+  `combinator/juxt` (`((combinator/juxt inc dec) 5)` → `[6 4]`) `combinator/fnil` (`((combinator/fnil inc 0) nil)` → `1`)
+  `combinator/memoize` (a `table`-backed cache — put it under a `def`, never in a loop; it hashes
   every key and never forgets) · `defmemo` from the `memo` module (`(:use memo)`, then
   `(defmemo rows-of 8 (rope width) …)`: a `defn` that remembers its last N calls compared
   by `=` — bounded, and immediate for the same big value such as a rope) ·
