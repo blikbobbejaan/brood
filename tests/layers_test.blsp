@@ -342,8 +342,8 @@
     ;; keymap, and every shadowed one is not — help derived from dispatch, not beside it
     (let (ctxs (list {:layers (list 'layers-test/layer-high 'layers-test/layer-low)})
           km (scope-keymap ctxs))
-      (assert= (get-in km [:ctrl-x "k"]) nil)
-      (assert= (get-in km [:ctrl-x "s"]) 'layers-test/cmd-y)))
+      (assert= (map/get-in km [:ctrl-x "k"]) nil)
+      (assert= (map/get-in km [:ctrl-x "s"]) 'layers-test/cmd-y)))
   (test "a layer with no keymap contributes nothing and breaks nothing"
     (assert= (count (scope-bindings (list {:layers (list {:name 'bare})}))) 0)))
 

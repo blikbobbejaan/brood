@@ -202,7 +202,7 @@ from `what`. Pure — reads the curated `*error-explanations*` table.
      :see "docs/language.md §Modules / privacy"}
     {:intent "use a keyword as a function to look up a map"
      :keywords ["keyword" "keyword function" "lookup" ":key" "get value" "(:k m)"]
-     :idiom "A keyword is NOT callable — `(:k m)` errors (E0030). Look up with `(get m :k)` (or `(get m :k default)`). Nested access is `(get-in m [:a :b])`."
+     :idiom "A keyword is NOT callable — `(:k m)` errors (E0030). Look up with `(get m :k)` (or `(get m :k default)`). Nested access is `(map/get-in m [:a :b])`."
      :example "(get {:name \"ana\"} :name)   ; NOT (:name m)"
      :see "docs/language.md §Maps"}
     {:intent "a character / single-char literal"

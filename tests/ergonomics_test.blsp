@@ -220,16 +220,16 @@
 
 (describe "dissoc-in"
   (test "removes a nested key, leaving the rest"
-    (assert= {:a {:c 2}} (dissoc-in {:a {:b 1 :c 2}} [:a :b]))
-    (assert= {:b 2} (dissoc-in {:a 1 :b 2} [:a])))
+    (assert= {:a {:c 2}} (map/dissoc-in {:a {:b 1 :c 2}} [:a :b]))
+    (assert= {:b 2} (map/dissoc-in {:a 1 :b 2} [:a])))
   (test "a path that doesn't exist is a no-op"
-    (assert= {:a {:b 1}} (dissoc-in {:a {:b 1}} [:x :y]))
-    (assert= {:a {:b 1}} (dissoc-in {:a {:b 1}} [:a :zz])))
+    (assert= {:a {:b 1}} (map/dissoc-in {:a {:b 1}} [:x :y]))
+    (assert= {:a {:b 1}} (map/dissoc-in {:a {:b 1}} [:a :zz])))
   (test "an emptied branch is left in place, not pruned"
-    (assert= {:a {}} (dissoc-in {:a {:b 1}} [:a :b])))
+    (assert= {:a {}} (map/dissoc-in {:a {:b 1}} [:a :b])))
   (test "completes the nested family — the inverse of assoc-in"
     (let (m {:x {:y 1}})
-      (assert= m (dissoc-in (assoc-in m [:x :z] 2) [:x :z])))))
+      (assert= m (map/dissoc-in (map/assoc-in m [:x :z] 2) [:x :z])))))
 
 (describe "for takes multiple body forms"
   ;; It took exactly one until 2026-07-26 — the only iteration form that did

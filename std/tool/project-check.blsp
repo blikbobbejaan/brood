@@ -1518,7 +1518,7 @@ more than one namespace, and a name that moved behind `%`. Backs `nest check --f
         ;; bare or qualified — and needs no search. Whatever it does not cover goes to
         ;; the image-search heuristic below, bare names only.
         ledgered (seq/filter (sort (vec (unbound-names diags))) (fn (nm) (contains? ledger nm)))
-        names (fold ledgered (unbound-bare-names diags) (fn (acc nm) (disj acc nm)))
+        names (fold ledgered (unbound-bare-names diags) (fn (acc nm) (set/disj acc nm)))
         pname (if *project-name* (->string *project-name*) nil))
     (if (and (empty? names) (empty? ledgered))
       (do (io/puts "fix-renames: no unbound names — nothing to do") 0)

@@ -339,18 +339,18 @@ a map. Returns a fresh collection; `coll` is untouched.
     (conj #{1} 2)       ;=> #{1 2}
     (conj {} [:b 2])    ;=> {:b 2}
 
-`disj` is the inverse and lives beside it — both stay core rather than in `std/set`
-so a set works with the collection protocol without an import."
+`set/disj` is the inverse (ADR-506); `conj` stays core, so a set takes the collection
+protocol without an import."
   (fold xs coll %conj-one))
 
-(defn disj (s & xs)
+(defn set/disj (s & xs)
   "A fresh set like `s` with each of `xs` removed (removing an absent element is a
 no-op). The set counterpart of `dissoc`, and `conj`'s inverse — both live here
 rather than in `std/set` so a set works with the collection protocol without an
 import (and so `(:use set)` can't shadow them).
 
-    (disj #{1 2 3} 2)   ;=> #{1 3}
-    (disj #{1} 9)       ;=> #{1}   ; removing what isn't there is a no-op"
+    (set/disj #{1 2 3} 2)   ;=> #{1 3}
+    (set/disj #{1} 9)       ;=> #{1}   ; removing what isn't there is a no-op"
   (fold xs s %set-remove))
 
 ;; ---- more sequence operations -----------------------------------------------

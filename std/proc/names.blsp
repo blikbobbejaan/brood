@@ -80,7 +80,7 @@ A `{:via registry :key key}` address works wherever `gen` takes a pid, including
         (do (demonitor (get watch :ref)) (assoc state :held (dissoc (get state :held) pid)))
       else
         (assoc state
-          :held (assoc (get state :held) pid (assoc watch :keys (disj (get watch :keys) key)))))))
+          :held (assoc (get state :held) pid (assoc watch :keys (set/disj (get watch :keys) key)))))))
 
 (defn- names-forget (state pid)
   (let (watch (get (get state :held) pid))

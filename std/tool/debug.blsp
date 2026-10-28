@@ -83,7 +83,7 @@ pause with `break`, and correlate with `span` (`span-spawn` is now just
       ;; and tell whoever watches for breaks (`watch-breaks`: an editor, a DAP adapter).
       (doseq (watcher (or (get state :watchers) []))
         (send watcher [:debug-break (self) pid snapshot]))
-      (debug-loop (debug-record (assoc-in state [:paused pid] snapshot)
+      (debug-loop (debug-record (map/assoc-in state [:paused pid] snapshot)
                     {:kind :break :pid pid :label (get snapshot :label)})))
     ([:resume pid] (send pid [:resume])
       (debug-loop (assoc state :paused (dissoc (get state :paused) pid))))

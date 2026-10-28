@@ -79,7 +79,7 @@ a member on a node whose link drops is removed when the drop is noticed.
 
 (defn- groups-part (state node)
   (groups-drop-origin (get state :members) node)
-  (assoc state :peers (disj (get state :peers) node)))
+  (assoc state :peers (set/disj (get state :peers) node)))
 
 ;; ---- this node's members ------------------------------------------------------
 
@@ -108,7 +108,7 @@ a member on a node whose link drops is removed when the drop is noticed.
           (assoc state
             :held
               (assoc (get state :held)
-                pid (assoc watch :groups (disj (get watch :groups) group)))))))))
+                pid (assoc watch :groups (set/disj (get watch :groups) group)))))))))
 
 (defn- groups-member-down (state pid)
   (let (watch (get (get state :held) pid))

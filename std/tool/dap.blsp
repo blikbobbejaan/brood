@@ -194,7 +194,7 @@ debugger breaks at (`debug/break-fn`); stepping is not supported.")
               next (assoc state :fn-bps names))
           (respond next request {:breakpoints (into [] (map names (fn (_) {:verified true})))}))
       "setBreakpoints"
-        (let (path (get-in args [:source :path])
+        (let (path (map/get-in args [:source :path])
               lines (into [] (map (or (:breakpoints args) []) :line))
               names (into [] (map lines (fn (l) (function-at-line path l))))
               next (assoc state

@@ -554,7 +554,7 @@ Only one timer fires per call; simultaneous timers serialize over successive ite
     (if (nil? due)
       [nil clock]
       (let (name (first due))
-        [[:timer name] (assoc-in clock [:fired name] now)]))))
+        [[:timer name] (map/assoc-in clock [:fired name] now)]))))
 
 (defn quit-request? (input)
   "True if `input` is a window-close request (`:close`) — the frontend (the GUI's X

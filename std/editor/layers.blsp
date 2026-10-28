@@ -253,7 +253,7 @@ leaves `ctx` unchanged, so a bad hook can't crash the loop."
 
 (defn- layers-layer-event-hooks (layer event)
   "The `event` hook list of a single layer reference, or ()."
-  (or (get-in (layers-resolve layer) [:hooks event]) (list)))
+  (or (map/get-in (layers-resolve layer) [:hooks event]) (list)))
 
 (defn- layers-run-one (ctx layer event)
   "Run just `layer`'s `event` hooks (the lifecycle path: `:activate`/`:deactivate`)."

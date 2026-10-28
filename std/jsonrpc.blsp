@@ -70,7 +70,7 @@ this.
 `*error-codes*` for a protocol failure, `(:method-not-found jsonrpc/*error-codes*)` being
 the honest answer to a request the receiver does not implement.
 
-    (get-in (first (first (jsonrpc/decode (jsonrpc/error-response 3 -32601 \"no\")))) [:error :code])   ;=> -32601"
+    (map/get-in (first (first (jsonrpc/decode (jsonrpc/error-response 3 -32601 \"no\")))) [:error :code])   ;=> -32601"
   (frame (json/encode {:jsonrpc "2.0" :id id :error {:code code :message message}})))
 
 (defn- content-length (header:string -> (or nil int))

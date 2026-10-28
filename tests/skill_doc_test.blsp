@@ -36,7 +36,7 @@
     (list 'first 'rest 'append 'count 'any? 'mapcat)
     ;; collection protocol claimed to work with no import
     (list 'contains?
-      'conj 'disj 'get 'empty? 'into 'vec 'seq 'sort 'seq/sort-by 'index-of 'includes?)
+      'conj 'get 'empty? 'into 'vec 'seq 'sort 'seq/sort-by 'index-of 'includes?)
     ;; introspection the skill tells you to use instead of guessing
     (list 'bound? 'reflect/private?)))
 

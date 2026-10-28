@@ -249,10 +249,10 @@ Maps are immutable — every operation returns a **fresh** map:
 | `(map/update-vals m f)` / `(map/update-keys m f)` | a new map with `f` applied to every value / key — the `map` module |
 | `(map/select-keys m ks)` | a new map of just the entries whose key is in `ks` — the `map` module |
 | `(map/zipmap ks vs)` | a map pairing `ks` with `vs` positionally (stops at the shorter) |
-| `(get-in m path)` / `(get-in m path default)` | the value at a nested key `path`, or `default`/`nil`; each step looks up like `get`, so a vector (or list/string) along the path is indexed by position — `(get-in {:a [1 2]} [:a 1])` is `2` |
-| `(assoc-in m path v)` | a nested copy with `v` stored at `path` (intermediate maps created); a vector along the path with an integer key is updated at that index (in range, as for `assoc`) — `(assoc-in [[1]] [0 0] 9)` is `[[9]]` — and any other non-map node becomes a fresh map |
-| `(dissoc-in m path)` | a nested copy with `path` removed (a missing path is a no-op; empty branches are left in place) |
-| `(update-in m path f args…)` | a nested copy with `path`'s value replaced by `(f current args…)` |
+| `(map/get-in m path)` / `(map/get-in m path default)` | the value at a nested key `path`, or `default`/`nil`; each step looks up like `get`, so a vector (or list/string) along the path is indexed by position — `(map/get-in {:a [1 2]} [:a 1])` is `2` |
+| `(map/assoc-in m path v)` | a nested copy with `v` stored at `path` (intermediate maps created); a vector along the path with an integer key is updated at that index (in range, as for `assoc`) — `(map/assoc-in [[1]] [0 0] 9)` is `[[9]]` — and any other non-map node becomes a fresh map |
+| `(map/dissoc-in m path)` | a nested copy with `path` removed (a missing path is a no-op; empty branches are left in place) |
+| `(map/update-in m path f args…)` | a nested copy with `path`'s value replaced by `(f current args…)` |
 | `(count m)` / `(empty? m)` | number of entries / whether there are none |
 | `(map? x)` | whether `x` is a map |
 
@@ -961,7 +961,7 @@ Equality is order-independent (`(= #{1 2 3} #{3 2 1})`), and a `#{…}` literal
 evaluates its elements then dedups (`#{(+ 1 1) 2}` ⇒ `#{2}`).
 
 A set is a full member of the **collection protocol**, so the ordinary prelude ops
-work on one with no import: `(conj s x)` adds, `(disj s x)` removes,
+work on one with no import: `(conj s x)` adds, `(set/disj s x)` removes,
 `(contains? s x)` tests membership, `(get s x)` returns the *element* when present
 (never a positional index) and `nil`/`default` when not, `(into #{} coll)` pours
 and dedups, and `count`/`empty?`/`first`/`rest`/`vec`/`seq` treat it as its
@@ -975,7 +975,7 @@ dedups) and the algebra `union`/`intersection`/`difference`/`subset?`. Sets
 deep-copy across processes like any value (`send`/`spawn` round-trip them as sets,
 not maps).
 
-> Until 2026-07-26 `conj`/`disj` lived in `std/set` instead, and the prelude's own
+> Until 2026-07-26 `conj`/`set/disj` lived in `std/set` instead, and the prelude's own
 > `conj`/`into`/`get` didn't know about sets — so `(conj #{1} 2)` raised "not a
 > collection", `(into #{} [1 1 2])` returned the *list* `(1 1 2)`, `(get #{10 20}
 > 10)` was `nil` while `(get #{10 20} 0)` was `20`, and a `(:use set)` header
@@ -1308,7 +1308,7 @@ string/->number inc)` raises. Stopping is something you say (ADR-315) — `ok->`
 
 There is **no `some->`** (deleted by ADR-315). It stopped on `nil`, which since ADR-310
 means only "the lookup found nothing" and is an ordinary value everywhere else in the
-language — a pipe for a channel that is not one. `get-in` covers the nil-chaining it
+language — a pipe for a channel that is not one. `map/get-in` covers the nil-chaining it
 existed for.
 
 `each` applies a function to
@@ -3078,7 +3078,7 @@ In the `math` module: `math/mod`  `math/rem`  `math/quot`  `math/floor`  `math/m
 
 ### Lists & sequences
 `cons`  `first`  `rest`  `second`  `third`  `last`  `seq/but-last`
-`list`  `vector`  `vec`  `conj`  `disj`  `into`  `seq`
+`list`  `vector`  `vec`  `conj`  `set/disj`  `into`  `seq`
 `append`  `reverse`  `%reverse-onto`  `nth`  `count`  `empty?`
 `range`  `take`  `drop`  `split-at`  `take-last`  `drop-last`  `seq/take-while`  `seq/drop-while`
 `includes?`  `any?`  `every?`  `find`  `index-of`  `zip`
@@ -3258,7 +3258,7 @@ The run's table costs ~0.45 µs per `transduce` call.
 
 ### Maps
 `hash-map`  `get`  `assoc`  `dissoc`  `contains?`  `keys`  `vals`
-`merge`  `update`  `get-in`  `assoc-in`  `dissoc-in`  `update-in`  `map?`
+`merge`  `update`  `map/get-in`  `map/assoc-in`  `map/dissoc-in`  `map/update-in`  `map?`
 
 The transformation helpers `reduce-kv`, `merge-with`, `update-vals`, `update-keys`,
 `select-keys` and `zipmap` live in the **`map` module** (ADR-227) — `(:use map)` for bare
@@ -3996,7 +3996,7 @@ its names bare. Run `nest doc <module>` for the full API of any module.
 | `std/io.blsp` | `'io` | Output **ports** — the `Port` ability (`io-write`), `stdout-port`, `stderr-port`, `process-port`, `file-port`, `fn-port`, and the `with-out`/`with-err` redirections — so output has a first-class destination instead of a fixed stdout. Also the writers themselves: `io/write`, `io/puts`, `io/inspect`, each taking an optional trailing `:to <port>` (see also `std/log.blsp`) |
 | `std/text.blsp` | `'text` | Plain-text transforms with no editor/buffer/IO dependency: `fill`, greedy word-wrap to a column width. Pure Brood over the string primitives, so it is reusable anywhere (fill-paragraph, wrapping help text or REPL output) |
 | `std/seq.blsp` | `'seq` | Derived **sequence helpers** (ADR-227) layered over the bare collection protocol: `dedupe`, `distinct-by`, `group-by`, `frequencies`, `chunk-by`, `chunk-every`, `interpose`, `interleave`, `scan`, `zip-with`, `reduce-while`, `min-by`, `max-by`, `enumerate`, `index-where`. Also `filter`/`reject`/`keep`/`filterv`/`rejectv`/`distinct`/`zip`/`find`/`flatten` and the transducer + lazy stages. The core ops (`map`/`reduce`/`fold`/`take`/`drop`/`sort`) stay bare in the prelude, and `take-while`/`partition`/`repeat`/`sort-by`/`mapv` are here (ADR-506); `(:use seq)` for bare access or call qualified |
-| `std/map.blsp` | `'map` | Derived **map-transformation helpers** (ADR-227): `reduce-kv`, `merge-with`, `update-vals`, `update-keys`, `select-keys`, `zipmap`. The core map protocol (`assoc`/`dissoc`/`get`/`keys`/`vals`/`contains?`/`update`/`get-in`/`update-in`/`merge`) stays bare in the prelude; `(:use map)` for bare access or call qualified (the bare `map` *function* is unaffected) |
+| `std/map.blsp` | `'map` | Derived **map-transformation helpers** (ADR-227): `reduce-kv`, `merge-with`, `update-vals`, `update-keys`, `select-keys`, `zipmap`, and the path functions `get-in`/`assoc-in`/`update-in`/`dissoc-in` (ADR-506). The core map protocol (`assoc`/`dissoc`/`get`/`keys`/`vals`/`contains?`/`update`/`merge`) stays bare in the prelude; `(:use map)` for bare access or call qualified (the bare `map` *function* is unaffected) |
 | `std/math.blsp` | `'math` | The derived **math library** (ADR-227): `sqrt`, `pow`, `ceil`, `round`, `round-to`, `clamp`, `abs`, `sum`, `product`, the sign/parity predicates (`positive?`/`negative?`/`even?`/`odd?`), and the constants `pi`/`e`. Only the **operators** (`+` `-` `*` `/` `<` `=` …) and `inc`/`dec` stay bare in the prelude — `quot`/`mod`/`rem`/`floor`/`min`/`max` are derived arithmetic and live here too, so they are `math/quot`, `math/min`, … unless `(:use math)` brings them back bare |
 | `std/ansi.blsp` | `'ansi` | ANSI/VT100 escape-sequence **stripping** for pipe output — `strip-ansi` removes CSI colour/cursor sequences (reading a subprocess that emits colour). For *emitting* escapes in a display frontend, see `std/editor/ansi.blsp` instead |
 | `std/vt.blsp` | `'vt` | A **virtual terminal as pure data** (ADR-384): `(vt/feed vt chunk)` folds a program's output — cursor motion, erases, scroll regions, the alternate screen, SGR 16/256/true colour, the modes and queries an interactive program relies on — into a grid of cells; `(vt/screen vt palette)` reads it back as `{:text :spans :cursor …}` for a buffer to show, `(vt/line row palette)` a scrolled-off row with its colour, `(vt/key->bytes key vt)` an editor key — and `mouse->bytes` a click or wheel notch — as the bytes a program expects. The other direction from `std/term`: Brood *being* the terminal for a program under `os/spawn-pty` |

@@ -522,7 +522,7 @@ Prefer the higher-order combinators:
 `map` `fold` `reduce` `into` `vec` `seq` (and `seq/filter`) take a list, vector, `bytes`, a
 **set** (as its elements) or a **map** (as its `[k v]` pairs) — `(first {:a 1})` is
 `[:a 1]`. `conj`/`into` insert at each kind's natural point and *preserve the kind*;
-`(conj #{1} 2)` and `(disj s x)` are prelude, no `(:use set)` needed. Two ops stay
+`(conj #{1} 2)` and `(set/disj s x)` are prelude, no `(:use set)` needed. Two ops stay
 deliberately strict: `contains?` is map/set only (a vector would have to answer by
 *index*), and a **string** is not seqable — bridge with `string/->list` (codepoints) or
 `string/->graphemes` (what a human calls a character).
@@ -1140,7 +1140,7 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
   `#{1 2 3}` literal (evaluates its elements and dedups). It is its *own* kind:
   `(set? s)` is true, `(map? s)` is **false**, `(type-of s)` is `:set`, it prints
   `#{…}`, and a set is **never** `=` to a map. It's a full member of the collection
-  protocol with no import: `(contains? s x)` tests membership, `(conj s x)`/`(disj s
+  protocol with no import: `(contains? s x)` tests membership, `(conj s x)`/`(set/disj s
   x)` add/remove, `(get s x)` returns the *element* (not an index) or nil, `(count
   s)`/`(first s)`/`map`/`fold`/`into`/`vec`/`seq` treat it as its elements, and
   `(into #{} coll)` pours-and-dedups. `#{[0 0] [1 2]}` is the natural live-cell model

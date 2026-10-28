@@ -13,9 +13,9 @@ elements).
 
 The kernel supplies the literal, `set?`, and the O(log n) element ops
 (`%set`/`%set-add`/`%set-remove`/`%set-has?`/`%set-count`); the prelude's
-`conj`/`disj`/`get`/`into`/`contains?`/`count`/`empty?`/`first`/`rest` already
-dispatch to a set, so plain collection code needs no import. This module adds the
-constructor from a collection (`set`) and the set algebra (`union` /
+`conj`/`get`/`into`/`contains?`/`count`/`empty?`/`first`/`rest` already
+dispatch to a set, so plain collection code needs no import. This module adds `disj`
+(the inverse of `conj`, ADR-506), the constructor from a collection (`set`) and the set algebra (`union` /
 `intersection` / `difference` / `subset?`).")
 
 (defn set (coll:any -> set)

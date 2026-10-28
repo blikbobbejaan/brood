@@ -18,15 +18,15 @@
         (assert= (:jsonrpc m) "2.0")
         (assert= (:id m) 1)
         (assert= (:method m) "textDocument/hover")
-        (assert= (get-in m [:params :line]) 3))))
+        (assert= (map/get-in m [:params :line]) 3))))
   (test "a notification has no id"
     (is (not (contains? (first (first (jsonrpc/decode (jsonrpc/notification "exit" nil)))) :id))))
   (test "an error response carries the reserved code"
     (let (m (first (first (jsonrpc/decode (jsonrpc/error-response 9
                                             (:method-not-found jsonrpc/*error-codes*)
                                             "no")))))
-      (assert= (get-in m [:error :code]) -32601)
-      (assert= (get-in m [:error :message]) "no"))))
+      (assert= (map/get-in m [:error :code]) -32601)
+      (assert= (map/get-in m [:error :message]) "no"))))
 
 (describe "jsonrpc — decoding a chunked stream"
   (test "several frames in one chunk come out in order"

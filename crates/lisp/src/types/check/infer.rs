@@ -1491,11 +1491,11 @@ fn seq_aware_call_ty(heap: &Heap, head: Symbol, items: &[Value], ctx: &Ctx) -> O
         "append" => append_ty(heap, items, ctx),
         "merge" if len >= 2 => merge_ty(heap, items, ctx),
         "get" if len >= 3 => get_ty(heap, items, ctx),
-        "get-in" if len == 3 || len == 4 => get_in_ty(heap, items, ctx),
+        "map/get-in" if len == 3 || len == 4 => get_in_ty(heap, items, ctx),
         "keys" if len == 2 => keys_ty(heap, items, ctx),
         "vals" if len == 2 => vals_ty(heap, items, ctx),
         "dissoc" if len >= 3 => dissoc_ty(heap, items, ctx),
-        name @ ("update" | "assoc-in" | "update-in") if len >= 3 => {
+        name @ ("update" | "map/assoc-in" | "map/update-in") if len >= 3 => {
             update_ty(heap, name == "update", items, ctx)
         }
         "assoc" if len >= 4 && (len - 2).is_multiple_of(2) => assoc_ty(heap, items, ctx),

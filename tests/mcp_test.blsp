@@ -189,7 +189,7 @@
 (describe "mcp server lifecycle"
   (test "initialize names the server and its capabilities"
     (let (result (get (mcpt-request "initialize" {}) :result))
-      (assert= (get-in result [:serverInfo :name]) "nest-mcp")
+      (assert= (map/get-in result [:serverInfo :name]) "nest-mcp")
       (assert= (get result :capabilities) {:tools {} :resources {} :prompts {}})))
   (test "a request echoes its id under jsonrpc 2.0"
     (let (reply (mcp/handle {:jsonrpc "2.0" :id "abc" :method "ping"} (mcpt-session)))
@@ -198,16 +198,16 @@
     (assert= (get (mcpt-request "shutdown" {}) :result) nil)
     (is (contains? (mcpt-request "shutdown" {}) :result)))
   (test "an unknown method is -32601; an unknown notification gets no reply"
-    (assert= (get-in (mcpt-request "no/such/method" {}) [:error :code]) -32601)
+    (assert= (map/get-in (mcpt-request "no/such/method" {}) [:error :code]) -32601)
     (assert= (mcp/handle {:jsonrpc "2.0" :method "bogus/notification"} (mcpt-session)) nil))
   (test "exit (a notification) ends the session"
     (assert= (mcp/handle {:jsonrpc "2.0" :method "exit"} (mcpt-session)) :exit))
   (test "a line that is not JSON is a -32700 with a null id, not the end of the session"
     (let (reply (mcpt-object (mcp/respond "this is not json{{{" (mcpt-session))))
-      (assert= (get-in reply [:error :code]) -32700)
+      (assert= (map/get-in reply [:error :code]) -32700)
       (is (contains? reply :id))
       (assert= (get reply :id) nil)
-      (is (string? (get-in reply [:error :data]))))
+      (is (string? (map/get-in reply [:error :data]))))
     (assert= (get (mcpt-object (mcp/respond "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}"
                                  (mcpt-session)))
                :result)
@@ -215,7 +215,7 @@
 
 (describe "mcp tools/list and tools/call"
   (test "tools/list projects the catalogue, skipping malformed entries"
-    (let (tools (get-in (mcpt-request "tools/list" {}) [:result :tools])
+    (let (tools (map/get-in (mcpt-request "tools/list" {}) [:result :tools])
           names (map tools (fn (t) (get t :name))))
       (is (includes? names "double"))
       (refute (includes? names "no-schema"))
@@ -225,28 +225,28 @@
          :description "Double :n"
          :inputSchema {"type" "object" "properties" {"n" {"type" "integer"}}}})))
   (test "the std catalogue lists every tool with an object schema"
-    (let (tools (get-in (mcp/handle {:jsonrpc "2.0" :id 1 :method "tools/list"}
-                          (assoc (mcpt-session) :catalogue (fn () (mcp/tools))))
+    (let (tools (map/get-in (mcp/handle {:jsonrpc "2.0" :id 1 :method "tools/list"}
+                              (assoc (mcpt-session) :catalogue (fn () (mcp/tools))))
                   [:result :tools])
           names (map tools (fn (t) (get t :name))))
       (doseq (expected ["eval"
                          "load" "write" "edit" "lookup" "macroexpand" "format" "check" "run-tests"
                          "processes" "process-info" "node" "callers"])
         (is (includes? names expected)))
-      (is (every? tools (fn (t) (= (get-in t [:inputSchema "type"]) "object"))))))
+      (is (every? tools (fn (t) (= (map/get-in t [:inputSchema "type"]) "object"))))))
   (test "a handler's value comes back as indented JSON text"
-    (assert= (get-in (mcpt-call "double" {:n 21}) [:result :content])
+    (assert= (map/get-in (mcpt-call "double" {:n 21}) [:result :content])
       [{:type "text" :text "42"}])
-    (assert= (get-in (mcpt-call "text" {}) [:result :content 0 :text]) "plain"))
+    (assert= (map/get-in (mcpt-call "text" {}) [:result :content 0 :text]) "plain"))
   (test "what a handler prints rides back as a second block, never on the channel"
-    (assert= (get-in (mcpt-call "chatty" {}) [:result :content])
+    (assert= (map/get-in (mcpt-call "chatty" {}) [:result :content])
       [{:type "text" :text "42"} {:type "text" :text "[captured stdout]\ndebug line"}]))
   (test "a map with a non-null error is a soft failure"
     (let (result (get (mcpt-call "soft-fail" {}) :result))
       (assert= (get result :isError) true)
-      (assert= (get-in result [:content 0 :text]) "{\n  \"error\": \"nope\"\n}")))
+      (assert= (map/get-in result [:content 0 :text]) "{\n  \"error\": \"nope\"\n}")))
   (test "arguments arrive keyword-keyed, with arrays as lists"
-    (assert= (get-in (mcpt-call "shapes" {:items [1 2]}) [:result :content 0 :text]) "true"))
+    (assert= (map/get-in (mcpt-call "shapes" {:items [1 2]}) [:result :content 0 :text]) "true"))
   (test "an unknown tool is -32602"
     (let (error (get (mcpt-call "nope" {}) :error))
       (assert= (get error :code) -32602)
@@ -262,7 +262,7 @@
       (is (int? (get data "line")))
       (is (int? (get data "col")))))
   (test "a value thrown below the handler carries the trace through it"
-    (let (data (get-in (mcpt-call "throws-deep" {}) [:error :data]))
+    (let (data (map/get-in (mcpt-call "throws-deep" {}) [:error :data]))
       (assert= (get data "kind") "user")
       (is (int? (get data "line")))
       (is (any? (or (get data "trace") ())
@@ -270,9 +270,9 @@
   (test "a kernel error travels whole in the error data"
     (let (error (get (mcpt-call "divides" {}) :error))
       (assert= (get error :code) -32603)
-      (assert= (get-in error [:data "kind"]) "runtime")
-      (assert= (get-in error [:data "code"]) "E0040")
-      (is (includes? (get-in error [:data "message"]) "division by zero"))))
+      (assert= (map/get-in error [:data "kind"]) "runtime")
+      (assert= (map/get-in error [:data "code"]) "E0040")
+      (is (includes? (map/get-in error [:data "message"]) "division by zero"))))
   (test "a result with no JSON shape is a -32603"
     (let (error (get (mcpt-call "closure" {}) :error))
       (assert= (get error :code) -32603)
@@ -280,17 +280,17 @@
   (test "a handler process that dies is an error reply, and the next call is served"
     (let (error (get (mcpt-call "dies" {}) :error))
       (assert= (get error :code) -32603)
-      (assert= (get-in error [:data "kind"]) "panic"))
-    (assert= (get-in (mcpt-call "double" {:n 1}) [:result :content 0 :text]) "2"))
+      (assert= (map/get-in error [:data "kind"]) "panic"))
+    (assert= (map/get-in (mcpt-call "double" {:n 1}) [:result :content 0 :text]) "2"))
   (test "an eval past the deadline is killed and answered, not waited on"
     (let (result (get (mcpt-call "eval" {}) :result))
       (assert= (get result :isError) true)
-      (is (includes? (get-in result [:content 0 :text]) "time limit"))))
+      (is (includes? (map/get-in result [:content 0 :text]) "time limit"))))
   (test "a progressToken streams the handler's reports as notifications"
     (let (reply (mcpt-request "tools/call"
                   {:name "reports" :arguments {} :_meta {:progressToken "tok-42"}})
           emitted (mcpt-emitted []))
-      (assert= (get-in reply [:result :content 0 :text]) "true")
+      (assert= (map/get-in reply [:result :content 0 :text]) "true")
       (assert= emitted
         [{:jsonrpc "2.0"
           :method "notifications/progress"
@@ -309,19 +309,19 @@
                     {:name "checks" :arguments {:root root} :_meta {:progressToken "tok-7"}})
             emitted (mcpt-emitted []))
         (file/rmdir root)
-        (assert= (get-in reply [:result :content 0 :text]) "0")
+        (assert= (map/get-in reply [:result :content 0 :text]) "0")
         (assert= emitted
           [{:jsonrpc "2.0"
             :method "notifications/progress"
             :params {:progressToken "tok-7" :progress 1 :total 1 :message "checked lib.blsp"}}]))))
   (test "without a progressToken, progress is a no-op answering false"
     (let (reply (mcpt-call "reports" {}))
-      (assert= (get-in reply [:result :content 0 :text]) "false")
+      (assert= (map/get-in reply [:result :content 0 :text]) "false")
       (assert= (mcpt-emitted []) []))))
 
 (describe "mcp resources and prompts"
   (test "resources/list names every document"
-    (let (uris (map (get-in (mcpt-request "resources/list" {}) [:result :resources])
+    (let (uris (map (map/get-in (mcpt-request "resources/list" {}) [:result :resources])
                  (fn (r) (get r :uri))))
       (doseq (uri ["brood://docs/brood-for-claude"
                     "brood://docs/incarnations" "brood://docs/llm-native"
@@ -329,18 +329,20 @@
         (is (includes? uris uri)))))
   (test "resources/read serves the bound document text"
     (binding (*mcp-documents* {"prelude" "(def x 1)"})
-      (assert= (get-in (mcpt-request "resources/read" {:uri "brood://prelude"}) [:result :contents])
+      (assert= (map/get-in (mcpt-request "resources/read" {:uri "brood://prelude"})
+                 [:result :contents])
         [{:uri "brood://prelude" :mimeType "text/markdown" :text "(def x 1)"}])
-      (assert= (get-in (mcpt-request "resources/read" {:uri "brood://nope"}) [:error :code]) -32602)))
+      (assert= (map/get-in (mcpt-request "resources/read" {:uri "brood://nope"}) [:error :code])
+        -32602)))
   (test "prompts list and serve brood-task, and refuse an unknown name"
     (binding (*mcp-documents* {"brood-task" "orient yourself"})
-      (assert= (map (get-in (mcpt-request "prompts/list" {}) [:result :prompts])
+      (assert= (map (map/get-in (mcpt-request "prompts/list" {}) [:result :prompts])
                  (fn (p) (get p :name)))
         (list "brood-task"))
-      (assert= (get-in (mcpt-request "prompts/get" {:name "brood-task"})
+      (assert= (map/get-in (mcpt-request "prompts/get" {:name "brood-task"})
                  [:result :messages 0 :content :text])
         "orient yourself")
-      (assert= (get-in (mcpt-request "prompts/get" {:name "nope"}) [:error :code]) -32602))))
+      (assert= (map/get-in (mcpt-request "prompts/get" {:name "nope"}) [:error :code]) -32602))))
 
 (describe "mcp JSON projection"
   (test "data kinds project onto JSON"
@@ -380,7 +382,7 @@
     (refute (mcp/rebuilt-since? nil 0)))
   (test "the warning rides on a tools/call reply and on no other"
     (let (tool-reply {:jsonrpc "2.0" :id 1 :result {:content [{:type "text" :text "42"}]}})
-      (assert= (get-in (mcp/with-warning tool-reply "STALE") [:result :content])
+      (assert= (map/get-in (mcp/with-warning tool-reply "STALE") [:result :content])
         [{:type "text" :text "42"} {:type "text" :text "STALE"}]))
     (assert= (mcp/with-warning {:jsonrpc "2.0" :id 1 :result {:capabilities {}}} "STALE") nil)
     (assert= (mcp/with-warning {:jsonrpc "2.0" :id 1 :error {:code -32601 :message "x"}} "STALE")

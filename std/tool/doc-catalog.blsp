@@ -39,10 +39,12 @@
 ;; per module (`nest doc <module>`) and have no category.
 (def *module-categories*
   {"bit" :math
+   "combinator" :functions
    "decimal" :math
    "file" :filesystem
    "fuzzy" :strings
    "io" :io
+   "list" :collections
    "map" :maps
    "math" :math
    "num" :math
@@ -50,6 +52,7 @@
    "proc" :processes
    "reflect" :meta
    "seq" :collections
+   "set" :sets
    "string" :strings
    "system" :system})
 
@@ -109,13 +112,11 @@
 (def *kernel-categories*
   {"apply" :functions
    "arglist" :meta
-   "assoc-in" :maps
    "bound?" :meta
    "bytes" :bytes
    "compare" :math
    "cons" :collections
    "demonitor" :processes
-   "dissoc-in" :maps
    "doc" :meta
    "empty?" :predicates
    "exit" :processes
@@ -154,7 +155,6 @@
    "->string" :convert
    "identity" :functions
    "last" :collections
-   "repeat" :collections
    "inspect" :io
    "fields" :maps
    "record-id" :maps})

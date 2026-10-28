@@ -27,7 +27,7 @@
         (assert= (:name (first entries)) "notes")
         (assert= (:key (first entries)) "/tmp/notes")
         (assert= (:proc (first entries)) a)
-        (assert= (get-in (first entries) [:meta :type]) :text))
+        (assert= (map/get-in (first entries) [:meta :type]) :text))
       (registry-stop reg)))
   (test "a watcher is told of every share and remove; remove stops the process"
     (let (reg (registry-start))

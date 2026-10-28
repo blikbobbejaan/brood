@@ -30,8 +30,8 @@
       (assert= ["+0330" 12600 nil] [(:std rule) (:std-offset rule) (:dst rule)])))
   (test "a change time other than 02:00, and an explicit DST offset"
     (let (rule (tz/posix-rule "CET-1CEST,M3.5.0,M10.5.0/3"))
-      (assert= 10800 (get-in rule [:end :time]))
-      (assert= {:kind :m :month 10 :week 5 :day 0} (get-in rule [:end :date]))))
+      (assert= 10800 (map/get-in rule [:end :time]))
+      (assert= {:kind :m :month 10 :week 5 :day 0} (map/get-in rule [:end :date]))))
   (test "a string that is no rule is a failure, not a raise"
     (is (failure? (tz/posix-rule "")))
     (is (failure? (tz/rule-zone "<unterminated")))))

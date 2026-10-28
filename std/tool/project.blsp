@@ -715,7 +715,7 @@ only; `tests/` files come from [[collect-tests]].
       ;; a worker that died mid-job left its module unloaded (`require-one` released its
       ;; waiters); the sequential pass after the pool loads it
       ([:down _ pid reason] (project-load-drive jobs
-                              (disj workers pid)
+                              (set/disj workers pid)
                               stopped
                               failed?
                               (if (= reason :normal) deaths (conj deaths reason)))))))

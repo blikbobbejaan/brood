@@ -34,7 +34,7 @@
       (assert (< 0 (- (memo-hits) before)))))
   (test "a violation deep inside a new value is still caught"
     (assert (type-matches? 'memo-model memo-model-value))
-    (let (broken (assoc-in memo-model-value [:buffers 7 :lines 1] 42))
+    (let (broken (map/assoc-in memo-model-value [:buffers 7 :lines 1] 42))
       (assert (not (type-matches? 'memo-model broken)))
       ;; and the old value, which shares every other buffer, still passes
       (assert (type-matches? 'memo-model memo-model-value))))

@@ -82,7 +82,7 @@ will get wrong if you write Brood like Clojure, Scheme, or Common Lisp.
    elements) or a **map** (its `[k v]` pairs) — so no `(seq/zip (keys m) (vals m))`, and
    `(first {:a 1})` is `[:a 1]`. Map order is hash-driven, never insertion order.
    `conj`/`into` insert at each kind's natural point and **preserve the kind**;
-   `conj`/`disj`/`get`/`contains?` on a set are prelude. Two deliberate exceptions:
+   `conj`/`set/disj`/`get`/`contains?` on a set are prelude. Two deliberate exceptions:
    `contains?` is map/set only, and a **string is not a sequence** — `count`/`empty?`
    accept one, but `first`/`rest`/`map`/`fold`/`into` raise; bridge with
    `string/->list` (codepoints) or `string/->graphemes` (what a human calls a
@@ -197,7 +197,7 @@ muscle-memory reaches for, and what Brood actually has:
 | `pmap` / `seq/take-while` transducer | `seq/pmap` (a process per item, order kept); `seq/transduce` with `seq/reduced` to stop early |
 | raw ANSI (`clear`/`home`/cursor) | `(:use editor/ansi)` → `(ansi-clear)`/`(ansi-home)`/`(ansi-cursor r c)` are **zero-arg fns returning an escape string** — `(io/write (ansi-clear))`, never `(io/write ansi-clear)`. A render loop wants `editor/display` + `ui-run` |
 | a built-in RNG (`rand`) | `rand/int`, `rand/float`, `rand/rng`, plus `seq/shuffle`/`seq/sample` — pure & seedable: each takes a seed (`(rand/seed n)` from any int) and returns `[value next-seed]`; thread the seed through your state. `(rand/token n)` is the exception — `n` OS-random bytes as hex, for ids/secrets |
-| a set / `#{}` | first-class: `#{1 2 3}`, `(set? s)`, `(contains? s x)`, `(conj s x)`/`(disj s x)` with no import; `set/union`/`set/intersection`/`set/difference`/`set/subset?` for the algebra |
+| a set / `#{}` | first-class: `#{1 2 3}`, `(set? s)`, `(contains? s x)`, `(conj s x)`/`(set/disj s x)` with no import; `set/union`/`set/intersection`/`set/difference`/`set/subset?` for the algebra |
 | `timeit` / `time` | `(dev/bench "label" expr)` prints `label: N ms` and returns the value |
 
 ## When to reach for a process (vs staying pure)

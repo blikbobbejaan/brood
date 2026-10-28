@@ -99,8 +99,8 @@
       (assert= :none (get mm :missing :none))))
   (test "get-in steps through a multimap's contents, as get does"
     (let (mm (multimap/assoc (multimap/empty) :k 1))
-      (assert= [1] (into [] (get-in {:m mm} [:m :k])))
-      (assert= :none (get-in {:m mm} [:m :missing] :none))))
+      (assert= [1] (into [] (map/get-in {:m mm} [:m :k])))
+      (assert= :none (map/get-in {:m mm} [:m :missing] :none))))
   (test "a record still answers a field, or the default for a missing one"
     (assert= 5 (get (assoc (multimap/empty) :extra 5) :extra :none))
     (assert= :none (get {:__id__ :x/y :a 1} :b :none)))

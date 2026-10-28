@@ -1192,9 +1192,9 @@ it cannot be read — never a false alarm."
   "`reply` with `warning` appended as one more content block, when it is a successful
 `tools/call` reply — the agent never sees the server's stderr. Nil for any other reply,
 which leaves the warning pending for the next one that can carry it."
-  (let (content (get-in reply [:result :content]))
+  (let (content (map/get-in reply [:result :content]))
     (if (vector? content)
-      (assoc-in reply [:result :content] (conj content {:type "text" :text warning}))
+      (map/assoc-in reply [:result :content] (conj content {:type "text" :text warning}))
       nil)))
 
 (defn- notice-rebuild (session:map -> map)

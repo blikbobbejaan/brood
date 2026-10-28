@@ -415,12 +415,12 @@
                               "  (let (child (spawn (send me :hi)) mref (monitor child))"
                               "    (receive (:hi nil))" "    (receive ([:down ^mref _ _] :got))))")))
       (assert= (get r :value) ":got")
-      (assert= (get-in r [:procs :alive]) 0)))
+      (assert= (map/get-in r [:procs :alive]) 0)))
 
   (test "a process left PARKED is reported as still running — the leak is visible"
     (let (r (eval-capturing "(do (spawn (receive (:never nil))) :spawned-and-left)"))
       (assert= (get r :value) ":spawned-and-left")
-      (is (>= (get-in r [:procs :alive]) 1)))))
+      (is (>= (map/get-in r [:procs :alive]) 1)))))
 
 (describe "the session namespace"
   (test "a defmodule in one request governs the definitions of the next"

@@ -54,7 +54,7 @@
     (is (not (match? "\\D" "123")))
     (is (matches? "\\W+" " .-"))
     (is (not (match? "\\W" "foo_9")))
-    (is (= (get-in (find "brood\\s+(\\S+)\\s+\\(([0-9a-f]+)\\)" "brood 0.42.0 (b3deae5a)")
+    (is (= (map/get-in (find "brood\\s+(\\S+)\\s+\\(([0-9a-f]+)\\)" "brood 0.42.0 (b3deae5a)")
              [:groups 0 :text])
           "0.42.0"))
     (is (matches? "[\\S]+" "ab"))

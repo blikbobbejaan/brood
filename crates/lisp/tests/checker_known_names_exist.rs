@@ -54,7 +54,7 @@ fn every_name_a_checker_rule_keys_on_exists() {
     let names = known_names();
     // Anchored by name from each source, so a reader that silently parses nothing fails
     // here rather than making the guard vacuous.
-    for anchor in ["math/max", "string/->number", "seq/filter", "get-in"] {
+    for anchor in ["math/max", "string/->number", "seq/filter", "map/get-in"] {
         assert!(
             names.iter().any(|n| n == anchor),
             "the reader did not find `{anchor}` among {} parsed names — it has drifted \
