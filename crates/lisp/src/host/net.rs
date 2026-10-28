@@ -17,14 +17,19 @@
 //! assigns it an owner, so no inbound bytes are lost to the acceptor before a
 //! per-connection handler takes over.
 //!
-//! **Writes are queued** (ADR-143): `tcp-send` lowers its iolist to bytes,
-//! hands them to the reactor, and returns; the reactor flushes as the socket
-//! accepts them. `tcp-close` lets what is queued flush in the background (bounded
+//! **Writes are queued, and flow-controlled** (ADR-143): `tcp-send` lowers its iolist
+//! to bytes, hands them to the reactor, and returns; the reactor flushes as the socket
+//! accepts them. Past [`OUTBOUND_HIGH_WATER`] unwritten, the sender waits (parked, no
+//! worker held) until the reactor has written it below [`OUTBOUND_LOW_WATER`] or the
+//! connection is gone ([`OutboundFlow`]), so a fast producer runs at its peer's pace
+//! and holds about a megabyte, not the whole of what it sends. Output that makes no
+//! progress for [`SEND_STALL_TIMEOUT`] drops the connection, which ends such a wait on a
+//! peer that stopped reading. `tcp-close` lets what is queued flush in the background (bounded
 //! by [`LINGER`]), so `tcp-send` + `tcp-close` can never truncate a response; but
 //! from the moment it returns the owner receives nothing more for that socket
-//! ([`SocketOwner`]) — no data read while lingering, no `[:tcp-closed]`. A slow/stuck peer is
-//! bounded by [`OUT_CAP`] per socket: past it the connection is dropped rather
-//! than buffering without bound. Write failures surface as `[:tcp-closed …]`
+//! ([`SocketOwner`]) — no data read while lingering, no `[:tcp-closed]`. [`OUT_CAP`] per
+//! socket stays as the backstop past which the connection is dropped rather than
+//! buffering without bound. Write failures surface as `[:tcp-closed …]`
 //! (the reactor discovers them after `tcp-send` has returned).
 //!
 //! **Reads are flow-controlled** too, with no API change: each `[:tcp sock data]`
@@ -88,13 +93,31 @@ const ACCEPT_REAP_AFTER: Duration = Duration::from_secs(30);
 /// generous), the slow-loris / broken-peer guard the app can't provide itself.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Per-socket outbound queue cap. `tcp-send` is asynchronous (the reactor
-/// flushes as the peer accepts bytes), so a stuck reader would otherwise grow
-/// the queue without bound; past this the connection is dropped and the owner
-/// sees `[:tcp-closed …]`. 16 MiB comfortably covers response bodies while
-/// bounding a slow-reader DoS.
+/// Per-socket outbound queue cap: past it the connection is dropped and the owner sees
+/// `[:tcp-closed …]`. A sender waits at [`OUTBOUND_HIGH_WATER`], so only a single
+/// `tcp-send` larger than this reaches it; it is the backstop that keeps one such call
+/// from buffering without bound.
 const OUT_CAP: usize = 16 * 1024 * 1024;
 
+/// Outbound backpressure: how much a stream may have handed to `tcp-send` and not yet
+/// written to the kernel before `tcp-send` waits. `tcp-send` used to queue and return
+/// whatever the peer's pace, so a server streaming a large response to a slow reader
+/// produced it as fast as it could and held all of it, up to [`OUT_CAP`], and then the
+/// connection was dropped mid-response. Past this mark the sender is parked (no worker
+/// held) until the reactor has written the queue below [`OUTBOUND_LOW_WATER`], or the
+/// connection is gone ([`OutboundFlow`]). Overshoot is at most one `tcp-send`.
+const OUTBOUND_HIGH_WATER: usize = 1024 * 1024;
+
+/// A parked sender is woken once the queue falls below this: well under the high-water
+/// mark, so a sender writing small pieces does not park and wake per piece.
+const OUTBOUND_LOW_WATER: usize = 256 * 1024;
+
+/// How long output waiting to be sent may make no progress before the connection is
+/// dropped (`tcp-set-stall-timeout` changes it per socket; 0 disarms). The bound on a
+/// peer that stops reading: with `tcp-send` waiting on the queue, nothing else would
+/// end that wait. Only a peer whose kernel buffers are full stalls (a peer not reading a
+/// small reply never does), so a legitimately idle stream is never touched.
+const SEND_STALL_TIMEOUT: Duration = Duration::from_secs(60);
 /// Inbound backpressure: how much a reading socket may have delivered to its owner's
 /// mailbox and not yet had taken before the reactor stops reading it. Reads used to
 /// post every chunk the moment the socket was readable, so a peer sending faster than
@@ -167,6 +190,9 @@ struct Ctl {
     /// A TLS client stream's negotiated ALPN protocol (`tls-connect`), set by the reactor
     /// when the handshake completes; `None` for every other socket.
     alpn: Option<Arc<OnceLock<String>>>,
+    /// Outbound backpressure, made by the first `tcp-send` and shared with the reactor
+    /// through each [`Cmd::Send`] ([`OutboundFlow`]); `None` for a socket never sent on.
+    outbound: Option<Arc<OutboundFlow>>,
 }
 
 /// A listener's fd, held jointly by its control-plane entry and the reactor. `close`
@@ -306,6 +332,11 @@ fn reactor_died(panic: Option<Box<dyn std::any::Any + Send>>) {
     for (id, ctl) in registry.drain() {
         ctl.owner.emit(tcp_error_msg(id, "net reactor died"));
         ctl.owner.emit(tcp_closed_msg(id));
+        // nothing will write its queue now: wake whoever waits on it (a socket already
+        // closed but still flushing is woken as its connection unwinds with the thread)
+        if let Some(flow) = &ctl.outbound {
+            flow.close();
+        }
     }
 }
 
@@ -367,10 +398,16 @@ enum Cmd {
         to: std::net::SocketAddr,
         bytes: Vec<u8>,
     },
-    /// Queue outbound bytes.
-    Send { id: u64, bytes: Vec<u8> },
+    /// Queue outbound bytes, already charged against `flow`.
+    Send {
+        id: u64,
+        bytes: Vec<u8>,
+        flow: Arc<OutboundFlow>,
+    },
     /// Arm/disarm an established stream's idle timeout (`ms` = 0 disarms).
     SetIdle { id: u64, ms: u64 },
+    /// Set how long a stream's queued output may make no progress (`ms` = 0 disarms).
+    SetStall { id: u64, ms: u64 },
     /// Flush queued outbound (bounded by [`LINGER`]) and close.
     Close { id: u64 },
     /// Test-only: panic the reactor thread, to exercise the death hook
@@ -491,6 +528,113 @@ fn tcp_error_msg(id: u64, msg: &str) -> Message {
     ])
 }
 
+fn tcp_drained_msg(id: u64) -> Message {
+    Message::Vector(vec![
+        Message::Keyword(value::intern("tcp-drained")),
+        Message::Socket(id),
+    ])
+}
+
+// ---- outbound flow control ----
+
+/// One stream's outbound budget: the bytes `tcp-send` has handed over and the reactor
+/// has not yet written to the kernel (for TLS, plaintext not yet fully flushed as
+/// records). `tcp-send` charges it before queuing; the reactor releases it as it writes.
+/// A send that leaves it at or past [`OUTBOUND_HIGH_WATER`] parks its caller: the pid
+/// goes on `waiters`, and the caller waits for `[:tcp-drained sock]`.
+///
+/// Every parked sender is woken exactly once, by whichever comes first: the release that
+/// takes the queue below [`OUTBOUND_LOW_WATER`], or the connection going by any route
+/// ([`close`](OutboundFlow::close): the reactor drops its [`SendGuard`] with the
+/// connection, finds no connection for a send, or dies). After a close no one parks
+/// again, so a sender's next `tcp-send` fails or returns at once. The parking decision
+/// and the wake-ups are taken under the one `waiters` lock, so a release can never slip
+/// between a sender's check and its parking.
+///
+/// It is created by the first `tcp-send` on a socket and travels with each
+/// [`Cmd::Send`]; the reactor keeps it in the connection's [`SendGuard`]. Waiters are
+/// whichever processes sent, not the socket's owner: a helper writing to a socket
+/// another process owns parks itself.
+struct OutboundFlow {
+    id: u64,
+    queued: AtomicUsize,
+    waiters: Mutex<Waiters>,
+}
+
+#[derive(Default)]
+struct Waiters {
+    pids: Vec<u64>,
+    closed: bool,
+}
+
+impl OutboundFlow {
+    fn new(id: u64) -> Arc<OutboundFlow> {
+        Arc::new(OutboundFlow {
+            id,
+            queued: AtomicUsize::new(0),
+            waiters: Mutex::new(Waiters::default()),
+        })
+    }
+
+    /// Control side: charge `bytes` about to be queued.
+    fn charge(&self, bytes: usize) {
+        self.queued.fetch_add(bytes, Ordering::SeqCst);
+    }
+
+    /// Control side, after queuing: whether `pid` must wait for `[:tcp-drained]`. Parks
+    /// it when the queue is at or past the high-water mark and the connection is not
+    /// gone.
+    fn park_if_full(&self, pid: u64) -> bool {
+        let mut waiters = crate::core::sync::lock(&self.waiters);
+        if waiters.closed || self.queued.load(Ordering::SeqCst) < OUTBOUND_HIGH_WATER {
+            return false;
+        }
+        waiters.pids.push(pid);
+        true
+    }
+
+    /// Reactor side: `bytes` were written. Wakes the parked senders once the queue is
+    /// below the low-water mark.
+    fn release(&self, bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        let after = self.queued.fetch_sub(bytes, Ordering::SeqCst) - bytes;
+        if after < OUTBOUND_LOW_WATER {
+            let mut waiters = crate::core::sync::lock(&self.waiters);
+            for pid in waiters.pids.drain(..) {
+                deliver(pid, tcp_drained_msg(self.id));
+            }
+        }
+    }
+
+    /// The connection is gone: wake every parked sender, and park no one again.
+    fn close(&self) {
+        let mut waiters = crate::core::sync::lock(&self.waiters);
+        waiters.closed = true;
+        for pid in waiters.pids.drain(..) {
+            deliver(pid, tcp_drained_msg(self.id));
+        }
+    }
+}
+
+/// The reactor's hold on a connection's [`OutboundFlow`]: dropped with the connection,
+/// whatever ends it (a write failure, [`OUT_CAP`], a stall, an idle or linger deadline,
+/// owner death, the reactor's own death), and dropping it closes the flow, so no sender
+/// stays parked on a connection that no longer exists.
+struct SendGuard(Arc<OutboundFlow>);
+
+impl SendGuard {
+    fn release(&self, bytes: usize) {
+        self.0.release(bytes);
+    }
+}
+
+impl Drop for SendGuard {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
 // ---- inbound flow control ----
 
 /// One reading socket's inbound budget: the cost of the `[:tcp sock data]` chunks it has
@@ -663,6 +807,14 @@ struct PlainConn {
     idle: Option<Duration>,
     /// Last time bytes moved (inbound read or outbound `Send`) — the idle stamp.
     last_activity: Instant,
+    /// Outbound backpressure ([`OutboundFlow`]), held from the first `Send`; dropping it
+    /// with the connection wakes every sender parked on it.
+    sent: Option<SendGuard>,
+    /// How long queued output may make no progress before the connection is dropped
+    /// ([`SEND_STALL_TIMEOUT`] unless `tcp-set-stall-timeout` changed it; `None` disarmed).
+    stall: Option<Duration>,
+    /// When queued output last made progress, or became queued: the stall stamp.
+    out_progress: Instant,
 }
 
 /// One TLS stream's reactor state — the same machine drives a server
@@ -701,6 +853,12 @@ struct TlsConn {
     idle: Option<Duration>,
     /// Last time bytes moved (inbound plaintext or outbound `Send`).
     last_activity: Instant,
+    /// See [`PlainConn::sent`].
+    sent: Option<SendGuard>,
+    /// See [`PlainConn::stall`].
+    stall: Option<Duration>,
+    /// See [`PlainConn::out_progress`].
+    out_progress: Instant,
     /// A persistent client (`tls-connect`) still to announce itself: when the handshake
     /// completes the reactor records the negotiated ALPN protocol here and emits
     /// `[:tcp-connected sock]`, ahead of any data. `None` once announced, and always for a
@@ -981,6 +1139,7 @@ fn accept_ready(
                         port,
                         listener: None,
                         alpn: None,
+                        outbound: None,
                     },
                 );
                 let entry = match &tls {
@@ -1006,6 +1165,9 @@ fn accept_ready(
                         registered: false,
                         idle: None,
                         last_activity: Instant::now(),
+                        sent: None,
+                        stall: Some(SEND_STALL_TIMEOUT),
+                        out_progress: Instant::now(),
                     }),
                 };
                 out.push(Accepted {
@@ -1118,6 +1280,10 @@ fn drive_plain(
         // response draining to a slow reader isn't idle-reaped mid-send.
         if c.out.total < before {
             c.last_activity = Instant::now();
+            c.out_progress = c.last_activity;
+            if let Some(sent) = &c.sent {
+                sent.release(before - c.out.total);
+            }
         }
         if c.out.is_empty() && c.closing.is_some() {
             return begin_linger(id, c, registry);
@@ -1316,15 +1482,21 @@ fn drive_tls(
                 Ok(0) => return tls_finish(id, c, Some("tls: connection closed".into())),
                 // Bytes left for the peer — outbound progress counts as activity so
                 // a large response draining to a slow reader isn't idle-reaped.
-                Ok(_) => c.last_activity = Instant::now(),
+                Ok(_) => {
+                    c.last_activity = Instant::now();
+                    c.out_progress = c.last_activity;
+                }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => return tls_finish(id, c, Some(format!("tls: {e}"))),
             }
         }
         // Fully drained to the socket → the OUT_CAP accounting resets (rustls's
-        // buffer is empty again).
+        // buffer is empty again), and the senders' budget gets it all back.
         if !c.conn.wants_write() {
+            if let Some(sent) = &c.sent {
+                sent.release(c.pending_out);
+            }
             c.pending_out = 0;
         }
         if c.closing.is_some() && !c.conn.wants_write() {
@@ -1498,8 +1670,9 @@ fn handle_cmd(cmd: Cmd, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) 
         Cmd::Claim { id } => claim(id, conns, registry),
         Cmd::Retarget { id } => retarget(id, conns, registry),
         Cmd::Resume { id } => resume_reading(id, conns, registry),
-        Cmd::Send { id, bytes } => queue_send(id, bytes, conns, registry),
+        Cmd::Send { id, bytes, flow } => queue_send(id, bytes, flow, conns, registry),
         Cmd::SetIdle { id, ms } => set_idle(id, ms, conns),
+        Cmd::SetStall { id, ms } => set_stall(id, ms, conns),
         Cmd::Close { id } => close_connection(id, conns, registry),
         #[cfg(debug_assertions)]
         Cmd::DieForTest => panic!("net reactor: test-induced death (Cmd::DieForTest)"),
@@ -1535,6 +1708,9 @@ fn start_stream(
         registered: false,
         idle: None,
         last_activity: Instant::now(),
+        sent: None,
+        stall: Some(SEND_STALL_TIMEOUT),
+        out_progress: Instant::now(),
     };
     sync_plain_registration(id, &mut connection, registry);
     conns.insert(id, Rx::Plain(connection));
@@ -1589,6 +1765,9 @@ fn start_tls_client(
                 handshake_deadline: Some(Instant::now() + HANDSHAKE_TIMEOUT),
                 idle: None,
                 last_activity: Instant::now(),
+                sent: None,
+                stall: Some(SEND_STALL_TIMEOUT),
+                out_progress: Instant::now(),
                 announce: start.announce,
             };
             sync_tls_registration(id, &mut connection, registry);
@@ -1637,6 +1816,9 @@ fn claim(id: u64, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
                     handshake_deadline: Some(Instant::now() + HANDSHAKE_TIMEOUT),
                     idle: None,
                     last_activity: Instant::now(),
+                    sent: None,
+                    stall: Some(SEND_STALL_TIMEOUT),
+                    out_progress: Instant::now(),
                     announce: None,
                 };
                 sync_tls_registration(id, &mut connection, registry);
@@ -1680,10 +1862,22 @@ fn retarget(id: u64, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
 
 /// Queue outbound bytes and try to flush at once (the common case is a writable socket,
 /// and edge-triggered polls only fire on transitions). Past [`OUT_CAP`] the connection is
-/// dropped rather than buffered without bound.
-fn queue_send(id: u64, bytes: Vec<u8>, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
+/// dropped rather than buffered without bound. The connection takes its [`SendGuard`]
+/// with its first send; a send for a connection already gone closes the flow, so its
+/// sender is never left parked.
+fn queue_send(
+    id: u64,
+    bytes: Vec<u8>,
+    flow: Arc<OutboundFlow>,
+    conns: &mut HashMap<u64, Rx>,
+    registry: &mio::Registry,
+) {
     let remove = match conns.get_mut(&id) {
         Some(Rx::Plain(connection)) => {
+            connection.sent.get_or_insert_with(|| SendGuard(flow));
+            if connection.out.is_empty() {
+                connection.out_progress = Instant::now();
+            }
             if connection.out.total + bytes.len() > OUT_CAP {
                 // A stuck reader. Notify the current subscriber whether or not reads were
                 // started — an unclaimed accepted socket write-bombed here would otherwise
@@ -1700,6 +1894,10 @@ fn queue_send(id: u64, bytes: Vec<u8>, conns: &mut HashMap<u64, Rx>, registry: &
             }
         }
         Some(Rx::Tls(connection)) => {
+            connection.sent.get_or_insert_with(|| SendGuard(flow));
+            if connection.pending_out == 0 {
+                connection.out_progress = Instant::now();
+            }
             // Bound the plaintext handed to rustls (whose writer buffers without limit):
             // once backed up (`wants_write`) and past OUT_CAP, drop rather than grow.
             if connection.conn.wants_write() && connection.pending_out + bytes.len() > OUT_CAP {
@@ -1721,7 +1919,10 @@ fn queue_send(id: u64, bytes: Vec<u8>, conns: &mut HashMap<u64, Rx>, registry: &
                 drive_tls(id, connection, false, true, registry)
             }
         }
-        _ => false,
+        _ => {
+            flow.close();
+            false
+        }
     };
     if remove {
         teardown(id, conns, registry);
@@ -1740,6 +1941,20 @@ fn set_idle(id: u64, ms: u64, conns: &mut HashMap<u64, Rx>) {
     };
     *idle_slot = idle;
     *last_activity = Instant::now();
+}
+
+/// Set (`ms` > 0) or disarm how long a stream's queued output may make no progress before
+/// the connection is dropped ([`SEND_STALL_TIMEOUT`] by default). The clock starts again
+/// now, so shortening it never drops a connection that was within the old bound.
+fn set_stall(id: u64, ms: u64, conns: &mut HashMap<u64, Rx>) {
+    let stall = (ms != 0).then(|| Duration::from_millis(ms));
+    let (stall_slot, out_progress) = match conns.get_mut(&id) {
+        Some(Rx::Plain(connection)) => (&mut connection.stall, &mut connection.out_progress),
+        Some(Rx::Tls(connection)) => (&mut connection.stall, &mut connection.out_progress),
+        _ => return,
+    };
+    *stall_slot = stall;
+    *out_progress = Instant::now();
 }
 
 /// Flush queued outbound (bounded by [`LINGER`]) and close. The socket's owner was
@@ -1845,6 +2060,11 @@ fn teardown(id: u64, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
     reg().remove(&id);
 }
 
+/// Whether output waiting since `out_progress` has gone past its `stall` bound.
+fn stalled(stall: Option<Duration>, out_progress: Instant, now: Instant) -> bool {
+    stall.is_some_and(|bound| now.duration_since(out_progress) >= bound)
+}
+
 fn housekeep(conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
     let now = Instant::now();
     // Silent drops (unclaimed accepts, expired lingers — no owner is waiting on a
@@ -1855,6 +2075,7 @@ fn housekeep(conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
     let mut handshake_timeouts: Vec<u64> = Vec::new();
     // Opt-in idle-timeout reaps: the owner armed this and IS waiting, so it gets a
     // terminal message too (plaintext `[:tcp-closed]`, TLS via `tls_finish`).
+    // Stalled output is reaped the same way (`SEND_STALL_TIMEOUT`).
     let mut idle_reaps: Vec<u64> = Vec::new();
     for (&id, rx) in conns.iter() {
         match rx {
@@ -1868,6 +2089,10 @@ fn housekeep(conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
                     if now >= deadline {
                         doomed.push(id);
                     }
+                } else if !c.out.is_empty() && stalled(c.stall, c.out_progress, now) {
+                    // Output waiting and the peer has taken none of it for the bound: it
+                    // has stopped reading, and its sender would wait for it forever.
+                    idle_reaps.push(id);
                 } else if let Some(idle) = c.idle {
                     // Established and gone quiet in both directions past its armed bound.
                     //
@@ -1911,6 +2136,9 @@ fn housekeep(conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
                     if now >= hd {
                         handshake_timeouts.push(id);
                     }
+                } else if c.pending_out > 0 && stalled(c.stall, c.out_progress, now) {
+                    // See the plaintext arm.
+                    idle_reaps.push(id);
                 } else if let Some(idle) = c.idle {
                     // Handshake already done (deadline cleared) and idle past bound.
                     // Not while paused by inbound backpressure (see the plaintext arm).
@@ -2023,6 +2251,7 @@ pub fn connect(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
             port: None,
             listener: None,
             alpn: None,
+            outbound: None,
         },
     );
     // Closes the race with `reactor_died`'s sweep: the flag is set before the sweep
@@ -2117,6 +2346,7 @@ pub fn listen(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
             port: Some(local),
             listener: Some(listener.clone()),
             alpn: None,
+            outbound: None,
         },
     );
     reactor().cmd(Cmd::Listen {
@@ -2216,36 +2446,67 @@ pub fn set_idle_timeout(id: u64, ms: u64) -> std::io::Result<()> {
     Ok(())
 }
 
-/// `(tcp-send sock data)` — queue `data` for the reactor to write (ADR-143:
-/// asynchronous; a write failure surfaces later as `[:tcp-closed …]`, and a
-/// queue past [`OUT_CAP`] drops the connection). Erroring cases the caller can
-/// know now — unknown socket, a listener, an unclaimed TLS stream — still
-/// error synchronously.
-pub fn send(id: u64, data: &[u8]) -> std::io::Result<()> {
-    reactor_up()?;
+/// `(tcp-set-stall-timeout sock ms)` — how long a stream's queued output may make no
+/// progress before the reactor drops the connection, delivering `[:tcp-closed]` (or
+/// `[:tcp-error]` for a one-shot TLS client) and waking any sender waiting on it. **On by
+/// default**, at [`SEND_STALL_TIMEOUT`]: it is what ends a `tcp-send` waiting on a peer
+/// that stopped reading. `ms` 0 disarms it, for a peer trusted to read eventually. No-op if
+/// the socket is already gone by the time the reactor applies it; errors now if it's a
+/// listener.
+pub fn set_stall_timeout(id: u64, ms: u64) -> std::io::Result<()> {
     {
         let registry = reg();
         match registry.get(&id) {
-            Some(ctl) if ctl.kind == Kind::Stream => {}
-            Some(ctl) if ctl.kind == Kind::TlsStream => {
-                if !ctl.claimed {
-                    return Err(invalid(
-                        "tcp-send: TLS socket not yet claimed (tcp-controlling-process)",
-                    ));
-                }
+            Some(ctl) if matches!(ctl.kind, Kind::Stream | Kind::TlsStream) => {}
+            Some(_) => {
+                return Err(invalid(
+                    "tcp-set-stall-timeout: socket is a listener, not a stream",
+                ));
             }
-            Some(ctl) if ctl.kind == Kind::Udp => {
-                return Err(invalid("tcp-send: a UDP socket sends with udp-send"));
-            }
-            Some(_) => return Err(invalid("tcp-send: socket is a listener, not a stream")),
             None => return Err(bad_socket()),
         }
     }
+    reactor().cmd(Cmd::SetStall { id, ms });
+    Ok(())
+}
+
+/// `(tcp-send sock data)` — queue `data` for the reactor to write (ADR-143), charged
+/// against the socket's [`OutboundFlow`]. Returns whether `sender` (the calling process)
+/// must now wait for `[:tcp-drained sock]`: the queue reached [`OUTBOUND_HIGH_WATER`],
+/// and the reactor wakes it once the queue is low again or the connection is gone. A
+/// write failure surfaces later as `[:tcp-closed …]`. Erroring cases the caller can know
+/// now — unknown socket, a listener, an unclaimed TLS stream — still error synchronously.
+pub fn send(id: u64, data: &[u8], sender: u64) -> std::io::Result<bool> {
+    reactor_up()?;
+    let flow = {
+        let mut registry = reg();
+        let Some(ctl) = registry.get_mut(&id) else {
+            return Err(bad_socket());
+        };
+        match ctl.kind {
+            Kind::Stream => {}
+            Kind::TlsStream if !ctl.claimed => {
+                return Err(invalid(
+                    "tcp-send: TLS socket not yet claimed (tcp-controlling-process)",
+                ));
+            }
+            Kind::TlsStream => {}
+            Kind::Udp => return Err(invalid("tcp-send: a UDP socket sends with udp-send")),
+            Kind::Listener | Kind::TlsListener => {
+                return Err(invalid("tcp-send: socket is a listener, not a stream"));
+            }
+        }
+        ctl.outbound
+            .get_or_insert_with(|| OutboundFlow::new(id))
+            .clone()
+    };
+    flow.charge(data.len());
     reactor().cmd(Cmd::Send {
         id,
         bytes: data.to_vec(),
+        flow: flow.clone(),
     });
-    Ok(())
+    Ok(flow.park_if_full(sender))
 }
 
 /// `(tcp-close sock)` — close a stream or listener. Idempotent; sends nothing.
@@ -2335,6 +2596,7 @@ pub fn udp_open(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> 
             port: Some(local),
             listener: None,
             alpn: None,
+            outbound: None,
         },
     );
     reactor().cmd(Cmd::Udp {
@@ -2450,6 +2712,7 @@ pub fn tls_request(
             port: None,
             listener: None,
             alpn: None,
+            outbound: None,
         },
     );
     // See `connect` — closes the race with `reactor_died`'s sweep.
@@ -2533,6 +2796,7 @@ pub fn tls_connect(
             port: None,
             listener: None,
             alpn: Some(slot.clone()),
+            outbound: None,
         },
     );
     // See `connect` — closes the race with `reactor_died`'s sweep.
@@ -2647,6 +2911,7 @@ pub fn tls_listen(
             port: Some(local),
             listener: Some(listener.clone()),
             alpn: None,
+            outbound: None,
         },
     );
     reactor().cmd(Cmd::TlsListen {

@@ -93,9 +93,9 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     primitives.def(
         "%tcp-send",
         Arity::exact(2),
-        Sig::new(vec![socket_ty, iolist], nil_ty),
+        Sig::new(vec![socket_ty, iolist], bool_ty),
         &["sock", "data"],
-        "Write data to sock (blocking). data is any iolist — a string, a bytes value, a byte int 0–255, or an arbitrarily nested list/vector of those, flattened once at the write (ADR-139). A string leaf is always sent as its UTF-8 bytes, whatever the socket's mode (ADR-141); raw bytes go out as bytes values. Returns nil; throws on error.",
+        "Queue data for sock. data is any iolist — a string, a bytes value, a byte int 0–255, or an arbitrarily nested list/vector of those, flattened once at the write (ADR-139). A string leaf is always sent as its UTF-8 bytes, whatever the socket's mode (ADR-141); raw bytes go out as bytes values. Returns true when the socket's unwritten output has reached its high-water mark: the caller must then wait for [:tcp-drained sock], which the reactor sends it once the output is low again or the connection is gone (tcp/send does). Returns false otherwise; throws on error.",
         tcp_send);
     primitives.def(
         "%tcp-set-binary",
@@ -111,6 +111,13 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["sock", "ms"],
         "Arm (or, with ms 0, disarm) an idle timeout on an established stream: the reactor drops the connection if no bytes move in EITHER direction for ms milliseconds, delivering [:tcp-closed] (or [:tcp-error] for a one-shot TLS client). Off by default — arm it on a connection accepting untrusted input as slow-loris protection the reactor applies even if the app forgets to close; leave it off for a legitimately long-idle stream (SSE, long-poll). Returns nil; throws if sock is gone or a listener.",
         tcp_set_idle_timeout);
+    primitives.def(
+        "%tcp-set-stall-timeout",
+        Arity::exact(2),
+        Sig::new(vec![socket_ty, int], nil_ty),
+        &["sock", "ms"],
+        "Set how long an established stream's queued output may make no progress before the reactor drops the connection, delivering [:tcp-closed] (or [:tcp-error] for a one-shot TLS client) and waking a tcp/send waiting on it. On by default at 60 s: it ends a send waiting on a peer that stopped reading. ms 0 disarms it. Returns nil; throws if sock is gone or a listener.",
+        tcp_set_stall_timeout);
     primitives.def(
         "%tcp-controlling-process",
         Arity::exact(2),
@@ -304,9 +311,9 @@ pub(super) fn tls_protocol(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
 pub(super) fn tcp_send(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let id = expect_socket(heap, "%tcp-send", arg(args, 0))?;
     let out = send_payload(heap, "%tcp-send", arg(args, 1))?;
-    crate::host::net::send(id, &out)
+    let wait = crate::host::net::send(id, &out, crate::process::self_pid())
         .map_err(|e| LispError::runtime(format!("%tcp-send: {}", e)))?;
-    Ok(Value::nil())
+    Ok(Value::Bool(wait))
 }
 
 pub(super) fn tcp_set_binary(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
@@ -327,6 +334,19 @@ pub(super) fn tcp_set_idle_timeout(args: &[Value], _: EnvId, heap: &mut Heap) ->
     }
     crate::host::net::set_idle_timeout(id, ms as u64)
         .map_err(|e| LispError::runtime(format!("%tcp-set-idle-timeout: {}", e)))?;
+    Ok(Value::nil())
+}
+
+pub(super) fn tcp_set_stall_timeout(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let id = expect_socket(heap, "%tcp-set-stall-timeout", arg(args, 0))?;
+    let ms = expect_int(heap, "%tcp-set-stall-timeout", arg(args, 1))?;
+    if ms < 0 {
+        return Err(LispError::runtime(
+            "%tcp-set-stall-timeout: ms must be >= 0 (0 disarms)",
+        ));
+    }
+    crate::host::net::set_stall_timeout(id, ms as u64)
+        .map_err(|e| LispError::runtime(format!("%tcp-set-stall-timeout: {}", e)))?;
     Ok(Value::nil())
 }
 

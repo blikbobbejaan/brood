@@ -6,15 +6,17 @@
 ;; the owner's mailbox (the kernel buffer fills and TCP slows the peer), and resumes when
 ;; the owner has consumed it below 256 KiB — with no API change.
 ;;
-;; Each case has a sender queue far more than the high-water mark (8 MiB) while the owner
+;; Each case has a sender send far more than the high-water mark (8 MiB) while the owner
 ;; reads nothing, then measures what actually sat in the owner's mailbox: the chunks are
 ;; counted with `proc/mailbox-size` at a quiet moment and exactly that many are taken and
 ;; summed. The bound is the high-water mark plus one read (64 KiB). Then the owner reads
 ;; the rest and every byte must arrive intact and in order, followed by the close.
 ;;
-;; The sender stays alive until told to close: `tcp/close` flushes for a bounded linger,
-;; and a sender that exited early would close its socket at owner death — both would cut
-;; off the bytes still queued behind the paused reader.
+;; The sender stays alive until told to close and its writer has sent everything: a
+;; `tcp/send` waits once about a megabyte is unwritten (outbound backpressure, `OutboundFlow`),
+;; so the writer is parked behind the paused reader; `tcp/close` flushes for a bounded
+;; linger, and a sender that exited early would close its socket at owner death — either
+;; would cut off the bytes still on their way.
 
 (defmodule tcp-backpressure-test (:use test) (:use tcp :exclude [send]) (:use suite-helpers))
 
@@ -25,12 +27,17 @@
 (defn- blocks (n) (map (range n) block))
 
 (defn- send-then-hold (parent port payload)
-  "Connect, queue every block of `payload`, tell `parent`, then hold the socket open
-  until `parent` says to close it."
-  (let (c (tcp/connect "127.0.0.1" port))
-    (doseq (b payload) (tcp/send c b))
+  "Connect and send every block of `payload` from a writer of its own (a `tcp/send` waits
+  once about a megabyte is unwritten, and the reader takes nothing until it is told to),
+  tell `parent` the sending is under way, then hold the socket open until `parent` says to
+  close it and the writer has sent everything."
+  (let (c (tcp/connect "127.0.0.1" port)
+        me (self))
+    (spawn (do (doseq (b payload) (tcp/send c b)) (send me [:sent])))
     (send parent [:queued (self)])
-    (receive ([:close] (tcp/close c)) (after 60000 (tcp/close c)))
+    (receive ([:close] nil) (after 60000 nil))
+    (receive ([:sent] nil) (after 60000 nil))
+    (tcp/close c)
     (receive ([:done] nil) (after 60000 nil))))
 
 (defn- binary-listener ()
@@ -155,9 +162,12 @@
                             (tcp/set-binary c true)
                             (tcp/controlling-process c (self))
                             (receive ([:tcp ^c _] nil) (after 20000 nil))
-                            (doseq (b payload) (tcp/send c b))
+                            (let (server (self))
+                              (spawn (do (doseq (b payload) (tcp/send c b)) (send server [:sent]))))
                             (send me [:queued])
-                            (receive ([:close] (tcp/close c)) (after 60000 (tcp/close c)))
+                            (receive ([:close] nil) (after 60000 nil))
+                            (receive ([:sent] nil) (after 60000 nil))
+                            (tcp/close c)
                             (receive ([:done] nil) (after 60000 nil)))))
           [port cert] (receive ([:ready p ct] [p ct]) (after 20000 (error "no tls server")))
           s (tls/request "localhost" port "go" cert true))

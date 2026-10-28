@@ -33,7 +33,11 @@ pub fn set_idle_timeout(_id: u64, _ms: u64) -> std::io::Result<()> {
     unsupported()
 }
 
-pub fn send(_id: u64, _data: &[u8]) -> std::io::Result<()> {
+pub fn set_stall_timeout(_id: u64, _ms: u64) -> std::io::Result<()> {
+    unsupported()
+}
+
+pub fn send(_id: u64, _data: &[u8], _sender: u64) -> std::io::Result<bool> {
     unsupported()
 }
 

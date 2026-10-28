@@ -114,6 +114,7 @@ const EFFECTFUL: &[&str] = &[
     "%tcp-send",
     "%tcp-set-binary",
     "%tcp-set-idle-timeout",
+    "%tcp-set-stall-timeout",
     "%tls-listen",
     "%tls-request",
     "%tls-self-signed",

@@ -1,0 +1,130 @@
+;; Outbound socket backpressure (host/net.rs `OutboundFlow`).
+;;
+;; `tcp/send` used to queue and return whatever the peer's pace, so a producer writing to a
+;; slow reader made everything at once and held it, up to the 16 MiB cap, past which the
+;; connection was dropped mid-stream. A send now waits once about a megabyte is unwritten,
+;; until the reactor has written most of it or the connection is gone; and output that
+;; makes no progress for the stall timeout drops the connection, which ends that wait.
+;;
+;; Each case writes from a process that does not own the socket (a writer parks itself,
+;; whoever owns the socket), to a peer that reads nothing until the case says so. A writer
+;; reports each block it has sent, so the case sees where it stopped.
+
+(defmodule tcp-send-backpressure-test (:use test) (:use tcp :exclude [send]))
+
+(def- *block-bytes* 65536)
+
+(defn- block (k)
+  "64 KiB whose content names `k`, so a reordered or dropped block is a mismatch."
+  (bytes/concat (string/repeat (str (string/pad-left (str k) 7 "0") "|") 8192)))
+
+(defn- blocks (n) (map (range n) block))
+
+(defn- pair ()
+  "A connected loopback pair, `[client server listener]`, the accepted end binary and owned
+  by the calling process, which reads nothing from it until it says so."
+  (let (ls (tcp/listen "127.0.0.1" 0))
+    (tcp/set-binary ls true)
+    (let (c (tcp/connect "127.0.0.1"
+              (or (tcp/local-port ls) (error "the listener reported no local port")))
+          s (receive ([:tcp-accept ^ls cs] cs) (after *test-wait-ms* (error "no accept"))))
+      (tcp/controlling-process s (self))
+      [c s ls])))
+
+(defn- writer (parent c payload)
+  "Send each block of `payload` on `c`, telling `parent` `[:sent k]` after block `k`, then
+  `[:written]`; a send that raises ends it with `[:refused]`."
+  (spawn (do
+           (check-allow :discarded-catch
+             (try
+               (doseq (k (range (count payload)))
+                 (tcp/send c (nth payload k))
+                 (send parent [:sent k]))
+               (catch _ (send parent [:refused]))))
+           (send parent [:written]))))
+
+(defn- sent-before-quiet (last-sent)
+  "The last block a writer reported before it went quiet for half a second: where it is
+  parked."
+  (receive
+    ([:sent k] (sent-before-quiet k))
+    (after 500 last-sent)))
+
+(defn- drain-all (s acc)
+  "Everything `s` delivers until its writer says it has written all, then what is left."
+  (receive
+    ([:tcp ^s data] (drain-all s (cons data acc)))
+    ([:sent _] (drain-all s acc))
+    ([:written] (drain-rest s acc))
+    (after *test-wait-ms* (error "the writer never finished"))))
+
+(defn- drain-rest (s acc)
+  (receive
+    ([:tcp ^s data] (drain-rest s (cons data acc)))
+    (after 500 (bytes/concat (reverse acc)))))
+
+(defn- finished ()
+  "How the writer ended: `:written`, or `:hung` if it did not within the wait."
+  (receive
+    ([:written] :written)
+    ([:sent _] (finished))
+    ([:refused] (finished))
+    (after *test-wait-ms* :hung)))
+
+(describe "tcp send backpressure: a peer that reads nothing"
+  :isolated (test "the writer waits well short of all it has to send, and every byte arrives once the peer reads"
+    ;; 32 MiB offered; what can be in flight is the sender's megabyte, both kernel buffers
+    ;; and the reader's own megabyte of inbound budget, a few megabytes on loopback.
+    (let (payload (blocks 512)
+          [c s ls] (pair))
+      (writer (self) c payload)
+      (let (parked-at (sent-before-quiet -1))
+        (is (>= parked-at 0))
+        (is (< (* (+ parked-at 1) *block-bytes*) (* 16 1024 1024)))
+        (let (got (drain-all s nil))
+          (tcp/close c)
+          (tcp/close s)
+          (tcp/close ls)
+          (is (= got (bytes/concat payload))))))))
+
+(describe "tcp send backpressure: the wait ends with the connection"
+  :isolated (test "a writer parked on a peer that closes is woken, and does not hang"
+    (let (payload (blocks 512)
+          [c s ls] (pair))
+      (writer (self) c payload)
+      (sent-before-quiet -1)
+      ;; closing with unread input resets the connection: the writer's queue goes nowhere
+      (tcp/close s)
+      (assert= (finished) :written)
+      (tcp/close c)
+      (tcp/close ls)))
+  :isolated (test "a peer that takes nothing for the stall timeout is dropped, and the writer woken"
+    (let (payload (blocks 512)
+          [c s ls] (pair))
+      (tcp/set-stall-timeout c 500)
+      (writer (self) c payload)
+      ;; the reap is found on the reactor's housekeeping tick, about a second
+      (assert= (finished) :written)
+      (assert= (receive ([:tcp-closed ^c] :closed) (after *test-wait-ms* :open)) :closed)
+      (tcp/close c)
+      (tcp/close s)
+      (tcp/close ls))))
+
+(describe "tcp send backpressure: the stall timeout"
+  (test "a listener has no stall timeout to set"
+    (let (ls (tcp/listen "127.0.0.1" 0))
+      (assert-error (tcp/set-stall-timeout ls 1000))
+      (tcp/close ls)))
+  (test "a small reply to a peer that is not reading never stalls"
+    ;; the kernel takes it at once, so nothing waits and nothing is dropped
+    (let ([c s ls] (pair))
+      (tcp/set-stall-timeout c 200)
+      (tcp/send c "hello")
+      ;; past the bound and a housekeeping tick, the connection is still there
+      (let (kept (receive ([:tcp-closed ^c] :dropped) (after 1500 :kept))
+            got (receive ([:tcp ^s data] (string/bytes-> data)) (after *test-wait-ms* :none)))
+        (tcp/close c)
+        (tcp/close s)
+        (tcp/close ls)
+        (assert= kept :kept)
+        (assert= got "hello")))))

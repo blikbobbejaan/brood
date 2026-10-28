@@ -6,6 +6,19 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Changed — breaking.**
+- `tcp/send` waits on its peer (ADR-504). Once about a megabyte is unwritten it parks until
+  the peer has taken most of it, or the connection is gone, so a producer streaming to a slow
+  reader runs at the reader's pace and holds a megabyte rather than all it sends; a response
+  larger than 16 MiB is no longer cut off for a slow client. A process that sent a large
+  payload to a peer not yet reading and went on now waits there: send it from another
+  process. `%tcp-send` returns whether to wait for the new `[:tcp-drained sock]` message.
+
+**Added.**
+- `tcp/set-stall-timeout`: how long queued output may make no progress before the
+  connection is dropped (60 s by default, 0 disarms), which ends a send waiting on a peer that
+  stopped reading.
+
 ## v0.45.0 — C-g, one shape for errors, and macros at every level
 
 A busy program can now be stopped without killing it: C-g interrupts a running update or

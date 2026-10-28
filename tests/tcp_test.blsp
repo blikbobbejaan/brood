@@ -749,7 +749,13 @@
         port (receive ([:port ^peer p] p) (after *test-wait-ms* (error "no port from the peer")))
         c (tcp/connect "127.0.0.1" port))
     (receive ([:tcp ^c _] nil) (after *test-wait-ms* (error "the peer never wrote")))
-    (when payload (tcp/send c payload))
+    ;; The peer reads nothing until it is stopped, so a send of the payload waits on it
+    ;; (outbound backpressure): send it from a writer, and close once the writer is parked
+    ;; with all of it queued. The close lingers to flush it, and wakes the writer.
+    (when payload
+      (let (writer (spawn (tcp/send c payload)))
+        (eventually "the writer parked behind the peer"
+          (fn () (= (get (proc/info writer) :status) :waiting)))))
     (tcp/close c)
     ;; Whatever was delivered before the close returned may sit here; take it.
     (late-messages c 0 0)

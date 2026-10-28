@@ -23,11 +23,14 @@
 ;;                               to the same owner, so its [:tcp …] arrive here too)
 ;;
 ;; Outbound is `(tcp/send sock iolist)` (writes it all; string leaves are always
-;; UTF-8, raw bytes ride as `bytes` values — ADR-141); `(tcp/close sock)` shuts a
-;; stream or stops a listener. Once `close` returns, no new message for that socket
-;; reaches any mailbox — not even a `[:tcp-closed]`; what was already delivered
-;; stays. A stream's queued output still flushes to the peer in the background, so
-;; `send` then `close` never truncates. A socket handle is valid across this
+;; UTF-8, raw bytes ride as `bytes` values — ADR-141). It queues and returns, and waits
+;; once about a megabyte is unwritten until the peer has taken most of it (ADR-504): the
+;; reactor wakes the sending process with `[:tcp-drained sock]`, which `send` consumes, so
+;; no caller sees it. A peer that takes nothing for the stall timeout is dropped.
+;; `(tcp/close sock)` shuts a stream or stops a listener. Once `close` returns, no new
+;; message for that socket reaches any mailbox — not even a `[:tcp-closed]`; what was
+;; already delivered stays. A stream's queued output still flushes to the peer in the
+;; background, so `send` then `close` never truncates. A socket handle is valid across this
 ;; runtime's processes but is never sent across nodes.
 
 (defmodule tcp
@@ -67,10 +70,14 @@ are Rust.")
   (%tcp-listen host port))
 
 (defn send (sock:socket data:any -> nil)
-  "Write data to sock (blocking). data is any iolist — a string, a bytes value, a byte int 0–255, or an arbitrarily nested list/vector of those, flattened once at the write (ADR-139). A string leaf is always sent as its UTF-8 bytes, whatever the socket's mode (ADR-141); raw bytes go out as bytes values. Returns nil; throws on error.
+  "Write data to sock. data is any iolist — a string, a bytes value, a byte int 0–255, or an arbitrarily nested list/vector of those, flattened once at the write (ADR-139). A string leaf is always sent as its UTF-8 bytes, whatever the socket's mode (ADR-141); raw bytes go out as bytes values. Returns nil; throws on error.
 
-    (tcp/send sock [\"GET / HTTP/1.0\\r\\n\" \"\\r\\n\"])   ;~> nil, once the bytes are written"
-  (%tcp-send sock data))
+The bytes are queued and written as the peer takes them, so a write failure shows later, as `[:tcp-closed sock]`. Once about a megabyte is waiting unwritten, `send` waits (parked, holding no worker) until the peer has taken most of it, or the connection is gone: a producer runs at its peer's pace and never holds more than that. A peer that takes nothing for the stall timeout (60 s by default, `set-stall-timeout`) has its connection dropped, which ends the wait.
+
+    (tcp/send sock [\"GET / HTTP/1.0\\r\\n\" \"\\r\\n\"])   ;~> nil, once the bytes are queued"
+  (when (%tcp-send sock data)
+    (receive ([:tcp-drained ^sock] nil)))
+  nil)
 
 (defn close (sock:socket -> nil)
   "Close sock (a stream or listener), releasing its fd / stopping its accept loop. Once this returns, no new message for sock reaches any mailbox — no data, no [:tcp-closed], no [:tcp-accept]; messages already delivered stay. A stream's queued output still flushes to the peer (bounded by a 5 s linger), so send-then-close never truncates; bytes the peer sends meanwhile are discarded. Idempotent; returns nil.
@@ -107,6 +114,12 @@ are Rust.")
 
     (tcp/set-idle-timeout sock 30000)   ;~> nil; the connection drops after 30 s with no traffic"
   (%tcp-set-idle-timeout sock ms))
+
+(defn set-stall-timeout (sock:socket ms:int -> nil)
+  "Set how long an established stream's queued output may make no progress before the reactor drops the connection, delivering `[:tcp-closed]` (or `[:tcp-error]` for a one-shot TLS client) and ending a `send` waiting on it. On by default at 60 s: it is what ends a `send` to a peer that stopped reading. ms 0 disarms it, for a peer trusted to read eventually. Only a peer whose buffers are full can stall, so an idle stream is never dropped by it. Returns nil; throws if sock is gone or a listener.
+
+    (tcp/set-stall-timeout sock 10000)   ;~> nil; a peer that takes nothing for 10 s is dropped"
+  (%tcp-set-stall-timeout sock ms))
 
 (defn socket? (x)
   "True if `x` is a TCP socket.

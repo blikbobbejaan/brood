@@ -4673,3 +4673,21 @@ harness fix the doctest and C-g tests; do the JIT tests still read `:untried`/`:
 load — `settle` now prints why), both soaks, and ADR-502's benchmark, never run:
 `make ab BASE=11601fe6 ROWS="nqueens pipeline json reduce"` on the benchmark machine. If any
 of these turns up a defect, it ships as v0.45.1.
+2026-10-28 (ADR-504, `tcp-send` waits on its peer): outbound sockets had no flow control —
+`tcp-send` queued and returned, and the reactor's 16 MiB cap dropped the connection of a
+reader that fell that far behind. So a server streaming to a slow client made the whole
+response at once and held it, and one past 16 MiB was cut off: the mur forge's streamed
+`.tar.gz` of Brood's trunk (21 MB) would have failed for nearly every client, and its release
+downloads over 16 MiB already did. Each stream now has an `OutboundFlow` (bytes handed over and
+not written to the kernel); `%tcp-send` returns true at 1 MiB and `tcp/send` waits for
+`[:tcp-drained sock]`, sent below 256 KiB or when the connection goes by any route (a
+`SendGuard` dropped with the connection, a send finding none, the reactor's death hook). A
+stall bound (60 s, `tcp/set-stall-timeout`) drops a peer whose queue makes no progress, which
+is what ends a wait on a peer that stopped reading. Two tests queued a large payload to a peer
+not yet reading and then went on; they send it from a writer of their own now
+(`tcp_backpressure_test`'s sender, `tcp_test`'s lingering close, which closes once the writer
+is parked). Guard: `tests/tcp_send_backpressure_test.blsp` (red before: the 32 MiB writer
+queued it all and was dropped). Run here, each once: that file, `tcp_backpressure_test`,
+`tcp_test`, `tls_test`, `http_test`, and the `primitive_docs` and `natives_never_mutate` Rust
+tests; build, clippy, fmt. Not run here: the suite, GC stress, ASan and the loops the reactor's
+concurrency calls for (`make green` after the push).
