@@ -508,6 +508,8 @@ pub(super) struct MailboxState {
     /// key, so a `proc/send-latest` finds the one it supersedes, and a receive asks whether
     /// its candidate was superseded, without walking the backlog. Boxed at the first
     /// LATEST envelope: few processes are ever sent one, and every process pays the field.
+    // The box is the point: one pointer on every mailbox instead of the map's 48 B.
+    #[allow(clippy::box_collection)]
     pub(super) latest_queued: Option<Box<std::collections::HashMap<Box<str>, u64>>>,
     /// The quit key (`proc/set-quit-key`, ADR-491): a PRIORITY-lane message equal to it
     /// interrupts this process when its interrupt window has been open long enough.
