@@ -1218,7 +1218,7 @@ mod tests {
     #[test]
     fn a_stepped_search_finds_what_one_meta_search_finds() {
         for pattern in PATTERNS {
-            let rx = compiled("test", pattern, Kind::LeftmostFirst).unwrap();
+            let rx = compiled("%regex-find", pattern, Kind::LeftmostFirst).unwrap();
             for text in TEXTS {
                 for start in starts(text) {
                     let expected = rx.search(&Input::new(text).range(start..));
@@ -1253,7 +1253,7 @@ mod tests {
     #[test]
     fn a_stepped_longest_match_is_what_meta_finds() {
         for pattern in PATTERNS {
-            let rx = compiled("test", pattern, Kind::Longest).unwrap();
+            let rx = compiled("%regex-tokens", pattern, Kind::Longest).unwrap();
             let Some(stepped) = rx.stepped() else {
                 continue;
             };
@@ -1287,7 +1287,7 @@ mod tests {
 
     #[test]
     fn a_prefilter_candidate_across_a_window_edge_is_found() {
-        let rx = compiled("test", "zq\\w*", Kind::LeftmostFirst).unwrap();
+        let rx = compiled("%regex-find", "zq\\w*", Kind::LeftmostFirst).unwrap();
         for pad in [
             SEARCH_WINDOW - 2,
             SEARCH_WINDOW - 1,
@@ -1304,7 +1304,7 @@ mod tests {
     #[test]
     fn the_polling_pike_vm_finds_what_meta_finds_with_its_groups() {
         for pattern in PATTERNS {
-            let rx = compiled("test", pattern, Kind::LeftmostFirst).unwrap();
+            let rx = compiled("%regex-find", pattern, Kind::LeftmostFirst).unwrap();
             let nfa = rx.nfa().unwrap();
             for text in TEXTS {
                 for start in starts(text) {
@@ -1340,7 +1340,7 @@ mod tests {
     #[test]
     fn the_polling_pike_vm_finds_the_longest_match_meta_finds() {
         for pattern in PATTERNS {
-            let rx = compiled("test", pattern, Kind::Longest).unwrap();
+            let rx = compiled("%regex-tokens", pattern, Kind::Longest).unwrap();
             let nfa = rx.nfa().unwrap();
             let mut slots = vec![None; 2];
             for text in TEXTS {
