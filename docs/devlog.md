@@ -4722,8 +4722,8 @@ tests under wasmtime 50's new fuel charging, the nightly's ASan job and soaks, a
 benchmark rows ADR-502 and ADR-505 name. A defect any of these finds ships as v0.46.1.
 2026-10-28 (ADR-506, the bare namespace is the language; ROADMAP B4): a name is bare only when
 it is syntax, a function used in 15 or more of the 37 Brood projects counted (or the partner of
-one), a built-in kind's predicate or coercion, or an operator; 115 moved to their family's
-module in nine waves, 187 stay. Boot was the reason the old split blurred, and it was never
+one), a built-in kind's predicate or coercion, or an operator; 113 moved to their family's
+module in nine waves, 189 stay. Boot was the reason the old split blurred, and it was never
 one: the prelude defines `seq/mapv` itself. Each wave renamed the definition, recorded the
 ledger entry, and rewrote callers at the positions the checker reports unbound, so a local of
 the same name is never touched; a call-head pass covered the files the checker gives up on,

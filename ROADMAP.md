@@ -191,9 +191,9 @@ another Lisp has it.
    starting point).
    **Done:** a name is bare only when it is syntax, a function used in 15 or more of the 37
    projects counted (or the partner of one), a built-in kind's predicate or coercion, or an
-   operator. 115 names moved to their family's module (`combinator/`, `list/`, `seq/`,
+   operator. 113 names moved to their family's module (`combinator/`, `list/`, `seq/`,
    `map/`, `set/`, `proc/`, `reflect/`, `debug/`, `io/`, a library type's own module, and
-   65 subsystem dynamics); boot is no reason, as the prelude defines qualified names.
+   63 subsystem dynamics); boot is no reason, as the prelude defines qualified names.
 5. ⬜ **Exceptions to "callback last".**
    - `(map/merge-with f & maps)`: variadic maps force the function first.
    - `condp` is value-first, the opposite of Clojure's `(pred test expr)`.

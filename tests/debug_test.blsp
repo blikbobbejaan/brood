@@ -255,10 +255,10 @@
     (assert= (trace-release 'debug-test/tfn-held) 0)
     (is (nil? (get (trace-holds) 'debug-test/tfn-held)))
     (assert= (tfn-held 1) 2))
-  :isolated (test "trace-fn emits :call and :return through debug/*spy-sink* and is value-transparent"
+  :isolated (test "trace-fn emits :call and :return through *spy-sink* and is value-transparent"
     (let (me (self))
       (trace-fn 'debug-test/tfn-square)
-      (let (r (binding (debug/*spy-sink* (fn (e) (send me [:spy-entry e])))
+      (let (r (binding (*spy-sink* (fn (e) (send me [:spy-entry e])))
                 (tfn-square 7)))
         (assert= 49 r)
         (let (call (receive ([:spy-entry e] e) (after test/*wait-ms* :timeout))
@@ -274,7 +274,7 @@
       (trace-fn 'debug-test/tfn-add)
       (untrace-fn 'debug-test/tfn-add)
       (assert= 5
-        (binding (debug/*spy-sink* (fn (e) (send me [:spy-entry e])))
+        (binding (*spy-sink* (fn (e) (send me [:spy-entry e])))
           (tfn-add 2 3)))
       (assert= :quiet (receive ([:spy-entry e] e) (after 50 :quiet)))))
   (test "a function redefined WHILE traced keeps its redefinition through untrace-fn"
@@ -295,7 +295,7 @@
       (trace-fn 'debug-test/tfn-rewrap)
       (is (traced-current? 'debug-test/tfn-rewrap))
       (assert= 3000
-        (binding (debug/*spy-sink* (fn (e) (send me [:spy-entry e])))
+        (binding (*spy-sink* (fn (e) (send me [:spy-entry e])))
           (tfn-rewrap 3)))
       ;; drain BOTH entries — an isolated describe shares one process across its tests,
       ;; and a `:call` left in the mailbox would surface in the next test's receive
@@ -337,7 +337,7 @@
       (untrace-fn 'debug-test/tfn-add)
       (let (me (self))
         (assert= 5
-          (binding (debug/*spy-sink* (fn (e) (send me [:spy-entry e])))
+          (binding (*spy-sink* (fn (e) (send me [:spy-entry e])))
             (tfn-add 2 3)))
         (assert= :quiet (receive ([:spy-entry e] e) (after 50 :quiet))))))
   (test "traced-fns lists the instrumented names; untrace-all clears them"
@@ -384,7 +384,7 @@
   ((n) (tfn-countdown (- n 1))))
 
 ;; A sink bounded to `cap` entries, answering `:spy-stop` once it is full — the
-;; bounded-sink contract from `debug/*spy-sink*`, and what every display sink should do.
+;; bounded-sink contract from `*spy-sink*`, and what every display sink should do.
 (defn bounded-sink (acc cap)
   (fn (e)
     (let (n (or (table/get acc :n) 0))
@@ -400,7 +400,7 @@
     (let (acc (table/new))
       (trace-fn 'debug-test/tfn-countdown)
       (assert= :liftoff
-        (binding (debug/*spy-sink* (bounded-sink acc 10))
+        (binding (*spy-sink* (bounded-sink acc 10))
           (tfn-countdown 5000)))
       (untrace-fn 'debug-test/tfn-countdown)
       (assert= 10 (table/get acc :n))
@@ -417,7 +417,7 @@
     (let (acc (table/new))
       (trace-fn 'debug-test/tfn-countdown)
       (assert= :liftoff
-        (binding (debug/*spy-sink* (bounded-sink acc 50))
+        (binding (*spy-sink* (bounded-sink acc 50))
           (tfn-countdown 1200000)))
       (untrace-fn 'debug-test/tfn-countdown)
       (assert= 50 (table/get acc :n))
@@ -426,7 +426,7 @@
     (let (me (self))
       (trace-fn 'debug-test/tfn-square)
       (assert= 81
-        (binding (debug/*spy-sink* (fn (e) (send me [:spy-entry e]) nil))
+        (binding (*spy-sink* (fn (e) (send me [:spy-entry e]) nil))
           (tfn-square 9)))
       (untrace-fn 'debug-test/tfn-square)
       (assert= :call (:spy (receive ([:spy-entry e] e) (after test/*wait-ms* :timeout))))

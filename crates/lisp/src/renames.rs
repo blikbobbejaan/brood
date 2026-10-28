@@ -30,7 +30,6 @@ pub const RENAMES: &[(&str, &str, &str)] = &[
     ("*ui-slow-reports*", "editor/ui/*slow-reports*", "ADR-506"),
     ("*ui-memo*", "editor/ui/*memo*", "ADR-506"),
     ("*ui-loop*", "editor/ui/*loop*", "ADR-506"),
-    ("*transduce-run*", "seq/*transduce-run*", "ADR-506"),
     ("*test-wait-ms*", "test/*wait-ms*", "ADR-506"),
     ("*test-trace*", "test/*trace*", "ADR-506"),
     ("*test-timeout-ms*", "test/*timeout-ms*", "ADR-506"),
@@ -46,7 +45,6 @@ pub const RENAMES: &[(&str, &str, &str)] = &[
     ("*test-filter*", "test/*filter*", "ADR-506"),
     ("*term-display*", "editor/ui/*term-display*", "ADR-506"),
     ("*stale-temp-age-ms*", "test/*stale-temp-age-ms*", "ADR-506"),
-    ("*spy-sink*", "debug/*spy-sink*", "ADR-506"),
     (
         "*resolver-time-budget-ms*",
         "resolver/*time-budget-ms*",

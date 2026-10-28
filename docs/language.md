@@ -1395,13 +1395,13 @@ It fully macroexpands the form and instruments each evaluated position **in plac
 laziness is preserved (an untaken `if` branch or a short-circuited `and` tail never
 traces) and a **pipeline needs no special case** — `(-> x f g)` expands to `(g (f x))`
 and each stage traces as an ordinary call. `fn` bodies and quoted data are left opaque.
-Trace entries flow through the swappable **`debug/*spy-sink*`** (a `defdyn`) — the default
+Trace entries flow through the swappable **`*spy-sink*`** (a `defdyn`) — the default
 prints the indented tree to stderr, but a host can `binding` it to a collector and
 consume the trace as data (`{:spy :node :form … :value … :depth …}` maps), or to a
 no-op to silence it without editing code:
 
 ```clojure fragment
-(binding (debug/*spy-sink* (fn (entry) nil)) (debug/spy (heavy-computation)))  ; value, no output
+(binding (*spy-sink* (fn (entry) nil)) (debug/spy (heavy-computation)))  ; value, no output
 ```
 
 > Macros are hygienic both ways automatically: a template's introduced `let`/`fn`

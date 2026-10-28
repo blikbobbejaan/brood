@@ -19,7 +19,7 @@ release compiles it out — see scheduler/lifecycle.rs and process/mailbox.rs). 
 — no re-wiring — and a server handles a request in the *sender's* context; the debugger
 reconstructs a cross-process causal TREE, something `dbg` cannot do.
 
-Wire it up with `with-debugger`; trace with `spy` (its `debug/*spy-sink*` is routed here),
+Wire it up with `with-debugger`; trace with `spy` (its `*spy-sink*` is routed here),
 pause with `break`, and correlate with `span` (`span-spawn` is now just
 `(spawn (span …))` sugar). `watch` gives a live terminal view."
   (:use editor/ansi)
@@ -113,14 +113,14 @@ Debug Adapter Protocol server sends its `stopped` event from it). Returns nil.
   (spawn (debug-loop {:events [] :paused {} :seq 0})))
 
 (defn debugger-sink ()
-  "A `debug/*spy-sink*` value that forwards each `spy` entry to the debugger in the current `*trace-context*` (read at emit time, so it follows the context into spawned children).
+  "A `*spy-sink*` value that forwards each `spy` entry to the debugger in the current `*trace-context*` (read at emit time, so it follows the context into spawned children).
 
-    (binding (debug/*spy-sink* (debug/debugger-sink)) (work))   ;~> work's value; its `debug/spy` entries reach the debugger"
+    (binding (*spy-sink* (debug/debugger-sink)) (work))   ;~> work's value; its `debug/spy` entries reach the debugger"
   (fn (entry) (let (dbg (tc-debugger)) (when dbg (send dbg [:trace entry (self)])))))
 
 (defn with-debugger (dbg thunk)
-  "Run `thunk` wired to debugger `dbg`: the trace-context slot carries it (and the current span) and `debug/*spy-sink*` routes `spy` to it. Because the kernel propagates the slot across `spawn` (and `send`→`receive`), children and message handlers inherit the wiring with NO re-setup — a plain `(spawn (fn () (break …)))` inside here parks at `dbg`."
-  (binding (debug/*spy-sink* (debugger-sink))
+  "Run `thunk` wired to debugger `dbg`: the trace-context slot carries it (and the current span) and `*spy-sink*` routes `spy` to it. Because the kernel propagates the slot across `spawn` (and `send`→`receive`), children and message handlers inherit the wiring with NO re-setup — a plain `(spawn (fn () (break …)))` inside here parks at `dbg`."
+  (binding (*spy-sink* (debugger-sink))
     (with-trace-context {:debugger dbg :span nil} thunk)))
 
 ;; ---- break: park without a timeout, fan into the paused queue ----------------
@@ -209,7 +209,7 @@ are just a Brood predicate, so no recompile and no cost on the false path. (A ma
 ;; is rebound to a wrapper (late binding, ADR-013: every existing call site takes the
 ;; new definition on its next call — the same def-rebinding seam `nest test --cover`
 ;; instruments with); the original fn value is kept in `*traced-fns*` and restored by
-;; `untrace-fn`. Traffic goes through the same `debug/*spy-sink*` seam `spy` uses, so it
+;; `untrace-fn`. Traffic goes through the same `*spy-sink*` seam `spy` uses, so it
 ;; follows the sink wherever it points (stderr, the debugger, an editor buffer).
 ;; Reserved names (ADR-166) mean a prelude/std name cannot be rebound — these are for
 ;; YOUR functions. The wrapper is variadic, so every arity of a multi-clause fn goes
@@ -251,7 +251,7 @@ redefined since (its rebinding generation moved), which `trace-fn` re-wraps.
 (defn trace-fn (sym)
   "Trace function `sym` (a quoted, usually qualified symbol) at its boundary: rebind it
 to a wrapper that emits `{:spy :call :fn sym :args …}` before delegating and
-`{:spy :return :fn sym :value …}` after, through `debug/*spy-sink*`. The value is returned
+`{:spy :return :fn sym :value …}` after, through `*spy-sink*`. The value is returned
 unchanged and a thrown error passes through untraced. Idempotent; `untrace-fn`
 restores the original. Not for a macro or a builtin (there is no fn value to wrap),
 nor a reserved prelude/std name (ADR-166).
@@ -260,7 +260,7 @@ nor a reserved prelude/std name (ADR-166).
 is work AFTER the call, so a self-call in tail position stops being one and each level
 costs a VM frame — instrumenting a tail loop turns O(1) stack into O(n) and can trip
 the frame limit. A sink that answers `:spy-stop` (the bounded-sink contract on
-`debug/*spy-sink*`) makes that cost stop with it: the wrapper puts the original back and
+`*spy-sink*`) makes that cost stop with it: the wrapper puts the original back and
 delegates in TAIL position, so every call after that one is uninstrumented — real
 speed, constant stack, nothing built to be discarded. What you lose is the trace past
 the sink's own budget, which the sink just told us it was throwing away.
@@ -271,7 +271,7 @@ and a later `trace-fn` still finds the true original. It IS globally visible, li
 every other thing instrumentation does here: a second process running the same
 function stops being traced too.
 
-    (debug/trace-fn 'myapp/parse)   ;~> myapp/parse — its calls and returns now reach `debug/*spy-sink*`"
+    (debug/trace-fn 'myapp/parse)   ;~> myapp/parse — its calls and returns now reach `*spy-sink*`"
   (let (orig (debug-original sym))
     (when (not (fn? orig)) (error "trace-fn: not a function: " sym))
     ;; Already wrapped and untouched since: nothing to do (a second wrapper would trace
@@ -462,7 +462,7 @@ A name nobody holds is left alone — an untraced name, or one already restored 
     (when dbg (send dbg [:span-enter id parent (self) label]))
     ;; Set the whole context (new span) for the body AND bind the spy sink, so `spy`
     ;; inside this span routes to the debugger even in a child that only inherited it.
-    (binding (debug/*spy-sink* (debugger-sink))
+    (binding (*spy-sink* (debugger-sink))
       (with-trace-context {:debugger dbg :span id}
         (fn ()
           (let (value (thunk))
@@ -688,10 +688,10 @@ always runs, even on error, so the terminal is restored.
 ;; *result* — resume to advance to the next. Run under `with-debugger` and drive the
 ;; steps from `repl-session` / `attach`.
 (defn stepping-sink ()
-  "A `debug/*spy-sink*` that parks the process at each `spy` node (one breakpoint per
+  "A `*spy-sink*` that parks the process at each `spy` node (one breakpoint per
 subexpression). Non-node entries (`:enter`/`:exit`) pass through.
 
-    (binding (debug/*spy-sink* (debug/stepping-sink)) (work))   ;~> work's value, after parking at each `debug/spy` node"
+    (binding (*spy-sink* (debug/stepping-sink)) (work))   ;~> work's value, after parking at each `debug/spy` node"
   (fn (entry)
     (when (= (get entry :spy) :node)
       (let (dbg (tc-debugger))
@@ -710,7 +710,7 @@ subexpression). Non-node entries (`:enter`/`:exit`) pass through.
   "Evaluate `expr` in single-step mode: each `spy`-traced subexpression parks at a
 breakpoint until resumed, so you step through evaluation one node at a time. Run it
 under `with-debugger`; advance the steps from `repl-session` (`r`) or `attach`."
-  `(binding (debug/*spy-sink* (stepping-sink)) (debug/spy ~expr)))
+  `(binding (*spy-sink* (stepping-sink)) (debug/spy ~expr)))
 
 ;; ---- pry: drop into the REAL REPL at a debug point --------------------------
 ;; The `binding.pry` / `IEx.pry` move, done right: instead of a bespoke prompt, launch

@@ -297,7 +297,7 @@ since the prelude is always present.
                         (not (%prelude-global? g))))))
         ;; A `defdyn` is the other way to get here, and the message above would send you the
         ;; wrong way: it is AMBIENT — always a root name, so no module can own it, from a fresh
-        ;; process or not (`seq/*transduce-run*` in std/seq, 2026-10-22). Name that case and its fix.
+        ;; process or not (`*transduce-run*` in std/seq, 2026-10-22). Name that case and its fix.
         dynamic-orphans (seq/filter orphans reflect/dynamic?)
         _ (when (not (empty? dynamic-orphans))
             (error "stdimage/build: "

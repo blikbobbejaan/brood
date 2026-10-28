@@ -68,7 +68,7 @@ degrades to a plain case-insensitive name/docstring search, e.g.
 ;; an untaken `if` branch or a short-circuited `and` tail never traces. A pipeline
 ;; needs no special case: `(-> x f g)` expands to `(g (f x))`, and the ordinary
 ;; call rule traces each stage for free. Trace entries flow through the swappable
-;; `debug/*spy-sink*`, so a host (the editor, the observer) can capture the trace as
+;; `*spy-sink*`, so a host (the editor, the observer) can capture the trace as
 ;; DATA rather than text; the default sink pretty-prints an indented tree to
 ;; stderr. `fn` bodies, `quote`, and `quasiquote` are left opaque (a closure body
 ;; runs later/elsewhere, quoted data never evaluates).
@@ -86,11 +86,11 @@ degrades to a plain case-insensitive name/docstring search, e.g.
 ;; thrown away (`debug/trace-fn` reverts to a plain tail call; see its wrapper). The
 ;; alternative is a sink that silently drops entries while the traced program still
 ;; pays a frame per level for every one of them.
-(defdyn debug/*spy-sink* nil)
+(defdyn *spy-sink* nil)
 
 (defn- %spy-indent (depth) (apply str (map (range depth) (combinator/constantly "  "))))
 (defn- %spy-default-sink (entry)
-  "Default `debug/*spy-sink*`: pretty-print one trace entry as an indented stderr line.
+  "Default `*spy-sink*`: pretty-print one trace entry as an indented stderr line.
 `:call`/`:return` are the function-boundary entries `debug/trace-fn` emits.
 
 Values print through `pr-str-bounded`, not `pr-str`: this is a display protocol, and
@@ -114,7 +114,7 @@ the bound for a run with `(binding (*print-string-length* nil) …)`."
                     (debug/pr-str-bounded (:value entry))
                     "\n"))
     nil))
-(defn- %spy-emit (entry) ((or debug/*spy-sink* %spy-default-sink) entry))
+(defn- %spy-emit (entry) ((or *spy-sink* %spy-default-sink) entry))
 (defn- %spy-node (form value depth)
   ;; Runtime: emit a traced node's value, then return it untouched.
   (%spy-emit {:spy :node :form form :value value :depth depth})
@@ -178,5 +178,5 @@ the bound for a run with `(binding (*print-string-length* nil) …)`."
             else (%spy-walk-call form depth)))))))
 
 (defmacro debug/spy (expr)
-  "Evaluate `expr`, trace every evaluated subexpression's value (in evaluation order) to `debug/*spy-sink*` — default: an indented tree on stderr — and return the value unchanged. Referentially transparent: wrap or drop `spy` around any form with no behavioural change. Homoiconic: fully macroexpands and instruments in place, so laziness (an untaken branch, a short-circuited `and`) is preserved and pipelines trace stage-by-stage for free. `fn` bodies and quoted data are left opaque."
+  "Evaluate `expr`, trace every evaluated subexpression's value (in evaluation order) to `*spy-sink*` — default: an indented tree on stderr — and return the value unchanged. Referentially transparent: wrap or drop `spy` around any form with no behavioural change. Homoiconic: fully macroexpands and instruments in place, so laziness (an untaken branch, a short-circuited `and`) is preserved and pipelines trace stage-by-stage for free. `fn` bodies and quoted data are left opaque."
   `(%spy-run '~expr (fn () ~(%spy-walk expr 0))))

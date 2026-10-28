@@ -8,7 +8,7 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 **Changed — breaking.**
 - The bare namespace is the language (ADR-506): syntax, the functions most programs use, the
-  built-in kinds' predicates and coercions, and the operators. 115 names moved to their
+  built-in kinds' predicates and coercions, and the operators. 113 names moved to their
   family's module; `nest check --fix-renames` rewrites a caller, and an `unbound symbol`
   names the replacement.
   - `combinator/`: `complement` `constantly` `juxt` `fnil` `memoize` (`identity`, `partial`
@@ -22,7 +22,7 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   - `debug/`: `spy` `tap` `pr-str-bounded`; `io/read-line`.
   - A library type's predicate is its module's: `queue/queue?`, `pq/pq?`,
     `multimap/multimap?`, `datetime/date?`, `datetime/datetime?`, `datetime/time-of-day?`.
-  - 65 subsystem dynamics, the prefix dropped: `*project-root*` is `project/*root*`,
+  - 63 subsystem dynamics, the prefix dropped: `*project-root*` is `project/*root*`,
     `*test-wait-ms*` is `test/*wait-ms*`, `*ui-loop*` is `editor/ui/*loop*`, and so on.
 
 ## v0.46.0 — sends that wait for their reader, and parks inside a record's methods
