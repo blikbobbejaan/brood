@@ -323,7 +323,29 @@ pub mod error_codes {
     /// (`:blame :function :argument :expected :got`) as the caught value, plus the
     /// position and trace a built-in error carries (see [`LispError::caught_value`]).
     pub const CONTRACT_VIOLATION: &str = "E0080";
+    /// `(error part…)` — the language's own raise for a caller's mistake (ADR-500). Raised by
+    /// `%raise` with `{:kind :error :message …}`; caught enriched like a contract violation.
+    pub const RAISED_ERROR: &str = "E0090";
+    /// `(assert test …)` found `test` falsy: `{:kind :assert :message "assert failed: …"}`.
+    pub const ASSERTION_FAILED: &str = "E0091";
+    /// No clause of a `match`/`case`, refutable `let` or pattern `fn` matched:
+    /// `{:kind :match :message … :context … :value … :patterns …}`.
+    pub const MATCH_FAILED: &str = "E0092";
     pub const RUNTIME_GENERIC: &str = "E0099";
+
+    /// The codes a Brood-built error map may be raised with (`%raise`, `%contract-raise`):
+    /// a catch binds such a map enriched with position and trace. A user `throw` carries
+    /// no code, so a map a program throws itself comes back exactly as thrown.
+    pub fn raised_map_code(code: &str) -> Option<&'static str> {
+        [
+            CONTRACT_VIOLATION,
+            RAISED_ERROR,
+            ASSERTION_FAILED,
+            MATCH_FAILED,
+        ]
+        .into_iter()
+        .find(|known| *known == code)
+    }
 }
 
 impl LispError {
@@ -611,6 +633,8 @@ impl LispError {
             "type" => ErrorKind::Type,
             "runtime" => ErrorKind::Runtime,
             "user" => ErrorKind::User,
+            // The language's own raises (ADR-500) render as a plain `error: <message>`.
+            "error" | "assert" | "match" => ErrorKind::User,
             "interrupted" => ErrorKind::Interrupted,
             _ => return None,
         };
@@ -676,7 +700,11 @@ impl LispError {
     pub fn caught_value(&self, heap: &mut crate::core::heap::Heap) -> Value {
         use crate::core::value::{Value, intern};
         match self.payload {
-            Some(Value::Map(map)) if self.code == Some(error_codes::CONTRACT_VIOLATION) => {
+            Some(Value::Map(map))
+                if self
+                    .code
+                    .is_some_and(|code| error_codes::raised_map_code(code).is_some()) =>
+            {
                 let mut entries = heap.map_entries(map);
                 if let Value::Map(extra) = self.to_value_map(heap) {
                     for name in ["code", "file", "line", "col", "trace"] {
@@ -704,7 +732,21 @@ impl LispError {
     /// payload (i.e. it's a built-in error). See `docs/llm-native.md` §4.
     pub fn to_value_map(&self, heap: &mut crate::core::heap::Heap) -> Value {
         use crate::core::value::{Value, intern};
-        let kind_kw = Value::keyword(intern(self.kind.tag_name()));
+        // A map the language raised (`%raise`, `%contract-raise`) names its own kind — `:error`,
+        // `:assert`, `:match`, `:contract` — so a description (a death reason, `%try-described`)
+        // says what the `catch` of the same raise binds, not the rendering kind behind it.
+        let raised_kind = match self.payload {
+            Some(Value::Map(map))
+                if self
+                    .code
+                    .is_some_and(|code| error_codes::raised_map_code(code).is_some()) =>
+            {
+                heap.map_get(map, Value::keyword(intern("kind")))
+                    .filter(|kind| matches!(kind, Value::Keyword(_)))
+            }
+            _ => None,
+        };
+        let kind_kw = raised_kind.unwrap_or_else(|| Value::keyword(intern(self.kind.tag_name())));
         let msg_str = heap.alloc_string(&self.message);
         let mut entries: Vec<(Value, Value)> = Vec::with_capacity(8);
         entries.push((Value::keyword(intern("kind")), kind_kw));

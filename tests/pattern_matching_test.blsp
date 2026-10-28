@@ -298,21 +298,22 @@
     (assert= (match 5 (n (let (d (* n 2)) d))) 10)))
 
 ;; ─────────────────────────────────────────────────────────────────────────────
-;; RUNTIME FAILURE — a structured, catchable [:match-error ctx value patterns]
+;; RUNTIME FAILURE — a structured, catchable {:kind :match :context :value :patterns} error
 ;; ─────────────────────────────────────────────────────────────────────────────
 (describe "no-match failure"
   (test "an unmatched value raises" (assert-error (match 42 ([:ok v] v) ([:err e] e))))
   (test "the failure is structured and matchable"
     (assert= (try
                (match 42 ([:ok v] v) ([:err e] e))
-               (catch e (match e ([:match-error ctx val pats] (list ctx val)) (_ :other))))
+               (catch e
+                 (match e ({:kind :match :context ctx :value val} (list ctx val)) (_ :other))))
       (list :match 42)))
   (test "the failure carries the patterns tried"
     ;; check-allow: the non-exhaustive match is the failure under test.
     (check-allow :type-mismatch
       (assert= (try
                  (match 7 (1 :a) (2 :b))
-                 (catch e (match e ([:match-error ctx val pats] pats) (_ :no))))
+                 (catch e (match e ({:kind :match :patterns pats} pats) (_ :no))))
         (list 1 2))))
   (test "an empty match always fails" (assert-error (match :anything)))
   (test "a totalised match never fails" (assert= (match :anything (_ :ok)) :ok)))
@@ -455,7 +456,8 @@
     (assert-error (let ([:ok v] [:err 1]) v))
     (assert= (try
                (let ([:ok v] [:err 404]) v)
-               (catch e (match e ([:match-error ctx val pats] (list ctx val)) (_ :other))))
+               (catch e
+                 (match e ({:kind :match :context ctx :value val} (list ctx val)) (_ :other))))
       (list :let [:err 404])))
   (test "malformed let pattern is a compile-time error"
     (assert-error (reflect/eval (reflect/read-string "(let ((a & b c) (list 1)) a)")))))

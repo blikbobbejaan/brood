@@ -426,14 +426,18 @@ innermost frame first (each location is the call site that entered the frame)."
 `{:kind :message [:line :col] [:trace …] …}`, a user `throw` arrives as the raw
 value."
   (if (and (map? e) (contains? e :message))
-    (str (if (contains? e :kind) (str (->string (get e :kind)) " error") "error")
+    ;; The language's own raises (`error`, `assert`, a failed pattern — ADR-500) read as a
+    ;; plain "error:"; their message already says what failed.
+    (str (if (and (contains? e :kind) (not (includes? [:error :assert :match] (get e :kind))))
+           (str (->string (get e :kind)) " error")
+           "error")
       ": "
       (get e :message)
       (if (contains? e :line)
         (str " (line " (get e :line) ", col " (get e :col) ")")
         "")
       (if (contains? e :trace) (repl-trace-lines (get e :trace)) ""))
-    (str "error: " (if (string? e) e (pr-str e)))))
+    (str "error: " (error-message e))))
 
 (defn- repl-print-value (v)
   "Print a result value — syntax-coloured (the input highlighter, reused) on an

@@ -327,10 +327,7 @@ Structured means a handler can match on the failure itself:
 
 ```clojure fragment
 (try (decode x)
-  (catch e
-    (match e
-      ([:match-error :let pat got] (recover pat got))
-      (_                           (throw e)))))
+  (catch {:kind :match :context :let :patterns (pat) :value got} (recover pat got)))
 ```
 
 **Compile-time — malformed or dead patterns** fire before the code ever runs:
@@ -340,12 +337,9 @@ Structured means a handler can match on the failure itself:
   after a catch-all (an irrefutable pattern must come last)`;
 - a clause that isn't `(pattern body…)`, or a `:when` with no guard.
 
-*Infra note.* `throw` carries a payload value, but an uncaught error's printed
-message is just that value's display form — there is no error today holding *both*
-a custom message and a structured payload. So the thrown value is a tag like
-`[:match-error <context> <value> <patterns>]`: it is matchable, and its display
-reads legibly. A small future "error with message + payload" (near the maps work)
-would let the printed line be a bare sentence; not needed for v1.
+The raised value is an error map (ADR-500): `{:kind :match :message … :context <form>
+:value <value> :patterns <patterns>}` with code `E0092`, so it prints as a sentence
+(`error: let: no clause matches [1] — tried [a b]`) and a `catch` pattern picks it out.
 
 ## Implementation sketch
 

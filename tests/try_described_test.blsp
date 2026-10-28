@@ -6,7 +6,7 @@
 
 (defn tdt-raise (x)
   "Raise a bare string from a named function, through a non-tail call."
-  (+ 1 (error "tdt: bad " x)))
+  (+ 1 (throw (str "tdt: bad " x))))
 
 (defn tdt-described (thunk)
   "`[caught error]` for whatever `thunk` raises, `[:returned value]` when it does not."

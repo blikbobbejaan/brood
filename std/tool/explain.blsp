@@ -82,15 +82,34 @@ the `nest mcp` tools of the same names.")
             :causes "A value nested past `MAX_MESSAGE_DEPTH` (a ~256-deep structure) handed to `send`."
             :fix "Flatten or restructure the value before sending; deeply-nested data is usually a design smell across a process boundary."
             :example "; send a {:items [...]} map, not a 300-deep nested list"}
-   "E0099" {:summary "A generic runtime error (`throw`/`error`) with no more specific code."
-            :causes "An explicit `(error …)`/`(throw …)`, or a kernel error without a dedicated code."
+   "E0090" {:summary "Raised by `(error …)`: the caller made a mistake the function cannot recover from."
+            :causes "An explicit `(error part…)` — in your code or in a library function you called with input it refuses."
+            :fix "Read the `:message` and the `:trace` (innermost frame first). Catch it by kind: `(catch {:kind :error :message m} …)`. For input a caller may legitimately get wrong, a function should return a `failure` instead."
+            :example "(try (error \"bad \" 42) (catch {:kind :error :message m} m))   ; \"bad 42\""}
+   "E0091" {:summary "An `(assert test …)` found `test` falsy."
+            :causes "An invariant the code relied on does not hold: the `:message` names the form that was falsy, then any message parts."
+            :fix "Fix whatever made the asserted form false; an assertion is a statement about the program, not a check of user input."
+            :example "(assert (> n 0) \"n must be positive, got \" n)"}
+   "E0092" {:summary "No clause of a `match`, `case`, refutable `let` or pattern `fn` matched the value."
+            :causes "A value of a shape the clauses do not cover. The caught map carries `:context` (the form), `:value` and `:patterns` (every pattern tried)."
+            :fix "Add a clause for the shape in `:value`, or a catch-all `(_ …)` last. `(catch {:kind :match :value v} …)` reads the value that fell through."
+            :example "(match x ([:ok v] v) (_ :unexpected))"}
+   "E0099" {:summary "A generic runtime error with no more specific code."
+            :causes "A kernel error without a dedicated code. (`(error …)` is E0090; a `(throw v)` carries no code — `catch` binds `v` itself.)"
             :fix "Read the message and `:trace` (the caught map carries an innermost-first frame list). Branch on `:kind`/`:code`, not the message text."
             :example "(try (risky) (catch e (get e :trace)))"}})
 
 ;; A kind keyword → representative code, so `error` accepts a `:kind`
 ;; from a caught error map, not only a code.
 (def *kind->code*
-  {:parse "E0001" :unbound "E0010" :arity "E0020" :type "E0030" :runtime "E0099"})
+  {:parse "E0001"
+   :unbound "E0010"
+   :arity "E0020"
+   :type "E0030"
+   :runtime "E0099"
+   :error "E0090"
+   :assert "E0091"
+   :match "E0092"})
 
 (defn error (what)
   "Explain an error: `what` may be a code string (\"E0030\"), a caught error map

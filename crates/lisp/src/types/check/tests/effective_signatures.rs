@@ -189,7 +189,7 @@ fn an_inline_pattern_clause_callback_flows_its_result_too() {
     // before call sites are typed, so this read as `any` while the named spelling was
     // precise — two spellings of one program, two answers. The surface pre-pass records
     // the literal's clauses keyed by its printed head list; `clause_lambda_ret` recovers
-    // them through the `[:match-error … (quote heads)]` datum the lowering embeds.
+    // them through the `(%match-error … (quote heads))` call the lowering embeds.
     let sigs = signatures(
         "(defn calc (input)
            (first (reduce (string/split input \" \") '()

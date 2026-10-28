@@ -541,7 +541,7 @@ struct FileFacts {
     /// The un-expanded clauses of each same-file **inline pattern-clause `fn` literal**
     /// (`(reduce xs '() (fn (((x y & acc) "+") …) ((acc val) …)))`), keyed by the printed
     /// form of its clause-HEAD list — the very list the match lowering embeds in its
-    /// `[:match-error (quote :fn) … (quote heads)]` throws, which is how the lowered
+    /// `(%match-error (quote :fn) … (quote heads))` raises, which is how the lowered
     /// variadic lambda a combinator hands to `callback_ret` finds its way back to the
     /// clauses it was lowered from. `None` marks a key two literals with *different*
     /// bodies share: ambiguous, so no answer (typing the wrong body would be worse than

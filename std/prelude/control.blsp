@@ -463,10 +463,12 @@ Bindings are ONE flat list, exactly like `let`'s — not a list per pair. `(with
 (defn- %last-walk (xs) (if (empty? (rest xs)) (first xs) (%last-walk (rest xs))))
 
 (defn error (& parts)
-  "Raise an error whose message is the concatenated display forms of `parts`.
+  "Raise an error whose message is the concatenated display forms of `parts`: an error map
+`{:kind :error :message …}` with the `:code`, position and trace every error carries.
 
-    (try (error \"bad \" 42) (catch e (error-message e)))   ;=> \"bad 42\""
-  (throw (apply str parts)))
+    (try (error \"bad \" 42) (catch e (error-message e)))   ;=> \"bad 42\"
+    (try (error \"bad\") (catch {:kind kind} kind))        ;=> :error"
+  (%raise {:kind :error :code "E0090" :message (apply str parts)}))
 
 (defn failure (& parts)
   "**Return** a failure carrying the concatenated display forms of `parts` — the
@@ -491,8 +493,9 @@ absence and failure stay distinct; and `error-message` reads it.
 ;; asserted without the caller restating it. The message parts sit in the failing branch
 ;; only: an `(assert ok? "context " (expensive))` pays for `expensive` when it raises.
 (defmacro assert (test & message)
-  "Raise an error naming `test` when it is falsy; otherwise return its value. Any
-`message` parts follow the form in the error, joined like `error`'s.
+  "Raise an error naming `test` when it is falsy — an error map of kind `:assert` —
+otherwise return its value. Any `message` parts follow the form in the error, joined like
+`error`'s.
 
     (assert (+ 1 2))                                      ;=> 3
     (try (assert (= 1 2)) (catch e (error-message e)))    ;=> \"assert failed: (= 1 2)\"
@@ -501,10 +504,13 @@ absence and failure stay distinct; and `error-message` reads it.
     `(let (~v ~test)
        (if ~v
          ~v
-         (error ~(str "assert failed: " (pr-str test)) ~@(when message (cons ": " message)))))))
+         (%raise {:kind :assert
+                  :code "E0091"
+                  :message (str ~(str "assert failed: " (pr-str test))
+                             ~@(when message (cons ": " message)))})))))
 
-;; `(catch Type e body…)` — Clojure/Java's *typed* catch. Brood's `catch` binds
-;; ONE bare symbol and has no exception class, so this shape is not an error the
+;; `(catch Type e body…)` — Clojure/Java's *typed* catch. Brood's `catch` takes a
+;; PATTERN and has no exception class, so this shape is not an error the
 ;; reader can see: the class name silently becomes the binding and the intended
 ;; binder is evaluated as a statement. It produces a WRONG PROGRAM, not a
 ;; diagnostic — `(catch Exception e (io/puts "caught" e))` binds the value to
@@ -556,9 +562,19 @@ clause, else `[body nil]`. A `finally` anywhere but last is an error."
         [body nil]))))
 
 (defmacro try (& body)
-  "Evaluate `body`; if a `(catch e handler...)` clause is present, run it with the raised value bound to `e` when `body` throws; if a final `(finally cleanup...)` clause is present, run `cleanup` afterwards whether or not anything threw, then yield the try's value or rethrow what escaped.
+  "Evaluate `body`; when it raises, run the first `(catch pattern [:when guard] handler…)`
+clause whose pattern matches what was raised, with the pattern's bindings; when none
+matches, the error propagates, raised again from where it was first raised. If a final
+`(finally cleanup…)` clause is present, run `cleanup` afterwards whether or not anything
+raised, then yield the try's value or rethrow what escaped.
+
+An error the language raises is a map with `:kind` and `:message` (`:type`, `:arity`,
+`:error` from `error`, `:match` from a failed pattern, …); `throw` raises any value as it
+is. The clauses use the one pattern grammar, so `(catch e …)` catches everything.
 
     (try (risky) (catch e :failed))                    ;=> :failed
+    (try (/ 1 0) (catch {:kind :type} :type) (catch {:kind :runtime :message m} m))   ;=> \"division by zero\"
+    (try (throw :found) (catch :found :got-it))       ;=> :got-it
     (try 41 (finally nil))                             ;=> 41       ; cleanup ran, value survives
     (try (throw :x) (catch e :failed) (finally nil))   ;=> :failed   ; cleanup ran after the handler
 
@@ -574,46 +590,92 @@ line is EXECUTED by `doctest` (tests/doc_examples_test.blsp), so it has to be ru
            (/nth outcome 1)))
       (%try-expand body))))
 
-(defn- %try-expand (body)
-  "The `try` expansion for a body with no `finally`: `(%try …)` with a `catch`, else a `do`."
-  (let (clause (last body))
-    (if (and (pair? clause) (= (first clause) 'catch))
-      (let (init (but-last body) evar (second clause) handler (rest (rest clause)))
-        (if (%try-class-catch? clause)
-          (error "try: `(catch "
-            (str evar)
-            " "
-            (str (first handler))
-            " …)` looks like Clojure's typed catch, which Brood does not have. "
-            "`catch` takes ONE bare binding and no exception class: write `(catch "
-            (str (first handler))
-            " …)` and branch on the caught value's shape in the body "
-            "(`(get e :kind)`, `match`, `error-message`). As written, `"
-            (str evar)
-            "` would be bound to the raised value and `"
-            (str (first handler))
-            "` evaluated as a statement.")
-          `(%try (fn () ~@init) (fn (~evar) ~@handler))))
-      (if (and (pair? clause) (= (first clause) 'fn))
-        ;; Common mistake: (try body (fn (e) handler)) instead of (try body (catch e handler)).
-        ;; Fail loud at macro-expansion time so the bug is caught before it silently becomes
-        ;; (do body (fn (e) ...)) — a handler that is never installed.
-        (error "try: last form is `"
-          (pr-str clause)
-          "` — did you mean `(catch "
-          (let (params (second clause))
-            ;; `pair?` alone: `nil` is the empty list and is not a pair, so the `nil?`
-            ;; arm could never run.
-            (if (pair? params)
-              (str (first params))
-              "e"))
-          " ...)`? Syntax: (try body... (catch e handler...))")
-        `(do ~@body)))))
+(defn- %try-catches (body)
+  ;; `[forms catches]`: the trailing `(catch …)` clauses of `body`, in order, and the forms
+  ;; before them.
+  (letrec (split (fn (forms catches)
+                   (let (clause (last forms))
+                     (if (and (pair? clause) (= (first clause) 'catch))
+                       (split (but-last forms) (cons clause catches))
+                       [forms catches]))))
+    (split body ())))
 
-;; A thrown value has no single shape: `(throw x)` hands `catch` the value `x`
-;; verbatim (a bare string from `error`, a keyword, a `[:tag …]` vector, …),
-;; while every *kernel* error is the canonical `{:kind :message [:code :file
-;; :line :col :hint]}` map. `error-message` is the one accessor that turns any of
+(defn- %try-class-catch-error (clause)
+  (let (binder (second clause) handler (rest (rest clause)))
+    (error "try: `(catch "
+      (str binder)
+      " "
+      (str (first handler))
+      " …)` looks like Clojure's typed catch, which Brood does not have. "
+      "`catch` takes a PATTERN and no exception class: write `(catch "
+      (str (first handler))
+      " …)`, or match the error's kind — `(catch {:kind :type} …)`. As written, `"
+      (str binder)
+      "` would be bound to the raised value and `"
+      (str (first handler))
+      "` evaluated as a statement.")))
+
+(defn- %try-catch-all? (clause)
+  ;; Does this `(catch pattern [:when guard] body…)` catch everything? Then it is the last
+  ;; clause there can be, and the expansion needs no rethrow after it.
+  (let (pattern (second clause)
+        after (rest (rest clause))
+        guard (if (= (first after) :when) (second after) nil))
+    (%match-irrefutable? pattern guard)))
+
+(defn- %try-expand (body)
+  "The `try` expansion for a body with no `finally`: `(%try …)` when it has `catch` clauses,
+else a `do`. One catch-all `(catch e …)` binds the caught error directly; otherwise the
+clauses are `match` clauses over it, tried in order, and an error none of them matches is
+raised again — from where it was first raised."
+  (let ([init catches] (%try-catches body))
+    (letrec (misplaced? (fn (forms)
+                          (cond
+                            (empty? forms) false
+                            (and (pair? (first forms)) (= (first (first forms)) 'catch)) true
+                            else (misplaced? (rest forms)))))
+      (when (misplaced? init)
+        (error "try: every `(catch …)` clause must come after the body, together at the end.")))
+    (cond
+      (empty? catches)
+        (let (clause (last body))
+          (cond
+            (and (pair? clause) (= (first clause) 'fn))
+            ;; Common mistake: (try body (fn (e) handler)) instead of (try body (catch e handler)).
+            ;; Fail loud at macro-expansion time so the bug is caught before it silently becomes
+            ;; (do body (fn (e) ...)) — a handler that is never installed.
+              (error "try: last form is `"
+                (pr-str clause)
+                "` — did you mean `(catch "
+                (let (params (second clause))
+                  ;; `pair?` alone: `nil` is the empty list and is not a pair, so the `nil?`
+                  ;; arm could never run.
+                  (if (pair? params)
+                    (str (first params))
+                    "e"))
+                " ...)`? Syntax: (try body... (catch e handler...))")
+            else `(do ~@body)))
+      else
+        (do
+          (letrec (check (fn (clauses)
+                           (when (not (empty? clauses))
+                             (when (%try-class-catch? (first clauses))
+                               (%try-class-catch-error (first clauses)))
+                             (check (rest clauses)))))
+            (check catches))
+          (let (only (first catches))
+            (if (and (= (count catches) 1)
+                  (symbol? (second only))
+                  (not (= (first (rest (rest only))) :when)))
+              `(%try (fn () ~@init) (fn (~(second only)) ~@(rest (rest only))))
+              (let (caught (gensym "caught")
+                    clauses (map catches rest)
+                    rethrow (if (%try-catch-all? (last catches)) () `((_ (throw ~caught)))))
+                `(%try (fn () ~@init) (fn (~caught) (match ~caught ~@clauses ~@rethrow))))))))))
+
+;; Every error the language raises is a `{:kind :message [:code :file :line :col :hint
+;; :trace]}` map (ADR-500), but `(throw x)` hands `catch` the value `x` verbatim — a
+;; keyword, a string, a program's own map. `error-message` is the one accessor that turns any of
 ;; them into a human string, so a `(catch e …)` handler never has to branch on
 ;; the shape itself.
 (defn error-message (e)

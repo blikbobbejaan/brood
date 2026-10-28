@@ -180,12 +180,15 @@ fn domain_of_inner(
     {
         return any_domain(n);
     }
-    // The `match` compiler's failure branch: `(throw [:match-error …])`. Reaching it
+    // The `match` compiler's failure branch: `(%raise (%match-error …))`. Reaching it
     // is not an execution any caller can want — every value that lands there raises.
     // So its domain is `never`, which is what makes a `match`'s clause patterns (and
     // a `defn` clause's `:when` guard, which lowers through the same engine) add up
     // to the function's domain instead of vanishing.
-    if value::symbol_is(h, "throw") && items.len() == 2 && is_match_failure(heap, items[1]) {
+    if super::super::guards::is_raise_head(h)
+        && items.len() == 2
+        && super::super::guards::match_failure_parts(heap, items[1]).is_some()
+    {
         return vec![Ty::NEVER; n];
     }
     // `if` — the rule this whole function exists for.
@@ -528,15 +531,4 @@ pub(super) fn guard_slices(
         }
     }
     (then_slice, else_slice)
-}
-
-/// Is this the vector the `match` compiler throws when no clause matched —
-/// `[:match-error 'context target 'patterns]`?
-fn is_match_failure(heap: &Heap, arg: Value) -> bool {
-    let Value::Vector(vid) = arg else {
-        return false;
-    };
-    let elems = heap.vector(vid).to_vec();
-    matches!(elems.first(), Some(&Value::Keyword(tag))
-        if value::symbol_name_ref(tag) == "match-error")
 }

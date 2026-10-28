@@ -124,7 +124,9 @@
   (test "a missing path dep is a clear error"
     (let (app (pkg-fixture-root))
       (pkg-write-project app "app" "main" "(defn main () 1)" "")
-      (is (includes? (try (resolve-deps app (list (dep-path 'gone "../gone")) nil) (catch e e))
+      (is (includes? (try
+                       (resolve-deps app (list (dep-path 'gone "../gone")) nil)
+                       (catch e (error-message e)))
             "not found")))))
 
 ;; :git deps (Slice 2) — exercised against a local git repo over a file:// URL, so
@@ -210,7 +212,7 @@
       (pkg-write-project app-dir "app" "main" "(defn main () 1)" "")
       (let (message (error-message (try
                                      (package/package-release-in app-dir "patch" (fn () :published))
-                                     (catch e e))))
+                                     (catch e (error-message e)))))
         (is (string/starts-with? message "package: git add failed"))
         (assert= (plist-get (rest (reflect/read-first (file/slurp (path/join app-dir "project.blsp"))))
                    :version)
@@ -337,7 +339,7 @@
                              (list (dep-git 'greeter greeter-url "main" nil)
                                (dep-git 'pretty pretty-url "main" nil))
                              nil)
-                           (catch e e))
+                           (catch e (error-message e)))
                 "conflicting dependency")))))))
 
 ;; --- git-tag semver ranges (ADR-209) ----------------------------------------
@@ -1102,7 +1104,7 @@
                                                                              "src")]
                                                                      ["your project"
                                                                        (path/join b "src")]))
-                       (catch e e))
+                       (catch e (error-message e)))
             "collision"))))
   (test "distinct module names across providers are fine"
     (let (parent (pkg-fixture-root)
@@ -1163,7 +1165,7 @@
                                                                            (path/join a "src")]
                                                                      ["dependency 'b'"
                                                                        (path/join b "src")]))
-                       (catch e e))
+                       (catch e (error-message e)))
             "collision")))))
 
 (describe "package: the lock file round-trips"
@@ -1377,13 +1379,13 @@
     (is (includes? (try
                      (package/package-check-compatible (dep-path 'a "../a")
                        (dep-path 'a "../b"))
-                     (catch e e))
+                     (catch e (error-message e)))
           "conflicting dependency")))
   (test "the same name at two git refs is a loud error naming both"
     (let (message (try
                     (package/package-check-compatible (dep-git 'a "u" "v1" nil)
                       (dep-git 'a "u" "v2" nil))
-                    (catch e e)))
+                    (catch e (error-message e))))
       (is (includes? message "conflicting dependency"))
       (is (includes? message "v1"))
       (is (includes? message "v2"))))
@@ -1391,13 +1393,13 @@
     (is (includes? (try
                      (package/package-check-compatible (dep-registry 'a "1.0.0")
                        (dep-registry 'a "2.0.0"))
-                     (catch e e))
+                     (catch e (error-message e)))
           "two registry versions")))
   (test "two DIFFERENT kinds for one name can never agree"
     (let (message (try
                     (package/package-check-compatible (dep-path 'a "../a")
                       (dep-git 'a "u" "v1" nil))
-                    (catch e e)))
+                    (catch e (error-message e))))
       (is (includes? message "required as both :path and :git"))))
   (test "a ranged request agrees when the resolved pin satisfies it"
     (let (entry (assoc (dep-git 'a "u" nil "^1.2.0") :ref "v1.4.0" :resolved-version "1.4.0"))
@@ -1409,14 +1411,14 @@
     (let (entry (assoc (dep-git 'a "u" nil "^1.2.0") :ref "v1.4.0" :resolved-version "1.4.0")
           message (try
                     (package/package-check-compatible entry (dep-git 'a "u" nil "^2.0.0"))
-                    (catch e e)))
+                    (catch e (error-message e))))
       (is (includes? message "conflicting dependency"))
       (is (includes? message "^2.0.0"))))
   (test "the same repo at two different URLs conflicts"
     (is (includes? (try
                      (package/package-check-compatible (dep-git 'a "u1" "v1" nil)
                        (dep-git 'a "u2" "v1" nil))
-                     (catch e e))
+                     (catch e (error-message e)))
           "two different git URLs"))))
 
 ;; The `fetch`/`tree` verbs themselves are cwd-driven (they walk from `(file/cwd)` to a
@@ -1531,7 +1533,8 @@
   (test "a trailing-newline name is rejected"
     (refute (project/valid-dep-name? "a\n")))
   (test "add refuses a corrupting name before touching the manifest"
-    (is (includes? (try (package/add "" ":path" "../x") (catch e e)) "not a usable dependency name")))
+    (is (includes? (try (package/add "" ":path" "../x") (catch e (error-message e)))
+          "not a usable dependency name")))
   ;; A dep name is also the directory `_deps/<name>/`, which a re-fetch deletes.
   (test "a name that is not one path component is rejected"
     (refute (project/valid-dep-name? ".."))
@@ -1543,7 +1546,7 @@
     (refute (project/valid-dep-name? "-flag"))
     (refute (project/valid-dep-name? "~home")))
   (test "add refuses a name that escapes _deps/"
-    (is (includes? (try (package/add ".." ":path" "../x") (catch e e))
+    (is (includes? (try (package/add ".." ":path" "../x") (catch e (error-message e)))
           "not a usable dependency name")))
   (test "the manifest parser refuses a name that escapes _deps/"
     (is (includes? (try

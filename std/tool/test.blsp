@@ -171,7 +171,9 @@ docs/testing.md for the full guide."
         (test-failure? (second outcome))
           (test-run (rest thunks)
             (cons (test-record (second outcome)) fails))
-        else (reverse (cons (list nil (list (str "uncaught error: " (second outcome)))) fails))))))
+        else
+          (reverse (cons (list nil (list (str "uncaught error: " (error-message (second outcome)))))
+                     fails))))))
 
 ;; --- modifiers, tags, and per-test metadata ----------------------------------
 ;; A `describe`/`test` header may carry modifiers before its body, in any order:
@@ -478,9 +480,12 @@ the test rather than hanging the run.
 (defn- error-of-render (e)
   ;; Built-in errors come through `catch` as a structured map (`{:kind :code
   ;; :message :hint}`); flatten to the legacy "kind error: message" string so
-  ;; tests can pin exact text. A `(throw v)` lands here as the raw value `v` —
-  ;; pass it through unchanged (matches the macro's stated contract).
+  ;; tests can pin exact text. The language's own raises — `error`, `assert`, a failed
+  ;; pattern (ADR-500) — render as their message alone, the text they were written with. A
+  ;; `(throw v)` lands here as the raw value `v` — pass it through unchanged (matches the
+  ;; macro's stated contract).
   (cond
+    (and (map? e) (includes? [:error :assert :match] (get e :kind))) (get e :message)
     (map? e) (str (->string (get e :kind)) " error: " (get e :message))
     else e))
 (defmacro error-of (& body)

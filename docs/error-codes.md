@@ -65,6 +65,9 @@ Codes are grouped by [`ErrorKind`]:
 | `E0060` | `:runtime` | distribution layer: `node/start` / `node/connect` failed, or a `send` to an unreachable node under `(proc/flag :send-errors true)` | `(node/start "a" "no.such.host:1")` |
 | `E0070` | `:runtime` | `send` saw a message value nested past `MAX_MESSAGE_DEPTH` — a million levels since ADR-394, a sanity bound rather than a stack limit (with a `:hint` about chunking) | a recursively self-referential structure |
 | `E0080` | `:contract` | a runtime contract refused an argument or a result (`BROOD_CONTRACTS`, `sig!`; raised by `%contract-raise`). The caught value is the contract map — `:blame :function :argument :expected :got :message` — with `:code`, `:file`/`:line`/`:col` and `:trace` added, as a built-in error has them. A map a program `throw`s itself is not touched, even one of kind `:contract` | `(sig! f (int -> int))` then `(f "x")` |
+| `E0090` | `:error` | `(error part…)` (ADR-500; raised by `%raise`). The caught value is `{:kind :error :message …}` with `:code`, `:file`/`:line`/`:col` and `:trace` added | `(error "bad index: " 7)` |
+| `E0091` | `:assert` | `(assert test …)` found `test` falsy: `{:kind :assert :message "assert failed: <form>[: parts]"}`, enriched the same way | `(assert (> 0 1))` |
+| `E0092` | `:match` | no clause of a `match`/`case`, refutable `let` or pattern `fn` matched: `{:kind :match :message … :context :value :patterns}` — `:context` names the form (`:match`, `:let`, `:fn`, a function name), `:value` what was matched, `:patterns` what was tried | `(match 3 (1 :one))` |
 | `E0099` | `:runtime` | `LispError::runtime(...)` (catch-all) | uncoded runtime raises |
 
 `E0099` is the catch-all assigned by `LispError::runtime(...)` — every

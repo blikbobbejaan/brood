@@ -135,7 +135,7 @@
 (describe "ADR-152: &optional does not mix with pattern dispatch"
   (test "an &optional marker in a pattern-dispatched fn is rejected"
     ;; Was: matched as a literal symbol, so the clause silently stopped being
-    ;; variadic and `(f 1 2)` died with a [:match-error …].
+    ;; variadic and `(f 1 2)` died with a `:match` error.
     (is (includes? (err-of "(defn bad ((x) [:one x]) ((x &optional (y 5)) [:two x y]))")
           "pattern-dispatched fn")))
 

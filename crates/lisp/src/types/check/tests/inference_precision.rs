@@ -337,7 +337,7 @@ fn a_record_constructor_call_carries_its_argument_types_in_its_fields() {
 }
 
 // The design behind that guarantee (ADR-297): synthetic code is located at the form it was
-// expanded from. A `match`'s expansion ends in a `throw` the reader never saw; after
+// expanded from. A `match`'s expansion ends in a `%raise` the reader never saw; after
 // expansion it carries the `match`'s own position — and is marked synthetic, so a lint that
 // must speak only about the user's text (the unused-`let` exemption) can still tell.
 #[test]
@@ -352,15 +352,15 @@ fn expanded_code_carries_the_position_of_the_form_it_came_from_and_is_marked_syn
     let env = interp.heap.global();
     let expanded =
         crate::eval::macros::macroexpand_all(&mut interp.heap, form, env).expect("expands");
-    // find a `throw` anywhere in the expansion
+    // find the `%raise` of the no-match branch anywhere in the expansion
     fn find_throw(heap: &crate::core::heap::Heap, v: Value) -> Option<Value> {
         let items = super::walk::list_items(heap, v)?;
-        if matches!(items.first(), Some(Value::Sym(s)) if value::symbol_is(*s, "throw")) {
+        if matches!(items.first(), Some(Value::Sym(s)) if value::symbol_is(*s, "%raise")) {
             return Some(v);
         }
         items.iter().find_map(|&i| find_throw(heap, i))
     }
-    let throw = find_throw(&interp.heap, expanded).expect("a match expands to a throw");
+    let throw = find_throw(&interp.heap, expanded).expect("a match expands to a %raise");
     assert!(
         interp.heap.form_pos_only(throw).is_some(),
         "the throw has a position"

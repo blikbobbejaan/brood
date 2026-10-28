@@ -632,7 +632,7 @@ fn lint_fn_pattern_clauses(heap: &Heap, items: &[Value], out: &mut Vec<(Option<P
     // `:when` INSIDE the head list. It is clause syntax and belongs after the list —
     // `((acc num) :when (string? num) body…)` — so a head list containing it silently
     // becomes two extra parameters, the arity stops matching, and every call dies with a
-    // `[:match-error :fn …]` that names the clauses rather than the mistake. There is
+    // `{:kind :match :context :fn …}` error that names the clauses rather than the mistake. There is
     // nothing else it can plausibly be: a head list holds patterns, and a pattern matching
     // the literal keyword `:when` in a parameter position is not a thing anyone writes.
     for (&clause, &head) in forms.iter().zip(&heads) {
@@ -2487,7 +2487,7 @@ fn infer_same_file_functions(
     }
     // Inline PATTERN-clause `fn` literals get the same surface record, keyed by their
     // printed clause-head list: the expanded tree holds only the lowered `match*` lambda,
-    // whose embedded `[:match-error … (quote heads)]` data is how
+    // whose embedded `(%match-error … (quote heads))` call is how
     // `sigs::clause_lambda_ret` finds its way back here from a combinator call site.
     for &form in forms {
         record_fn_literal_clauses(heap, form, ctx);

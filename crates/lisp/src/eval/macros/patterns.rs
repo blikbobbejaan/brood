@@ -229,7 +229,7 @@ pub(super) fn lower_fn(heap: &mut Heap, items: &[Value]) -> Result<Option<Value>
             // engine, where each head is a list pattern over the argument list. A `&`
             // there is that pattern's rest (`(x & more)`), so it stays variadic
             // (ADR-434). An `&optional` marker is an error rather than a literal-symbol
-            // pattern: `(f 1 2)` would fail with a match-error listing
+            // pattern: `(f 1 2)` would fail with a `:match` error listing
             // `(x &optional (y 5))` as a *pattern*.
             let guarded = clauses.iter().any(|&c| clause_has_when_guard(heap, c));
             for &clause in clauses {

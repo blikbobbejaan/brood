@@ -134,9 +134,9 @@ behind a long-lived loop has changed since it started.
               (when on-reload
                 (try
                   (on-reload path)
-                  (catch e (io/puts "[reload] on-reload failed:" path "—" e)))))
+                  (catch e (io/puts "[reload] on-reload failed:" path "—" (error-message e))))))
             (catch e
-              (io/puts "[reload] failed:" path "—" e)))
+              (io/puts "[reload] failed:" path "—" (error-message e))))
           (sleep *reload-poll-ms*)
           (reload-loop path now on-reload)))))
 
@@ -184,8 +184,8 @@ behind a long-lived loop has changed since it started.
             (when on-reload
               (try
                 (on-reload p)
-                (catch e (io/puts "[reload] on-reload failed:" p "—" e)))))
-          (catch e (io/puts "[reload] +load failed:" p "—" e)))
+                (catch e (io/puts "[reload] on-reload failed:" p "—" (error-message e))))))
+          (catch e (io/puts "[reload] +load failed:" p "—" (error-message e))))
         (spawn (reload-loop p (file/mtime p) on-reload))))
     (sleep *reload-scan-ms*)
     (reload-dir-loop dir current on-reload)))

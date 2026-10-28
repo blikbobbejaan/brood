@@ -1,0 +1,92 @@
+;; Every error the language raises is an error map, and `catch` takes a pattern (ADR-500).
+;;
+;; A handler used to see four shapes — a built-in error's map, a plain string from `error`
+;; and `assert`, a `[:match-error …]` vector from a failed pattern, and a `throw`n value as
+;; it was. These pin the one shape and the pattern clauses that choose by it.
+
+(defmodule error-shape-test (:use test))
+
+(defn caught (thunk)
+  (try (thunk) (catch e e)))
+
+(describe "every error the language raises is a map"
+  (test "error raises kind :error, with a code and a position"
+    (let (e (caught (fn () (error "bad " 42))))
+      (assert= :error (:kind e))
+      (assert= "bad 42" (:message e))
+      (assert= "E0090" (:code e))
+      (is (int? (:line e)))))
+  (test "assert raises kind :assert"
+    (let (e (caught (fn () (assert (= 1 2) "why"))))
+      (assert= :assert (:kind e))
+      (assert= "E0091" (:code e))
+      (assert= "assert failed: (= 1 2): why" (:message e))))
+  (test "a failed match raises kind :match, naming the value and the patterns"
+    (let (e (caught (fn () (check-allow :type-mismatch (match 3 (1 :one) (2 :two))))))
+      (assert= :match (:kind e))
+      (assert= "E0092" (:code e))
+      (assert= :match (:context e))
+      (assert= 3 (:value e))
+      (assert= '(1 2) (:patterns e))
+      (assert= "match: no clause matches 3 — tried 1, 2" (:message e))))
+  (test "a refutable let and a pattern fn raise the same kind"
+    (assert= :let (:context (caught (fn () (let ([a b] [1]) a)))))
+    (assert= :match (:kind (caught (fn () (check-allow :type-mismatch ((fn ([a]) a) 5)))))))
+  (test "throw raises its argument as it is"
+    (assert= :found (caught (fn () (throw :found))))
+    (assert= "plain" (caught (fn () (throw "plain"))))
+    (assert= {:kind :mine} (caught (fn () (throw {:kind :mine})))))
+  (test "error-message reads every shape"
+    (assert= "bad" (error-message (caught (fn () (error "bad")))))
+    (assert= "plain" (error-message (caught (fn () (throw "plain")))))))
+
+(describe "catch takes a pattern"
+  (test "the first clause whose pattern matches runs"
+    (assert= "division by zero"
+      (try (/ 1 0) (catch {:kind :type} :type) (catch {:kind :runtime :message m} m))))
+  (test "a kind pattern picks a failed match out"
+    (assert= 3
+      (try (check-allow :type-mismatch (match 3 (1 :one))) (catch {:kind :match :value v} v))))
+  (test "a guard and a conjunction"
+    (assert= "E0090" (try (error "x") (catch e :when (= (:kind e) :error) (:code e))))
+    (assert= "x" (try (error "x") (catch (and e {:kind :error}) (error-message e)))))
+  (test "a literal pattern catches a thrown keyword"
+    (assert= :got-it (try (throw :found) (catch :found :got-it))))
+  (test "a later catch-all takes what the earlier clauses do not"
+    (assert= [:all :other] (try (throw :other) (catch :found 1) (catch e [:all e]))))
+  ;; Without the rethrow an unmatched error would vanish into nil — a handler that silently
+  ;; swallowed every kind it was not written for.
+  (test "an error no clause matches propagates, from where it was first raised"
+    (let (outer (try
+                  (try (error "inner") (catch {:kind :type} :wrong))
+                  (catch e e)))
+      (assert= :error (:kind outer))
+      (assert= "inner" (:message outer))))
+  (test "catch clauses compose with finally"
+    (assert= :caught (try (error "f") (catch {:kind :error} :caught) (finally nil))))
+  (test "a catch before the body is rejected"
+    (is (includes? (error-message (caught (fn () (macroexpand '(try (catch e 1) 2)))))
+          "must come after the body")))
+  (test "Clojure's typed catch is still rejected with a hint"
+    (is (includes? (error-message (caught (fn ()
+                                            (macroexpand '(try 1 (catch Exception e (io/puts e)))))))
+          "typed catch"))))
+
+;; ---- across processes -------------------------------------------------------
+;; An error map is ordinary data: it must survive a send, and a pattern catch must work
+;; inside a spawned process exactly as at home.
+
+(defn raising-worker (parent)
+  (send parent (caught (fn () (check-allow :type-mismatch (match :z (:a 1)))))))
+
+(defn catching-worker (parent)
+  (send parent (try (error "far") (catch {:kind :error :message m} [:caught m]))))
+
+(describe "error maps across processes"
+  :isolated (test "an error map caught in another process arrives whole"
+    (let (me (self) _ (spawn (raising-worker me)) e (receive))
+      (assert= :match (:kind e))
+      (assert= :z (:value e))))
+  (test "a pattern catch runs in a spawned process"
+    (let (me (self) _ (spawn (catching-worker me)))
+      (assert= [:caught "far"] (receive)))))

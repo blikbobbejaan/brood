@@ -1053,7 +1053,7 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                     // Quoted data → one immovable `Const` (`const_node` promotes the
                     // datum into the shared RUNTIME region). Unblocks any body that
                     // quotes data — notably match*'s no-match arm,
-                    // `(throw [:match-error (quote :ctx) m (quote pats)])`, which had
+                    // `(%raise (%match-error (quote :ctx) m (quote pats)))`, which had
                     // been forcing every non-total `match` / pattern-dispatch `fn`
                     // onto the tree-walker.
                     //

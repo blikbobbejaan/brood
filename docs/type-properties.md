@@ -68,7 +68,7 @@ its `if` branch):
 
 A function with no self-call passes this half. Mutual recursion is not examined.
 
-**Coverage.** Reported by the walk (`walk.rs`, at the `(throw [:match-error …])` a
+**Coverage.** Reported by the walk (`walk.rs`, at the `(%raise (%match-error …))` a
 catch-all-less `match` lowers to) under `Ctx::total_fn`: a `match` failure the checker
 cannot prove unreachable — a scrutinee that is not a closed literal type, or a pattern
 that is not a literal (`guards::match_coverage` answers `Unknown`) — is a case the

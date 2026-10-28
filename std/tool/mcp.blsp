@@ -1015,7 +1015,7 @@ and send the outcome to `dispatcher`, already projected to JSON data."
                                                 (handler arguments)))
                                     (try
                                       [:ok (json-data value)]
-                                      (catch e [:unencodable (if (string? e) e (pr-str e))]))))
+                                      (catch e [:unencodable (error-message e)]))))
                   (fn (caught error) [:raised caught error]))
         output (or (%capture-take) ""))
     (send dispatcher [:mcp-outcome (self) outcome output])))
@@ -1167,7 +1167,7 @@ does not hide the rest."
 
 (defn- respond (line session)
   "The reply to one transport line — a line that is not JSON is answered `-32700`."
-  (let (decoded (try [:ok (json/decode line)] (catch e [:unparsed (if (string? e) e (pr-str e))])))
+  (let (decoded (try [:ok (json/decode line)] (catch e [:unparsed (error-message e)])))
     (if (= (first decoded) :ok)
       (handle (second decoded) session)
       {:jsonrpc "2.0" :id nil :error {:code -32700 :message "Parse error" :data (second decoded)}})))

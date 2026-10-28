@@ -912,8 +912,8 @@ fn literal_eq_guard(heap: &Heap, a: Value, b: Value) -> Option<(Symbol, Ty)> {
 /// Match-exhaustiveness check over literal-enum scrutinees (ADR-118).
 ///
 /// `match` compiles `(match expr clause…)` to a `let`+`if`+`%eq` chain whose
-/// innermost failure is `(throw [:match-error 'context target 'patterns])`
-/// (`%match-no-match`, `std/prelude.blsp`) — and that exact shape is only
+/// innermost failure is `(%raise (%match-error 'context target 'patterns))`
+/// (`%match-no-match`, `std/prelude/match.blsp`) — and that exact shape is only
 /// present in the compiled tree when the match has **no catch-all clause**
 /// (an irrefutable wildcard/bind clause compiles to its body directly, no
 /// further `if`, so the throw never gets generated). So finding this shape
@@ -943,23 +943,34 @@ pub(super) enum MatchCoverage {
     Unknown,
 }
 
-/// The coverage of the `match` a `(throw [:match-error …])` shape belongs to — `None` when
-/// `throw_arg` is not that shape at all (an ordinary throw). The walk reports the `Missing`
+/// The `[context target patterns]` of the error a `match` raises when no clause matched —
+/// `(%match-error (quote context) target (quote patterns))`, the argument of the
+/// `(%raise …)` its failure branch lowers to (`%match-no-match`, ADR-500) — or `None` for
+/// any other value.
+pub(super) fn match_failure_parts(heap: &Heap, raised: Value) -> Option<[Value; 3]> {
+    let items = list_items(heap, raised)?;
+    match items.as_slice() {
+        [Value::Sym(head), context, target, patterns]
+            if value::symbol_name_ref(*head) == "%match-error" =>
+        {
+            Some([*context, *target, *patterns])
+        }
+        _ => None,
+    }
+}
+
+/// Is `(head arg)` how a match failure is raised — `%raise`, or the `throw` it may be
+/// written as?
+pub(super) fn is_raise_head(head: value::Symbol) -> bool {
+    value::symbol_is(head, "%raise") || value::symbol_is(head, "throw")
+}
+
+/// The coverage of the `match` a `(%raise (%match-error …))` shape belongs to — `None` when
+/// `raised` is not that shape at all (an ordinary raise). The walk reports the `Missing`
 /// case (ADR-118); a `:total` declaration (ADR-351) demands `Covered`.
-pub(super) fn match_coverage(heap: &Heap, throw_arg: Value, ctx: &Ctx) -> Option<MatchCoverage> {
-    let Value::Vector(vid) = throw_arg else {
-        return None;
-    };
-    let elems = heap.vector(vid).to_vec();
-    if elems.len() != 4 {
-        return None;
-    }
-    let Value::Keyword(tag) = elems[0] else {
-        return None;
-    };
-    if value::symbol_name_ref(tag) != "match-error" {
-        return None;
-    }
+pub(super) fn match_coverage(heap: &Heap, raised: Value, ctx: &Ctx) -> Option<MatchCoverage> {
+    let [context, target, patterns] = match_failure_parts(heap, raised)?;
+    let elems = [Value::nil(), context, target, patterns];
     let Value::Sym(target) = elems[2] else {
         return Some(MatchCoverage::Unknown);
     };

@@ -59,7 +59,8 @@ will get wrong if you write Brood like Clojure, Scheme, or Common Lisp.
    **truthy**, so `(or (string/->number s) 0)` yields the failure, not `0`. Test with
    `(failure? x)`, read with `(error-message x)`; stop on the first one with `ok->`
    (a pipe) or `with` (a `let`). Bugs still raise — `try`/`catch` those.
-   `(catch e body…)` takes ONE bare binder, never Clojure's `(catch Type e …)`.
+   `(catch pattern body…)` takes a pattern — `(catch e …)` catches everything — never
+   Clojure's `(catch Type e …)`.
 
 8. **Don't tuple-destructure a single-clause top-level `defn` param.** Name the
    param, unpack in the body: `(defn area (p) (let ([x y] p) (* x y)))`, not

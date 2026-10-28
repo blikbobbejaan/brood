@@ -43,24 +43,26 @@
     (assert= (project/project-parse-main '(foo bar)) '(foo bar)))
   (test "a 1-list is rejected"
     (assert= "project: :main must be a module symbol or '(module fn), got (foo)"
-      (try (project/project-parse-main '(foo)) (catch e e))))
+      (try (project/project-parse-main '(foo)) (catch e (error-message e)))))
   (test "a 3-list is rejected"
     (assert= "project: :main must be a module symbol or '(module fn), got (foo bar baz)"
-      (try (project/project-parse-main '(foo bar baz)) (catch e e))))
+      (try (project/project-parse-main '(foo bar baz)) (catch e (error-message e)))))
   (test "a non-symbol head is rejected"
-    (is (string? (try (project/project-parse-main '("foo" main)) (catch e e)))))
+    (is (string? (try (project/project-parse-main '("foo" main)) (catch e (error-message e))))))
   (test "a non-symbol fn is rejected"
-    (is (string? (try (project/project-parse-main '(foo "main")) (catch e e)))))
+    (is (string? (try (project/project-parse-main '(foo "main")) (catch e (error-message e))))))
   (test "a string is rejected"
-    (is (string? (try (project/project-parse-main "main") (catch e e)))))
+    (is (string? (try (project/project-parse-main "main") (catch e (error-message e))))))
   ;; `:main 'app` reads as `(quote app)` (the manifest is data, never evaluated),
   ;; which would silently misparse to module `quote` — guard it with a fix-it.
   (test "a quoted symbol is rejected with a drop-the-quote fix-it"
-    (let (msg (try (project/project-parse-main '(quote app)) (catch e e)))
+    (let (msg (try (project/project-parse-main '(quote app)) (catch e (error-message e))))
       (and (is (includes? msg "drop the leading quote"))
         (is (includes? msg "`:main app`")))))
   (test "a quoted list is rejected with a drop-the-quote fix-it"
-    (is (includes? (try (project/project-parse-main '(quote (app start))) (catch e e))
+    (is (includes? (try
+                     (project/project-parse-main '(quote (app start)))
+                     (catch e (error-message e)))
           "drop the leading quote"))))
 
 (describe "project: default entry"
@@ -134,10 +136,13 @@
     (assert= (project/parse-dep '[parser :git "https://example.com/p.git" :version "^1.2.0"])
       (assoc (project/dep-git 'parser "https://example.com/p.git" nil "^1.2.0") :optional false)))
   (test "a :git entry giving both :ref and :version is rejected"
-    (is (includes? (try (project/parse-dep '[p :git "u" :ref "v1" :version "^1"]) (catch e e))
+    (is (includes? (try
+                     (project/parse-dep '[p :git "u" :ref "v1" :version "^1"])
+                     (catch e (error-message e)))
           "cannot give both")))
   (test "a :git entry giving neither :ref nor :version is rejected"
-    (is (includes? (try (project/parse-dep '[p :git "u"]) (catch e e)) "needs a :ref")))
+    (is (includes? (try (project/parse-dep '[p :git "u"]) (catch e (error-message e)))
+          "needs a :ref")))
   (test "a :path entry normalises to a dep-path record"
     (assert= (project/parse-dep '[shared :path "../shared"])
       (assoc (project/dep-path 'shared "../shared") :optional false)))
@@ -168,23 +173,26 @@
   (test "nil dependencies parse to nil"
     (assert= (project/parse-deps nil) nil))
   (test "a non-vector :dependencies value is rejected"
-    (is (includes? (try (project/parse-deps '(a b)) (catch e e)) "must be a vector")))
+    (is (includes? (try (project/parse-deps '(a b)) (catch e (error-message e))) "must be a vector")))
   (test "a non-symbol dep name is rejected"
-    (is (includes? (try (project/parse-dep '["parser" :path "../p"]) (catch e e))
+    (is (includes? (try (project/parse-dep '["parser" :path "../p"]) (catch e (error-message e)))
           "must be a symbol")))
   (test "an unknown source kind is rejected"
-    (is (includes? (try (project/parse-dep '[parser :svn "../p"]) (catch e e))
+    (is (includes? (try (project/parse-dep '[parser :svn "../p"]) (catch e (error-message e)))
           "must be :git, :path, :tarball, or :version")))
   (test "a :git dep without a :ref is rejected"
-    (is (includes? (try (project/parse-dep '[parser :git "https://x.git"]) (catch e e))
+    (is (includes? (try
+                     (project/parse-dep '[parser :git "https://x.git"])
+                     (catch e (error-message e)))
           "needs a :ref")))
   (test "a reserved opt is rejected so the manifest stays forward-compatible"
     (is (includes? (try
                      (project/parse-dep '[parser :git "https://x.git" :ref "v1" :branch "main"])
-                     (catch e e))
+                     (catch e (error-message e)))
           "reserved for a future version")))
   (test "an entry that is too short is rejected"
-    (is (includes? (try (project/parse-dep '[parser :path]) (catch e e)) "too short"))))
+    (is (includes? (try (project/parse-dep '[parser :path]) (catch e (error-message e)))
+          "too short"))))
 
 ;; `:isolated` — `apply` clobbers the ambient `*project-*` globals; roll them back.
 (describe "project: :optional deps and :dev-dependencies (ADR-172)"
@@ -683,19 +691,20 @@
   (test "a list of path strings is accepted"
     (assert= (project/project-check-paths :source-paths (list "src")) (list "src")))
   (test "a bare string is rejected, naming the key and the fix"
-    (let (msg (try (project/project-check-paths :source-paths "src") (catch e e)))
+    (let (msg (try (project/project-check-paths :source-paths "src") (catch e (error-message e))))
       (and (is (includes? msg ":source-paths"))
         (is (includes? msg "not a bare string"))
         (is (includes? msg "[\"src\"]")))))
   (test "a vector of non-strings is rejected"
-    (is (includes? (try (project/project-check-paths :source-paths [5]) (catch e e))
+    (is (includes? (try (project/project-check-paths :source-paths [5]) (catch e (error-message e)))
           "must contain only strings")))
   (test "a number is rejected"
-    (is (includes? (try (project/project-check-paths :test-paths 5) (catch e e))
+    (is (includes? (try (project/project-check-paths :test-paths 5) (catch e (error-message e)))
           "must be a vector of path strings")))
   (test "the fix-it example matches the key it is about"
     ;; suggesting ["src"] for :test-paths would be actively misleading
-    (is (includes? (try (project/project-check-paths :test-paths 5) (catch e e)) "[\"tests\"]"))))
+    (is (includes? (try (project/project-check-paths :test-paths 5) (catch e (error-message e)))
+          "[\"tests\"]"))))
 
 (describe "project: manifest loading errors point at the file"
   :isolated (test "an unparseable manifest names the file, line, and column"
@@ -703,7 +712,7 @@
           manifest (path/join dir "project.blsp"))
       (file/mkdir dir)
       (file/spit manifest "(project :name \"x\"\n")
-      (let (msg (try (project/project-apply-manifest manifest) (catch e e)))
+      (let (msg (try (project/project-apply-manifest manifest) (catch e (error-message e))))
         (and (is (includes? msg "cannot parse"))
           (is (includes? msg manifest))
           (is (includes? msg "line"))))))
@@ -712,13 +721,14 @@
           manifest (path/join dir "project.blsp"))
       (file/mkdir dir)
       (file/spit manifest "")
-      (is (includes? (try (project/project-apply-manifest manifest) (catch e e)) "cannot parse"))))
+      (is (includes? (try (project/project-apply-manifest manifest) (catch e (error-message e)))
+            "cannot parse"))))
   (test "a first form that is not (project …) is REJECTED, not silently ignored"
     (let (dir (temp-dir "brood-manifest-")
           manifest (path/join dir "project.blsp"))
       (file/mkdir dir)
       (file/spit manifest "(porject :name \"x\")\n")
-      (let (msg (try (project/project-apply-manifest manifest) (catch e e)))
+      (let (msg (try (project/project-apply-manifest manifest) (catch e (error-message e))))
         (and (is (includes? msg "must begin with a (project"))
           (is (includes? msg "porject"))
           (is (includes? msg "being ignored"))))))
@@ -727,7 +737,7 @@
           manifest (path/join dir "project.blsp"))
       (file/mkdir dir)
       (file/spit manifest "42\n")
-      (is (includes? (try (project/project-apply-manifest manifest) (catch e e))
+      (is (includes? (try (project/project-apply-manifest manifest) (catch e (error-message e)))
             "must begin with a (project"))))
   (test "a well-formed manifest still applies"
     (let (dir (temp-dir "brood-manifest-")
@@ -800,7 +810,7 @@
     (is (includes? (try
                      (project-release/bundle-reject-duplicate-names (list "app"
                                                                       "parser" "lib" "parser"))
-                     (catch e e))
+                     (catch e (error-message e)))
           "same module name")))
   (test "distinct require-names pass"
     (assert= (project-release/bundle-reject-duplicate-names (list "app" "sse" "lib")) nil)))

@@ -741,10 +741,10 @@ fn match_dispatches_on_patterns() {
 #[test]
 fn match_no_clause_raises_structured_value() {
     // A no-match crashes with a structured, catchable value:
-    // [:match-error <context> <value> <patterns-tried>].
+    // {:kind :match :context <context> :value <value> :patterns <patterns-tried>}.
     assert_eq!(
         run("(try (match 42 ([:ok v] v))
-               (catch e (match e ([:match-error ctx val pats] (list ctx val)) (_ :other))))"),
+               (catch e (match e ({:kind :match :context ctx :value val} (list ctx val)) (_ :other))))"),
         "(:match 42)"
     );
     let mut interp = Interp::new();
@@ -874,8 +874,11 @@ fn throw_and_catch() {
         run("(try (/ 1 0) (catch e (string? (get e :message))))"),
         "true"
     );
-    // error: raise a formatted message — user-throw, no :code
-    assert_eq!(run("(try (error \"nope: \" 5) (catch e e))"), "\"nope: 5\"");
+    // error: raise a formatted message — an error map of kind :error, code E0090 (ADR-500)
+    assert_eq!(
+        run("(try (error \"nope: \" 5) (catch e [(get e :kind) (get e :message) (get e :code)]))"),
+        "[:error \"nope: 5\" \"E0090\"]"
+    );
     // try with no catch clause is just a do
     assert_eq!(run("(try 1 2 3)"), "3");
 }

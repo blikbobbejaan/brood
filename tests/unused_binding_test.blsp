@@ -104,7 +104,7 @@
 (describe "checker: `:when` written inside the head list"
   (test "names the misplacement, not the match error it causes"
     ;; `((acc num :when (string? num)) body)` becomes a FOUR-parameter head, so the clause
-    ;; stops matching and every call dies with `[:match-error :fn …]` naming the clauses
+    ;; stops matching and every call dies with a `:match` error naming the clauses
     ;; rather than the slip. Nothing said anything until this.
     (let (msgs (checker-messages "(defn f (xs) (reduce xs '() (fn ((acc num :when (string? num)) acc))))"))
       (is (any? msgs (fn (m) (string/starts-with? m "`:when` belongs after the head list"))))))

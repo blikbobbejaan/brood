@@ -81,8 +81,11 @@
   (test "throw a list"
     (assert= (try (throw '(a b c)) (catch e e)) '(a b c)))
 
-  (test "error function raises a string message"
-    (assert= (try (error "bad " "input") (catch e e)) "bad input")))
+  (test "error function raises an error map of kind :error"
+    (let (e (try (error "bad " "input") (catch e e)))
+      (assert= :error (get e :kind))
+      (assert= "bad input" (get e :message))
+      (assert= "E0090" (get e :code)))))
 
 ;; ── 3. Kernel error kinds ────────────────────────────────────────────────────
 

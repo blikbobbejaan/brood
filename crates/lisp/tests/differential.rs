@@ -180,12 +180,12 @@ const CORPUS: &[&str] = &[
     "(defn ma ((x) :one) ((x y) :two) ((x y & r) [:many (count r)])) [(ma 1) (ma 1 2) (ma 1 2 3 4)]",
     // a variadic helper driven in a tail loop (rest list rebuilt each call)
     "(defn vmax (& xs) (reduce (rest xs) (first xs) (fn (a b) (if (< a b) b a)))) (vmax 3 9 2 7 1)",
-    // pattern-dispatch fns (string/lower to match* whose no-match arm is `(throw [:match-error
-    // (quote ctx) m (quote pats)])`): the VM now compiles `quote` + vector/map literals,
+    // pattern-dispatch fns (string/lower to match* whose no-match arm is `(%raise (%match-error
+    // (quote ctx) m (quote pats)))`): the VM now compiles `quote` + vector/map literals,
     // so these run on the VM instead of deferring. Recursive + non-total + the throw path.
     "(defn pfib ((0) 0) ((1) 1) ((n) (+ (pfib (- n 1)) (pfib (- n 2))))) (pfib 12)",
     "(defn pf ((0) :zero) ((1 2) :one-two)) [(pf 0) (pf 1 2)]",
-    "(defn pf ((0) :zero)) (pf 9)", // no clause matches → match-error throw (both engines)
+    "(defn pf ((0) :zero)) (pf 9)", // no clause matches → the %match-error raise (both engines)
     // quoted data + vector/map literals built inside a compiled body (non-constant
     // elements, so they're build-nodes, not folded Consts)
     "(defn qd (x) (list (quote a) x '(n e s t) [:v x] {:k x :q (quote s)})) (qd 7)",

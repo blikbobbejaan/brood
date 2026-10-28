@@ -164,7 +164,7 @@ another Lisp has it.
    **Done:** destructuring, `match`/`receive` clauses and the standard binding macros
    are renamed, and a typed binder keeps its annotation (it lost it before). Still literal,
    by decision: a user's own binding macro, computed binders and `{:keys [a]}` names.
-2. ⬜ **One shape for a caught error.** Today a `catch` handler sees three shapes:
+2. ✅ **One shape for a caught error (2026-10-28, ADR-500).** Today a `catch` handler sees three shapes:
    - a built-in error: a map `{:kind :message …}`;
    - an unmatched `match`/`case`: a `[:match-error ctx value patterns]` vector;
    - a user `throw`: the raw value.
@@ -173,6 +173,10 @@ another Lisp has it.
    Decide whether `match-error` becomes an error map with `:kind :match-error`, and whether
    `catch` should be able to filter by `:kind` (it has no filtering today, so handlers
    rethrow by hand).
+   **Done:** there were four shapes (`error` and `assert` raised strings). Every error the
+   language raises is now a map — `:error`, `:assert` and `:match` (with `:context`,
+   `:value`, `:patterns`) joined the built-in kinds — and `throw` stays raw. `catch` takes a
+   pattern with an optional `:when`, several clauses, and rethrows what none matches.
 3. ⬜ **Nested quasiquote.** It is rejected (levels are not tracked), so macros that write
    macros need `` `(a ~(inner-template x)) `` workarounds. Track levels. The rejection was
    chosen precisely so this lands additively (ADR-011).

@@ -620,10 +620,28 @@ NON-LINEAR patterns (the same name twice) work.
       " elements: "
       (pr-str-bounded pat))))
 
-;; The no-match failure: a structured, catchable, self-describing value carrying
-;; the context (:match / :let / a fn name), the value, and the patterns tried.
+;; The no-match failure: an error map (ADR-500) carrying the context (:match / :case / :let / a
+;; fn name), the value, and the patterns tried. The lowered form is `(%raise (%match-error …))`,
+;; whose arguments sit where the checker looks for them (`guards::match_coverage`).
+(defn %match-error (context target patterns)
+  "The error map a failed pattern raises: `{:kind :match :message … :context … :value …
+:patterns …}`, with code `E0092`. Built by the `throw` every non-total `match`, `case`,
+refutable `let` and pattern `fn` lowers its no-match branch to.
+
+    (:message (%match-error :match 3 '(1 2)))   ;=> \"match: no clause matches 3 — tried 1, 2\""
+  {:kind :match
+   :code "E0092"
+   :message (str (->string context)
+              ": no clause matches "
+              (pr-str-bounded target)
+              " — tried "
+              (string/join (map patterns pr-str-bounded) ", "))
+   :context context
+   :value target
+   :patterns patterns})
+
 (defn- %match-no-match (context target patterns)
-  `(throw [:match-error (quote ~context) ~target (quote ~patterns)]))
+  `(%raise (%match-error (quote ~context) ~target (quote ~patterns))))
 
 (defn- %match-clause-patterns (clauses) (map clauses (fn (c) (if (pair? c) (first c) c))))
 
@@ -791,7 +809,7 @@ the surface the special forms target directly when they need their own context."
 pairs; a lone trailing form is the default. `(case k :a 1 :b 2 :other)`. Tests
 are literals only — a bare symbol is an error (it would bind, not compare), and
 destructuring, guards, or alternatives mean you want `match`. With no default, no
-match raises `[:match-error :case value patterns]`, exactly as `match` does.
+match raises a `:match` error with `:context :case`, exactly as `match` does.
 
     (case :b :a 1 :b 2 :other)   ;=> 2
     (case :z :a 1 :other)        ;=> :other"

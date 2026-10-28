@@ -834,9 +834,9 @@ fn check_named_call(
     }
 
     // **Match-exhaustiveness lint** (ADR-118). `match` compiles a no-catch-
-    // all form's failure to `(throw [:match-error 'context target
-    // 'patterns])` — recognising that exact shape here (the generic
-    // `throw` call path, not a dedicated `match`/`SPECIAL_HEAD` entry,
+    // all form's failure to `(%raise (%match-error 'context target
+    // 'patterns))` — recognising that exact shape here (the generic
+    // raise call path, not a dedicated `match`/`SPECIAL_HEAD` entry,
     // since by now `match` has already macroexpanded to this) is enough
     // to flag a literal-enum scrutinee whose clauses don't cover every
     // member. See `guards::match_coverage`.
@@ -871,7 +871,7 @@ fn check_named_call(
         }
     }
 
-    if value::symbol_is(s, "throw") && items.len() == 2 {
+    if super::guards::is_raise_head(s) && items.len() == 2 {
         match super::guards::match_coverage(heap, items[1], ctx) {
             // Its category is `:type-mismatch`: the scrutinee's (literal) type has
             // members no pattern accepts — a test provoking the match failure on

@@ -29,7 +29,7 @@ these are the ones to unlearn:
 
 | Clojure habit | Brood reality | What you get if you guess wrong |
 |---|---|---|
-| `(try … (catch Type e body))` | `catch` takes a **bare binding**: `(catch e body)`. There is no exception class. | A clean error naming the fix. (It used to bind the *class name* as the variable and evaluate `e` as a statement — and since the prelude then defined `e` (it is `math/e` now), `(catch Exception e (io/puts "caught" e))` silently printed 2.718…, a wrong program with no diagnostic.) |
+| `(try … (catch Type e body))` | `catch` takes a **pattern**: `(catch e body)` catches everything, `(catch {:kind :type} body)` one kind. There is no exception class. | A clean error naming the fix. (It used to bind the *class name* as the variable and evaluate `e` as a statement — and since the prelude then defined `e` (it is `math/e` now), `(catch Exception e (io/puts "caught" e))` silently printed 2.718…, a wrong program with no diagnostic.) |
 | Multi-arity `(fn ((x) …) ((x y) …))` | **Supported** (ADR-047) — dispatch by argument count, like Clojure. But param lists are **lists** `(x)`, not vectors `[x]`, and a clause head may *also* be a same-arity **pattern** (see [Pattern matching](#pattern-matching)). | A **clean error** with a hint: vector-headed clauses `([x] …) ([x y] …)` are rejected. (They used to read as one 2-parameter pattern clause with an empty body — a completely different function, diagnosed only later as a misleading arity error at the call site.) |
 | `{:a 1}` map literal | **Supported.** Immutable; `get`/`assoc`/`dissoc`/`keys`/`vals`/`contains?` (see [Maps](#maps)). Iteration order is **hash-derived, not insertion order** (unlike Clojure's array-map — see [Maps](#maps)). | Works as you'd expect, except don't rely on key order. |
 | `{:keys [a b]}` / `:or` map destructuring | **Supported** — a map literal in pattern position binds each `:keys` symbol to the same-named keyword's value (nil if absent, or the `:or` default): `(let ({:keys [a b] :or {b 0}} m) …)`, works in `let`/`fn`/`match`. General `{:key subpattern}` nesting and `:as` are deferred (ADR-011). | Works as in Clojure for the `:keys`/`:or` subset. |
@@ -1510,16 +1510,13 @@ Clauses are **wrapped** `(pattern [:when guard] body…)`; the first whose patte
 ```
 
 A `match` in tail position is TCO-safe (loops and receive loops won't overflow).
-No clause matching **crashes** with a structured, catchable value
-`[:match-error <context> <value> <patterns-tried>]` — add a `_` clause to make a
-match total:
+No clause matching **raises** an error of kind `:match` (ADR-500) —
+`{:kind :match :message … :context <form> :value <value> :patterns <patterns-tried>}` —
+which a `catch` pattern can pick out. Add a `_` clause to make a match total:
 
 ```clojure fragment
 (try (match resp ([:ok v] v))
-  (catch e
-    (match e
-      ([:match-error ctx val pats] (recover val))
-      (_                           (throw e)))))
+  (catch {:kind :match :value val} (recover val)))
 ```
 
 **Function-head guards.** The same `:when` guard works on a `fn`/`defn` **clause
@@ -1535,7 +1532,7 @@ falls through to the next clause:
 
 The guard sees every parameter the clause binds. A guarded fn dispatches through the
 match engine (so tail calls are still TCO-safe, and a single guarded clause whose guard
-fails raises `[:match-error …]` like any unmatched `match`). The guard belongs on a
+fails raises a `:match` error like any unmatched `match`). The guard belongs on a
 **clause head** — the double-paren form `((n) :when …)`, not the bare `(fn (n) :when …)`
 parameter form. `:when` does **not** combine with `&optional`/`&` in one clause (a loud
 error — one dispatch mechanism per fn); express a guarded variadic with a `match` on the
@@ -1567,7 +1564,7 @@ it would silently *bind* instead of comparing. So `case` is the spelling to reac
 for whenever every arm is a constant, and `match` the one for shapes, guards, and
 binding. Anything richer than a literal — destructuring, a guard, alternatives — is
 rejected with a hint naming `match`. With no default, no match raises
-`[:match-error :case value patterns]`, exactly as `match` does, and the
+a `:match` error with `:context :case`, exactly as `match` does, and the
 [exhaustiveness lint](#type-annotations) covers a `case` over a declared literal
 type just as it covers a `match`.
 
@@ -1763,22 +1760,40 @@ it should unwind.
 
 ### Raising — for bugs and the unexpected
 
-Raise with `throw` (any value) or `error` (a formatted message), and handle with
+Raise with `error` (a formatted message) or `throw` (any value), and handle with
 `try`/`catch`:
 
 ```clojure fragment
 (try
   (risky)
   (catch e
-    (io/puts "failed:" e)
+    (io/puts "failed:" (error-message e))
     :recovered))
 
-(throw :boom)                       ; raise an arbitrary value
-(error "bad index: " i)             ; raise a message string
+(error "bad index: " i)             ; raise an error map {:kind :error :message "bad index: 7" …}
+(throw :boom)                       ; raise an arbitrary value, as it is
 ```
 
-**`(assert test message…)`** states an invariant: when `test` is falsy it raises through
-`error` with the form's own text, followed by any `message` parts; otherwise it returns
+**Every error the language raises is an error map** (ADR-500):
+`{:kind <keyword> :message <string> [:code :file :line :col :hint :trace]}`. A built-in
+error's kind names what went wrong (`:type`, `:arity`, `:unbound`, `:runtime`,
+`:contract`, …); `error` raises kind `:error`, `assert` kind `:assert`, and a pattern that
+matches nothing — a `match` or `case` without a catch-all, a refutable `let`, a pattern `fn`
+— kind `:match`, which also carries `:context` (`:match`, `:let`, `:fn`, …), `:value` and
+the `:patterns` tried:
+
+```clojure
+(try (match 3 (1 :one)) (catch e (:message e)))   ;=> "match: no clause matches 3 — tried 1"
+(try (match 3 (1 :one)) (catch e (:value e)))     ;=> 3
+(try (error "bad " 42) (catch e (:kind e)))        ;=> :error
+```
+
+`throw` is the one exception: it raises its argument **as it is** — a keyword for a
+non-local exit, or a program's own error, which it writes as a map with `:kind` and
+`:message` so it reads like the rest.
+
+**`(assert test message…)`** states an invariant: when `test` is falsy it raises an
+`:assert` error with the form's own text, followed by any `message` parts; otherwise it returns
 `test`'s value, so it can wrap the expression it checks. The message parts are evaluated
 only when it raises. It is always on — there is no build that strips it.
 
@@ -1814,17 +1829,26 @@ lives on the heap (a string, a map, …), so `throw` of that same value raises i
 its original site (ADR-427). A keyword or number has no identity to remember; it is
 located at the rethrow.
 
-`catch` takes **exactly one bare binder** and no exception class — Clojure's
-`(catch Type e body…)` is rejected with a hint, since reading it Brood's way would
-bind the *class name* and evaluate the intended binder as a statement (a wrong
-program, not an error). `catch` binds `e` to the thrown value: a `throw` hands back its argument verbatim
-(a bare string from `error`, a keyword, a `[:tag …]` vector, …), while a built-in
-error (like division by zero) binds the kernel's canonical **error map** —
-`{:kind :message [:code :file :line :col :hint :trace]}` — so a handler can
-branch on `(get e :kind)` without parsing strings. A `try` with no `catch` is
-just a `do`. Under the hood `throw` and `%try` are primitives and
-`try`/`catch`/`error` are written in Brood (`std/prelude/core.blsp`) — see
-[primitives.md](primitives.md).
+**`catch` takes a pattern** — the one pattern grammar, with an optional `:when` guard —
+and a `try` may have several, together after the body. The first whose pattern matches
+what was raised runs, with the pattern's bindings; when none matches, the error
+propagates, raised again from where it was first raised. A symbol matches anything, so
+`(catch e …)` catches everything:
+
+```clojure
+(try (/ 1 0)
+  (catch {:kind :type} :type)
+  (catch {:kind :runtime :message m} m))           ;=> "division by zero"
+(try (throw :found) (catch :found :got-it))        ;=> :got-it
+(try (error "x") (catch e :when (= (:kind e) :error) (:code e)))   ;=> "E0090"
+(try (error "x") (catch (and e {:kind :error}) (error-message e)))  ;=> "x"
+```
+
+There is no exception class — Clojure's `(catch Type e body…)` is rejected with a hint,
+since reading it as a pattern would bind the *class name* and evaluate the intended binder
+as a statement (a wrong program, not an error). A `try` with no `catch` is just a `do`.
+Under the hood `throw`, `%raise` and `%try` are primitives and `try`/`catch`/`error` are
+written in Brood (`std/prelude/control.blsp`) — see [primitives.md](primitives.md).
 
 **`:trace` is the call stack at the raise** — a list of frames, innermost first,
 each a `{:fn <name> [:file <file> :line <l> :col <c>]}` map whose location is the
@@ -1845,15 +1869,15 @@ The position and trace still exist — the raise collected them as it unwound �
 **`(%try-described thunk handler)`** is how a handler reads them for any thrown value:
 it calls `(handler caught error)`, where `caught` is exactly what `catch` would bind and
 `error` the raise's description, `{:kind :message [:code :file :line :col :hint :trace]}`
-(for a built-in error the two are the same map). Tooling that reports a failure it did
+(for an error map the language raised, the two are the same map). Tooling that reports a failure it did
 not raise — `nest mcp` answering a tool handler's `throw` — uses it:
 
 ```clojure
-(%try-described (fn () (error "bad input"))
+(%try-described (fn () (throw "bad input"))
   (fn (caught error) [caught (get error :line)]))   ;~> ["bad input" 1]
 ```
 
-Because a caught value has no single shape, **`(error-message e)`** is the
+Because a thrown value can be anything, **`(error-message e)`** is the
 shape-agnostic accessor: a raised string as-is, the `:message` of an error map,
 else the value's printed form. A `catch` handler that just wants a human string
 uses it directly instead of branching on `string?`/`map?`:

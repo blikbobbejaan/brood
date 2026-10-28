@@ -77,6 +77,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         blob_strong_count,
     );
     primitives.def(
+        "%raise",
+        Arity::exact(1),
+        Sig::new(vec![map_ty], Ty::NEVER),
+        &["error"],
+        "Raise the error map `error` — `{:kind k :message s :code c …}`, `c` one of the codes the language raises itself (`E0090` `error`, `E0091` `assert`, `E0092` a failed match). A catch binds the map with the `:file`/`:line`/`:col` and `:trace` of the raise added, as for a built-in error; uncaught it renders as `error: <message>`. The primitive behind `error`, `assert` and a failed pattern (ADR-500).",
+        raise,
+    );
+    primitives.def(
         "%try",
         Arity::exact(2),
         Sig::new(vec![callable, callable], any),
@@ -111,6 +119,31 @@ pub(super) fn make_macro(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
     expect!(heap, "%make-macro", arg(args, 0), "fn",
         Value::Fn(id) => Value::macro_(id),
     )
+}
+
+/// `(%raise m)` — raise the error map `m` with the code its `:code` names, so a catch binds `m`
+/// enriched with position and trace (`LispError::caught_value`). A code outside
+/// [`error_codes::raised_map_code`] is a type error: a program's own error map is `throw`n.
+pub(super) fn raise(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    use crate::core::value::intern;
+    use crate::error::error_codes;
+    let error = arg(args, 0);
+    let code = match error {
+        Value::Map(map) => match heap.map_get(map, Value::keyword(intern("code"))) {
+            Some(Value::Str(id)) => error_codes::raised_map_code(heap.string(id)),
+            _ => None,
+        },
+        _ => None,
+    };
+    match code {
+        Some(code) => Err(LispError::thrown(error, heap).with_code(code)),
+        None => Err(LispError::wrong_type(
+            heap,
+            "%raise",
+            "an error map whose :code the language raises (E0090, E0091, E0092)",
+            error,
+        )),
+    }
 }
 
 /// `(throw v)`. A `v` a handler caught is raised again from where it was first raised —

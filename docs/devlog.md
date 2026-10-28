@@ -4552,3 +4552,17 @@ now `x__609:int`. Still literal by decision: a user's binding macro, computed bi
 `{:keys}` names. Run here: the probe over 24 shapes, `nest check`, `--strict`, the std
 doctest engine, clippy `--all-features` on the crate, `cargo fmt --check`. Not run: the
 test suites (`tests/hygiene_test.blsp` gains a block per site and a cross-process case).
+
+2026-10-28 (ADR-500, every error is a map; `catch` takes a pattern): a `catch` handler saw
+four shapes, not the three ROADMAP listed — `error` and `assert` raised plain strings,
+a failed pattern raised `[:match-error ctx value patterns]` (and printed as that vector
+uncaught), a built-in error was a map, and `throw` was raw. Every error the language raises
+is now an error map: `error` → `:error` (E0090), `assert` → `:assert` (E0091), a failed
+`match`/`case`/`let`/`fn` pattern → `:match` (E0092) with `:context`/`:value`/`:patterns`
+and a readable message (`match: no clause matches 3 — tried 1`). They go through one new
+primitive, `%raise`, so a catch binds them with position and trace as it already did for a
+contract violation. `throw` is unchanged. `catch` takes a pattern with an optional `:when`
+guard; several clauses are tried in order, and an error none matches is raised again from
+its first site. The checker's four readers of the old vector now share
+`guards::match_failure_parts`. Run here: probes of every raise shape and catch form, the
+exhaustiveness lint, `nest check`, `--strict`, the std doctest engine. Not run: the suites.

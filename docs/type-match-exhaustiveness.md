@@ -1,5 +1,10 @@
 # Match exhaustiveness checking over literal-enum types (ADR-118, generalized in ADR-121)
 
+> **Since ADR-500** the failure branch is `(%raise (%match-error (quote context) target (quote
+> patterns)))` rather than a `(throw [:match-error …])` vector; the arguments sit in the same
+> positions, and `guards::match_failure_parts` is the one recogniser. The text below predates
+> that.
+>
 > Status: **shipped, generalized to mixed-kind enums** (ADR-121). A `match`
 > over a scrutinee whose declared type is a *pure* enumerable literal type —
 > any combination of keyword/int/bool/string literals plus `nil`

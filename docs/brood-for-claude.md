@@ -568,16 +568,17 @@ that indexed replace was cheap, and ran 16 seconds at n=8 000. Rewritten over a
 CHAMP map index→item it is 206 ms (~78×). **If you are updating in a loop, use a
 map keyed by index and convert once at the end.**
 
-**`catch` takes ONE bare binder** — `(catch e body…)`, never Clojure's
-`(catch Type e body…)`, which is rejected with a hint. (Reading it Brood's way
-would bind the *class name* to the raised value and evaluate `e` as a statement;
-because the prelude then defined `e` (now `math/e`), that silently printed 2.718… instead of failing.)
+**`catch` takes a PATTERN** — `(catch e body…)` catches everything,
+`(catch {:kind :match} body…)` one kind, `(catch e :when guard body…)` a guarded one;
+several clauses are tried in order and an error none matches propagates. Never
+Clojure's `(catch Type e body…)`, which is rejected with a hint (read as a pattern it
+would bind the *class name* and evaluate `e` as a statement).
 
-**In a `catch`, use `(error-message e)`.** A caught value has no single shape:
-`throw` hands back its argument verbatim (often a bare string from `error`),
-while a kernel error is a `{:kind :message …}` map. `error-message` normalises
-any of them to a human string — don't branch on `string?`/`map?` yourself.
-A kernel error map also carries **`:trace`** — the call stack at the raise,
+**Every error the language raises is a map** — `{:kind :message :code …}`: `:type`,
+`:arity`, `:unbound`, `:error` from `error`, `:assert`, `:match` from a pattern nothing
+matched (with `:value` and `:patterns`). Only `throw` raises a value as it is.
+**In a `catch`, use `(error-message e)`** to read any of them as a human string.
+An error map also carries **`:trace`** — the call stack at the raise,
 innermost first, each entry `{:fn <name> [:file :line :col]}` (the location is
 the call site that entered the frame; tail calls collapse into their caller's
 frame). Debug "how did I get here" from a caught error with
@@ -1052,8 +1053,8 @@ until 2026-08; that name is gone.)
 ```
 
 **Failures are values, bugs raise** — see *A `failure` is a returned value* below; the
-`try`/`catch` above is for the raising half. `(catch e …)` takes one bare binder; use
-`(error-message e)` to read whatever was caught.
+`try`/`catch` above is for the raising half. `(catch e …)` catches everything, a pattern
+such as `(catch {:kind :type} …)` one kind; `(error-message e)` reads whatever was caught.
 
 ## Common builtins
 

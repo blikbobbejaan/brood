@@ -622,7 +622,7 @@ pub(in crate::types::check) fn self_call_sites(
 ///  - **pattern/guard clauses** (and a destructuring single-clause param list) were
 ///    already lowered to one variadic `match*` lambda by the time call sites are typed,
 ///    so the clauses are gone from the form itself. The lowering embeds the original
-///    clause-head list in each `[:match-error (quote :fn) … (quote heads)]` throw;
+///    clause-head list in each `(%match-error (quote :fn) … (quote heads))` raise;
 ///    that datum's printed form is the key the surface pre-pass recorded the clauses
 ///    under (`Ctx::fn_literal_clauses`), and the recovery below reads them back.
 ///
@@ -674,9 +674,9 @@ pub(in crate::types::check) fn clause_lambda_ret(
 }
 
 /// The surface `(heads, tail)` arms of a LOWERED pattern-clause literal, recovered via
-/// the `[:match-error (quote :fn) scrutinee (quote heads)]` vector the lowering embeds:
+/// the `(%match-error (quote :fn) scrutinee (quote heads))` call the lowering embeds:
 /// its quoted head-list datum, printed, is the key the surface pre-pass recorded the
-/// literal's clauses under. `None` when no such vector is found (not a lowered clause
+/// literal's clauses under. `None` when no such call is found (not a lowered clause
 /// fn) or the key is unknown/ambiguous.
 fn recovered_literal_arms(
     heap: &Heap,
@@ -686,21 +686,17 @@ fn recovered_literal_arms(
     let mut work = vec![fn_form];
     while let Some(v) = work.pop() {
         match v {
-            Value::Vector(id) => {
-                let elems = heap.vector(id).to_vec();
-                let is_match_error = matches!(elems.first(), Some(&Value::Keyword(k))
-                    if value::symbol_name_ref(k) == "match-error")
-                    && elems.len() == 4
-                    && super::walk::unquote(heap, elems[1]).is_some_and(
+            Value::Vector(id) => work.extend(heap.vector(id).to_vec()),
+            Value::Pair(_) => {
+                if let Some([context, _, heads]) = super::guards::match_failure_parts(heap, v)
+                    && super::walk::unquote(heap, context).is_some_and(
                         |t| matches!(t, Value::Keyword(k) if value::symbol_name_ref(k) == "fn"),
-                    );
-                if is_match_error && let Some(heads) = super::walk::unquote(heap, elems[3]) {
+                    )
+                    && let Some(heads) = super::walk::unquote(heap, heads)
+                {
                     let key = crate::syntax::printer::print(heap, heads);
                     return ctx.fn_literal_clauses(&key).cloned();
                 }
-                work.extend(elems);
-            }
-            Value::Pair(_) => {
                 if let Some(items) = list_items(heap, v) {
                     work.extend(items);
                 }

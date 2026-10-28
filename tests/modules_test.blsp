@@ -242,9 +242,9 @@
     ;; clause that silently does nothing is the failure mode it exists to prevent.
     (is (= (try (%load-string "(defmodule impl-d (:require foo))") (catch e :rejected)) :rejected)))
   (test "the error names :implements among the accepted clauses"
-    ;; `error` raises a plain string here, not a structured map — hence `str`, not
-    ;; `(get e :message)`.
-    (let (message (try (%load-string "(defmodule impl-e (:nonsense x))") (catch e (str e))))
+    (let (message (try
+                    (%load-string "(defmodule impl-e (:nonsense x))")
+                    (catch e (error-message e))))
       (is (includes? message ":implements")))))
 
 ;; `(:use …)` import policy (ADR-065 + ADR-235): importing two modules that
