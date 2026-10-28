@@ -4512,3 +4512,14 @@ setup naming values the block never defines (the triage is ROADMAP A3 step 5). R
 std doctest engine (0 failures over 2,035 names), `nest check` and `--strict`,
 `nest format --check`, and probes of isolation, `halt` and the timeout through
 `nest doctest`. Not run: `doctest_test`.
+
+2026-10-28 (`:doc-paths`): the manifest names the markdown plain `nest doctest` runs after
+the docstrings — files, directories (every `.md` under them) and `!`-prefixed paths left out
+(`docs/doc-files`). The default is `README.md` when there is one, so a project without a
+README sees no change; a path the manifest names that does not exist is reported as a
+failure, so a typo cannot check nothing. Brood's manifest names `README.md` and `docs`,
+leaving out the ADRs, the devlog and the archive: 88 files. `markdown-failures` takes an
+optional label so failures name the file relative to the project. Run here: `nest doctest`
+in a scaffold with no README, a failing README and a missing `:doc-paths` entry; `doc-files`
+over this repo; the std doctest engine (0 failures over 2,036 names); `nest check`,
+`--strict`, `nest format --check`. Not run: the test suites.

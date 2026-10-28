@@ -505,10 +505,10 @@ faults on a last line the parent reads back.
            (if (= stderr "") "" (str ": " (last (string/split stderr "\n"))))))]
       (reflect/read-string (string/drop-prefix (last reported) *faults-prefix*)))))
 
-(defn markdown-failures (path)
+(defn markdown-failures (path &optional label)
   "Every fenced block example in the markdown file at `path` that does not hold, each block
 run in a child process of its own under a timeout. A vector of descriptions, empty when every
-block holds.
+block holds. `label` names the file in them (default `path`).
 
     (doctest/markdown-failures \"docs/guide.md\")   ;~> [] — or one description per failure"
   (let (blocks (fenced-blocks (file/slurp path)))
@@ -516,12 +516,12 @@ block holds.
       (fold blocks
         []
         (fn (faults block)
-          (let (label (str path ":" (:line block))
+          (let (block-label (str (or label path) ":" (:line block))
                 file (str (path/temp "brood-doctest-") ".blsp")
                 command (child-command file))
             (file/spit file
               (str "(doctest/run-block "
-                (pr-str path)
+                (pr-str (or label path))
                 " "
                 (:line block)
                 " "
@@ -529,4 +529,4 @@ block holds.
                 ")\n"))
             (let (result (os/cmd (first command) (second command) {:timeout-ms *block-timeout-ms*}))
               (file/rm file)
-              (append faults (block-outcome label result)))))))))
+              (append faults (block-outcome block-label result)))))))))

@@ -692,6 +692,11 @@ own under a 10 s timeout. A block is a small program: unmarked lines are setup, 
 marked line may close a form the lines above it opened. A block tagged
 ```` ```clojure fragment ```` is never run, nor is an untagged block or another language.
 
+Plain `nest doctest` runs the markdown a project's manifest names in `:doc-paths` after its
+docstrings — files, directories (every `.md` under them) and `!`-prefixed paths to leave out,
+`:doc-paths ["README.md" "guides" "!guides/drafts"]`. Without the key it is `README.md` when
+there is one; a path the key names that does not exist is a failure, not a silent skip.
+
 The expected side is **read**, not evaluated, so `(:a :b)` is the list it depicts rather than
 a call; and values are compared as values, so a map's key order (the trie's, not insertion
 order) cannot break an example. A trailing `; comment` is ignored, and only *indented* lines

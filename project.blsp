@@ -27,5 +27,10 @@
   :version "0.44.0"
   :source-paths ["tests/support"]
   :test-paths ["tests"]
-  :format-paths ["std" "examples" "scripts" "stress" "breakage"])
+  :format-paths ["std" "examples" "scripts" "stress" "breakage"]
+  ;; `nest doctest` runs the fenced examples in these. ADRs and the devlog are records of
+  ;; what was true when written, so they are left out, as is the archive.
+  :doc-paths
+    ["README.md"
+      "docs" "!docs/decisions" "!docs/decisions.md" "!docs/devlog" "!docs/devlog.md" "!docs/archive"])
 ; override; e.g. :source-paths ["lib"] for a real app

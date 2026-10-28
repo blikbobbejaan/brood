@@ -123,6 +123,10 @@ identity and may override those paths. The rest of the tool is its siblings:
 ; a whitelist, so a directory holding .blsp the project authors but does not build from
 ; (`std/`, `examples/`, `scripts/`) has to be named here to be formatted. Ambient so
 ; `std/format.blsp` reads it without importing the manifest.
+(defdyn *project-doc-paths* nil)
+; the manifest's :doc-paths — the markdown `nest doctest` runs the fenced examples of: files,
+; directories (every `.md` under them) and `!`-prefixed paths left out. nil = `README.md` when
+; there is one.
 (defdyn *project-width* nil)
 ; the manifest's :width (an integer column budget for `nest format`, e.g. 80);
 ; nil = use the formatter's built-in default. Ambient so `std/format.blsp` reads it
@@ -382,7 +386,7 @@ spells, and it is a single path component — no `/`, `\\` or NUL, and not start
 ;; and the `:main` pair — without quoting. Manifests are static data; nothing in
 ;; them is ever evaluated.
 (defmacro project (& opts)
-  "Declare the project manifest (ADR-020/037): `:name` `:version` `:description` `:repository` `:source-paths` `:test-paths` `:format-paths` `:main`, `:dependencies` and `:dev-dependencies` (test/dev-only, excluded from a release bundle — ADR-172). `:format-paths` names EXTRA directories `nest format` owns beyond `:source-paths`/`:test-paths` — needed for a tree the project authors but does not build from (`std/`, `examples/`); the formatter walks a whitelist, so a fetched dependency under `_deps/` is never rewritten. A dep entry may carry `:optional true` (declared but not force-installed). `:brood` names the runtime-version constraint this project needs (`:brood \">= 0.2\"`), checked against `(system/brood-version)` at setup — an unmet requirement stops with a clear error (ADR-209). `:enhances` declares the applications this package plugs into as a map of name → version constraint (`:enhances {bedit \">= 0.3\"}`) — the application checks it when it loads the package; nothing is fetched. `:kind` is the package's kind — `:app` (an application you run) or `:library` (the default, an ordinary reusable package); optional, and the registry lists the two differently. Arguments are literal data — write dep names, `:enhances` keys and the `:main` pair as bare symbols."
+  "Declare the project manifest (ADR-020/037): `:name` `:version` `:description` `:repository` `:source-paths` `:test-paths` `:format-paths` `:doc-paths` `:main`, `:dependencies` and `:dev-dependencies` (test/dev-only, excluded from a release bundle — ADR-172). `:format-paths` names EXTRA directories `nest format` owns beyond `:source-paths`/`:test-paths` — needed for a tree the project authors but does not build from (`std/`, `examples/`); the formatter walks a whitelist, so a fetched dependency under `_deps/` is never rewritten. `:doc-paths` names the markdown `nest doctest` runs the fenced examples of — files, directories (every `.md` under them) and `!`-prefixed paths to leave out; default `README.md` when there is one. A dep entry may carry `:optional true` (declared but not force-installed). `:brood` names the runtime-version constraint this project needs (`:brood \">= 0.2\"`), checked against `(system/brood-version)` at setup — an unmet requirement stops with a clear error (ADR-209). `:enhances` declares the applications this package plugs into as a map of name → version constraint (`:enhances {bedit \">= 0.3\"}`) — the application checks it when it loads the package; nothing is fetched. `:kind` is the package's kind — `:app` (an application you run) or `:library` (the default, an ordinary reusable package); optional, and the registry lists the two differently. Arguments are literal data — write dep names, `:enhances` keys and the `:main` pair as bare symbols."
   ;; quasiquote (not `(list 'apply …)`) so α qualifies `apply`
   ;; to `project/apply-config` at this macro's definition (ADR-065 §7).
   `(apply-config (quote ~opts)))
@@ -396,6 +400,7 @@ spells, and it is a single path component — no `/`, `\\` or NUL, and not start
   (let (example (cond
                   (= key :test-paths) "[\"tests\"]"
                   (= key :format-paths) "[\"examples\"]"
+                  (= key :doc-paths) "[\"README.md\" \"guides\"]"
                   else "[\"src\"]"))
     (cond
       (or (vector? value) (pair? value))
@@ -488,10 +493,12 @@ manifest is read, naming the key, not later inside whoever consumes the map."
   (let (src (plist-get opts :source-paths)
         tst (plist-get opts :test-paths)
         fmt (plist-get opts :format-paths)
+        doc-paths (plist-get opts :doc-paths)
         m (plist-get opts :main))
     (when src (def *project-source-paths* (project-check-paths :source-paths src)))
     (when tst (def *project-test-paths* (project-check-paths :test-paths tst)))
     (when fmt (def *project-format-paths* (project-check-paths :format-paths fmt)))
+    (when doc-paths (def *project-doc-paths* (project-check-paths :doc-paths doc-paths)))
     (when m (def *project-main* (project-parse-main m))))
   (def *project-dependencies* (parse-deps (plist-get opts :dependencies)))
   ;; `:dev-dependencies` (ADR-172) — parsed exactly like `:dependencies`, each tagged

@@ -125,7 +125,12 @@ another Lisp has it.
      164 blocks in 57 s, 120 failures. Most are trailing prose after a result and setup that
      names values the block never defines; that is step 5's triage. One is real drift:
      `language.md`'s `(area (rect 3 4)) ;=> 12` fails its own `sig` contract.
-  4. ⬜ `:doc-paths` in `project.blsp`.
+  4. ✅ **`:doc-paths` (2026-10-28).** Plain `nest doctest` runs the markdown the manifest
+     names after the docstrings: files, directories (every `.md` under them), and `!`-prefixed
+     paths to leave out. The default is `README.md` when there is one, so a scaffold without a
+     README is unchanged. A named path that does not exist is a failure. Brood names
+     `README.md` and `docs`, leaving out `docs/decisions*`, `docs/devlog*` and `docs/archive`:
+     88 files.
   5. ⬜ Triage Brood's docs.
   6. ⬜ ADR, `docs/tooling.md`, devlog.
 - ✅ **Docstring examples take the full namespace (2026-10-28).** An example is evaluated at

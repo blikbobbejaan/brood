@@ -463,11 +463,57 @@ bare-surface (prelude) name, whose references are bare already."
 ;; One engine checks every documented example: `std/tool/doctest.blsp`, the same one
 ;; `nest test` gates a project's docstrings with. This is only its front end.
 
+(defn doc-files (root entries)
+  "The markdown files the `:doc-paths` `entries` name, relative to `root`, sorted:
+`[files missing]`. An entry is a file, a directory (every `.md` under it), or a `!`-prefixed
+path whose files are left out. `missing` lists the entries that name nothing, so a typo in
+the manifest is said rather than checking nothing.
+
+    (docs/doc-files \".\" [\"README.md\" \"docs\" \"!docs/decisions\"])   ;~> [(\"README.md\" \"docs/language.md\" …) ()]"
+  (let (excluded (map (seq/filter entries (fn (e) (string/starts-with? e "!")))
+                   (fn (e) (string/drop-prefix e "!")))
+        included (seq/filter entries (fn (e) (not (string/starts-with? e "!"))))
+        relative (fn (full) (string/drop-prefix full (str root "/")))
+        left-out? (fn (p)
+                    (any? excluded (fn (x) (or (= p x) (string/starts-with? p (str x "/"))))))
+        expand (fn (e)
+                 (let (full (path/join root e))
+                   (cond
+                     (file/dir? full)
+                       (map (seq/filter (file/walk-files full) (fn (f) (string/ends-with? f ".md")))
+                         relative)
+                     (file/exists? full) (list e)
+                     else nil))))
+    [(sort (seq/filter (seq/distinct (fold included [] (fn (acc e) (append acc (expand e)))))
+             (fn (p) (not (left-out? p)))))
+      (seq/filter included (fn (e) (not (file/exists? (path/join root e)))))]))
+
+(defn- markdown-doctests (files)
+  ;; Run `files`, each a `[path label]` pair, print each failure and a summary, and return
+  ;; the failure count.
+  (if (empty? files)
+    0
+    (let (fails (fold files
+                  []
+                  (fn (acc [path label]) (append acc (doctest/markdown-failures path label)))))
+      (each fails (fn (f) (io/puts (str "  FAIL " f))))
+      (io/puts (str (count files)
+                 " markdown file(s), "
+                 (fold files
+                   0
+                   (fn (n [path _]) (+ n (count (doctest/fenced-blocks (file/slurp path))))))
+                 " block(s) checked, "
+                 (count fails)
+                 " failing example(s)"))
+      (count fails))))
+
 (defn run-doctests ()
-  "Check every documented example in the current project's docstrings with `doctest` — a
+  "Check every documented example in the current project: its docstrings with `doctest` — a
 `form ;=> result` case is evaluated and compared, a `form ;~> result` illustration is read
-and its callee checked. Loads the project's sources, prints each failure and a summary, and
-returns the failure count (0 = all hold). The policy behind `nest doctest`."
+and its callee checked — then the fenced blocks of the markdown its `:doc-paths` names
+(default `README.md` when there is one). Loads the project's sources, prints each failure
+and a summary, and returns the failure count (0 = all hold). The policy behind
+`nest doctest`."
   (let (root (docs-setup-root "doctest")
         prefix (str *project-name* "/"))
     (project-image/load-sources-cached root)
@@ -477,22 +523,20 @@ returns the failure count (0 = all hold). The policy behind `nest doctest`."
                  " documented names checked, "
                  (count fails)
                  " failing example(s)"))
-      (count fails))))
+      (let ([files missing] (doc-files root (or *project-doc-paths* ["README.md"]))
+            ;; The default names a file a project may not have; only a path the manifest
+            ;; wrote is an error when it is missing.
+            not-found (if *project-doc-paths* missing [])
+            markdown (markdown-doctests (map files (fn (f) [(path/join root f) f]))))
+        (each not-found
+          (fn (e) (io/puts (str "  FAIL :doc-paths names " e ", which does not exist"))))
+        (+ (count fails) (count not-found) markdown)))))
 
 (defn run-markdown-doctests (paths)
   "Run the fenced examples in the markdown files `paths` with `doctest/markdown-failures`,
 each block in a process of its own. Prints each failure and a summary, and returns the
 failure count (0 = all hold). The policy behind `nest doctest FILE.md…`."
-  (let (fails (fold paths [] (fn (acc p) (append acc (doctest/markdown-failures p)))))
-    (each fails (fn (f) (io/puts (str "  FAIL " f))))
-    (io/puts (str (count paths)
-               " file(s), "
-               (fold paths 0 (fn (n p) (+ n (count (doctest/fenced-blocks (file/slurp p))))))
-               " block(s) checked, "
-               (count fails)
-               " failing example(s)"))
-    (count fails)))
-
+  (markdown-doctests (map paths (fn (p) [p p]))))
 (defn generate (& args)
   "Print Markdown documentation to stdout: the whole project with no args, or a single module given its name. The policy behind `nest doc`.
 

@@ -231,3 +231,17 @@
     (is (includes? (markdown/->html "[x](https://example.com)") "href=\"https://example.com\""))
     (is (includes? (markdown/->html "[x](/relative)") "href=\"/relative\""))
     (is (includes? (markdown/->html "[x](mailto:a@b.com)") "href=\"mailto:a@b.com\""))))
+
+(describe "doc-files — the markdown `:doc-paths` names"
+  (test "files, directories of .md and `!` exclusions, relative and sorted; a missing entry is named"
+    (let (root (path/temp "doc-files-test-"))
+      (file/mkdir (path/join root "guides/drafts"))
+      (file/spit (path/join root "README.md") "")
+      (file/spit (path/join root "guides/b.md") "")
+      (file/spit (path/join root "guides/a.md") "")
+      (file/spit (path/join root "guides/notes.txt") "")
+      (file/spit (path/join root "guides/drafts/c.md") "")
+      (let ([files missing] (docs/doc-files root ["README.md" "guides" "!guides/drafts" "typo.md"]))
+        (file/rmdir root)
+        (assert= ["README.md" "guides/a.md" "guides/b.md"] (apply vector files))
+        (assert= ["typo.md"] (apply vector missing))))))
