@@ -6,6 +6,25 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Changed — breaking.**
+- The bare namespace is the language (ADR-506): syntax, the functions most programs use, the
+  built-in kinds' predicates and coercions, and the operators. 115 names moved to their
+  family's module; `nest check --fix-renames` rewrites a caller, and an `unbound symbol`
+  names the replacement.
+  - `combinator/`: `complement` `constantly` `juxt` `fnil` `memoize` (`identity`, `partial`
+    and `comp` stay bare).
+  - `list/`: `caar` … `cdddr`.
+  - `seq/`: `but-last` `drop-while` `take-while` `mapv` `partition` `repeat` `sort-by`.
+  - `map/`: `get-in` `assoc-in` `update-in` `dissoc-in`; `set/disj`.
+  - `proc/`: `sleep` `offload`.
+  - `reflect/`: `apropos` `arglist` `doc` `doc-search` `macroexpand` `macroexpand-1`
+    `gensym` `multi-return-type` `reserved-package-name?`.
+  - `debug/`: `spy` `tap` `pr-str-bounded`; `io/read-line`.
+  - A library type's predicate is its module's: `queue/queue?`, `pq/pq?`,
+    `multimap/multimap?`, `datetime/date?`, `datetime/datetime?`, `datetime/time-of-day?`.
+  - 65 subsystem dynamics, the prefix dropped: `*project-root*` is `project/*root*`,
+    `*test-wait-ms*` is `test/*wait-ms*`, `*ui-loop*` is `editor/ui/*loop*`, and so on.
+
 ## v0.46.0 — sends that wait for their reader, and parks inside a record's methods
 
 A TCP send now waits on its peer, so a producer streams at its reader's pace instead of

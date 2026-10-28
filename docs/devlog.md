@@ -4720,3 +4720,19 @@ own runs (interrupt tests at both tiers, 16 record/sequence/numeric files, bedit
 on a release build of the branch). Unrun at the tag: the suite on the merged tree, the wasm
 tests under wasmtime 50's new fuel charging, the nightly's ASan job and soaks, and the
 benchmark rows ADR-502 and ADR-505 name. A defect any of these finds ships as v0.46.1.
+2026-10-28 (ADR-506, the bare namespace is the language; ROADMAP B4): a name is bare only when
+it is syntax, a function used in 15 or more of the 37 Brood projects counted (or the partner of
+one), a built-in kind's predicate or coercion, or an operator; 115 moved to their family's
+module in nine waves, 187 stay. Boot was the reason the old split blurred, and it was never
+one: the prelude defines `seq/mapv` itself. Each wave renamed the definition, recorded the
+ledger entry, and rewrote callers at the positions the checker reports unbound, so a local of
+the same name is never touched; a call-head pass covered the files the checker gives up on,
+skipping a file that defines the name itself (`string/repeat`) and the first pair of a binding
+list (`(let (doc …))`). What the checker cannot see came out of CI and the gates: docstring
+examples (run as tests), the bare-name ledger's group counts, `'/mapv` built by `defmulti`,
+Brood embedded in Rust tests, the doc catalog's kernel table, and the purity lint, which reads
+any `reflect/` call as an effect and so sent `type-matches?` and `record-id` back to bare. The
+combinators were the one judgement the user changed: `identity`, `partial` and `comp` stay bare,
+the rest are `combinator/`. Checked here: fmt, clippy `--all-features`, `nest format`, `nest
+check` and `--strict`, and the std per-file checker gate over every std file; not run here: the
+suite. Downstream projects move with `nest check --fix-renames`.

@@ -184,11 +184,16 @@ another Lisp has it.
    zero is evaluated, so `~~x`, `~'~x` and `~@~xs` reach out to the level that fills them. A free
    name at any level means the defining module's, an inner template's binders are renamed
    when the macro it builds expands, and an `x#` belongs to the template that holds it.
-4. ⬜ **The bare/module boundary has no rule a newcomer can predict.** `mapv` is bare but
+4. ✅ **The bare/module boundary has no rule a newcomer can predict (2026-10-28, ADR-506).** `mapv` is bare but
    `seq/filterv` is not; `filter` is `seq/filter`; `reduce-kv`, `merge-with` and `zipmap`
    are `map/…`; `even?` is `math/even?` while `inc` is bare. Write down the rule ADR-227
    applied, and audit the bare namespace against it (the 2026-08-26 audit is the
    starting point).
+   **Done:** a name is bare only when it is syntax, a function used in 15 or more of the 37
+   projects counted (or the partner of one), a built-in kind's predicate or coercion, or an
+   operator. 115 names moved to their family's module (`combinator/`, `list/`, `seq/`,
+   `map/`, `set/`, `proc/`, `reflect/`, `debug/`, `io/`, a library type's own module, and
+   65 subsystem dynamics); boot is no reason, as the prelude defines qualified names.
 5. ⬜ **Exceptions to "callback last".**
    - `(map/merge-with f & maps)`: variadic maps force the function first.
    - `condp` is value-first, the opposite of Clojure's `(pred test expr)`.
