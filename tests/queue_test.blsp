@@ -114,18 +114,18 @@
 ;; either from comparing `=` to a look-alike, and what carries their print form.
 (describe "queue and pq are records with their own identity"
   (test "queue? / pq? are true only for the real thing"
-    (is (queue? (queue/empty)))
-    (is (queue? (queue/push (queue/empty) 1)))
+    (is (queue/queue? (queue/empty)))
+    (is (queue/queue? (queue/push (queue/empty) 1)))
     (check-allow :type-mismatch
-      (is (not (queue? (pq/empty)))))
-    (is (pq? (pq/empty)))
-    (is (pq? (pq/insert (pq/empty) 1 :a)))
+      (is (not (queue/queue? (pq/empty)))))
+    (is (pq/pq? (pq/empty)))
+    (is (pq/pq? (pq/insert (pq/empty) 1 :a)))
     (check-allow :type-mismatch
-      (is (not (pq? (queue/empty))))))
+      (is (not (pq/pq? (queue/empty))))))
   (test "neither is a plain collection in disguise"
-    (is (not (queue? {:front nil :back nil :size 0})))
+    (is (not (queue/queue? {:front nil :back nil :size 0})))
     (check-allow :type-mismatch
-      (is (not (pq? (list [1 :a])))))
+      (is (not (pq/pq? (list [1 :a])))))
     (is (not (= (queue/empty) {:front nil :back nil :size 0}))))
   (test "each carries its record id"
     (assert= (reflect/record-id (queue/empty)) :queue/queue)
@@ -156,7 +156,7 @@
       (doseq (i (range 4))
         (spawn (send me [:q (queue/list-> (list i (+ i 10)))])))
       (let (results (map (range 4) (fn (_) (receive ([:q q] q) (after *test-wait-ms* :timeout)))))
-        (is (every? results queue?))
+        (is (every? results queue/queue?))
         (is (every? results (fn (q) (= (count q) 2))))
         (assert= (into [] (sort (map results (fn (q) (queue/peek q))))) [0 1 2 3]))))
   (test "a pq survives a round trip and keeps its ordering"
@@ -164,5 +164,5 @@
           pq (-> (pq/empty) (pq/insert 3 :c) (pq/insert 1 :a)))
       (spawn (send me [:pq pq]))
       (let (back (receive ([:pq p] p) (after *test-wait-ms* :timeout)))
-        (is (pq? back))
+        (is (pq/pq? back))
         (assert= (into [] (seq back)) [:a :c])))))

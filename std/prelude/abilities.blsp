@@ -46,40 +46,40 @@
 ; type's `:module/name` id) so `queue?`/`pq?` sit alongside `set?`/`map?` instead of doubling
 ; as `queue/queue?` inside their own module (ADR-236). The check is pure and needs no module
 ; loaded: a non-record, or a record of another id, is simply false.
-(defn queue? (x)
+(defn queue/queue? (x)
   "True if `x` is a FIFO queue (`std/queue`) — by identity, not by shape.
 
-    (queue? (list 1 2))   ;=> false"
+    (queue/queue? (list 1 2))   ;=> false"
   (%eq (reflect/record-id x) :queue/queue))
 
-(defn pq? (x)
+(defn pq/pq? (x)
   "True if `x` is a min-priority queue (`std/pq`) — by identity, not by shape.
 
-    (pq? [1 2 3])   ;=> false"
+    (pq/pq? [1 2 3])   ;=> false"
   (%eq (reflect/record-id x) :pq/pq))
 
-(defn multimap? (x)
+(defn multimap/multimap? (x)
   "True if `x` is a multi-valued map (`std/multimap`) — by identity, not by shape.
 
-    (multimap? {:a 1})   ;=> false"
+    (multimap/multimap? {:a 1})   ;=> false"
   (%eq (reflect/record-id x) :multimap/multimap))
 
-(defn datetime? (x)
+(defn datetime/datetime? (x)
   "True if `x` is a datetime — a date *and* a time-of-day (`std/datetime`) — by identity.
 
-    (datetime? 42)   ;=> false"
+    (datetime/datetime? 42)   ;=> false"
   (%eq (reflect/record-id x) :datetime/datetime))
 
-(defn date? (x)
+(defn datetime/date? (x)
   "True if `x` is a date with no time component (`std/datetime`) — by identity.
 
-    (date? (datetime/today))   ;=> true"
+    (datetime/date? (datetime/today))   ;=> true"
   (%eq (reflect/record-id x) :datetime/date))
 
-(defn time-of-day? (x)
+(defn datetime/time-of-day? (x)
   "True if `x` is a time-of-day with no date component (`std/datetime`) — by identity.
 
-    (time-of-day? 42)   ;=> false"
+    (datetime/time-of-day? 42)   ;=> false"
   (%eq (reflect/record-id x) :datetime/time-of-day))
 
 ;; ---- ability impl registration and dispatch -----------------------------------

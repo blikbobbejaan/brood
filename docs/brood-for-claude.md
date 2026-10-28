@@ -434,7 +434,7 @@ edit the library. Beyond the core `Display` (`->string`, what `io/puts` shows) a
 
 Also: `std/`'s value types are **records**, not plain maps — `buffer`, `queue`, `pq`,
 `multimap`, `datetime`/`date`/`time-of-day`, and the four dependency kinds. So
-`(buffer? x)` / `(queue? x)` / `(date? x)` are identity checks a look-alike map fails, each
+`(buffer? x)` / `(queue/queue? x)` / `(datetime/date? x)` are identity checks a look-alike map fails, each
 prints as itself (`#<buffer *scratch* 11 chars>`, `2026-07-29T…Z`) rather than dumping its
 internals, and **none of them is `=` to a map with the same fields** — build them with
 their constructors, and don't compare one against a map literal in a test. Where a library

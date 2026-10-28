@@ -134,7 +134,7 @@ Dynamic variables (`defdyn`) — earmuffed, so they cannot be mistaken for ordin
 - `*ui-slow-reports*`
 - `*units*`
 
-## predicate (38)
+## predicate (32)
 
 Predicates — `x?` type and shape tests. Bare because they read as English at a call site and are used everywhere.
 - `any?`
@@ -142,8 +142,6 @@ Predicates — `x?` type and shape tests. Bare because they read as English at a
 - `bound?`
 - `bytes?`
 - `contains?`
-- `date?`
-- `datetime?`
 - `decimal?`
 - `empty?`
 - `every?`
@@ -155,13 +153,10 @@ Predicates — `x?` type and shape tests. Bare because they read as English at a
 - `keyword?`
 - `list?`
 - `map?`
-- `multimap?`
 - `nil?`
 - `number?`
 - `pair?`
 - `pid?`
-- `pq?`
-- `queue?`
 - `range?`
 - `ratio?`
 - `record?`
@@ -173,7 +168,6 @@ Predicates — `x?` type and shape tests. Bare because they read as English at a
 - `string?`
 - `symbol?`
 - `table?`
-- `time-of-day?`
 - `vector?`
 
 ## core (128)

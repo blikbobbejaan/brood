@@ -77,10 +77,10 @@
 ;; reserved `:__id__` key through both).
 (describe "multimap is a record with its own identity"
   (test "multimap? is true only for the real thing"
-    (is (multimap? (multimap/empty)))
-    (is (multimap? (multimap/assoc (multimap/empty) :k 1)))
-    (is (not (multimap? {:k (list 1)})))
-    (is (not (multimap? nil))))
+    (is (multimap/multimap? (multimap/empty)))
+    (is (multimap/multimap? (multimap/assoc (multimap/empty) :k 1)))
+    (is (not (multimap/multimap? {:k (list 1)})))
+    (is (not (multimap/multimap? nil))))
   (test "it carries its record id and is never = to a look-alike map"
     (assert= (reflect/record-id (multimap/empty)) :multimap/multimap)
     (is (not (= (multimap/empty) {}))))
@@ -121,7 +121,7 @@
     (let (me (self))
       (spawn (send me [:mm (multimap/assoc-all (multimap/empty) :k [1 2 3])]))
       (let (back (receive ([:mm m] m) (after *test-wait-ms* :timeout)))
-        (is (multimap? back))
+        (is (multimap/multimap? back))
         (assert= (count back) 3)
         (assert= (into [] (multimap/get-all back :k)) [1 2 3])))))
 

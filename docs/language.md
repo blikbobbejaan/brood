@@ -868,7 +868,7 @@ never heard of can join.
 
 `std/` also uses `defrecord` for the value types that were once plain maps told apart by
 their shape — `buffer`, `queue`, `pq`, `multimap`, `datetime`/`date`/`time-of-day`, and the
-four dependency kinds. Each has an identity-based predicate (`buffer?`, `queue?`, …) that a
+four dependency kinds. Each has an identity-based predicate (`buffer?`, `queue/queue?`, …) that a
 look-alike map can't satisfy, and a `Display` impl, so it prints as itself rather than as
 its internals. Where a library renders a *user-supplied* value into text —
 `template/render`, `csv-emit`, `url/query-encode` — it goes through `->string`, so your
