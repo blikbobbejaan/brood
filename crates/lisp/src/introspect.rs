@@ -366,15 +366,15 @@ pub fn source_location(interp: &mut Interp, name: &str) -> Option<SourceLoc> {
 }
 
 /// Every `.blsp` file the bootstrapped project owns — its sources plus its
-/// tests — by asking the Brood side `(project/project-all-files *project-root*)` (the
+/// tests — by asking the Brood side `(project/project-all-files project/*root*)` (the
 /// same set `check` walks). Empty when no project has been set up (e.g.
-/// a bare buffer outside a project, where `*project-root*` is unbound). Feeds
+/// a bare buffer outside a project, where `project/*root*` is unbound). Feeds
 /// the cross-file reference / rename sweep (ADR-031 §Cross-file): under the flat
 /// module model these files are the whole search space for a global.
 pub fn project_files(interp: &mut Interp) -> Vec<String> {
     eval_owned_list(
         interp,
-        "(project/project-all-files *project-root*)",
+        "(project/project-all-files project/*root*)",
         string_contents,
     )
     .unwrap_or_default()

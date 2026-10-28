@@ -55,7 +55,7 @@
         (exit a :kill)
         ;; the registry learns of the death through its monitor (a third process) and
         ;; announces the drop to its watchers
-        (assert= :died (receive ([:registry-removed "x" why] why) (after *test-wait-ms* :timeout)))
+        (assert= :died (receive ([:registry-removed "x" why] why) (after test/*wait-ms* :timeout)))
         (assert= (registry-entries reg) [])
         (let (b (registry-share reg "x" "text again" {}))
           (is (not (= a b)))
@@ -79,7 +79,7 @@
       ;; it; the registry's own [:down] for the death may still be queued, which is the case
       (let (a-monitor (monitor a))
         (exit a :kill)
-        (receive ([:down ^a-monitor ^a _] :ok) (after *test-wait-ms* :timeout)))
+        (receive ([:down ^a-monitor ^a _] :ok) (after test/*wait-ms* :timeout)))
       (is (nil? (proc/info a)))
       (let (b (registry-share reg "x" "again" {}))
         (is (not (= a b)))
@@ -134,7 +134,7 @@
 ;; everything before it. Only the runtime's `[:down]` cannot be ordered against anything we
 ;; send, so the respawn is awaited on the watcher notice that announces it.
 (defn- await-added (key)
-  (receive ([:registry-added ^key _ p _] p) (after *test-wait-ms* :timeout)))
+  (receive ([:registry-added ^key _ p _] p) (after test/*wait-ms* :timeout)))
 
 (describe "buffer-registry with a mirror"
   (test "a process that dies is respawned from the mirror, every acknowledged edit kept"
@@ -146,7 +146,7 @@
       (registry-share reg "doc" "ignored" {:file "/tmp/mirror-doc"}) ; the registry folded it
       (exit p1 :kill)
       (assert= :died
-        (receive ([:registry-removed "/tmp/mirror-doc" why] why) (after *test-wait-ms* :timeout)))
+        (receive ([:registry-removed "/tmp/mirror-doc" why] why) (after test/*wait-ms* :timeout)))
       (let (p2 (await-added "/tmp/mirror-doc"))
         (is (pid? p2))
         (is (not (= p1 p2)))
@@ -177,6 +177,6 @@
       (registry-watch reg (self))
       (exit p1 :kill)
       (assert= :died
-        (receive ([:registry-removed "plain" why] why) (after *test-wait-ms* :timeout)))
+        (receive ([:registry-removed "plain" why] why) (after test/*wait-ms* :timeout)))
       (assert= (registry-entries reg) [])
       (registry-stop reg))))

@@ -3121,7 +3121,7 @@ fn def_name_and_value(heap: &Heap, form: Value) -> Option<(Symbol, Value)> {
 /// Every name `form` guards with an explicit `(bound? 'name)` test, recursively.
 ///
 /// A `(bound? 'x)` test says, in the source itself, "this name may not exist in this
-/// image" — the prelude's ability dispatch reads `*project-name*` / `*ns-package*` that
+/// image" — the prelude's ability dispatch reads `project/*name*` / `project/*ns-package*` that
 /// way, since those ambients are `defdyn`'d by `std/tool/project.blsp` and simply absent
 /// under a bare `brood script.blsp`. Flagging the guarded reference as unbound reports a
 /// *correct* program, which is exactly what the advisory contract forbids

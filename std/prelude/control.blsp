@@ -104,7 +104,7 @@ the consuming project instead made a package's `(include-str \"priv/x.sql\")` re
 consumer's `priv/` in development and its own in a release.
 
 `root` is passed explicitly by the release path, which knows the project it is collecting
-but does not go through `project/setup` and so has no `*project-root*` bound. Without it a
+but does not go through `project/setup` and so has no `project/*root*` bound. Without it a
 release run from a subdirectory resolved every embedded file against the wrong place.
 
     (%include-str-path \"/etc/hostname\")   ;=> \"/etc/hostname\""
@@ -113,7 +113,7 @@ release run from a subdirectory resolved every embedded file against the wrong p
     else
       (let (base (or root
                    (%include-package-root)
-                   (when (and (bound? '*project-root*) *project-root*) *project-root*)
+                   (when (and (bound? 'project/*root*) project/*root*) project/*root*)
                    (file/cwd)))
         (if (string/ends-with? base "/") (/str base rel) (/str base "/" rel)))))
 

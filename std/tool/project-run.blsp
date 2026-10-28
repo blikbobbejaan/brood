@@ -173,7 +173,7 @@ Returns the coverage percentage (nil when none was measured)."
   (let (outcome (try
                   (project-run-suite files (project-resolve-test-opts root opts))
                   (catch e [:raised e])))
-    (project-write-failed root *test-last-ran* *test-last-failed*)
+    (project-write-failed root test/*last-ran* test/*last-failed*)
     (when (test/opt? :stale opts) (project-write-stale root files))
     (let (percent (project-coverage-report root opts))
       (match outcome
@@ -218,8 +218,8 @@ Returns the coverage percentage (nil when none was measured)."
 ;; Runs only once the suite is green — a red suite is already the answer, and a wall of
 ;; doctest output underneath it buries the failure that matters.
 (defn- project-doctest-gate ()
-  (when *project-name*
-    (let (fails (doctest/failures-under (str (->string *project-name*) "/")))
+  (when project/*name*
+    (let (fails (doctest/failures-under (str (->string project/*name*) "/")))
       (when (not (empty? fails))
         (io/puts (str (count fails) " documented example(s) do not hold:") :to *err*)
         (each fails (fn (f) (io/puts (str "  " f) :to *err*)))
@@ -240,20 +240,20 @@ Returns the coverage percentage (nil when none was measured)."
     (or branch-percent line-percent fn-percent)))
 
 (defn- project-coverage-lines-begin (root)
-  (coverage/line-begin (project/abs-paths root *project-source-paths*)))
+  (coverage/line-begin (project/abs-paths root project/*source-paths*)))
 
 (defn- project-coverage-lines-finish (root)
-  (coverage/line-report root (project/abs-paths root *project-source-paths*)))
+  (coverage/line-report root (project/abs-paths root project/*source-paths*)))
 
 (defn- project-coverage-branches-finish (root)
-  (coverage/branch-report root (project/abs-paths root *project-source-paths*)))
+  (coverage/branch-report root (project/abs-paths root project/*source-paths*)))
 
 ;; --- coverage wiring (nest test --cover) --------------------------------------
 ;; `coverage` is required lazily, like `package`: a run without `--cover` never
 ;; loads it, and the module is pure policy over `source-location`/`table` (see
 ;; std/tool/coverage.blsp).
 (defn- project-coverage-begin (root)
-  (coverage/begin (project/abs-paths root *project-source-paths*)))
+  (coverage/begin (project/abs-paths root project/*source-paths*)))
 
 ;; Enforce `--cover-min N`: a coverage floor is only useful if it can fail the
 ;; build, so falling short raises (non-zero exit) exactly like a failing test.
@@ -364,18 +364,18 @@ source paths, no such module under them, or no `:main` naming it.
 
     (project-run/project-no-entry-advice 'myapp)   ;~> \"no entry point: `:main` names module 'myapp', which does not exist (looked in src)\""
   (let (name (->string modname)
-        where (string/join *project-source-paths* ", "))
+        where (string/join project/*source-paths* ", "))
     (cond
-      *project-main-override*
+      project/*main-override*
         (str "no entry point: `--main` names module '"
           name "', which does not exist" " (looked in " where ")")
-      ;; A manifest with no `:main` never assigns `*project-main*`, so the default
+      ;; A manifest with no `:main` never assigns `project/*main*`, so the default
       ;; standing means "nothing was declared" — the same advice either way.
-      (= *project-main* (list 'main 'main))
+      (= project/*main* (list 'main 'main))
         (str "no entry point: this project declares no `:main`, and there is no module"
           " `main` to fall back on. Declare one — `:main app` in project.blsp (module"
           " `app`, fn `main`) — or add "
-          (or (first *project-source-paths*) "src")
+          (or (first project/*source-paths*) "src")
           "/main.blsp with a `(defn main (args) …)`")
       else
         (str "no entry point: `:main` names module '"
@@ -395,7 +395,7 @@ source paths, no such module under them, or no `:main` naming it.
         (throw e)))))
 
 ;; (run args) — find the project from the cwd, set it up (which may
-;; override *project-main* via the manifest), `require` the entry module, and
+;; override project/*main* via the manifest), `require` the entry module, and
 ;; call its entry fn with `args` (a list of strings from the CLI). The default
 ;; entry is `(main main)` — module `main`, fn `main` — so most projects ship a
 ;; bare manifest and a `(defn main () ...)` in src/main.blsp. Errors if there's
@@ -407,8 +407,8 @@ source paths, no such module under them, or no `:main` naming it.
   (let (root (project/require-root "run"))
     (project/setup root)
     ;; A `--main` override (set via `set-project-main`) wins over the manifest's
-    ;; `:main`, which `setup` just re-applied into `*project-main*`.
-    (let (entry (or *project-main-override* *project-main*)
+    ;; `:main`, which `setup` just re-applied into `project/*main*`.
+    (let (entry (or project/*main-override* project/*main*)
           ;; Root the entry module under the project (ADR-070): `setup` above
           ;; set the ambient package context, so `main` → `myeditor/main`. A bare-file
           ;; entry (no `(defmodule …)`, so not a registered module) is left unrooted.
@@ -474,7 +474,7 @@ of those loads the entry point, which is where a stale dependency actually dies 
     ;; opposite of what a boot check wants. `load-sources-cached` evaluates every
     ;; module's top-level forms, which is the half `nest check` cannot see.
     (project-image/load-sources-cached root)
-    (let (entry (or *project-main-override* *project-main*)
+    (let (entry (or project/*main-override* project/*main*)
           modname (%root-module-name (first entry))
           fname (second entry))
       (require-one modname)

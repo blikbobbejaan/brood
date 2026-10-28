@@ -4,7 +4,7 @@
 ;; same seam instead of re-inventing it. Two pieces:
 ;;
 ;;  - **Frontends** (ADR-046: one render-op protocol, many frontends). A *display*
-;;    is a map of five fns `{:enter :leave :size :draw :poll}`. `*term-display*` is
+;;    is a map of five fns `{:enter :leave :size :draw :poll}`. `editor/ui/*term-display*` is
 ;;    the crossterm terminal; `(gui-display)` opens a native window (needs
 ;;    `--features gui`); `display-broadcast` fans one frame out to several at once.
 ;;    All over the `term-*` / `gui-*` primitives — the same pure `view` frame paints
@@ -25,7 +25,7 @@
 
 (defmodule editor/ui
   "A small terminal/GUI app framework over the M3 display/input seam (ADR-046): a
-`display` frontend (`*term-display*` / `(gui-display)` / `display-broadcast`) plus a
+`display` frontend (`editor/ui/*term-display*` / `(gui-display)` / `display-broadcast`) plus a
 TEA-style `(ui-run model view update display)` loop. Build an app by supplying a
 pure `view` (model + cols/rows → a render frame) and an `update` (model + input +
 cols/rows → model); set `:done` in the model to quit, and declare time-driven work
@@ -54,7 +54,7 @@ Merge the result into the display map.
   (let (poll (fn (ms) (display-untag (poll-tagged ms))))
     {:poll poll :poll-tagged poll-tagged :poll-tagged-of poll}))
 
-(defdyn *term-display*
+(defdyn editor/ui/*term-display*
   ;; the terminal (crossterm) frontend — always available, and single (one
   ;; terminal), so it's a fixed display map of the 0-arg `term-*` primitives.
   ;; `:key-held?` is reported by a terminal speaking the kitty keyboard protocol and
@@ -214,7 +214,7 @@ entry (the terminal) accepts and ignores the upload.
 (defn gui-display (&optional (opts nil))
   "Open a **new** native window and return a display (the `{:enter :leave :size
 :draw :poll}` map) bound to it — each call is a separate window, so several
-observers (or editor windows) can run at once. Unlike `*term-display*` (one
+observers (or editor windows) can run at once. Unlike `editor/ui/*term-display*` (one
 terminal, a constant), the windowed frontend is a *constructor*: it calls `gui/open`
 for a fresh window id and closes the `gui-*` primitives over it. The window is
 opened eagerly here, so `:enter` is a no-op and `:leave` closes it. Needs the
@@ -336,7 +336,7 @@ together (a GUI window and the terminal today; remote frontends later — they s
 in as just another member). The frame renders at the smallest common grid so it
 fits everywhere. Pure Brood over the `term-*`/`gui-*` mechanism.
 
-    (editor/ui/display-broadcast [*term-display* (editor/ui/gui-display)])   ;~> one display map driving both frontends"
+    (editor/ui/display-broadcast [editor/ui/*term-display* (editor/ui/gui-display)])   ;~> one display map driving both frontends"
   (merge {:enter (fn () (doseq (d displays) ((get d :enter))))
           :leave (fn () (doseq (d displays) ((get d :leave))))
           :size (fn () (display-min-size displays))
@@ -357,7 +357,7 @@ The display's `:poll-input` passes through too, so `ui-run` still takes a queued
 ahead of a flood of pushes (ADR-490). Needs the `sse` module on the producing side
 (loaded by referencing `sse/…`).
 
-    (editor/ui/with-events *term-display*)   ;~> the display, its :poll also yielding [:sse ev] messages"
+    (editor/ui/with-events editor/ui/*term-display*)   ;~> the display, its :poll also yielding [:sse ev] messages"
   (let (poll-tagged (fn (ms)
                       (let (event (receive
                                     ([:sse-open s] [:sse-open s])
@@ -444,7 +444,7 @@ synthesized back-compat timer below and any app that hasn't moved to named timer
 ;; whose folds is just over the line — would otherwise report once per fold, and an app
 ;; that logs the report into its model makes the next fold slower still.
 
-(defdyn *ui-slow-reports* nil)
+(defdyn editor/ui/*slow-reports* nil)
 ;; The loop's watchdog bookkeeping, a table bound for the loop's life: when it last reported
 ;; a slow update (`:update-at`). nil outside a loop, where nothing is rate-limited.
 
@@ -599,7 +599,7 @@ already-open window instead of opening a duplicate (e.g. a repeated `(observe)`)
 ;; line of the fields it shows. Yet the view can't remember last turn's result: it
 ;; has no state, and the loop hands it only the model. `ui-memo` is the missing
 ;; primitive, Elm's `Html.Lazy` in TEA-honest form: the loop keeps the previous
-;; turn's fragments as a table bound to `*ui-memo*` while `view` runs, a fragment
+;; turn's fragments as a table bound to `editor/ui/*memo*` while `view` runs, a fragment
 ;; reads its own entry there and reuses the ops when its `deps` are unchanged, and
 ;; the fragments of THIS turn travel back to the loop inside the frame itself — as
 ;; `[:ui/memo key deps ops]` markers `ui-harvest` collects into the next table and
@@ -611,7 +611,7 @@ already-open window instead of opening a duplicate (e.g. a repeated `(observe)`)
 ;; small. A fragment that is not emitted this turn is simply not in the next table:
 ;; the memo is bounded by the frame, and nothing needs evicting.
 
-(defdyn *ui-loop* nil)
+(defdyn editor/ui/*loop* nil)
 ;; The pid of the `ui-run` loop this code is running inside — bound for the loop's whole
 ;; life, `update` and `view` alike — or nil outside one: a test calling `update` directly, a
 ;; batch run. The one question an app has to ask before it fires work at another process and
@@ -619,7 +619,7 @@ already-open window instead of opening a duplicate (e.g. a repeated `(observe)`)
 ;; this, not a registered name like `:editor`, which is true of exactly one loop — a second
 ;; window or a daemon's per-client loop would read as "no loop" and do the work inline.
 
-(defdyn *ui-memo* nil)
+(defdyn editor/ui/*memo* nil)
 ;; The previous turn's memo table — `{key -> [deps ops]}` — while `view` runs inside
 ;; `ui-loop`; nil outside a loop (a test calling a view directly, a headless render),
 ;; where `ui-memo` computes every fragment and emits no marker, so a frame is the
@@ -641,9 +641,9 @@ that takes the markers (`:fragments?`, the GUI window) then reuses what it parse
 last frame instead of parsing them again (ADR-470).
 
     (editor/ui/ui-memo [:line 12] [\"text\"] (fn () [[:text \"text\"]]))   ;~> ([:ui/memo [:line 12] [\"text\"] ops reused?]) in a loop; the thunk's ops outside one"
-  (if (or (nil? *ui-memo*) (nil? key))
+  (if (or (nil? editor/ui/*memo*) (nil? key))
     (thunk)
-    (let (prev (get *ui-memo* key))
+    (let (prev (get editor/ui/*memo* key))
       (if (and prev (= (first prev) deps))
         (list [:ui/memo key deps (second prev) true])
         (list [:ui/memo key deps (thunk) false])))))
@@ -657,7 +657,7 @@ last frame instead of parsing them again (ADR-470).
 
 (defn ui-harvest (frame &optional (keep-markers? false))
   "`[frame' table]`: `frame` with every `ui-memo` marker spliced away (a plain frame the
-frontend paints), and the table of this turn's fragments — what `*ui-memo*` is bound to
+frontend paints), and the table of this turn's fragments — what `editor/ui/*memo*` is bound to
 for the next turn. With `keep-markers?` the frame comes back as it is, markers and all,
 for a display whose `:fragments?` says it takes them: the GUI window parses a fragment the
 loop reused once, and shares it with the frame before (ADR-470). The loop calls it on every rendered frame; a frame without markers
@@ -802,7 +802,7 @@ itself, a vector by its leading keyword — and its second, when that is one too
   (cond
     (keyword? input) input
     (string? input) (if (> (string/length input) 16) :string input)
-    (record? input) (reflect/record-id input)
+    (record? input) (record-id input)
     (and (vector? input) (not (empty? input)) (keyword? (first input)))
       (if (and (> (count input) 1) (keyword? (second input)))
         [(first input) (second input)]
@@ -839,8 +839,8 @@ crash of its own. nil."
 (defn- ui-slow-update-due? ()
   "Whether a slow update may be reported now: none was in the last
 `*ui-slow-update-quiet-ms*` (wall clock) — stamping now as the last when so. Always true
-outside a loop (`*ui-slow-reports*` nil)."
-  (let (reports *ui-slow-reports*
+outside a loop (`editor/ui/*slow-reports*` nil)."
+  (let (reports editor/ui/*slow-reports*
         now (os/now)
         last (if (nil? reports) nil (table/get reports :update-at nil)))
     (if (or (nil? last) (>= (- now last) *ui-slow-update-quiet-ms*))
@@ -988,7 +988,7 @@ loop, `{}` on the first turn."
                               (ui-interruptible nil
                                 (fn ()
                                   ;; the harvest walks every op too: inside the window
-                                  (ui-harvest (binding (*ui-memo* (or (get clock :memo) {}))
+                                  (ui-harvest (binding (editor/ui/*memo* (or (get clock :memo) {}))
                                                 (view model cols rows))
                                     (get display :fragments?))))))
         [how value] outcome)
@@ -1273,7 +1273,7 @@ yet) is fatal, surfacing a genuine startup bug. See `ui-loop`.
 **Teardown is guaranteed.** `:leave` runs on a normal quit *and* if the frontend
 mechanism itself (`:size`/`:draw`/`:poll`) throws, or the first render fails (the
 error is re-raised after) — so a crash never strands the terminal in the alternate
-screen / raw mode; the screen is restored. With `*term-display*` the frontend is raw
+screen / raw mode; the screen is restored. With `editor/ui/*term-display*` the frontend is raw
 mode + the alternate screen, so `Ctrl-C` arrives as a `:ctrl-c` **key** (have
 `update` quit on it — see the observer's keymap) rather than a SIGINT that kills the
 process mid-draw and leaves stale cells on screen.
@@ -1292,7 +1292,7 @@ non-blocking window. The shared loop behind the observer (and the editor)."
       (do
         ;; nil last-good: first render must succeed. {} clock: a fresh timer bookkeeping
         ;; map (last-input/armed/fired filled lazily on the first iteration).
-        (binding (*ui-loop* (self) *ui-slow-reports* (table/new))
+        (binding (editor/ui/*loop* (self) editor/ui/*slow-reports* (table/new))
           (ui-loop model nil {} view update display))
         (proc/set-quit-key nil 0)
         ((get display :leave)))

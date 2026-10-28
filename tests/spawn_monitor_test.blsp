@@ -29,12 +29,12 @@
       (is (= (type-of p) :pid))
       (is (= (type-of r) :ref))
       ;; drain, so the DOWN doesn't outlive the test into a sibling's mailbox
-      (receive ([:down ^r _ _] nil) (after *test-wait-ms* nil))))
+      (receive ([:down ^r _ _] nil) (after test/*wait-ms* nil))))
 
   (test "a crash reports its REAL reason, not :noproc, across a yield"
     (let ([p r] (spawn-monitor (error "i fell over")))
       (await-exit p)
-      (let (reason (receive ([:down ^r ^p reason] reason) (after *test-wait-ms* :lost)))
+      (let (reason (receive ([:down ^r ^p reason] reason) (after test/*wait-ms* :lost)))
         ;; The shape is `[:error {:message … :kind … :trace …}]`. Asserting the TAG is what
         ;; matters here — `:noproc` is a bare keyword, so `(first reason)` raising or
         ;; yielding anything but `:error` is exactly the regression.
@@ -47,16 +47,16 @@
     (let ([p r] (spawn-monitor :ok))
       (await-exit p)
       (assert= :normal
-        (receive ([:down ^r ^p reason] reason) (after *test-wait-ms* :lost)))))
+        (receive ([:down ^r ^p reason] reason) (after test/*wait-ms* :lost)))))
 
   (test "the DOWN names the pid that was spawned"
     (let ([p r] (spawn-monitor :ok))
-      (assert= p (receive ([:down ^r pid _] pid) (after *test-wait-ms* :lost)))))
+      (assert= p (receive ([:down ^r pid _] pid) (after test/*wait-ms* :lost)))))
 
   (test "a zero-arg lambda body is passed through, not re-wrapped"
     ;; Same contract as `spawn`/`spawn-link`: `(fn () …)` is the thunk, not a value to wrap.
     (let ([p r] (spawn-monitor (fn () (error "from a lambda"))))
-      (let (reason (receive ([:down ^r _ reason] reason) (after *test-wait-ms* :lost)))
+      (let (reason (receive ([:down ^r _ reason] reason) (after test/*wait-ms* :lost)))
         (assert= :error (first reason))
         (assert= "from a lambda" (:message (second reason))))))
 
@@ -66,10 +66,10 @@
   (test "monitoring an already-dead pid is still :noproc"
     (let ([p first-ref] (spawn-monitor :ok))
       ; p is dead once its first DOWN has arrived
-      (receive ([:down ^first-ref ^p _] :ok) (after *test-wait-ms* :timeout))
+      (receive ([:down ^first-ref ^p _] :ok) (after test/*wait-ms* :timeout))
       (let (r (monitor p))
         (assert= :noproc
-          (receive ([:down ^r ^p reason] reason) (after *test-wait-ms* :lost)))))))
+          (receive ([:down ^r ^p reason] reason) (after test/*wait-ms* :lost)))))))
 
 (describe "spawn-monitor: across processes"
   :isolated (test "every child's reason arrives intact under a concurrent fan-out"
@@ -83,7 +83,7 @@
                     (let ([p r] (spawn-monitor (error "fell")))
                       (await-exit p)
                       (send me
-                        [:saw (receive ([:down ^r _ reason] reason) (after *test-wait-ms* :lost))]))))
+                        [:saw (receive ([:down ^r _ reason] reason) (after test/*wait-ms* :lost))]))))
       (dotimes (_ n) (spawn (watcher)))
       (let (collect (fn (collect i bad)
                       (if (>= i n)
@@ -98,7 +98,7 @@
                               (if (and (vector? reason) (= (first reason) :error))
                                 bad
                                 (cons reason bad))))
-                          (after *test-wait-ms* (cons :timeout bad))))))
+                          (after test/*wait-ms* (cons :timeout bad))))))
         ;; Name what went wrong rather than just a count — a `:noproc` here and a `:lost`
         ;; here mean different bugs.
         (assert= '() (collect collect 0 '()))))))
@@ -109,7 +109,7 @@
 ;; `:blame`/`:expected`/`:got` gone. The standard fields a bound map lacks are filled in.
 (defn- down-reason-of (thunk)
   (let ([p r] (spawn-monitor (thunk)))
-    (receive ([:down ^r ^p reason] reason) (after *test-wait-ms* :lost))))
+    (receive ([:down ^r ^p reason] reason) (after test/*wait-ms* :lost))))
 
 (defn- smt-int-only (n) n)
 (sig! smt-int-only (int -> int))

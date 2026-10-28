@@ -23,7 +23,7 @@
 ;; VM's heap-backed frames; the two together cost ~600 ms.
 ;;
 ;; They were briefly skipped on the belief that they cost >120 s under parallel load. That
-;; was a misdiagnosis: `*test-timeout-ms*` is a wall deadline for an entire *batch* of
+;; was a misdiagnosis: `test/*timeout-ms*` is a wall deadline for an entire *batch* of
 ;; parallel workers, not a per-test ceiling, so a batch that overran blamed whichever
 ;; worker reported last. Nothing here is slow. See `crates/lisp/tests/suite.rs` for the
 ;; actual fix.

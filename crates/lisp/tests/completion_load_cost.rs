@@ -92,6 +92,6 @@ fn the_template_completion_still_works_through_the_call_time_require() {
     assert!(
         count > 0,
         "complete/templates returned {count} templates — the call-time \
-         `(require-one 'scaffold)` no longer binds `*project-templates*`"
+         `(require-one 'scaffold)` no longer binds `scaffold/*templates*`"
     );
 }

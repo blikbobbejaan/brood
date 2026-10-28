@@ -41,7 +41,7 @@
   "An interactive process observer — showing this runtime's node stats and a
 navigable table of live processes (id, name, status, mailbox backlog, memory,
 monitors), built on the display seam (M3, ADR-046) over `proc/info`. Renders to
-a GUI window (`(observe)`) or the terminal (`(observe-attach *term-display*)`).
+a GUI window (`(observe)`) or the terminal (`(observe-attach editor/ui/*term-display*)`).
 
     (observe)          ; open the observer in a native window (needs --features gui)
     (observe-run)      ; standalone terminal demo app (nest observe)
@@ -482,7 +482,7 @@ Clamped to a valid row."
 ;;
 ;; Each command is a pure `(state key) -> state`; the loop threads the current
 ;; `:procs`/`:sel`/`:n` into the state so selection commands can read them. Keys
-;; resolve through `*observe-keymap*` via `keymap-dispatch` (rebindable + testable,
+;; resolve through `observer/*keymap*` via `keymap-dispatch` (rebindable + testable,
 ;; like the line editor). Quit sets `:done`; `:`/`e` enter the eval minibuffer.
 
 (defn observe-cmd-up (state _)
@@ -548,7 +548,7 @@ process is selected.
           :confirm {:pid (get p :pid) :id (get p :id) :name (get p :name)}
           :msg nil)))))
 
-(defdyn *observe-keymap*
+(defdyn observer/*keymap*
   {:up 'observer/observe-cmd-up
    :ctrl-p 'observer/observe-cmd-up
    "k" 'observer/observe-cmd-up
@@ -621,7 +621,7 @@ body height (`(math/max 1 (- rows 5))`, as in `observe-frame`)."
       else state)))
 
 ;; ---- display frontends + app loop now live in `ui` (std/editor/ui.blsp) ------------
-;; `*term-display*`, `(gui-display)`, `display-broadcast`, and the `ui-run` loop
+;; `editor/ui/*term-display*`, `(gui-display)`, `display-broadcast`, and the `ui-run` loop
 ;; were extracted into the reusable `ui` module so a new project (the editor) can
 ;; build on the same seam. The `ui/…` references above pull them in; the observer is now
 ;; just a `ui-run` client — see `observe-view` / `observe-update` below.
@@ -748,7 +748,7 @@ the minibuffer UI state. Paints to whatever frontend `ui-run` holds."
 paused, in the minibuffer, or awaiting a kill confirmation (so the list can't shift
 under a pending action); a `[:mouse …]` event selects/scrolls; a pending `:confirm`
 routes keys to y/n; otherwise keys flow through `overlay-route` — the eval minibuffer
-(`:command` mode) if open, else `*observe-keymap*` (quit sets `:done`, which `ui-run`
+(`:command` mode) if open, else `observer/*keymap*` (quit sets `:done`, which `ui-run`
 honours). The backend rides in the model under `:backend`.
 
 A remote observer's loop polls the whole mailbox, so the link's own messages arrive here
@@ -774,7 +774,7 @@ reply that came after its request gave up is dropped, never read as a key."
           model
           input
           (fn (m k)
-            (keymap-dispatch *observe-keymap*
+            (keymap-dispatch observer/*keymap*
               (assoc (observe-derived m cols rows) :msg nil)
               k
               (fn (s _) s)))))))
@@ -803,7 +803,7 @@ nil."
       (seq/repeatedly 4 (fn () (send w :idle))))
     nil))
 
-(defn observe-attach (&optional (display *term-display*))
+(defn observe-attach (&optional (display editor/ui/*term-display*))
   "Bring up the observer over **this runtime's own live processes** — the inline
 entry point. A running program calls it (e.g. from a key handler or command) to
 inspect itself: it spawns no demo processes, takes over the terminal, and returns
@@ -862,7 +862,7 @@ keys coexist, each unique. Needs a `--features gui` runtime (`./configure --with
     (observer/observe)          ;~> the SAME pid; no second window
     (observer/observe :audit)   ;~> a different pid; an independent second window
 
-For a modal terminal observer instead, call `(observe-attach *term-display*)`."
+For a modal terminal observer instead, call `(observe-attach editor/ui/*term-display*)`."
   ;; The window process registers under the per-key name. If one is already alive,
   ;; don't re-spawn (the named `spawn` would no-op anyway, ADR-039) — instead send it
   ;; `:focus`, which `ui-run` turns into `gui/focus` on its window, surfacing it to
@@ -882,7 +882,7 @@ For a modal terminal observer instead, call `(observe-attach *term-display*)`."
 ;; `(observe-local-snapshot)` verbatim — no kernel changes, no new wire format.
 
 ; ms to wait for a remote snapshot before :stale
-(defdyn *observe-timeout* 800)
+(defdyn observer/*timeout* 800)
 (defn- observe-agent-loop ()
   "The target-side agent's receive loop: reply to `[:snapshot from _]` with this
 runtime's `observe-local-snapshot`, to `[:eval src from _]` with the result of
@@ -928,13 +928,13 @@ link can't pile them up in the observer's mailbox."
 (defn- observe-request (peer)
   "Request one snapshot from `peer`'s `:observe` agent. Returns the snapshot map, or
 `:down` if the link to `peer` dropped, or `:timeout` if no reply arrived in
-`*observe-timeout*` ms (a stalled link, or the target never called `observe-serve`)."
+`observer/*timeout*` ms (a stalled link, or the target never called `observe-serve`)."
   (observe-drain-replies)
   (send {:name :observe :node peer} [:snapshot (self) (ref)])
   (receive
     ([:observe-reply snap] snap)
     ([:nodedown ^peer] :down)
-    (after *observe-timeout* :timeout)))
+    (after observer/*timeout* :timeout)))
 
 (defn- observe-remote-eval (peer src)
   "Evaluate `src` on `peer` via its `:observe` agent (the remote eval minibuffer):
@@ -944,7 +944,7 @@ string on a dropped/stalled link rather than throwing (the minibuffer shows it).
   (receive
     ([:eval-reply r] r)
     ([:nodedown ^peer] "error: link down")
-    (after *observe-timeout* "error: eval timed out")))
+    (after observer/*timeout* "error: eval timed out")))
 
 (defn- observe-remote-kill (peer c)
   "Kill the process in confirmation `c` on `peer` via its `:observe` agent (the
@@ -955,7 +955,7 @@ link rather than throwing."
   (receive
     ([:kill-reply r] r)
     ([:nodedown ^peer] "error: link down")
-    (after *observe-timeout* "error: kill timed out")))
+    (after observer/*timeout* "error: kill timed out")))
 
 (defn observe-connect (spec &optional cookie)
   "Attach the observer to a peer runtime named in `spec` (\"name@host:port\") over
@@ -988,7 +988,7 @@ freezes on the last snapshot with a DISCONNECTED banner until you quit.
                :backend {:source (fn () (observe-request peer))
                          :eval (fn (src) (observe-remote-eval peer src))
                          :kill (fn (c) (observe-remote-kill peer c))}}
-        observe-view observe-update *term-display*))))
+        observe-view observe-update editor/ui/*term-display*))))
 
 (defn observe-run (&optional (demo true))
   "Run the interactive process observer as a standalone app — a full-screen TUI

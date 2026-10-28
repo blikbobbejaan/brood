@@ -89,7 +89,7 @@ Common macros (expanded once at the compile pass — runtime-free): `defmacro`
 (point 3 4)                                         ; => {:__id__ :<ns>/point, :x 3, :y 4}
 (point-x (point 3 4))                               ; => 3  (accessor per field; a typo is a
                                                     ;        checker-caught undefined-fn, not silent nil)
-;; update with plain assoc/merge; `(record? r)`/`(reflect/record-id r)`/`(fields r)` are the id
+;; update with plain assoc/merge; `(record? r)`/`(record-id r)`/`(fields r)` are the id
 ;; API; a record is NOT `=` to a bare map (`=` is structural and the id is an entry). Typed fields: (defrecord point ((x int) (y int)))
 ```
 
@@ -390,7 +390,7 @@ Other things worth knowing:
   to a bare map with the same fields (nominal), and its
   **collection view is the fields, id-free**: `seq`/`count`/`keys`/`vals`/`map`/`fold`
   over a record see its fields, never `:__id__` (via the `Seqable` ability). Use
-  `record?`/`reflect/record-id`/`fields` to test/read the identity explicitly.
+  `record?`/`record-id`/`fields` to test/read the identity explicitly.
 - **Match a record by id + fields** with `(record name {:k p …})` — the `name` fixes the
   nominal id (bare = current ns, or `mod/name`) and the optional `{…}` is a map pattern over
   its fields (`{:k p}` / `:keys` / `:or` compose); a plain map or a different record fails.
@@ -881,7 +881,7 @@ code paints to a terminal or a GUI window unchanged.
   `(frame (clear) (text row col s face?) (cursor row col))`. A *face* is a style
   map, `{:fg :red :bold true}` (`(:use editor/display)` for the constructors).
 - **Frontend** = a map of five fns `{:enter :leave :size :draw :poll}`. `(:use editor/ui)`
-  gives you `*term-display*` (the terminal) and `(gui-display)` (a native window,
+  gives you `editor/ui/*term-display*` (the terminal) and `(gui-display)` (a native window,
   needs a `--features gui` build); `display-broadcast` fans one frame to several.
 - **The loop** = `(ui-run model view update display)` — a TEA loop: render
   `(view model cols rows)` → poll input → fold it with `(update model input cols
@@ -947,7 +947,7 @@ code paints to a terminal or a GUI window unchanged.
         (= input :ctrl-c) (assoc m :done true)   ; Esc/Ctrl-C → quit
         else m))
 
-(defn main () (ui-run {:count 0 :done false :tick-ms 1000} view update *term-display*))
+(defn main () (ui-run {:count 0 :done false :tick-ms 1000} view update editor/ui/*term-display*))
 ;; for a window instead: (ui-run … (gui-display))   ; --features gui
 ```
 
@@ -1455,7 +1455,7 @@ Testing processes: **never `proc/sleep` to wait for another process** — a load
 outsleeps any guess. Wait for the event: a message the other side sends, a monitor's
 `[:down …]`, or, when nothing announces it, `(eventually "what" probe)` (polls a
 zero-argument fn until truthy) / `(await-parked pid)`. Bound a wait for an expected
-message with `(receive … (after *test-wait-ms* :timeout))`; a test that hangs anyway is
+message with `(receive … (after test/*wait-ms* :timeout))`; a test that hangs anyway is
 killed and its report says what it was stuck on.
 
 `nest test` runs each test in its own green process. `nest run` invokes the

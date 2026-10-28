@@ -1174,7 +1174,7 @@ impl Ctx {
     }
     /// Does the enclosing top-level form test `sym` with `(bound? 'sym)`? Then a
     /// reference to it is deliberately conditional — an ambient global some other
-    /// module `def`s (`*project-name*`, set at project setup) — and reporting it
+    /// module `def`s (`project/*name*`, set at project setup) — and reporting it
     /// unbound would flag code that is correct precisely *because* of the guard.
     pub(super) fn is_bound_guarded(&self, sym: Symbol) -> bool {
         self.file.bound_guarded.contains(&sym)

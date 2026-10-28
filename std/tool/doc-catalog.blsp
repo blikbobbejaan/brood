@@ -151,7 +151,8 @@
    "identity" :functions
    "last" :collections
    "inspect" :io
-   "fields" :maps})
+   "fields" :maps
+   "record-id" :maps})
 
 ;; `;; ---- title ----`; a bare `;; -----` rule under a file's opening comment is not one.
 (defn- header-line? (line)

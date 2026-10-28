@@ -76,7 +76,7 @@
   ;; throttled-but-O(depth) drain-report cost) makes each case's warm + spawned parse
   ;; legitimately long once the whole suite's loaded code arms the drain AND every core is
   ;; contended; the whole-test wall-clock overran the 120 s default ceiling, hard-killing a
-  ;; run that finishes fine given room. `:slow` buys the `*test-slow-timeout-ms*` (900 s)
+  ;; run that finishes fine given room. `:slow` buys the `test/*slow-timeout-ms*` (900 s)
   ;; batch budget — the same lever the conformance corpora use for work that is long, not
   ;; stuck. The underlying drain cost is left for an ADR-gated collector-perf pass.
   :serial :tags

@@ -137,7 +137,7 @@
 (describe "format: assoc pairs its key/value args"
   ;; `assoc` takes a collection then trailing key/value PAIRS. Broken,
   ;; the collection rides the head line and each k/v pair sits on one body line
-  ;; (the *format-pair-body* shape), not one element per line.
+  ;; (the format/*pair-body* shape), not one element per line.
   (test "a broken assoc pairs key+value, collection on the head line"
     (let (out (source "(assoc m\n :alpha 1 :beta 2 :gamma 3)"))
       (is (includes? out "(assoc m\n  :alpha 1\n  :beta 2\n  :gamma 3)"))
@@ -416,7 +416,7 @@
       (is (format-stable? src (source src) 0 300)))))
 
 (describe "format: project/plugin-extensible headers"
-  ;; *format-headers-extra* lets a project (and its :format-plugins deps) teach the
+  ;; format/*headers-extra* lets a project (and its :format-plugins deps) teach the
   ;; formatter the shape of framework macros — e.g. Hatch's `deflive` clauses, where
   ;; the clause signature should ride the head line like `defn`'s params. One test
   ;; (both states checked in sequence) so the two format calls don't race on the shared
@@ -424,11 +424,11 @@
   ;; rules, so the brief set can't change how unrelated forms format elsewhere.
   (test "an extra header rule keeps the clause signature on the head line"
     (let (src "(zzz-clause \"event\" (params model)\n  (handler params model))")
-      (def *format-headers-extra* {})
+      (def format/*headers-extra* {})
       (let (plain (source src))
-        (def *format-headers-extra* {'zzz-clause 2})
+        (def format/*headers-extra* {'zzz-clause 2})
         (let (ruled (source src))
-          (def *format-headers-extra* {})
+          (def format/*headers-extra* {})
           ;; no rule → call-style: the event name sits alone, the signature splits
           (assert= (string/starts-with? plain "(zzz-clause \"event\"\n") true)
           ;; rule = 2 → event name + (params model) ride the head line

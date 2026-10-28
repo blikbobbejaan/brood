@@ -73,7 +73,7 @@ or a failure for a platform no release is built for.
 (defn- fetch-following (url redirects)
   ;; GitHub answers a release download with a redirect to its CDN; `http/fetch` does not
   ;; follow one, so this does, a bounded number of times.
-  (let (response (binding (*http-max-response-bytes* *max-download-bytes*) (http/fetch url))
+  (let (response (binding (http/*max-response-bytes* *max-download-bytes*) (http/fetch url))
         status (get response :status))
     (cond
       (= status 0) (failure (str "update-brood: " url ": " (get response :error)))

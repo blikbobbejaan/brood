@@ -79,6 +79,6 @@
       (send me [:other 1])
       (spawn (send me [:price 19.990M]))
       (spawn (send me [:share 2/4])))
-    (assert= (receive ([:price 19.99M] :priced) (after *test-wait-ms* :timeout)) :priced)
-    (assert= (receive ([:share 1/2] :shared) (after *test-wait-ms* :timeout)) :shared)
+    (assert= (receive ([:price 19.99M] :priced) (after test/*wait-ms* :timeout)) :priced)
+    (assert= (receive ([:share 1/2] :shared) (after test/*wait-ms* :timeout)) :shared)
     (assert= (receive ([:other n] n)) 1)))

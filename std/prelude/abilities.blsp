@@ -24,11 +24,11 @@
     (record? {:a 1}) ;=> false"
   (if (and (map? x) (get x :__id__)) true false))
 
-(defn reflect/record-id (x)
+(defn record-id (x)
   "The nominal id (`module/name` keyword) of record `x`, or nil if `x` is not a record.
   Unlike `%identity-of`, never falls back to `type-of`.
 
-    (reflect/record-id {:a 1}) ;=> nil"
+    (record-id {:a 1}) ;=> nil"
   (if (record? x) (get x :__id__) nil))
 
 (defn fields (x)
@@ -50,37 +50,37 @@
   "True if `x` is a FIFO queue (`std/queue`) — by identity, not by shape.
 
     (queue/queue? (list 1 2))   ;=> false"
-  (%eq (reflect/record-id x) :queue/queue))
+  (%eq (record-id x) :queue/queue))
 
 (defn pq/pq? (x)
   "True if `x` is a min-priority queue (`std/pq`) — by identity, not by shape.
 
     (pq/pq? [1 2 3])   ;=> false"
-  (%eq (reflect/record-id x) :pq/pq))
+  (%eq (record-id x) :pq/pq))
 
 (defn multimap/multimap? (x)
   "True if `x` is a multi-valued map (`std/multimap`) — by identity, not by shape.
 
     (multimap/multimap? {:a 1})   ;=> false"
-  (%eq (reflect/record-id x) :multimap/multimap))
+  (%eq (record-id x) :multimap/multimap))
 
 (defn datetime/datetime? (x)
   "True if `x` is a datetime — a date *and* a time-of-day (`std/datetime`) — by identity.
 
     (datetime/datetime? 42)   ;=> false"
-  (%eq (reflect/record-id x) :datetime/datetime))
+  (%eq (record-id x) :datetime/datetime))
 
 (defn datetime/date? (x)
   "True if `x` is a date with no time component (`std/datetime`) — by identity.
 
     (datetime/date? (datetime/today))   ;=> true"
-  (%eq (reflect/record-id x) :datetime/date))
+  (%eq (record-id x) :datetime/date))
 
 (defn datetime/time-of-day? (x)
   "True if `x` is a time-of-day with no date component (`std/datetime`) — by identity.
 
     (datetime/time-of-day? 42)   ;=> false"
-  (%eq (reflect/record-id x) :datetime/time-of-day))
+  (%eq (record-id x) :datetime/time-of-day))
 
 ;; ---- ability impl registration and dispatch -----------------------------------
 
@@ -103,15 +103,15 @@
     nil))
 
 ; True if module `from` belongs to the current project's OWN package (ADR-172): its
-; `*ns-package*` entry (set at project setup) equals `*project-name*`. Guarded with `bound?`
+; `project/*ns-package*` entry (set at project setup) equals `project/*name*`. Guarded with `bound?`
 ; so abilities still work when no project is loaded (a bare `brood script.blsp` — those
 ; ambients are undeclared then). Root/REPL (`from` = nil) is handled by the caller as the app.
 (defn- %impl-app? (from)
   (and from
-    (bound? '*project-name*)
-    *project-name*
-    (bound? '*ns-package*)
-    (= (get *ns-package* from) *project-name*)))
+    (bound? 'project/*name*)
+    project/*name*
+    (bound? 'project/*ns-package*)
+    (= (get project/*ns-package* from) project/*name*)))
 
 (defn %impl-rank (aname key from)
   "The ability-impl precedence TIER for an impl of `aname`/`key` declared by module `from` —
@@ -623,7 +623,7 @@ run time from a value the checker never read. Returns `value` so it can wrap a b
 error is a `:blame :callee` contract error, like a function's own result mismatch."
   ;; The kernel first: a base type or a remembered verdict answers without the
   ;; `type-matches?` frame, which is most results (ADR-480).
-  (if (or (%eq (%type-verdict ret value) true) (reflect/type-matches? ret value))
+  (if (or (%eq (%type-verdict ret value) true) (type-matches? ret value))
     value
     (%contract-raise {:kind :contract
                       :message (str aname

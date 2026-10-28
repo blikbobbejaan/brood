@@ -150,7 +150,7 @@
     (let (s (start closer (self)))
       (assert= (call s :ping) :pong)
       (stop s)
-      (assert= (receive ([:closed r] r) (after *test-wait-ms* :no-terminate)) :normal))))
+      (assert= (receive ([:closed r] r) (after test/*wait-ms* :no-terminate)) :normal))))
 
 (describe "gen: call timeout and death"
   :isolated
@@ -167,7 +167,7 @@
   (test "call raises promptly when the server is already dead"
     (let (s (start silent nil) server-ref (monitor s))
       (stop s)
-      (assert= :down (receive ([:down ^server-ref _ _] :down) (after *test-wait-ms* :timeout)))
+      (assert= :down (receive ([:down ^server-ref _ _] :down) (after test/*wait-ms* :timeout)))
       ;; the monitor on a dead pid fires [:down … :noproc] at once — no 2 s wait
       (assert= (try (call-timeout s :anything 2000) (catch e :died))
         :died)))
@@ -187,7 +187,7 @@
       (let (server-ref (monitor s))
         (stop s)
         (assert= :down
-          (receive ([:down ^server-ref _ _] :down) (after *test-wait-ms* :timeout))))
+          (receive ([:down ^server-ref _ _] :down) (after test/*wait-ms* :timeout))))
       (assert= before (proc/mailbox-size (self)))))
 
   (defserver double-replier

@@ -54,7 +54,7 @@
     (refute (warns? "(clf-remote/f 1)"))
     (let (me (self))
       (spawn (redefine-in-worker me "(defmodule clf-remote) (defn f (a b) (+ a b))"))
-      (assert= (receive (:redefined :ok) (after *test-wait-ms* :timeout)) :ok))
+      (assert= (receive (:redefined :ok) (after test/*wait-ms* :timeout)) :ok))
     (is (warns? "(clf-remote/f 1)"))
     (refute (warns? "(clf-remote/f 1 2)")))
 
@@ -63,4 +63,4 @@
     (%load-string "(defmodule clf-local) (defn f (a b c) a)")
     (let (me (self))
       (spawn (check-in-worker me ["(clf-local/f 1)" "(clf-local/f 1 2 3)"]))
-      (assert= (receive ([:checked r] r) (after *test-wait-ms* :timeout)) (list true false)))))
+      (assert= (receive ([:checked r] r) (after test/*wait-ms* :timeout)) (list true false)))))

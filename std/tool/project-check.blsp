@@ -57,7 +57,7 @@ project's module index (a file is parsed only when its size or mtime moved); the
 `project-require-closures` closes.
 
     (project-check/project-module-infos (project-check/all-files \"/path/to/proj\"))   ;~> {\"/path/to/proj/src/app.blsp\" {:module … :requires […]} …}"
-  (module-index/infos-of *project-root* files))
+  (module-index/infos-of project/*root* files))
 
 ;; The transitive set of module names reachable from `seeds` (a list/vector of module
 ;; names) over `module->deps` (module-name -> [direct-dep …]). Breadth-first; a module
@@ -155,7 +155,7 @@ module included), built from the whole `files` universe — the KI-17 reachabili
 ;;
 ;; Chunks run in `*check-batch*`-sized groups (each group collected before the next
 ;; spawns, so peak live worker heaps — hence memory — is bounded by one group, like
-;; the test runner's `*parallel-batch*`); each chunk's result folds into `acc` via
+;; the test runner's `test/*parallel-batch*`); each chunk's result folds into `acc` via
 ;; `combine` as it reports. A crashed worker (a check-file / parse that itself
 ;; throws) is folded via `on-death` instead of hanging the collector (mirrors the
 ;; test runner's KI-2 `monitor` handling). A small file set runs in-process — no
@@ -1332,7 +1332,7 @@ project's own sources. The `srcdirs` guard matters: a feature like `project` (th
 tooling module) otherwise resolves to the manifest `./project.blsp` sitting in the cwd,
 and the pre-flight would 'check' the manifest and warn on it."
   (let (n (->string feat)
-        prefix (cond (nil? *project-name*) nil else (str *project-name* "/"))
+        prefix (cond (nil? project/*name*) nil else (str project/*name* "/"))
         rel (cond
               (and prefix (string/starts-with? n prefix))
                 (string/substring n (string/length prefix))
@@ -1388,7 +1388,7 @@ reaches is `nest check`/`nest test`'s business.
     (if (= (os/env "BROOD_NO_CHECK") "1")
       *project-tally-zero*
       (let ([want reach] (project-entry-closure entry
-                           (project/abs-paths root *project-source-paths*))
+                           (project/abs-paths root project/*source-paths*))
             extracts (project-gather-extracts want)
             source-set (fold want {} (fn (m p) (%map-assoc m p true)))
             ;; `reach` is one closure for the whole set rather than one per file: every file
@@ -1519,7 +1519,7 @@ more than one namespace, and a name that moved behind `%`. Backs `nest check --f
         ;; the image-search heuristic below, bare names only.
         ledgered (seq/filter (sort (vec (unbound-names diags))) (fn (nm) (contains? ledger nm)))
         names (fold ledgered (unbound-bare-names diags) (fn (acc nm) (set/disj acc nm)))
-        pname (if *project-name* (->string *project-name*) nil))
+        pname (if project/*name* (->string project/*name*) nil))
     (if (and (empty? names) (empty? ledgered))
       (do (io/puts "fix-renames: no unbound names — nothing to do") 0)
       (let (index (rename-index names)
@@ -1771,7 +1771,7 @@ Backs `nest check --suggest-sigs`.
     ;; and leaves the reader to guess whether that is the answer or a misfire. Say which.
     (when (empty? targets)
       (io/puts (str "suggest-sigs: no .blsp files under this project's source paths "
-                 (->string *project-source-paths*)
+                 (->string project/*source-paths*)
                  " — name the files explicitly (`nest check --suggest-sigs a.blsp …`), "
                  "or run it where the project lists them")))
     (io/puts (str "\nsuggest-sigs: "

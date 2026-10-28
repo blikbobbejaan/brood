@@ -47,4 +47,4 @@
           expected "assert failed: (and (> n 0) n): worker got -3")
       (receive
         ([:down ^ref ^pid reason] (is (includes? (pr-str reason) expected)))
-        (after *test-wait-ms* (is false))))))
+        (after test/*wait-ms* (is false))))))

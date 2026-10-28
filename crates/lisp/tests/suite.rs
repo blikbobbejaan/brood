@@ -39,8 +39,8 @@ fn run_suite() {
         brood::core::alloc::TEST_DEFAULT_SOFT,
     );
     let mut interp = Interp::new();
-    // `*test-timeout-ms*` is a wall deadline for an ENTIRE BATCH of parallel workers
-    // (`collect-units` computes `(+ (now) *test-timeout-ms*)` once per chunk), not a
+    // `test/*timeout-ms*` is a wall deadline for an ENTIRE BATCH of parallel workers
+    // (`collect-units` computes `(+ (now) test/*timeout-ms*)` once per chunk), not a
     // per-test hang guard: any worker that hasn't reported by then is presumed hung, and
     // every test it holds is reported as timed out. So the budget has to cover the
     // slowest *chunk*, and this wrapper is the one place the suite runs in a **debug**
@@ -76,7 +76,7 @@ fn run_suite() {
     // If this wrapper ever needs shrinking again, re-read that paragraph first: sampling here
     // is how coverage quietly diverged between `make test` and `nest test` in the first place.
     if let Err(e) = interp.eval_str(
-        "(require-one 'test) (def *test-timeout-ms* 600000) \
+        "(require-one 'test) (def test/*timeout-ms* 600000) \
          (project-run/run-tests)",
     ) {
         panic!("Brood test suite failed: {}", e);

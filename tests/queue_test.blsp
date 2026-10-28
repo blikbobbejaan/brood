@@ -128,8 +128,8 @@
       (is (not (pq/pq? (list [1 :a])))))
     (is (not (= (queue/empty) {:front nil :back nil :size 0}))))
   (test "each carries its record id"
-    (assert= (reflect/record-id (queue/empty)) :queue/queue)
-    (assert= (reflect/record-id (pq/empty)) :pq/pq))
+    (assert= (record-id (queue/empty)) :queue/queue)
+    (assert= (record-id (pq/empty)) :pq/pq))
   ;; An EMPTY pq used to be `nil` (a bare list), and `()` is the one falsy collection in
   ;; Brood — so `(if pq …)` took the else branch on an empty queue. A record is truthy.
   (test "an empty pq is truthy, unlike the bare list it used to be"
@@ -155,7 +155,7 @@
     (let (me (self))
       (doseq (i (range 4))
         (spawn (send me [:q (queue/list-> (list i (+ i 10)))])))
-      (let (results (map (range 4) (fn (_) (receive ([:q q] q) (after *test-wait-ms* :timeout)))))
+      (let (results (map (range 4) (fn (_) (receive ([:q q] q) (after test/*wait-ms* :timeout)))))
         (is (every? results queue/queue?))
         (is (every? results (fn (q) (= (count q) 2))))
         (assert= (into [] (sort (map results (fn (q) (queue/peek q))))) [0 1 2 3]))))
@@ -163,6 +163,6 @@
     (let (me (self)
           pq (-> (pq/empty) (pq/insert 3 :c) (pq/insert 1 :a)))
       (spawn (send me [:pq pq]))
-      (let (back (receive ([:pq p] p) (after *test-wait-ms* :timeout)))
+      (let (back (receive ([:pq p] p) (after test/*wait-ms* :timeout)))
         (is (pq/pq? back))
         (assert= (into [] (seq back)) [:a :c])))))

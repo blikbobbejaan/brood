@@ -463,7 +463,7 @@ fn rename_rewrites_references_and_definition_in_a_project() {
 /// toolchain in before the build runs. The build attributed a module's ROOT globals by
 /// loading it and diffing, and `require-one` is a no-op for a module already loaded — so
 /// `project`'s 31 root globals went unclaimed and the image restored `project` without
-/// `*ns-package*`. This drives the real entry point with a private cache directory: build
+/// `project/*ns-package*`. This drives the real entry point with a private cache directory: build
 /// the image through the dispatcher, then run the command that first showed the hole.
 #[test]
 fn an_image_built_through_the_dispatcher_restores_every_root_global() {
@@ -490,7 +490,7 @@ fn an_image_built_through_the_dispatcher_restores_every_root_global() {
     let (code, _, err) = nest_in(&dir, &["new", "demo"]);
     assert_eq!(code, 0, "scaffold:\n{err}");
     // `check` loads `project` FROM THE IMAGE and reaches `record-ns-packages`, which reads
-    // the root dynamic `*ns-package*` — unbound, before the fix.
+    // the root dynamic `project/*ns-package*` — unbound, before the fix.
     let (code, out, err) = with_cache(&dir.join("demo"), &["check"]);
     assert_eq!(
         code, 0,

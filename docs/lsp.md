@@ -539,7 +539,7 @@ the introspection surface up front.
 **Cross-file references and rename.** A name that resolves to a **global** is
 one binding across the whole project under the flat module model (ADR-019), so
 references and rename span every project file: `workspace.rs` gets the file set
-from `introspect::project_files` (`(project--all-files *project-root*)`, the same
+from `introspect::project_files` (`(project--all-files project/*root*)`, the same
 set `check-project` walks), preferring an open document's in-memory text over its
 on-disk copy, and unions `ScopeTree::references_to_global` over each. Rename
 emits a multi-file `WorkspaceEdit`. **Locals stay single-file** (routed to the

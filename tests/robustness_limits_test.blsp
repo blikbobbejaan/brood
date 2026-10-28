@@ -360,7 +360,7 @@
     ;; project loader, or provided by an image whose bindings materialise on first use.
     (assert= (reflect/eval-string "(defmodule rl-only-a (:use math :only [rl-nope]))") nil)
     (assert= (reflect/eval-string "(defmodule rl-only-b (:use math :only [abs])) (abs -3)") 3)
-    (assert= (reflect/eval-string "(defmodule rl-only-c (:use format :only [*format-headers-extra*]))")
+    (assert= (reflect/eval-string "(defmodule rl-only-c (:use format :only [format/*headers-extra*]))")
       nil)))
 
 (describe "quasiquote through reflect/eval inside a module namespace"

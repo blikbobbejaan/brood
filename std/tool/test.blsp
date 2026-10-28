@@ -85,17 +85,17 @@ docs/testing.md for the full guide."
     dev encoding file humanize io json map math os path proc reflect regex seq set stdimage string
     system table))
 
-(defdyn *units* nil)
+(defdyn test/*units* nil)
 ; all registered units, newest first
 (def *collecting* false)
 ; true while a describe body is being registered
 (def *collected* nil)
 ; (name thunk) pairs gathered for the current describe
 
-(defn- add-unit (mode group tests) (def *units* (cons (list mode group tests) *units*)))
+(defn- add-unit (mode group tests) (def test/*units* (cons (list mode group tests) test/*units*)))
 
 ;; Empty the registry. A `describe`/`test` form REGISTERS by consing onto
-;; `*units*`; in a fresh process that starts at nil, so a one-shot `nest test`
+;; `test/*units*`; in a fresh process that starts at nil, so a one-shot `nest test`
 ;; never double-counts. But a long-lived image (the `nest mcp` session, ADR-013)
 ;; that `reflect/load`s the same test file twice would register every unit twice and
 ;; report inflated counts. The project test runner calls this right before it
@@ -105,7 +105,7 @@ docs/testing.md for the full guide."
   "Clear the test registry (drop every registered unit). The project test runner calls this before (re)loading test files so a long-lived image — e.g. a `nest mcp` hot-reload session — doesn't accumulate duplicate registrations across runs.
 
     (test/reset-units)   ;~> the registry emptied"
-  (def *units* nil))
+  (def test/*units* nil))
 
 ;; --- temp fixtures -----------------------------------------------------------
 ;; A test that needs a real directory builds one under /tmp. Two rules keep these
@@ -123,13 +123,13 @@ docs/testing.md for the full guide."
     (test/temp-dir \"brood-myapp-\")   ;~> \"/tmp/brood-myapp-7f3a9c…\" — not created"
   (path/temp prefix))
 
-(defdyn *stale-temp-age-ms* 3600000)
+(defdyn test/*stale-temp-age-ms* 3600000)
 
 (defn purge-stale-temp (prefix)
-  "Best-effort remove every `/tmp/<prefix>*` left by an earlier run — a directory tree *or* a plain file (a fixture may be either) — that was last modified more than `*stale-temp-age-ms*` (an hour) ago. Call once at FILE LOAD (a top-level form), before any test creates fixtures. The age is what keeps it off a LIVE fixture: /tmp is shared by every run on the machine, and a run of the same file beside this one (another checkout, another terminal) had its fixtures deleted under it. Bounds /tmp growth and recovers from crashed runs.
+  "Best-effort remove every `/tmp/<prefix>*` left by an earlier run — a directory tree *or* a plain file (a fixture may be either) — that was last modified more than `test/*stale-temp-age-ms*` (an hour) ago. Call once at FILE LOAD (a top-level form), before any test creates fixtures. The age is what keeps it off a LIVE fixture: /tmp is shared by every run on the machine, and a run of the same file beside this one (another checkout, another terminal) had its fixtures deleted under it. Bounds /tmp growth and recovers from crashed runs.
 
     (test/purge-stale-temp \"brood-myapp-\")   ;~> /tmp/brood-myapp-* older than an hour removed"
-  (let (cutoff (- (os/now) *stale-temp-age-ms*))
+  (let (cutoff (- (os/now) test/*stale-temp-age-ms*))
     (doseq (e (file/ls "/tmp"))
       (when (string/starts-with? e prefix)
         (let (p (path/join "/tmp" e)
@@ -461,9 +461,9 @@ the test rather than hanging the run.
       tag
       (cons (receive
               ([:concurrently ^tag v] v)
-              (after *test-timeout-ms*
+              (after test/*timeout-ms*
                 (test-fail nil
-                  (list (str "concurrently: a worker did not finish within " *test-timeout-ms* "ms")))))
+                  (list (str "concurrently: a worker did not finish within " test/*timeout-ms* "ms")))))
         acc))))
 
 (defmacro assert-error (& body)
@@ -811,7 +811,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 
 ;; The seed for this run, or nil. Read straight off the active filter so the
 ;; file-order shuffle below and the unit-order shuffle above can't disagree.
-(defn- test-filter-seed () (if (nil? *test-filter*) nil (get *test-filter* :seed)))
+(defn- test-filter-seed () (if (nil? test/*filter*) nil (get test/*filter* :seed)))
 
 ;; Did this run ask for a NARROWING selector — `--only`, `FILE:LINE`, or exact
 ;; names (`--failed`)? Used to warn when such a selector matched nothing: "0
@@ -823,10 +823,10 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; when a small suite is fanned across many CI machines, so warning on it would be
 ;; noise rather than signal.
 (defn- test-filter-narrows? ()
-  (and (not (nil? *test-filter*))
-    (or (not (empty? (or (get *test-filter* :only) (list))))
-      (not (empty? (or (get *test-filter* :lines) (list))))
-      (not (empty? (or (get *test-filter* :names) (list)))))))
+  (and (not (nil? test/*filter*))
+    (or (not (empty? (or (get test/*filter* :only) (list))))
+      (not (empty? (or (get test/*filter* :lines) (list))))
+      (not (empty? (or (get test/*filter* :names) (list)))))))
 
 ;; Randomise FILE order as well, for the scoped (file-by-file) runner. Without
 ;; this `--seed` shuffled only WITHIN each file — the scoped path drains one file
@@ -856,26 +856,26 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;;
 ;; Reporting on completion rather than on start is what makes the colour possible —
 ;; the outcome isn't known before the body runs. A hung test still surfaces: the
-;; runner hard-kills it at `*test-timeout-ms*` and reports it as a timed-out failure,
+;; runner hard-kills it at `test/*timeout-ms*` and reports it as a timed-out failure,
 ;; so it shows up as a red line rather than as a start with no end.
 ;;
 ;; Runs in the worker process, so lines from parallel workers interleave (each is one
-;; flushed `io/puts`), in waves of `*parallel-batch*`.
+;; flushed `io/puts`), in waves of `test/*parallel-batch*`.
 ;; The structured per-test reporting seam: a 1-arg fn (or nil) handed each result
 ;; tuple as its test finishes, in the WORKER process — the machine-readable
 ;; counterpart of `--trace`'s human line. A `defdyn`, so an external runner (an
 ;; editor streaming results into a buffer, a CI formatter) installs one with a
-;; root-rebinding `(def *test-report-sink* f)` — the same seam shape as `*spy-sink*`,
+;; root-rebinding `(def test/*report-sink* f)` — the same seam shape as `debug/*spy-sink*`,
 ;; and deliberately a dynamic: `trace-result` itself ships in the binary, so it is a
 ;; reserved name (ADR-166) and cannot be advised by redefinition.
-(defdyn *test-report-sink* nil)
+(defdyn test/*report-sink* nil)
 
 (defn trace-result (r)
-  "Report one finished result `r` through the per-test seams, then return `r` unchanged. Feeds it to any installed `*test-report-sink*` (the machine-readable seam) and, under `*test-trace*`, prints the coloured `--trace` line (glyph, label, timing, location, failure count). Runs in the worker process.
+  "Report one finished result `r` through the per-test seams, then return `r` unchanged. Feeds it to any installed `test/*report-sink*` (the machine-readable seam) and, under `test/*trace*`, prints the coloured `--trace` line (glyph, label, timing, location, failure count). Runs in the worker process.
 
     (test/trace-result r)   ;~> r, unchanged — after the report sink and --trace line saw it"
-  (when *test-report-sink* (*test-report-sink* r))
-  (when *test-trace*
+  (when test/*report-sink* (test/*report-sink* r))
+  (when test/*trace*
     (io/puts (str (trace-glyph r)
                " "
                (trace-label r)
@@ -943,12 +943,12 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; Suppressed under `:trace`, which already prints a line per test: the two together
 ;; would just be noise.
 (defn progress-mark (results)
-  "Print one live-progress character per result in `results` — a green `.` for a pass, red `F` for a failure, orange `○` for a skip — flushed as they arrive. Suppressed under `*test-trace*` (which already prints a line per test) and under a machine `*test-formatter*` (whose output must stay parseable).
+  "Print one live-progress character per result in `results` — a green `.` for a pass, red `F` for a failure, orange `○` for a skip — flushed as they arrive. Suppressed under `test/*trace*` (which already prints a line per test) and under a machine `*test-formatter*` (whose output must stay parseable).
 
     (test/progress-mark results)   ;~> one . F or ○ per result printed, flushed"
   ;; Suppressed under `:trace` (which prints a line per test) and under a machine
   ;; `--formatter` (whose output must stay parseable — no stray dots).
-  (unless (or *test-trace* *test-formatter*)
+  (unless (or test/*trace* *test-formatter*)
     (fold results
       nil
       (fn (_ r)
@@ -1028,15 +1028,15 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; limits threads, not started-and-suspended coroutines). Lower = less memory,
 ;; less parallelism; raise once the GC reclaims so a unit's transients don't pile
 ;; up. Within a group, a unit that itself spawns many workers still runs them
-;; freely — this only bounds how many *units* are in flight at once.
-(defdyn *parallel-batch* 4)
+;; freely — this only bounds how many test/*units* are in flight at once.
+(defdyn test/*parallel-batch* 4)
 
 ;; Two per-test wall-clock thresholds, in milliseconds — distinct on purpose:
 ;;
 ;; - `*test-slow-ms*` (default 1s) — **informational**. A test that takes longer is
 ;;   listed (name + duration) under the summary. It still PASSES; this only surfaces
 ;;   where the time goes. Override: `(run-tests :slow-over MS)`.
-;; - `*test-timeout-ms*` (default 120s) — **a hard ceiling**. A test that runs longer
+;; - `test/*timeout-ms*` (default 120s) — **a hard ceiling**. A test that runs longer
 ;;   is hard-killed (`(exit worker :kill)`, ADR-063 — stops even a tight loop that
 ;;   never `receive`s) and reported as a "timed out" FAILURE, so a hung/runaway test
 ;;   fails the suite instead of dragging or wedging it. Override: `(run-tests :timeout
@@ -1044,7 +1044,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;;   is effectively per-test (per-unit for `:serial`/`:isolated`).
 ;;
 ;; So: slow ≤ duration < timeout → listed but passes; duration ≥ timeout → killed +
-;; failed. Keep `*test-slow-ms*` < `*test-timeout-ms*` (a slow test you still want to
+;; failed. Keep `*test-slow-ms*` < `test/*timeout-ms*` (a slow test you still want to
 ;; see before it's a hard failure).
 (def *test-slow-ms* 1000)
 ;; 120s: headroom for legitimately slow tests (the adversarial heap-allocation
@@ -1055,8 +1055,8 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; ONE case, so its per-case cap in `.config/nextest.toml` is set *above* this (300s)
 ;; — otherwise nextest would kill the wrapper before this inner timeout could fire.
 ;; The same ceiling applies with contracts armed (`nest test`'s default, ADR-381).
-(defdyn *test-timeout-ms* 120000)
-(sig *test-timeout-ms* int)
+(defdyn test/*timeout-ms* 120000)
+(sig test/*timeout-ms* int)
 
 ;; The batch budget for a unit tagged `:slow` or `:conformance`. Before this, `:tags [… :slow]` was
 ;; documentation the runner ignored: the external conformance corpora (~19,000 UCD
@@ -1066,11 +1066,11 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; the batch this budget instead — still a hard ceiling, just one sized for work
 ;; that is legitimately long rather than stuck. Untagged batches are unchanged, so a
 ;; runaway test is still caught in 120 s.
-(defdyn *test-slow-timeout-ms* 900000)
+(defdyn test/*slow-timeout-ms* 900000)
 
-;; The deadline for an ANTI-HANG GUARD — a `(receive … (after *test-wait-ms* :timeout))`
+;; The deadline for an ANTI-HANG GUARD — a `(receive … (after test/*wait-ms* :timeout))`
 ;; where the message is expected and the timeout means "something is wrong". Distinct
-;; from `*test-timeout-ms*` (the runner's hard per-test ceiling) and from the short
+;; from `test/*timeout-ms*` (the runner's hard per-test ceiling) and from the short
 ;; deadlines a test uses to assert that *nothing* arrives, which must stay short.
 ;;
 ;; Why it is a named knob rather than a literal at each site: a few seconds is not a lot
@@ -1081,29 +1081,29 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; 20s: generous, while several compounding guards still fit inside the
 ;; 120s per-test ceiling, so a genuinely stuck test is still reported with its own
 ;; message rather than by the hard kill.
-(defdyn *test-wait-ms* 20000)
-;; Milliseconds, so a deadline a test builds from it (`(+ (os/now) *test-wait-ms*)`) is an
+(defdyn test/*wait-ms* 20000)
+;; Milliseconds, so a deadline a test builds from it (`(+ (os/now) test/*wait-ms*)`) is an
 ;; int an `after` clause accepts — a dynamic is otherwise unknown to the checker.
-(sig *test-wait-ms* int)
+(sig test/*wait-ms* int)
 
 (defn- eventually-loop (what probe deadline)
   (let (value (probe))
     (cond
       value value
       (> (os/now) deadline)
-        (error (str "eventually: " what " did not happen within " *test-wait-ms* " ms"))
+        (error (str "eventually: " what " did not happen within " test/*wait-ms* " ms"))
       else (do (proc/sleep 2) (eventually-loop what probe deadline)))))
 
 (defn eventually (what probe)
-  "Poll `probe`, a zero-argument function, until it returns a truthy value, and return that value; raise naming `what` if it has not within `*test-wait-ms*`. The handshake for a condition no message announces — a process parking, a count settling — in place of a `sleep` that guesses how long the other side takes, which a loaded machine outsleeps.
+  "Poll `probe`, a zero-argument function, until it returns a truthy value, and return that value; raise naming `what` if it has not within `test/*wait-ms*`. The handshake for a condition no message announces — a process parking, a count settling — in place of a `sleep` that guesses how long the other side takes, which a loaded machine outsleeps.
 
-    (test/eventually \"three hits\" (fn () (>= (hits) 3)))   ;~> true — or raises naming \"three hits\" after *test-wait-ms*"
-  (eventually-loop what probe (+ (os/now) *test-wait-ms*)))
+    (test/eventually \"three hits\" (fn () (>= (hits) 3)))   ;~> true — or raises naming \"three hits\" after test/*wait-ms*"
+  (eventually-loop what probe (+ (os/now) test/*wait-ms*)))
 
 (defn await-parked (pid)
-  "Wait until `pid` is parked (waiting in a `receive` or a `sleep`), then return `:ok`; raise if it is not within `*test-wait-ms*`. For a test whose point is a message reaching a process that is already blocked.
+  "Wait until `pid` is parked (waiting in a `receive` or a `sleep`), then return `:ok`; raise if it is not within `test/*wait-ms*`. For a test whose point is a message reaching a process that is already blocked.
 
-    (test/await-parked pid)   ;~> :ok — once pid is blocked in a receive or proc/sleep; raises after *test-wait-ms*"
+    (test/await-parked pid)   ;~> :ok — once pid is blocked in a receive or proc/sleep; raises after test/*wait-ms*"
   (eventually (str (pr-str pid) " parking")
     (fn () (when (= :waiting (get (proc/info pid) :status)) :ok))))
 
@@ -1112,11 +1112,11 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; default, and never set by `run-tests-structured` / the `--test` path, so machine-
 ;; parsed and structured output stays clean. `(run-tests :trace)` turns it on, and
 ;; `nest test` passes `:trace`. Lines from parallel workers interleave (each is one
-;; flushed `io/puts`); they come in waves of `*parallel-batch*`.
-(defdyn *test-trace* false)
+;; flushed `io/puts`); they come in waves of `test/*parallel-batch*`.
+(defdyn test/*trace* false)
 
 ;; The active output formatter name (`nest test --formatter NAME`), or nil for the
-;; default human report. A `def`-global (like `*test-trace*`) so a worker reads it to
+;; default human report. A `def`-global (like `test/*trace*`) so a worker reads it to
 ;; suppress the live progress dots under a machine formatter. See the formatter registry
 ;; below (`*test-formatters*`).
 (def *test-formatter* nil)
@@ -1124,24 +1124,24 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; The active filter spec (see "test selection" above) — nil runs everything.
 ;; A global rather than a threaded argument because `drain-current` is reached
 ;; through `drain-files-scoped`, several frames below the entry point, exactly
-;; like `*test-trace*` / `*test-timeout-ms*`.
-(defdyn *test-filter* nil)
+;; like `test/*trace*` / `test/*timeout-ms*`.
+(defdyn test/*filter* nil)
 
 ;; Outcome of the most recent reported pass, as full `"group › name"` labels:
 ;; every test that RAN, and the subset that FAILED. The project layer reads these
 ;; to maintain the on-disk `--failed` set (it needs both: a test that ran and
 ;; passed must be dropped from the set, while one that never ran keeps its prior
 ;; state). Set outside any `%isolate`, so the values survive a scoped run.
-(defdyn *test-last-ran* nil)
-(defdyn *test-last-failed* nil)
+(defdyn test/*last-ran* nil)
+(defdyn test/*last-failed* nil)
 
 ;; Stop the run once this many tests have failed (0 = unlimited, the default).
 ;; Checked by `run-driver` between steps, so it stops at the next step boundary
 ;; rather than mid-flight — a batch already in progress still reports, so the
 ;; count can overshoot slightly.
-(defdyn *test-max-failures* 0)
+(defdyn test/*max-failures* 0)
 
-;; The parallel/serial units run in bounded groups (see `*parallel-batch*`) — the
+;; The parallel/serial units run in bounded groups (see `test/*parallel-batch*`) — the
 ;; loop that does so is the `run-driver` below, which also folds in the isolated
 ;; phase, so the runner collects between groups at the safepoint.
 
@@ -1173,7 +1173,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; counts workers not yet accounted for. A `[:down …]` for an unknown pid (a
 ;; stale worker from a prior run in a long-lived session) is ignored WITHOUT
 ;; decrementing, so it can't corrupt the count.
-;; Budget exhausted (`*test-timeout-ms*`): every worker that hasn't reported is
+;; Budget exhausted (`test/*timeout-ms*`): every worker that hasn't reported is
 ;; presumed hung. Hard-kill each — `(exit pid :kill)` stops even a tight non-receive
 ;; loop (ADR-063) — and synthesize a timeout failure for each of its tests, so a hung
 ;; test FAILS instead of wedging the collector. Returns the full result list.
@@ -1235,10 +1235,10 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
         (first t)
         (list (list nil
                 (cons (str "test timed out after "
-                        (math/quot *test-timeout-ms* 1000)
-                        "s — hard-killed (raise *test-timeout-ms* if legitimately slow)")
+                        (math/quot test/*timeout-ms* 1000)
+                        "s — hard-killed (raise test/*timeout-ms* if legitimately slow)")
                   report)))
-        *test-timeout-ms*))))
+        test/*timeout-ms*))))
 
 ;; Tags that buy a batch the raised budget. `:slow` says it directly; `:conformance`
 ;; implies it — an external-corpus sweep is thousands of cases by construction (the
@@ -1256,17 +1256,17 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
         (fn (t) (any? (test-tags t) (fn (tag) (includes? *test-long-tags* tag))))))))
 
 (defn collect-units (workers acc)
-  "Collect the results of one batch of spawned `workers` (a list of `(pid unit)`), accumulating onto `acc`. Waits for each worker's `:unit-result` AND its monitor `:down` (a batch is done when every worker has EXITED, not merely reported) under a fresh per-batch deadline, hard-killing and failing any straggler that overruns. A `:slow`/`:conformance`-tagged batch runs under the raised `*test-slow-timeout-ms*` budget.
+  "Collect the results of one batch of spawned `workers` (a list of `(pid unit)`), accumulating onto `acc`. Waits for each worker's `:unit-result` AND its monitor `:down` (a batch is done when every worker has EXITED, not merely reported) under a fresh per-batch deadline, hard-killing and failing any straggler that overruns. A `:slow`/`:conformance`-tagged batch runs under the raised `test/*slow-timeout-ms*` budget.
 
     (test/collect-units (test/spawn-units units (self)) [])   ;~> the results of every unit in the batch, appended to []"
   ;; Fixed wall deadline for this batch — recomputed per collect, so each isolated
   ;; unit / parallel chunk gets its own full budget. A `:slow`-tagged unit raises the
-  ;; budget for its batch (see `*test-slow-timeout-ms*`); rebinding the var rather
+  ;; budget for its batch (see `test/*slow-timeout-ms*`); rebinding the var rather
   ;; than threading a number keeps the timeout *message* accurate too.
   (if (collect-slow-batch? workers)
-    (binding (*test-timeout-ms* (math/max *test-timeout-ms* *test-slow-timeout-ms*))
-      (collect-loop (count workers) workers nil acc (+ (os/now) *test-timeout-ms*)))
-    (collect-loop (count workers) workers nil acc (+ (os/now) *test-timeout-ms*))))
+    (binding (test/*timeout-ms* (math/max test/*timeout-ms* test/*slow-timeout-ms*))
+      (collect-loop (count workers) workers nil acc (+ (os/now) test/*timeout-ms*)))
+    (collect-loop (count workers) workers nil acc (+ (os/now) test/*timeout-ms*))))
 
 ;; `pending` counts workers that have not yet EXITED — a worker's `:down`, not its
 ;; `:unit-result`, is what retires it, so the runner's own workers are gone by
@@ -1328,7 +1328,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;;
 ;; Each isolated unit still runs in its OWN awaited worker (so its heap is dropped
 ;; wholesale on exit, and its mailbox can't leak stragglers into another test);
-;; the parallel units still run in `*parallel-batch*`-sized groups (so the live
+;; the parallel units still run in `test/*parallel-batch*`-sized groups (so the live
 ;; set per collection stays bounded to one group). Isolated steps come first and
 ;; serially, so `%isolate`'s snapshot/restore of the shared globals table can't
 ;; race a concurrent unit and each sees the clean post-load baseline.
@@ -1346,7 +1346,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; the parallel/serial units as `(:par . units)` groups.
 (defn- run-steps (iso par)
   (append (map iso (fn (u) (list :iso u)))
-    (map (run-chunks *parallel-batch* par nil) (fn (b) (cons :par b)))))
+    (map (run-chunks test/*parallel-batch* par nil) (fn (b) (cons :par b)))))
 
 ;; Run one step in the current (driver) process, returning its unit results. An
 ;; `:iso` step spawns+awaits one unit under `%isolate`; a `:par` step spawns the
@@ -1369,7 +1369,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; Has the `--max-failures` budget been spent? Checked between steps, so the
 ;; remaining steps are abandoned rather than run.
 (defn- test-max-failures-hit? (results)
-  (and (> *test-max-failures* 0) (>= (count-failed results) *test-max-failures*)))
+  (and (> test/*max-failures* 0) (>= (count-failed results) test/*max-failures*)))
 
 (defn- run-driver (steps parent acc)
   (if (or (empty? steps) (test-max-failures-hit? acc))
@@ -1402,7 +1402,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; Split the currently-registered units into (iso par) and drain them — the shared
 ;; body of `run-tests` and `run-tests-scoped`.
 (defn- drain-current ()
-  (let (units (test-select-units (reverse *units*) *test-filter*)
+  (let (units (test-select-units (reverse test/*units*) test/*filter*)
         par (seq/filter units (fn (u) (not (= (first u) :isolated))))
         iso (seq/filter units (fn (u) (= (first u) :isolated))))
     (drain-runner iso par)))
@@ -1487,7 +1487,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
                       "\n"))
       else
         (do
-          (when (and *test-trace* (not (empty? stragglers)))
+          (when (and test/*trace* (not (empty? stragglers)))
             (%write-err (str "[test] quiesce: killing "
                           (count stragglers)
                           " straggler(s): "
@@ -1526,7 +1526,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
                 (fn (state loader)
                   (let (chunks (first state)
                         failed (second state))
-                    (if (and (> *test-max-failures* 0) (>= failed *test-max-failures*))
+                    (if (and (> test/*max-failures* 0) (>= failed test/*max-failures*))
                       state
                       (let (file-results (%isolate (fn ()
                                                      (let (before (proc/list)
@@ -1704,16 +1704,16 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;;   :repeat N        run the suite up to N times, stopping at the first failure
 ;;                                               (mix --repeat-until-failure)
 (defn- test-apply-opts (opts)
-  (def *test-timeout-ms* (opt-val :timeout opts *test-timeout-ms*))
+  (def test/*timeout-ms* (opt-val :timeout opts test/*timeout-ms*))
   (def *test-slow-ms* (opt-val :slow-over opts *test-slow-ms*))
   ;; `BROOD_TEST_TRACE` arms `--trace` from the environment, for a runner nobody passes
   ;; flags to: the nextest wrapper (`crates/lisp/tests/suite.rs`) prints only progress marks,
   ;; so a run killed at its cap has never named the tests that failed (KI-120). Under trace
   ;; each result is a line as it lands, which survives the kill.
-  (def *test-trace* (or (opt? :trace opts) (not (nil? (os/env "BROOD_TEST_TRACE")))))
+  (def test/*trace* (or (opt? :trace opts) (not (nil? (os/env "BROOD_TEST_TRACE")))))
   (def *test-formatter* (opt-val :formatter opts nil))
-  (def *test-filter* (opt-val :filter opts nil))
-  (def *test-max-failures* (opt-val :max-failures opts 0)))
+  (def test/*filter* (opt-val :filter opts nil))
+  (def test/*max-failures* (opt-val :max-failures opts 0)))
 
 ;; How many slowest tests to list: `:slowest N`, or 5 for the legacy `:slow`
 ;; flag, else nil (list none). `:slowest 0` is nil too — otherwise the reporter
@@ -1823,8 +1823,8 @@ the exit code still reflects the run. An unknown formatter name is a clean error
 
 (defn- test-report-pass (results elapsed opts extra)
   ;; `--failed` tracking happens on every path (the interesting run is the failing one).
-  (def *test-last-ran* (map results full-name))
-  (def *test-last-failed* (map (seq/filter results r-failed?) full-name))
+  (def test/*last-ran* (map results full-name))
+  (def test/*last-failed* (map (seq/filter results r-failed?) full-name))
   (if *test-formatter*
     (test-report-formatted results elapsed)
     (test-report-human results elapsed opts extra)))
@@ -1883,8 +1883,8 @@ read the un-imaged path as evidence about the imaged one."
         skipped (count-skipped results)
         fails (count-failures results)
         slowest (test-slowest-n opts)
-        seed (if (nil? *test-filter*) nil (get *test-filter* :seed)))
-    ;; (`*test-last-ran*`/`*test-last-failed*` are set by `test-report-pass`, before
+        seed (if (nil? test/*filter*) nil (get test/*filter* :seed)))
+    ;; (`test/*last-ran*`/`test/*last-failed*` are set by `test-report-pass`, before
     ;; this human/formatter split, so `--failed` works on either path.)
     ;; A narrowing selector that matched nothing must not pass for success.
     (when (and (= total 0) (test-filter-narrows?))
@@ -1933,7 +1933,7 @@ read the un-imaged path as evidence about the imaged one."
 ;; One pass of the registered suite: select, drain, report, raise. Split out of
 ;; `run-tests` so `:repeat` can run it more than once.
 (defn- run-tests-pass (opts)
-  (let (units (test-select-units (reverse *units*) *test-filter*)
+  (let (units (test-select-units (reverse test/*units*) test/*filter*)
         par (seq/filter units (fn (u) (not (= (first u) :isolated))))
         ; parallel + serial
         iso (seq/filter units (fn (u) (= (first u) :isolated)))
@@ -1951,7 +1951,7 @@ read the un-imaged path as evidence about the imaged one."
 
     (test/run-tests-structured)   ;~> {:total 42 :passed 42 :failed 0 :failed-assertions 0 :ms 830 :results […]}"
   (test-apply-opts opts)
-  (let (units (test-select-units (reverse *units*) *test-filter*)
+  (let (units (test-select-units (reverse test/*units*) test/*filter*)
         parallel (seq/filter units (fn (unit) (not (= (first unit) :isolated))))
         isolated (seq/filter units (fn (unit) (= (first unit) :isolated)))
         start (os/now)

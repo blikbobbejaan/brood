@@ -26,7 +26,7 @@
       (%ref-deactivate dead)
       (send (self) [:reply dead :dropped])
       (send (self) [:reply live :kept])
-      (assert= (receive ([:reply ^live v] v) (after *test-wait-ms* :nothing)) :kept)
+      (assert= (receive ([:reply ^live v] v) (after test/*wait-ms* :nothing)) :kept)
       ;; and the dropped one is not merely *behind* it — it was never queued
       (assert= (receive ([:reply ^dead v] v) (after 30 :never-arrived)) :never-arrived)))
 
@@ -37,7 +37,7 @@
       (send (self) [:reply r :already-here])
       (proc/sleep 20)
       (%ref-deactivate r)
-      (assert= (receive ([:reply ^r v] v) (after *test-wait-ms* :nothing)) :already-here)))
+      (assert= (receive ([:reply ^r v] v) (after test/*wait-ms* :nothing)) :already-here)))
 
   (test "the ref must be in the reply-token position of a keyword-tagged vector"
     ;; The check is O(1) precisely because it looks in one place. A ref somewhere else
@@ -45,7 +45,7 @@
     (let (r (ref))
       (%ref-deactivate r)
       (send (self) [:reply :not-here r])
-      (assert= (receive ([:reply :not-here x] (= x r)) (after *test-wait-ms* :nothing))
+      (assert= (receive ([:reply :not-here x] (= x r)) (after test/*wait-ms* :nothing))
         true)))
 
   (test "a deactivated alias is ONE-shot: the second message with that ref arrives"
@@ -56,7 +56,7 @@
       (send (self) [:reply r :first])
       (proc/sleep 20)
       (send (self) [:reply r :second])
-      (assert= (receive ([:reply ^r v] v) (after *test-wait-ms* :nothing)) :second)))
+      (assert= (receive ([:reply ^r v] v) (after test/*wait-ms* :nothing)) :second)))
 
   (test "a PARKED receiver drops it too — the L1 local-send fast path checks as well"
     ;; The two delivery paths are separate code: a local send to a **parked** receiver
@@ -72,10 +72,10 @@
                 (send me [:armed r])
                 ;; parked here when the aliased message is delivered
                 (receive ([:go from] (send from [:mbox (proc/mailbox-size (self))]))))))
-      (let (r (receive ([:armed r] r) (after *test-wait-ms* :no-arm)))
+      (let (r (receive ([:armed r] r) (after test/*wait-ms* :no-arm)))
         (send p [:reply r :late])
         (send p [:go me])
-        (assert= (receive ([:mbox n] n) (after *test-wait-ms* :no-report)) 0))))
+        (assert= (receive ([:mbox n] n) (after test/*wait-ms* :no-report)) 0))))
 
   (test "a monitor's [:down] is dropped too — the wire delivery path checks as well"
     ;; A `[:down <mref> pid reason]` is built by the KERNEL and handed to `deliver`
@@ -115,7 +115,7 @@
       (doseq (r (rest refs)) (send (self) [:reply r :dropped]))
       (proc/sleep 40)
       (assert= (proc/mailbox-size (self)) 1)
-      (assert= (receive ([:reply _ v] v) (after *test-wait-ms* :nothing)) :evicted))))
+      (assert= (receive ([:reply _ v] v) (after test/*wait-ms* :nothing)) :evicted))))
 
 (describe "gen/call-timeout: a reply posted after the deadline never lands"
   :isolated
@@ -136,9 +136,9 @@
                               (catch e :timed-out)))
                 ;; a second call is a barrier: the server is serial and its replies to
                 ;; this process arrive in order, so the late reply has been posted
-                (gen/call-timeout srv [:slow 0] *test-wait-ms*)
+                (gen/call-timeout srv [:slow 0] test/*wait-ms*)
                 (send me [:probe outcome (proc/mailbox-size (self))]))))
-      (assert= (receive ([:probe outcome n] [outcome n]) (after *test-wait-ms* :no-report))
+      (assert= (receive ([:probe outcome n] [outcome n]) (after test/*wait-ms* :no-report))
         [:timed-out 0])
       (gen/stop srv)))
 

@@ -328,14 +328,14 @@
                     "brood://docs/claude-demo-findings" "brood://docs/error-codes" "brood://prelude"])
         (is (includes? uris uri)))))
   (test "resources/read serves the bound document text"
-    (binding (*mcp-documents* {"prelude" "(def x 1)"})
+    (binding (mcp/*documents* {"prelude" "(def x 1)"})
       (assert= (map/get-in (mcpt-request "resources/read" {:uri "brood://prelude"})
                  [:result :contents])
         [{:uri "brood://prelude" :mimeType "text/markdown" :text "(def x 1)"}])
       (assert= (map/get-in (mcpt-request "resources/read" {:uri "brood://nope"}) [:error :code])
         -32602)))
   (test "prompts list and serve brood-task, and refuse an unknown name"
-    (binding (*mcp-documents* {"brood-task" "orient yourself"})
+    (binding (mcp/*documents* {"brood-task" "orient yourself"})
       (assert= (map (map/get-in (mcpt-request "prompts/list" {}) [:result :prompts])
                  (fn (p) (get p :name)))
         (list "brood-task"))

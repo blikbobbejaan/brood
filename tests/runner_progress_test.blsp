@@ -22,12 +22,12 @@
   (let (f (test/r-fails r))
     (if (pair? f) f (error "runner-progress-test: expected a failure list, got " f))))
 
-;; The marks `results` print with trace OFF. `progress-mark` is suppressed under `*test-trace*`
+;; The marks `results` print with trace OFF. `progress-mark` is suppressed under `test/*trace*`
 ;; (a line per test already says everything), so these cases used to read "" — and fail —
 ;; whenever the run around them was traced: `nest test --trace`, or `BROOD_TEST_TRACE=1` on
 ;; the nextest wrapper. What they test is the marks, not the run's trace setting.
 (defn- marks (results)
-  (binding (*test-trace* false)
+  (binding (test/*trace* false)
     (with-out-str (test/progress-mark results))))
 
 (describe "test runner: progress marks"
@@ -75,42 +75,42 @@
 
 (describe "test runner: --trace replaces the dots"
   :isolated (test "tracing suppresses the progress marks"
-    (def *test-trace* true)
+    (def test/*trace* true)
     (assert= (with-out-str (test/progress-mark (list (progress-test-pass "t")))) ""))
   (test "an ungrouped test traces just its name, with no group prefix"
-    (def *test-trace* true)
+    (def test/*trace* true)
     (let (line (with-out-str (test/trace-result (list "" "lonely" nil 1))))
       (and (is (includes? line "lonely")) (refute (includes? line "›")))))
   (test "trace prints nothing when off"
-    (def *test-trace* false)
+    (def test/*trace* false)
     (assert= (with-out-str (test/trace-result (progress-test-pass "t"))) ""))
   (test "the dots come back once tracing is off"
-    (def *test-trace* false)
+    (def test/*trace* false)
     (assert= (with-out-str (test/progress-mark (list (progress-test-pass "t")))) "."))
   ;; A trace exists to tell you more than a dot: the outcome, how long it took, and
   ;; where the test lives.
   (test "a traced pass shows a tick, the label and the duration"
-    (def *test-trace* true)
+    (def test/*trace* true)
     (let (line (with-out-str (test/trace-result (progress-test-pass "adds"))))
       (and (is (includes? line "✓"))
         (is (includes? line "adds"))
         (is (includes? line "1ms")))))
   (test "a traced failure shows a cross and how many assertions failed"
-    (def *test-trace* true)
+    (def test/*trace* true)
     (let (line (with-out-str (test/trace-result (progress-test-fail "divides"))))
       (and (is (includes? line "✗")) (is (includes? line "1 failure")))))
   (test "a traced skip shows a circle and says skipped, with no duration"
-    (def *test-trace* true)
+    (def test/*trace* true)
     (let (line (with-out-str (test/trace-result (progress-test-skip "needs db"))))
       (and (is (includes? line "○"))
         (is (includes? line "skipped"))
         (refute (includes? line "0ms")))))
   (test "a traced test shows where it is declared"
-    (def *test-trace* true)
+    (def test/*trace* true)
     (let (line (with-out-str (test/trace-result (progress-test-at "x" "tests/a_test.blsp:12"))))
       (is (includes? line "tests/a_test.blsp:12"))))
   (test "trace-result returns its result, so it can wrap the call site"
-    (def *test-trace* false)
+    (def test/*trace* false)
     (let (r (progress-test-pass "t")) (assert= (test/trace-result r) r))))
 
 ;; A test FILE that fails to load is reported as one clearly-located failure rather

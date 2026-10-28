@@ -114,10 +114,10 @@
   (test "every scaffolder template is offered"
     ;; Compared against the scaffolder's own list rather than a restated one, so a
     ;; new template is completable with no change here. Reached via `reflect/eval` because
-    ;; `*project-templates*` is an ambient (earmuffed) global from `scaffold`,
+    ;; `scaffold/*templates*` is an ambient (earmuffed) global from `scaffold`,
     ;; which `complete` auto-loads (its `templates` names a `scaffold`
     ;; export); read via `reflect/eval` since the static checker cannot see the binding.
-    (assert= (count (complete/templates)) (count (reflect/eval '*project-templates*))))
+    (assert= (count (complete/templates)) (count (reflect/eval 'scaffold/*templates*))))
   (test "the template kind dispatches"
     (is (includes? (complete/for-kind "template") "gen")))
   (test "the project-module kind dispatches without raising"

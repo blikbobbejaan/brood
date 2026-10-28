@@ -342,7 +342,7 @@
     (let (me (self))
       (attach :vitals-seen [:runtime :vitals] (fn (e m md) (send me :vitals-sampled))))
     (let (w (watch-vitals 15))
-      (assert= :sampled (receive (:vitals-sampled :sampled) (after *test-wait-ms* :timeout)))
+      (assert= :sampled (receive (:vitals-sampled :sampled) (after test/*wait-ms* :timeout)))
       ;; the sample's whole dispatch, the gauge fold included, has run
       (sync)
       (stop-watch-vitals w)
@@ -375,7 +375,7 @@
         (emit [:app :hit] {:count 1} {:path "/x"})
         (let (got (receive
                     ([:remote-hit (and m {:count _}) md] {:m m :md md})
-                    (after *test-wait-ms* {})))
+                    (after test/*wait-ms* {})))
           (assert= {:count 1} (get got :m))
           (assert= "/x" (get (get got :md) :path))
           ;; the origin event is tagged into the re-emitted metadata

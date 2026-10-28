@@ -82,7 +82,7 @@
     (is (not (multimap/multimap? {:k (list 1)})))
     (is (not (multimap/multimap? nil))))
   (test "it carries its record id and is never = to a look-alike map"
-    (assert= (reflect/record-id (multimap/empty)) :multimap/multimap)
+    (assert= (record-id (multimap/empty)) :multimap/multimap)
     (is (not (= (multimap/empty) {}))))
   (test "the identity never leaks into keys, size, or the map view"
     (let (mm (multimap/assoc (multimap/empty) :k 1))
@@ -120,7 +120,7 @@
   :isolated (test "a multimap built in a worker arrives as a multimap"
     (let (me (self))
       (spawn (send me [:mm (multimap/assoc-all (multimap/empty) :k [1 2 3])]))
-      (let (back (receive ([:mm m] m) (after *test-wait-ms* :timeout)))
+      (let (back (receive ([:mm m] m) (after test/*wait-ms* :timeout)))
         (is (multimap/multimap? back))
         (assert= (count back) 3)
         (assert= (into [] (multimap/get-all back :k)) [1 2 3])))))

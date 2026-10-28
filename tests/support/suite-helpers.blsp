@@ -132,12 +132,12 @@ copied (`(* s 1103515245) + 12345 mod 2^31`) was not: its low bit alternated, so
 
 (defn await-done (n)
   "Wait for `n` `:done` messages, answering `:ok`. A message that has not arrived within
-`*test-wait-ms*` of the last raises, so a worker that died fails the test rather than
+`test/*wait-ms*` of the last raises, so a worker that died fails the test rather than
 passing it — whether or not the caller looks at the answer."
   (if (= n 0)
     :ok (receive
       (:done (await-done (dec n)))
-      (after *test-wait-ms* (error (str "await-done: " n " :done message(s) never arrived"))))))
+      (after test/*wait-ms* (error (str "await-done: " n " :done message(s) never arrived"))))))
 
 ;; ---- errors, hints and checker output ---------------------------------------------
 

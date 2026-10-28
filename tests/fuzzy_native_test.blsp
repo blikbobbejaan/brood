@@ -7,7 +7,7 @@
 ;; to hit every term of the score — boundaries, camelCase humps, contiguous runs, gaps, the
 ;; lead penalty, ties on length and then lexicographic, and a query that matches nothing.
 ;;
-;; The Brood side is reached by binding `*fuzzy-scorer*` to a wrapper of `scorer`: same
+;; The Brood side is reached by binding `fuzzy/*scorer*` to a wrapper of `scorer`: same
 ;; rules, but the native gate is then closed, so `top` takes the interpreted paths. That is
 ;; how a caller with custom rules reaches them too, which makes this a test of the GATE as
 ;; much as of the port.
@@ -17,7 +17,7 @@
 
 (defn fnt-brood-top (query cands limit &optional (options nil))
   "`top` forced down the Brood paths — the same rules behind a custom scorer."
-  (binding (*fuzzy-scorer* (fn (q options) (scorer q options))) (top query cands limit options)))
+  (binding (fuzzy/*scorer* (fn (q options) (scorer q options))) (top query cands limit options)))
 
 (def fnt-corpus
   ;; paths, module names and symbols — the shapes a completion UI actually ranks, plus the
@@ -73,10 +73,10 @@
       (assert= (fnt-brood-top q fnt-long 3) (top q fnt-long 3))
       (assert= (fnt-brood-top q fnt-long 3 {:category :file}) (top q fnt-long 3 {:category :file}))))
   (test "the sharded path answers the same too — the corpus forced past the shard floor"
-    ;; `*fuzzy-parallel-min*` 0 makes every ranking shard, so the merge is compared against
+    ;; `fuzzy/*parallel-min*` 0 makes every ranking shard, so the merge is compared against
     ;; the native pass rather than only against the serial Brood fold
     (doseq (q (take fnt-queries 8))
-      (assert= (binding (*fuzzy-parallel-min* 0) (fnt-brood-top q fnt-corpus 5))
+      (assert= (binding (fuzzy/*parallel-min* 0) (fnt-brood-top q fnt-corpus 5))
         (top q fnt-corpus 5)))))
 
 (describe "%fuzzy-top edge cases"
@@ -97,14 +97,14 @@
 
 (describe "the native gate"
   ;; Tested by what it DOES, not by reading the private predicate: the gate exists so that
-  ;; rebinding `*fuzzy-scorer*` still decides every ranking (ADR-357's whole point), and
+  ;; rebinding `fuzzy/*scorer*` still decides every ranking (ADR-357's whole point), and
   ;; that is an observable, not an implementation detail.
   (test "a custom scorer decides the ranking, native pass or not"
     ;; rank by length alone — shortest first — which the built-in rules would never do, and
     ;; which no candidate here even matches under them (`q` is in none of them)
     (let (by-length (fn (q options) (fn (cand) (- 0 (string/length cand)))))
       (assert= (list "z" "yy" "xxx")
-        (binding (*fuzzy-scorer* by-length) (top "q" ["xxx" "z" "yy"] 3)))
+        (binding (fuzzy/*scorer* by-length) (top "q" ["xxx" "z" "yy"] 3)))
       (assert= '() (top "q" ["xxx" "z" "yy"] 3))))
   (test "the custom scorer is put back: the default rules rank the same as before"
     (assert= (fnt-brood-top "ab" fnt-corpus 5) (top "ab" fnt-corpus 5))))

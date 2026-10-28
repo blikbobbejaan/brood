@@ -134,8 +134,8 @@
   (test "record? / record-id / fields are the clean, id-free API"
     (is (record? (circle 3)))
     (refute (record? {:r 3}))
-    (assert= (reflect/record-id (circle 3)) :ability-test/circle)
-    (assert= (reflect/record-id {:r 3}) nil)
+    (assert= (record-id (circle 3)) :ability-test/circle)
+    (assert= (record-id {:r 3}) nil)
     (assert= (fields (circle 3)) {:r 3}))
   (test "a record is NOT = to a bare map with the same fields (nominal identity)"
     ;; the identity intentionally distinguishes it — this is correct, not a leak
@@ -246,12 +246,12 @@
     ; the true owner
     (assert= (%impl-rank 'NestAb :editor/display/frame 'editor/display) 3)
     (assert= (%impl-rank 'NestAb :editor/display/frame 'editor) 1))
-  ;; app tier (4): a module in the project's OWN package (*ns-package* → *project-name*), or
+  ;; app tier (4): a module in the project's OWN package (project/*ns-package* → project/*name*), or
   ;; a root/REPL impl (from=nil, the user IS the app), outranks type/ability owners.
   (test "the project's own package (and root/REPL) is the top app tier"
     (%register-ability 'AppAb '((op [self])) 'artlib)
-    (binding (*project-name* 'myproj
-              *ns-package* (assoc *ns-package* 'appmod 'myproj))
+    (binding (project/*name* 'myproj
+              project/*ns-package* (assoc project/*ns-package* 'appmod 'myproj))
       (assert= (%impl-rank 'AppAb :foreign/rec 'appmod) 4)
       (assert= (%impl-rank 'AppAb :foreign/rec nil) 4)
       (assert= (%impl-rank 'AppAb :foreign/rec 'deplib) 1)))

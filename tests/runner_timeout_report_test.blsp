@@ -11,7 +11,7 @@
 ;; The failure detail lines of a one-test unit whose thunk is `body`, run under a short
 ;; budget so the collector times it out.
 (defn- timeout-lines (body)
-  (binding (*test-timeout-ms* 400)
+  (binding (test/*timeout-ms* 400)
     (let (results (collect-units (spawn-units (list (list :parallel
                                                       "hang-grp"
                                                       (list (list "hang" body))))

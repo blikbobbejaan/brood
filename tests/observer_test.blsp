@@ -359,14 +359,14 @@
 
 ; cancel too
 (describe "observer keymap + eval minibuffer (shared with the REPL)"
-  (test "*observe-keymap* dispatches nav keys to commands"
+  (test "observer/*keymap* dispatches nav keys to commands"
     (let (s {:sel-id nil :sort :id :paused false :procs [] :sel 0 :n 0})
-      (assert= (get (keymap-dispatch *observe-keymap* s "s" (fn (x _) x)) :sort) :mailbox)
-      (assert= (get (keymap-dispatch *observe-keymap* s " " (fn (x _) x)) :paused) true)
-      (assert= (get (keymap-dispatch *observe-keymap* s "q" (fn (x _) x)) :done) true)
-      (assert= (get (keymap-dispatch *observe-keymap* s ":" (fn (x _) x)) :mode) :command)))
+      (assert= (get (keymap-dispatch observer/*keymap* s "s" (fn (x _) x)) :sort) :mailbox)
+      (assert= (get (keymap-dispatch observer/*keymap* s " " (fn (x _) x)) :paused) true)
+      (assert= (get (keymap-dispatch observer/*keymap* s "q" (fn (x _) x)) :done) true)
+      (assert= (get (keymap-dispatch observer/*keymap* s ":" (fn (x _) x)) :mode) :command)))
   (test "an unbound key hits the fallback"
-    (assert= (keymap-dispatch *observe-keymap* {:n 1} "Z" (fn (s _) (assoc s :hit true)))
+    (assert= (keymap-dispatch observer/*keymap* {:n 1} "Z" (fn (s _) (assoc s :hit true)))
       {:n 1 :hit true}))
   (test "observer/observe-eval-string formats a value or an error"
     (is (includes? (observer/observe-eval-string "(+ 1 2)") "3"))
@@ -421,10 +421,10 @@
     (is (includes? (observer/observe-confirm-line {:id 7 :name :worker}) "(worker)"))
     (is (includes? (observer/observe-confirm-line {:id 7 :name nil}) "kill pid 7"))
     (refute (includes? (observer/observe-confirm-line {:id 7 :name nil}) "(")))
-  (test "*observe-keymap* binds t→tree and x→kill"
-    (assert= (get (keymap-dispatch *observe-keymap* {:sort :id} "t" (fn (x _) x)) :sort) :tree)
+  (test "observer/*keymap* binds t→tree and x→kill"
+    (assert= (get (keymap-dispatch observer/*keymap* {:sort :id} "t" (fn (x _) x)) :sort) :tree)
     (let (s {:sort :id :procs [{:id 5 :pid :p5 :name :w}] :sel 0}
-          r (keymap-dispatch *observe-keymap* s "x" (fn (x _) x)))
+          r (keymap-dispatch observer/*keymap* s "x" (fn (x _) x)))
       (assert= (get (get r :confirm) :id) 5)))
   (test "observe-frame renders the kill-confirm prompt in the footer"
     (let (f (observe-frame sample-node
@@ -523,7 +523,7 @@
     (let (a (spawn (observer/observe-agent-loop)))
       (proc/register :observe a)
       (send {:name :observe :node (node/name)} [:snapshot (self) (ref)])
-      (let (reply (receive ([:observe-reply snap] snap) (after *test-wait-ms* :timeout)))
+      (let (reply (receive ([:observe-reply snap] snap) (after test/*wait-ms* :timeout)))
         (is (map? reply))
         (is (contains? reply :node))
         (is (contains? reply :procs))))))

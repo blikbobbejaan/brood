@@ -60,7 +60,7 @@
                      acc
                      (receive
                        ([:f f] (recv (dec left) (+ acc (f))))
-                       (after *test-wait-ms* acc)))))
+                       (after test/*wait-ms* acc)))))
         ;; sum over i=1..N of 3i, arrival order irrelevant
         (assert= (* 3 (/ (* n (inc n)) 2)) (recv n 0)))))
 
@@ -97,7 +97,7 @@
     (defn mkc-burst2 (root k n)
       (let (dst (spawn (mkc-collect2 root k 0)))
         (mkc-spawn2 dst k n)
-        (receive ([:total t] t) (after *test-wait-ms* :timeout))))
+        (receive ([:total t] t) (after test/*wait-ms* :timeout))))
     (defn mkc-rounds2 (root r k n expect)
       (when (> r 0)
         (assert= expect (mkc-burst2 root k n))

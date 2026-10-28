@@ -330,7 +330,7 @@ field:
 (= (assoc p :x 9) (point 9 4))   ;=> true  ; a fresh record, id and all
 (fields p)               ;=> {:x 3 :y 4}   ; the clean, id-free view
 (record? p)              ;=> true
-(reflect/record-id p)            ;~> :<ns>/point
+(record-id p)            ;~> :<ns>/point
 (= (point 1 2) {:x 1 :y 2})   ;=> false    ; the bare map has no :__id__ entry
 (= (point 1 2) (point 1 2))   ;=> true     ; same fields, same id
 ```
@@ -343,7 +343,7 @@ and at runtime — whereas `(get p :witdh)` silently returns `nil`.
 maps entry by entry, and the `:__id__` entry is one of them. So a record is never `=` to a
 bare map with the same fields, nor to a record of another type with the same fields — the
 ids differ — while two records of one type with equal fields are `=`. The identity is
-nominal only where ability dispatch reads it (below). `record?`/`reflect/record-id`/`fields` are
+nominal only where ability dispatch reads it (below). `record?`/`record-id`/`fields` are
 the identity API. Functional update
 is plain `assoc`/`merge` (the id rides along).
 
@@ -592,7 +592,7 @@ means it can't gate); a required ability's *provided* op is satisfied by its def
 
 **Introspection and helpers.** `(satisfies? 'Shape x)` is true when every declared
 op resolves for `x` (directly or via `:default`), so a caller can branch instead of
-letting the op raise. `(record? x)` / `(reflect/record-id x)` / `(fields x)` are the clean
+letting the op raise. `(record? x)` / `(record-id x)` / `(fields x)` are the clean
 view of a record — `fields` returns the field map with the internal id omitted.
 `(ability-ops 'Shape)` exposes the declared op specs as data, the same hook the
 checker and LSP read.
@@ -1395,13 +1395,13 @@ It fully macroexpands the form and instruments each evaluated position **in plac
 laziness is preserved (an untaken `if` branch or a short-circuited `and` tail never
 traces) and a **pipeline needs no special case** — `(-> x f g)` expands to `(g (f x))`
 and each stage traces as an ordinary call. `fn` bodies and quoted data are left opaque.
-Trace entries flow through the swappable **`*spy-sink*`** (a `defdyn`) — the default
+Trace entries flow through the swappable **`debug/*spy-sink*`** (a `defdyn`) — the default
 prints the indented tree to stderr, but a host can `binding` it to a collector and
 consume the trace as data (`{:spy :node :form … :value … :depth …}` maps), or to a
 no-op to silence it without editing code:
 
 ```clojure fragment
-(binding (*spy-sink* (fn (entry) nil)) (debug/spy (heavy-computation)))  ; value, no output
+(binding (debug/*spy-sink* (fn (entry) nil)) (debug/spy (heavy-computation)))  ; value, no output
 ```
 
 > Macros are hygienic both ways automatically: a template's introduced `let`/`fn`

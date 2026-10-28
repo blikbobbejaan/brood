@@ -43,7 +43,7 @@
         (is (includes? p "std-image-")))))
 
   ;; Root globals — the ones carrying no `mod/` prefix — used to be credited to whichever
-  ;; module pulled their definer in FIRST, so `*lineedit-keymap*` landed in `repl`'s section
+  ;; module pulled their definer in FIRST, so `editor/lineedit/*keymap*` landed in `repl`'s section
   ;; and restoring `editor/lineedit` gave the module without it. Attribution now probes each
   ;; module in isolation and takes the SMALLEST introduced set containing the name.
   ;;
@@ -51,7 +51,7 @@
   ;; in a runtime where the module is not loaded yet — and under the scoped `nest test` it
   ;; already is: the project's startup image brings `repl` and `editor/lineedit` in before
   ;; the first test file runs (they are dependencies of what the tooling image loads), so
-  ;; the in-process form of this test read `own` as empty of `*lineedit-keymap*` on every
+  ;; the in-process form of this test read `own` as empty of `editor/lineedit/*keymap*` on every
   ;; scoped run while passing solo (KI-89, 2026-09-03 — it was filed as an orphan leak).
   (test "a root global is attributed to the module that defines it, not to a dependent"
     (let (exe (sibling-binary "brood")
@@ -70,8 +70,8 @@
                              "      own (introduced 'editor/lineedit)"
                              "      via (introduced 'repl))"
                              "  ;; both see the name; the definer's set is the smaller one, which is what build picks"
-                             "  (io/puts (str \"own=\" (contains? own '*lineedit-keymap*)"
-                             "             \" via=\" (contains? via '*lineedit-keymap*)"
+                             "  (io/puts (str \"own=\" (contains? own 'editor/lineedit/*keymap*)"
+                             "             \" via=\" (contains? via 'editor/lineedit/*keymap*)"
                              "             \" smaller=\" (< (count own) (count via)))))"]
                 "\n"))
           ;; `repl` is a DEV module. The sibling `brood` beside a `make release` nest is the

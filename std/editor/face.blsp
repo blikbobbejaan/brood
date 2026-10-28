@@ -10,7 +10,7 @@
 ;;  - A FACE is the same attribute map `display.blsp`/`term/draw`/`gui/draw` already
 ;;    consume (`{:fg :red :bold true …}`), so `(face :ui/header)` drops straight into
 ;;    a `[:text row col s <face>]` op with no frontend change. `face` is the only
-;;    resolution step — call sites never touch `*faces*` directly.
+;;    resolution step — call sites never touch `editor/face/*faces*` directly.
 ;;  - The registry is a single global map, mutated only by `def` rebinding it (the
 ;;    language's one mutation, as `provide` does for `*features*`). That rebind is
 ;;    visible across processes (shared code region, ADR), so a theme set in the REPL
@@ -60,7 +60,7 @@ theme change is visible to a running UI on its next frame (late binding).")
 
 ;; ---- the registry -----------------------------------------------------------
 
-(defdyn *faces* {})
+(defdyn editor/face/*faces* {})
 ; the theme: face-name (keyword) -> attribute map
 
 ;; Both writers are ONE map operation through `%registry-update!`, never a whole-map
@@ -76,7 +76,7 @@ theme change is visible to a running UI on its next frame (late binding).")
 `attrs` may carry an `:inherit` face name layered under it at resolution time.
 
     (editor/face/def-face :myapp/warning {:fg :yellow :bold true})   ;~> :myapp/warning — the face registry now holds it"
-  (%registry-update! '*faces* :assoc [name] attrs)
+  (%registry-update! 'editor/face/*faces* :assoc [name] attrs)
   name)
 
 (defn face-set (name attrs)
@@ -84,13 +84,13 @@ theme change is visible to a running UI on its next frame (late binding).")
 place, keeping its other attributes. Returns `name`.
 
     (editor/face/face-set :syntax/keyword {:bold true})   ;~> :syntax/keyword — the registry's keyword face is now bold"
-  (%registry-update! '*faces* :merge [name] attrs)
+  (%registry-update! 'editor/face/*faces* :merge [name] attrs)
   name)
 
 (defn faces ()
   "The whole face registry (a map of name → attribute map). For introspection — a
 theme editor or the docs; resolve a single face with `face`."
-  *faces*)
+  editor/face/*faces*)
 
 ;; ---- resolution -------------------------------------------------------------
 
@@ -100,7 +100,7 @@ theme editor or the docs; resolve a single face with `face`."
     "Resolve face `name` to a flat attribute map, layering an `:inherit` parent
   underneath (local keys win). `depth` bounds the `:inherit` chain so an accidental
   cycle terminates instead of overflowing the stack (cf. `observe-tree-walk`)."
-    (let (attrs (get *faces* name))
+    (let (attrs (get editor/face/*faces* name))
       (cond
         (nil? attrs) nil
         (>= depth 16) (dissoc attrs :inherit)

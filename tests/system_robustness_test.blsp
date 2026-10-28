@@ -126,7 +126,7 @@ the write never comes, which is what these cases actually test."
         (refute (= :normal
                   (receive
                     ([:down ^orphan-monitor ^orphan reason] reason)
-                    (after *test-wait-ms* :normal))))
+                    (after test/*wait-ms* :normal))))
         (is (nil? (table/get t :orphan-ran))))))
 
   :isolated (test "a grandchild of the thunk IS reaped while its parent is still alive"
@@ -140,7 +140,7 @@ the write never comes, which is what these cases actually test."
                      (send thunk :spawned)
                      (proc/sleep 400)))
             ; the grandchild exists and its parent is still sleeping
-            (receive (:spawned :ok) (after *test-wait-ms* :timeout))
+            (receive (:spawned :ok) (after test/*wait-ms* :timeout))
             :done)))
       (let (grandchild (table/get t :grandchild)
             grandchild-monitor (monitor grandchild))
@@ -148,7 +148,7 @@ the write never comes, which is what these cases actually test."
         (refute (= :normal
                   (receive
                     ([:down ^grandchild-monitor ^grandchild reason] reason)
-                    (after *test-wait-ms* :normal))))
+                    (after test/*wait-ms* :normal))))
         (is (nil? (table/get t :grand-ran))))))
 
   :isolated (test "the isolate still rolls its own global bindings back"

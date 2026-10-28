@@ -36,16 +36,16 @@
           port (listen-port ls))
       (let (c (tcp/connect "127.0.0.1" port)
             ;; the accept notification carries the server-side socket
-            s (receive ([:tcp-accept ^ls cs] cs) (after *test-wait-ms* :timeout)))
+            s (receive ([:tcp-accept ^ls cs] cs) (after test/*wait-ms* :timeout)))
         (is (socket? s))
         ;; an accepted socket is passive — take ownership to start receiving
         (tcp/controlling-process s (self))
         (tcp/send c "ping over tcp")
         ;; the server side (owned here too) receives the client's bytes
-        (let (got (receive ([:tcp ^s d] d) (after *test-wait-ms* :timeout)))
+        (let (got (receive ([:tcp ^s d] d) (after test/*wait-ms* :timeout)))
           (assert= got "ping over tcp")
           (tcp/send s "pong back")
-          (let (back (receive ([:tcp ^c d] d) (after *test-wait-ms* :timeout)))
+          (let (back (receive ([:tcp ^c d] d) (after test/*wait-ms* :timeout)))
             (tcp/close c)
             (tcp/close s)
             (tcp/close ls)
@@ -56,9 +56,9 @@
     (let (ls (tcp/listen "127.0.0.1" 0)
           port (listen-port ls))
       (let (c (tcp/connect "127.0.0.1" port)
-            s (receive ([:tcp-accept ^ls cs] cs) (after *test-wait-ms* :timeout)))
+            s (receive ([:tcp-accept ^ls cs] cs) (after test/*wait-ms* :timeout)))
         (tcp/close s)
-        (let (ev (receive ([:tcp-closed ^c] :closed) (after *test-wait-ms* :timeout)))
+        (let (ev (receive ([:tcp-closed ^c] :closed) (after test/*wait-ms* :timeout)))
           (tcp/close c)
           (tcp/close ls)
           (assert= ev :closed))))))
@@ -68,7 +68,7 @@
     (let (ls (tcp/listen "127.0.0.1" 0)
           port (listen-port ls))
       (let (c (tcp/connect "127.0.0.1" port)
-            s (receive ([:tcp-accept ^ls cs] cs) (after *test-wait-ms* :timeout)))
+            s (receive ([:tcp-accept ^ls cs] cs) (after test/*wait-ms* :timeout)))
         ;; server writes a reply in two chunks then closes
         (tcp/send s "hello, ")
         (tcp/send s "world")
@@ -86,9 +86,9 @@
     (let (ls (tcp/listen "127.0.0.1" 0)
           port (listen-port ls))
       (let (c (tcp/connect "127.0.0.1" port)
-            s (receive ([:tcp-accept ^ls cs] cs) (after *test-wait-ms* :timeout)))
+            s (receive ([:tcp-accept ^ls cs] cs) (after test/*wait-ms* :timeout)))
         (tcp/set-idle-timeout c 500)
-        (let (ev (receive ([:tcp-closed ^c] :idle-closed) (after *test-wait-ms* :not-reaped)))
+        (let (ev (receive ([:tcp-closed ^c] :idle-closed) (after test/*wait-ms* :not-reaped)))
           (tcp/close s)
           (tcp/close ls)
           (assert= ev :idle-closed)))))
@@ -99,7 +99,7 @@
     (let (ls (tcp/listen "127.0.0.1" 0)
           port (listen-port ls))
       (let (c (tcp/connect "127.0.0.1" port)
-            s (receive ([:tcp-accept ^ls cs] cs) (after *test-wait-ms* :timeout)))
+            s (receive ([:tcp-accept ^ls cs] cs) (after test/*wait-ms* :timeout)))
         ; arm while still unclaimed/passive
         (tcp/set-idle-timeout s 500)
         ; wait past the bound, passive
@@ -125,7 +125,7 @@
     (let (ls (tcp/listen "127.0.0.1" 0)
           port (listen-port ls))
       (let (c (tcp/connect "127.0.0.1" port)
-            s (receive ([:tcp-accept ^ls cs] cs) (after *test-wait-ms* :timeout)))
+            s (receive ([:tcp-accept ^ls cs] cs) (after test/*wait-ms* :timeout)))
         (tcp/controlling-process s (self))
         (tcp/set-idle-timeout c 2000)
         ;; Each send resets the idle stamp; the last one leaves ~500 ms on the clock.
@@ -143,7 +143,7 @@
     (let (ls (tcp/listen "127.0.0.1" 0)
           port (listen-port ls))
       (let (c (tcp/connect "127.0.0.1" port)
-            s (receive ([:tcp-accept ^ls cs] cs) (after *test-wait-ms* :timeout)))
+            s (receive ([:tcp-accept ^ls cs] cs) (after test/*wait-ms* :timeout)))
         (tcp/controlling-process s (self))
         (tcp/set-binary s true)
         ;; one iolist send from the (text-mode) client: raw bytes + a non-ASCII
@@ -674,9 +674,9 @@
     nil
     (let (c (tcp/connect "127.0.0.1" port)
           _ (tcp/send c "x")
-          s (receive ([:tcp-accept ^ls cs] cs) (after *test-wait-ms* nil)))
+          s (receive ([:tcp-accept ^ls cs] cs) (after test/*wait-ms* nil)))
       (tcp/controlling-process s (self))
-      (let (got (receive ([:tcp ^s d] d) (after *test-wait-ms* :lost)))
+      (let (got (receive ([:tcp ^s d] d) (after test/*wait-ms* :lost)))
         (tcp/close c)
         (tcp/close s)
         (if (= got :lost) remaining (first-lost-send ls port (- remaining 1)))))))
@@ -707,7 +707,7 @@
     (if (receive ([:stop] true) (after 1 false))
       true
       (keep-writing sock))
-    (receive ([:stop] false) (after *test-wait-ms* false))))
+    (receive ([:stop] false) (after test/*wait-ms* false))))
 
 (defn- read-to-eof (sock)
   "Take ownership of `sock` and read it to EOF: the byte count, or `[:timeout n]` /
@@ -729,7 +729,7 @@
     (send parent [:port (self) (listen-port ls)])
     (let (cs (receive
                ([:tcp-accept ^ls s] s)
-               (after *test-wait-ms* (error "chatty-peer: nobody connected")))
+               (after test/*wait-ms* (error "chatty-peer: nobody connected")))
           writable (keep-writing cs)
           ;; The chatter is left unread at the closed end; its close still ends in a FIN,
           ;; not a reset that would discard the tail of what it sent, because a close
@@ -746,9 +746,9 @@
   read (`read-to-eof`)."
   (let (me (self)
         peer (spawn (chatty-peer me))
-        port (receive ([:port ^peer p] p) (after *test-wait-ms* (error "no port from the peer")))
+        port (receive ([:port ^peer p] p) (after test/*wait-ms* (error "no port from the peer")))
         c (tcp/connect "127.0.0.1" port))
-    (receive ([:tcp ^c _] nil) (after *test-wait-ms* (error "the peer never wrote")))
+    (receive ([:tcp ^c _] nil) (after test/*wait-ms* (error "the peer never wrote")))
     ;; The peer reads nothing until it is stopped, so a send of the payload waits on it
     ;; (outbound backpressure): send it from a writer, and close once the writer is parked
     ;; with all of it queued. The close lingers to flush it, and wakes the writer.
@@ -761,7 +761,7 @@
     (late-messages c 0 0)
     (let (late (late-messages c window-ms 0))
       (send peer [:stop])
-      [late (receive ([:received ^peer n] n) (after *test-wait-ms* :timeout))])))
+      [late (receive ([:received ^peer n] n) (after test/*wait-ms* :timeout))])))
 
 (defn- first-noisy-close (payload window-ms remaining)
   "Run `close-under-chatter` `remaining` times; the first round in which a message

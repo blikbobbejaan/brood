@@ -7,7 +7,7 @@
 ;; A stage that records the run's table, so a test can ask whether it was dropped.
 (defn- run-spy (seen)
   (fn (rf)
-    (table/put seen :run *transduce-run*)
+    (table/put seen :run seq/*transduce-run*)
     rf))
 
 (defn- dropped? (seen)

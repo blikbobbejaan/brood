@@ -6,10 +6,10 @@
 
 (defmodule face-test (:use test) (:use editor/face))
 
-;; These describes `def-face` into the shared global `*faces*`. `:isolated` (alone,
+;; These describes `def-face` into the shared global `editor/face/*faces*`. `:isolated` (alone,
 ;; against a private rolled-back copy of the globals) so one test's faces don't leak
 ;; into another's assertions. It is no longer needed for *safety*: `def-face`/`face-set`
-;; used to be a `(def *faces* (assoc *faces* …))` read-modify-write that lost concurrent
+;; used to be a `(def editor/face/*faces* (assoc editor/face/*faces* …))` read-modify-write that lost concurrent
 ;; registrations, and now go through the atomic registry swap (KI-23). Concurrent
 ;; registration is covered directly in `tests/registry_test.blsp`.
 (describe "face registry"
@@ -70,12 +70,12 @@
           _workers (map (range 8) (fn (i) (spawn (send me [:face i (face :t/shared)])))))
       ;; collect each worker's resolution of the shared face
       (let (results (map (range 8)
-                      (fn (_) (receive ([:face _ f] f) (after *test-wait-ms* :timeout)))))
+                      (fn (_) (receive ([:face _ f] f) (after test/*wait-ms* :timeout)))))
         (is (every? results (fn (f) (= f {:fg :cyan :bold true})))))))
   (test "a face-set in this process is seen by a later-spawned worker"
     (def-face :t/live {:fg :red})
     (face-set :t/live {:bold true})
     (let (me (self))
       (spawn (send me [:got (face :t/live)]))
-      (assert= (receive ([:got f] f) (after *test-wait-ms* :timeout))
+      (assert= (receive ([:got f] f) (after test/*wait-ms* :timeout))
         {:fg :red :bold true}))))

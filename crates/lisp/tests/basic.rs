@@ -1620,7 +1620,7 @@ fn gensym_is_unique_across_threads() {
     }
 }
 
-/// The test registry (`*units*` in `std/tool/test.blsp`) must be resettable so a
+/// The test registry (`test/*units*` in `std/tool/test.blsp`) must be resettable so a
 /// long-lived image — the `nest mcp` hot-reload session (ADR-013) — that loads
 /// the same test file twice doesn't double-count. `reset-units` clears it; the
 /// project test runner calls it before (re)loading test files. Here we simulate

@@ -51,17 +51,17 @@ also recovers the session); results print through `pr-str-bounded` under
 `*print-length*` / `*print-level*` (use `(pr-str *1)` for the whole value).
 Startup files `~/.broodrc.blsp` (or `$BROOD_RC`) then `./.broodrc.blsp` load once
 per runtime — the place for `lineedit-bind`, `(def *lineedit-candidates* …)`,
-`(def *repl-interruptible* false)`, and other customisations.
+`(def repl/*interruptible* false)`, and other customisations.
 
 Nestable: `pry` (std/tool/debug.blsp) calls `(run)` mid-session. The prompts
-are the dynamic vars `*repl-prompt*` / `*repl-cont-prompt*`; rebind them with
+are the dynamic vars `repl/*prompt*` / `repl/*cont-prompt*`; rebind them with
 `binding` around the call to customise."
   (:use editor/lineedit)
   (:use editor/highlight))
 ;; ---- configuration (dynamic so a session can rebind them) -------------------
 
-(defdyn *repl-prompt* "brood> ")
-(defdyn *repl-cont-prompt* "  ...   ")
+(defdyn repl/*prompt* "brood> ")
+(defdyn repl/*cont-prompt* "  ...   ")
 (def *repl-banner*
   ;; A plain one-liner (printed only on an interactive TTY); the hint is dimmed.
   "brood — \e[90m,help for commands · Ctrl-D to exit\e[0m")
@@ -513,7 +513,7 @@ reporting a real error. Never lets an error escape the loop."
 ;; `tick_reporting_hard_kill` in `process/scheduler.rs` — which is also what lets a
 ;; supervisor kill a stuck code-evaluating child.)
 ;;
-;; Off-switch: `(def *repl-interruptible* false)` in `.broodrc.blsp` reverts to the
+;; Off-switch: `(def repl/*interruptible* false)` in `.broodrc.blsp` reverts to the
 ;; inline eval path with the default SIGINT disposition (Ctrl-C kills the runtime)
 ;; — the rc runs before the handler would be installed, so the `and` in
 ;; `run` short-circuits. A redefinable global, not an env knob, like every other
@@ -536,10 +536,10 @@ reporting a real error. Never lets an error escape the loop."
 ;; The user-facing knob AND the armed state, one global. It defaults true ("arm if you
 ;; can"); `run` then resolves it to the real armed state by AND-ing in the things
 ;; the user can't control — an interactive session, a platform with signals — AFTER the
-;; rc files load, so `(def *repl-interruptible* false)` in `.broodrc.blsp` sticks (the
+;; rc files load, so `(def repl/*interruptible* false)` in `.broodrc.blsp` sticks (the
 ;; `and` short-circuits and the handler is never installed). By the first prompt it is
 ;; always a plain boolean: armed or not.
-(defdyn *repl-interruptible* true)
+(defdyn repl/*interruptible* true)
 
 ;; How long the parent parks between interrupt polls. Short enough that Ctrl-C feels
 ;; instant, long enough to cost nothing: the parent is parked in `receive`, so this is
@@ -626,14 +626,14 @@ with it — the shared runner behind evaluation AND the evaluating meta-commands
 (defn- repl-eval (src)
   "Evaluate + print `src`, interruptibly when this session armed it (`run` on a
 TTY), else inline. The seam the loop calls."
-  (if *repl-interruptible*
+  (if repl/*interruptible*
     (repl-call-interruptible (fn () (repl-eval-print src)))
     (repl-eval-print src)))
 
 (defn- repl-call (thunk)
   "Run `thunk` — a meta-command body that evaluates user code — interruptibly when the
 session is armed, else inline. The meta-command counterpart of `repl-eval`."
-  (if *repl-interruptible*
+  (if repl/*interruptible*
     (repl-call-interruptible thunk)
     (do (thunk) :ok)))
 
@@ -703,9 +703,9 @@ Returns `{:eof false :history h}`."
 (Enter inserts a newline while the form is incomplete, repainting every line in place
 so bracket matches light up across lines), then we act on it. Ctrl-D on an empty line
 ends input; Ctrl-C drops the form and re-prompts."
-  (let (result (lineedit-read *repl-prompt*
+  (let (result (lineedit-read repl/*prompt*
                  history
-                 {:cont-prompt *repl-cont-prompt* :complete? repl-complete?}))
+                 {:cont-prompt repl/*cont-prompt* :complete? repl-complete?}))
     (cond
       (get result :eof) {:eof true :history history}
       (get result :cancel) {:eof false :history history}
@@ -715,7 +715,7 @@ ends input; Ctrl-C drops the form and re-prompts."
   "Piped/redirected read: accumulate physical lines (no editor) until the form is
 complete, echoing the prompt only when stdout is a TTY. Recurses on an incomplete form."
   (do
-    (when (os/stdout-tty?) (io/write (if (= acc "") *repl-prompt* *repl-cont-prompt*)))
+    (when (os/stdout-tty?) (io/write (if (= acc "") repl/*prompt* repl/*cont-prompt*)))
     (let (line (io/read-line))
       (cond
         (nil? line)
@@ -851,14 +851,14 @@ by the outermost invocation only.
     (repl/run)   ;~> nil, at end of input"
   (let (interactive (and (os/stdin-tty?) (os/stdout-tty?))
         _rc (repl-load-rc)
-        ;; Resolve `*repl-interruptible*` to the real armed state: the user's knob (the
+        ;; Resolve `repl/*interruptible*` to the real armed state: the user's knob (the
         ;; rc has already run, so an opt-out short-circuits before the handler is ever
         ;; installed) AND an interactive session (a pipeline must keep the default
         ;; SIGINT — Ctrl-C on `echo … | brood` should kill it like any Unix program)
         ;; AND the platform actually installing a handler. `def` (not `binding`)
         ;; because the flag has to reach the spawned loop process.
-        armed (and *repl-interruptible* interactive (%install-interrupt-handler))
-        _set (def *repl-interruptible* armed)
+        armed (and repl/*interruptible* interactive (%install-interrupt-handler))
+        _set (def repl/*interruptible* armed)
         ;; The first armed invocation owns the handler (a unique token compared at
         ;; exit); a nested run sees a non-nil owner and leaves restoration to it.
         token (ref)
@@ -867,8 +867,8 @@ by the outermost invocation only.
         ;; Capture the prompts HERE, where a caller's `binding` (pry's `debug> `) is
         ;; still in scope — dynamics do not cross `spawn`, so the loop process would
         ;; otherwise fall back to the defaults — and re-establish them in the loop.
-        prompt *repl-prompt*
-        cont-prompt *repl-cont-prompt*
+        prompt repl/*prompt*
+        cont-prompt repl/*cont-prompt*
         history (if interactive (repl-load-history) '()))
     (when (os/stdout-tty?) (io/write (str *repl-banner* "\n") :to *err*))
     ;; A process spawned at the prompt and left to crash reports itself (ADR-305).
@@ -879,7 +879,7 @@ by the outermost invocation only.
     ;; (the plain `brood` REPL, or `nest repl` outside a project).
     (repl-await
       (spawn
-        (binding (*repl-prompt* prompt *repl-cont-prompt* cont-prompt)
+        (binding (repl/*prompt* prompt repl/*cont-prompt* cont-prompt)
           ;; Guard on `symbol?`, not on truthiness. `*repl-start-ns*` is a
           ;; redefinable global, so it types as `dynamic()`; `(when *x* …)` only
           ;; rules out nil/false, which is not enough for the checker to conclude
@@ -894,5 +894,5 @@ by the outermost invocation only.
       (%restore-interrupt-handler)
       (def- *repl-sigint-owner* nil)
       ;; back to the "arm if you can" intent, so a later run re-resolves afresh
-      (def *repl-interruptible* true))
+      (def repl/*interruptible* true))
     nil))

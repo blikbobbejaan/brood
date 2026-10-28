@@ -1,19 +1,19 @@
 ;; Tests for `spy` — the homoiconic tree-tracing debug macro (ADR-173).
 ;; The core contract is referential transparency: `spy` returns its expression's
-;; value unchanged and only adds trace side-effects through `*spy-sink*`. Tests
+;; value unchanged and only adds trace side-effects through `debug/*spy-sink*`. Tests
 ;; rebind the sink to a collector (or a no-op) so nothing leaks to stderr and the
 ;; trace can be asserted as data.
 (defmodule spy-test (:use test) (:use math))
 
 ;; A no-op sink: prove transparency without any output.
-(defn silent (thunk) (binding (*spy-sink* (fn (entry) nil)) (thunk)))
+(defn silent (thunk) (binding (debug/*spy-sink* (fn (entry) nil)) (thunk)))
 
 ;; A collecting sink: return a table of {source-string -> value} for :node entries.
 (defn traced-nodes (thunk)
   (let (out (table/new))
-    (binding (*spy-sink* (fn (entry)
-                           (when (= (:spy entry) :node)
-                             (table/put out (pr-str (:form entry)) (:value entry)))))
+    (binding (debug/*spy-sink* (fn (entry)
+                                 (when (= (:spy entry) :node)
+                                   (table/put out (pr-str (:form entry)) (:value entry)))))
       (thunk))
     out))
 
@@ -74,13 +74,14 @@
 (describe "spy across processes"
   :isolated (test "a worker spy-computes a value and sends it; the parent gets it intact"
     (let (me (self))
-      (spawn (binding (*spy-sink* (fn (entry) nil)) (send me [:ok (debug/spy (+ (* 6 7) (- 0 0)))])))
+      (spawn (binding (debug/*spy-sink* (fn (entry) nil))
+               (send me [:ok (debug/spy (+ (* 6 7) (- 0 0)))])))
       (assert= 42 (receive ([:ok v] v)))))
   (test "many workers spy-build results; the parent folds them by fanning in"
     (letrec (spawn-n (fn (n)
                        (when (> n 0)
                          (let (me (self))
-                           (spawn (binding (*spy-sink* (fn (entry) nil))
+                           (spawn (binding (debug/*spy-sink* (fn (entry) nil))
                                     (send me [:ok (debug/spy (* n n))]))))
                          (spawn-n (dec n))))
              collect (fn (n acc)

@@ -98,5 +98,5 @@
       (await-parked v)
       (send v [:go])
       ;; Arrival order, exactly once: nil first, then [:a 1].
-      (assert= (receive ([:result m1 m2] [m1 m2]) (after *test-wait-ms* :NO-REPLY))
+      (assert= (receive ([:result m1 m2] [m1 m2]) (after test/*wait-ms* :NO-REPLY))
         [nil [:a 1]]))))

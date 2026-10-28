@@ -40,11 +40,11 @@
   ;; flaked `try_catch_test`'s finally case, 2026-09-20).
   (test "a spawned-nil process exits with :normal"
     (let ([_w _ref] (spawn-monitor nil))
-      (assert= :normal (receive ([:down _ _ reason] reason) (after *test-wait-ms* :timeout)))))
+      (assert= :normal (receive ([:down _ _ reason] reason) (after test/*wait-ms* :timeout)))))
 
   (test "a spawned-integer process exits with :normal"
     (let ([_w _ref] (spawn-monitor 42))
-      (assert= :normal (receive ([:down _ _ reason] reason) (after *test-wait-ms* :timeout)))))
+      (assert= :normal (receive ([:down _ _ reason] reason) (after test/*wait-ms* :timeout)))))
 
   (test "a crashing spawned process propagates its error as the monitor down reason"
     ;; Post-1a63eb7 `(spawn (fn () body))` runs `body` (no longer the silent
@@ -53,7 +53,7 @@
     (let ([_w _ref] (spawn-monitor (/ 1 0)))
       ;; the reason carries the structured error map:
       ;; [:error {:kind :message :code …}], not a flattened string
-      (let (reason (receive ([:down _ _ r] r) (after *test-wait-ms* :timeout)))
+      (let (reason (receive ([:down _ _ r] r) (after test/*wait-ms* :timeout)))
         (assert= :error (first reason))
         (assert= :runtime (get (first (rest reason)) :kind))
         (assert= "division by zero" (get (first (rest reason)) :message)))))
@@ -63,7 +63,7 @@
     ;; monitor learns not just WHAT killed the child but WHERE — the frame
     ;; names survive into the receiver's heap
     (let ([_w _ref] (spawn-monitor (chaos-crash-helper 5)))
-      (let (reason (receive ([:down _ _ r] r) (after *test-wait-ms* :timeout)))
+      (let (reason (receive ([:down _ _ r] r) (after test/*wait-ms* :timeout)))
         (assert= "chaos-test/chaos-crash-helper"
           (get (first (get (first (rest reason)) :trace)) :fn)))))
 

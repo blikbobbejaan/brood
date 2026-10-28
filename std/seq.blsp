@@ -256,7 +256,7 @@ it throws a `%reduced` record that `transduce` catches and unwraps.
 
     (seq/reduced? (try (seq/reduced 1) (catch e e)))   ;=> true
     (seq/reduced? [:reduced 1])                         ;=> false"
-  (and (record? x) (= (reflect/record-id x) :seq/%reduced)))
+  (and (record? x) (= (record-id x) :seq/%reduced)))
 
 ;; ---- stateful stages (ADR-421) -----------------------------------------------------
 ;; A stage that counts, windows or remembers needs state across inputs, and Brood's one
@@ -265,7 +265,7 @@ it throws a `%reduced` record that `transduce` catches and unwraps.
 ;; — the input ending, a `reduced`, a throw. No stage has to release anything, so no completion
 ;; arity is needed (Clojure's `(rf acc)` would reach the caller's own reducing function, and
 ;; `(- acc)` negates). Stateless stages never see the table.
-;; `*transduce-run*` itself is declared in the prelude (`std/prelude/seq.blsp`): a `defdyn` is an
+;; `seq/*transduce-run*` itself is declared in the prelude (`std/prelude/seq.blsp`): a `defdyn` is an
 ;; ambient ROOT name, and a std module may not define one — the stdlib image attributes every
 ;; root global to the module that defines it, and `seq` is already loaded when it looks.
 
@@ -277,11 +277,11 @@ run's own table, which the run drops when it ends however it ends. Errors outsid
 `transduce`.
 
     (seq/transduce [1 2 3] (seq/xtake 2) conj [])   ;=> [1 2]"
-  (if (nil? *transduce-run*)
+  (if (nil? seq/*transduce-run*)
     (error "seq/stage-slot: a stateful transducer stage runs under seq/transduce")
-    (let (slot (table/incr *transduce-run* :%slots))
-      (table/put *transduce-run* slot initial)
-      [*transduce-run* slot])))
+    (let (slot (table/incr seq/*transduce-run* :%slots))
+      (table/put seq/*transduce-run* slot initial)
+      [seq/*transduce-run* slot])))
 
 (defn transduce (coll xform rf init)
   "Reduce `coll` with `rf`/`init` through the transducer `xform` — one pass, no
@@ -356,7 +356,7 @@ raises, since it has no end. For values that cross a `send`, use `std/stream`.
     (seq/transduce (seq/iterate 1 inc) (seq/xtake-while (fn (n) (< n 4))) + 0)   ;=> 6"
   (%iterate x f))
 
-(defn- iterate? (x) (and (record? x) (= (reflect/record-id x) :seq/%iterate)))
+(defn- iterate? (x) (and (record? x) (= (record-id x) :seq/%iterate)))
 
 (impl Seqable
   seq/%iterate
@@ -378,11 +378,11 @@ raises, since it has no end. For values that cross a `send`, use `std/stream`.
       (iterate-loop (%iterate-seed coll)
         (%iterate-step coll)
         init
-        (binding (*transduce-run* run) (xform rf)))
+        (binding (seq/*transduce-run* run) (xform rf)))
     (and (seqview? coll) (iterate? (%vector-ref (%seqview-parts coll) 0)))
       (let (parts (%seqview-parts coll))
         (run-stack (%vector-ref parts 0) init (comp (%vector-ref parts 1) xform) rf run))
-    else (fold coll init (binding (*transduce-run* run) (xform rf)))))
+    else (fold coll init (binding (seq/*transduce-run* run) (xform rf)))))
 
 (defn filterv (coll pred)
   "A VECTOR of the items of `coll` for which `(pred x)` is truthy — [[filter]]

@@ -153,7 +153,7 @@ Extra positional args after `run` are passed to the entry fn as strings, so
 mismatch surfaces as a normal Brood error.
 
 `run-project` (in `std/tool/project.blsp`) walks from `file/cwd` up to `project.blsp`,
-loads the manifest (which may override `*project-main*`), puts the project's
+loads the manifest (which may override `project/*main*`), puts the project's
 source paths on `*load-path*`, `require`s the entry module — pulling in
 everything it transitively requires — then `apply`s the entry fn to the CLI
 args. A missing project, an unbound entry fn, or a non-callable entry are

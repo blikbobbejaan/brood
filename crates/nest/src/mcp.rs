@@ -4,7 +4,7 @@
 //! Brood (`std/tool/mcp.blsp`, routed like every other Brood subcommand). What only the
 //! binary can supply is the text it compiled in: the docs an agent reads as MCP resources,
 //! the prelude source, and the `brood-task` prompt. They reach the server as the dynamic
-//! `*mcp-documents*`, bound around the dispatcher call.
+//! `mcp/*documents*`, bound around the dispatcher call.
 
 use brood::introspect::string_literal;
 
@@ -47,7 +47,7 @@ const DOCUMENTS: &[(&str, &str)] = &[
     ),
 ];
 
-/// `call` (the `(nest/main …)` form) with `*mcp-documents*` bound to the embedded texts.
+/// `call` (the `(nest/main …)` form) with `mcp/*documents*` bound to the embedded texts.
 /// `mcp` is loaded first so its `defdyn` declares the variable before it is bound.
 pub fn with_embedded_documents(call: &str) -> String {
     let entries: Vec<String> = DOCUMENTS
@@ -55,7 +55,7 @@ pub fn with_embedded_documents(call: &str) -> String {
         .map(|(name, text)| format!("\"{name}\" {}", string_literal(text)))
         .collect();
     format!(
-        "(do (require-one 'mcp) (binding (*mcp-documents* {{{}}}) {call}))",
+        "(do (require-one 'mcp) (binding (mcp/*documents* {{{}}}) {call}))",
         entries.join(" ")
     )
 }

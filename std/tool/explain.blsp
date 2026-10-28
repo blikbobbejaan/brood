@@ -2,7 +2,7 @@
 ;; errors, docs/llm-native.md).
 ;;
 ;; Two curated Brood-data catalogues an agent (or a human at the REPL) reads:
-;;   - `*error-explanations*` — stable error code → {:summary :causes :fix
+;;   - `explain/*error-explanations*` — stable error code → {:summary :causes :fix
 ;;     :example}. `error` takes a code, a caught error map, or a kind
 ;;     keyword and returns the entry.
 ;;   - `*idiom-cookbook*` — intent → the Brood-idiomatic pattern, with a runnable
@@ -21,7 +21,7 @@ the `nest mcp` tools of the same names.")
 
 ;; ---- error explanations (keyed by the stable E-codes in crates/lisp/error.rs)
 
-(defdyn *error-explanations*
+(defdyn explain/*error-explanations*
   {"E0001" {:summary "A parse/reader error — the source isn't well-formed Brood."
             :causes "Unbalanced delimiters; a stray Clojure/Scheme reader macro (`#{…}` set, `#(…)` fn, `#'` var-quote); a malformed number or string."
             :fix "Read the caret position; balance `()`/`[]`/`{}`. Brood has no `#{…}`/`#(…)`/`#'` — use `(set/set …)`, `(fn (x) …)`, `'foo`."
@@ -116,7 +116,7 @@ the `nest mcp` tools of the same names.")
 (from `(try … (catch e e))` — its `:code` or `:kind` is used), or a kind keyword
 (`:type`). Returns `{:code :summary :causes :fix :example}`, or `{:code code :summary …}`
 when there's no entry — the code it looked up, or `:unknown` when none could be derived
-from `what`. Pure — reads the curated `*error-explanations*` table.
+from `what`. Pure — reads the curated `explain/*error-explanations*` table.
 
     (get (explain/error \"E0030\") :code)  ;=> \"E0030\"
     (get (explain/error \"E9999\") :code)  ;=> \"E9999\"
@@ -126,7 +126,7 @@ from `what`. Pure — reads the curated `*error-explanations*` table.
                (keyword? what) (get *kind->code* what)
                (map? what) (or (get what :code) (get *kind->code* (get what :kind)))
                else nil)
-        entry (and code (get *error-explanations* code)))
+        entry (and code (get explain/*error-explanations* code)))
     (if entry
       (assoc entry :code code)
       {:code (or code :unknown)

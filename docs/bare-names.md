@@ -53,90 +53,26 @@ Operators — arithmetic, comparison and the reader's own punctuation. Bare by c
 - `>`
 - `>=`
 
-## dynamic (77)
+## dynamic (12)
 
 Dynamic variables (`defdyn`) — earmuffed, so they cannot be mistaken for ordinary bindings, and bare because `binding` sites read better unqualified. The largest group and the least contentious; note how many are one subsystem's configuration (`*project-*`, `*test-*`, `*repl-*`).
-- `*comment-kinds*`
-- `*config-git-init*`
-- `*config-registry*`
-- `*config-registry-token*`
-- `*debug-session*`
 - `*err*`
-- `*error-explanations*`
-- `*faces*`
 - `*features*`
-- `*format-headers-extra*`
-- `*format-pair-body*`
-- `*fuzzy-parallel-min*`
-- `*fuzzy-scorer*`
-- `*fuzzy-worker-timeout-ms*`
-- `*fuzzy-workers*`
-- `*http-max-body-bytes*`
-- `*http-max-head-bytes*`
-- `*http-max-response-bytes*`
-- `*lineedit-keymap*`
 - `*load-path*`
-- `*loaded-mtimes*`
-- `*mcp-documents*`
-- `*mcp-progress-sink*`
-- `*ns-package*`
-- `*observe-keymap*`
-- `*observe-timeout*`
 - `*out*`
-- `*parallel-batch*`
 - `*print-length*`
 - `*print-level*`
 - `*print-string-length*`
-- `*project-brood*`
-- `*project-bundled-packages*`
-- `*project-dependencies*`
-- `*project-description*`
-- `*project-dev-dependencies*`
-- `*project-doc-paths*`
-- `*project-enhances*`
-- `*project-format-paths*`
-- `*project-kind*`
-- `*project-main*`
-- `*project-main-override*`
-- `*project-name*`
-- `*project-repository*`
-- `*project-root*`
-- `*project-source-paths*`
-- `*project-templates*`
-- `*project-test-paths*`
-- `*project-version*`
-- `*project-width*`
 - `*protocols*`
 - `*reload-diagnostics*`
-- `*repl-cont-prompt*`
-- `*repl-interruptible*`
-- `*repl-prompt*`
 - `*require-failed*`
 - `*require-parent*`
-- `*resolver-max-steps*`
-- `*resolver-time-budget-ms*`
 - `*show*`
-- `*spy-sink*`
-- `*stale-temp-age-ms*`
-- `*term-display*`
-- `*test-filter*`
-- `*test-last-failed*`
-- `*test-last-ran*`
-- `*test-max-failures*`
-- `*test-report-sink*`
-- `*test-slow-timeout-ms*`
-- `*test-timeout-ms*`
-- `*test-trace*`
-- `*test-wait-ms*`
-- `*transduce-run*`
-- `*ui-loop*`
-- `*ui-memo*`
-- `*ui-slow-reports*`
-- `*units*`
 
-## predicate (32)
+## predicate (33)
 
 Predicates — `x?` type and shape tests. Bare because they read as English at a call site and are used everywhere.
+- `type-matches?`
 - `any?`
 - `bool?`
 - `bound?`
@@ -170,9 +106,10 @@ Predicates — `x?` type and shape tests. Bare because they read as English at a
 - `table?`
 - `vector?`
 
-## core (128)
+## core (129)
 
 Core vocabulary — the language's own words: special-form companions, sequence and map operations, the process primitives, and the test/dev macros. **This is the group with a real budget.** Before adding here, ask whether the name belongs to a module instead: `string/`, `seq/`, `proc/`, `test/` all exist precisely so a name does not have to be bare.
+- `record-id`
 - `*e`
 - `->count`
 - `->float`

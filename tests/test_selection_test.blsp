@@ -3,7 +3,7 @@
 ;; --partitions, --max-failures).
 ;;
 ;; These build SYNTHETIC unit lists rather than registering real `describe`/`test`
-;; fixtures: a fixture would register into `*units*`, i.e. into the very suite
+;; fixtures: a fixture would register into `test/*units*`, i.e. into the very suite
 ;; being run, so the runner would try to execute the fixtures and the counts would
 ;; drift. A unit is `(mode group tests)` and a test is `(name thunk meta)` — the
 ;; same shape `register-test` builds — so exercising the selectors against
@@ -210,35 +210,35 @@
 ;; tests that have since been deleted (which is exactly how this was found).
 (describe "test selection: detecting a filter that matched nothing"
   :isolated (test "no filter at all does not count as narrowing"
-    (def *test-filter* nil)
+    (def test/*filter* nil)
     (refute (test/test-filter-narrows?)))
   (test "an empty spec does not count as narrowing"
-    (def *test-filter* {})
+    (def test/*filter* {})
     (refute (test/test-filter-narrows?)))
   (test "--only counts as narrowing"
-    (def *test-filter* {:only (list ["slow" ""])})
+    (def test/*filter* {:only (list ["slow" ""])})
     (is (test/test-filter-narrows?)))
   (test "FILE:LINE counts as narrowing"
-    (def *test-filter* {:lines (list ["a.blsp" 4])})
+    (def test/*filter* {:lines (list ["a.blsp" 4])})
     (is (test/test-filter-narrows?)))
   (test "exact names (--failed) count as narrowing"
-    (def *test-filter* {:names (list "g › t")})
+    (def test/*filter* {:names (list "g › t")})
     (is (test/test-filter-narrows?)))
   ;; An empty shard is normal when a small suite fans across many CI machines,
   ;; so sharding alone must NOT trip the warning.
   (test "sharding alone does NOT count as narrowing"
-    (def *test-filter* {:shards 8 :shard 7})
+    (def test/*filter* {:shards 8 :shard 7})
     (refute (test/test-filter-narrows?)))
   (test "a seed alone does not count as narrowing"
-    (def *test-filter* {:seed 42})
+    (def test/*filter* {:seed 42})
     (refute (test/test-filter-narrows?)))
   (test "--exclude alone does not count as narrowing"
     ;; Excluding everything is a deliberate act, not a probable typo.
-    (def *test-filter* {:exclude (list ["slow" ""])})
+    (def test/*filter* {:exclude (list ["slow" ""])})
     (refute (test/test-filter-narrows?)))
   (test "the filter global is restored for the rest of the suite"
-    (def *test-filter* nil)
-    (assert= *test-filter* nil)))
+    (def test/*filter* nil)
+    (assert= test/*filter* nil)))
 
 (describe "test selection: --slowest guard"
   (test "a positive count is kept" (assert= (test/test-slowest-n (list :slowest 3)) 3))
@@ -254,20 +254,20 @@
   :isolated
   ;; A result is (group name fails ms); a non-empty `fails` marks a failed test.
   (test "the budget is off by default"
-    (def *test-max-failures* 0)
+    (def test/*max-failures* 0)
     (refute (test/test-max-failures-hit? (list (list "g" "a" (list (list nil (list "boom"))) 1)))))
   (test "the budget is not hit below the threshold"
-    (def *test-max-failures* 2)
+    (def test/*max-failures* 2)
     (refute (test/test-max-failures-hit? (list (list "g" "a" (list (list nil (list "boom"))) 1)))))
   (test "the budget is hit at the threshold"
-    (def *test-max-failures* 1)
+    (def test/*max-failures* 1)
     (is (test/test-max-failures-hit? (list (list "g" "a" (list (list nil (list "boom"))) 1)))))
   (test "passing tests never consume the budget"
-    (def *test-max-failures* 1)
+    (def test/*max-failures* 1)
     (refute (test/test-max-failures-hit? (list (list "g" "a" nil 1) (list "g" "b" nil 1)))))
   (test "the budget global is restored for the rest of the suite"
-    (def *test-max-failures* 0)
-    (assert= *test-max-failures* 0)))
+    (def test/*max-failures* 0)
+    (assert= test/*max-failures* 0)))
 
 ;; Filter specs and tag vectors are ordinary immutable data that the CLI builds in
 ;; one process and the runner reads — and under `nest mcp` they cross a process

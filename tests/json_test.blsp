@@ -203,7 +203,7 @@
           src "{\"id\":7,\"tags\":[\"a\",\"b\"],\"ok\":true}")
       (doseq (i (range 8))
         (spawn (send me [:r (decode src)])))
-      (let (results (map (range 8) (fn (_) (receive ([:r m] m) (after *test-wait-ms* :timeout)))))
+      (let (results (map (range 8) (fn (_) (receive ([:r m] m) (after test/*wait-ms* :timeout)))))
         (is (every? results
               (fn (m)
                 (and (= (get m :id) 7)
@@ -213,7 +213,7 @@
     (let (me (self)
           v {:repo "brood" :runs [1 2 3]})
       (spawn (send me [:enc (encode v)]))
-      (let (s (receive ([:enc s] s) (after *test-wait-ms* :timeout)))
+      (let (s (receive ([:enc s] s) (after test/*wait-ms* :timeout)))
         (assert= (decode s) v))))
   ;; `*impls*` is a global, so a spawned process sees the same registry; a record
   ;; deep-copies on `send` and keeps its `:__id__`, so it dispatches identically at
@@ -221,14 +221,14 @@
   (test "a record's JsonEncode impl applies in a spawned process too"
     (let (me (self))
       (doseq (i (range 4)) (spawn (send me [:enc (encode (usd i))])))
-      (let (results (map (range 4) (fn (_) (receive ([:enc s] s) (after *test-wait-ms* :timeout)))))
+      (let (results (map (range 4) (fn (_) (receive ([:enc s] s) (after test/*wait-ms* :timeout)))))
         (assert= (into [] (sort (map results decode))) ["$0" "$1" "$2" "$3"]))))
   (test "a record built in a worker encodes via its impl after crossing heaps"
     (let (me (self))
       (spawn (send me [:rec (usd 99)]))
-      (let (r (receive ([:rec r] r) (after *test-wait-ms* :timeout)))
+      (let (r (receive ([:rec r] r) (after test/*wait-ms* :timeout)))
         (is (record? r))
-        (assert= (reflect/record-id r) :json-test/usd)
+        (assert= (record-id r) :json-test/usd)
         (assert= (encode r) "\"$99\"")))))
 
 ;; ---- surrogate escapes -------------------------------------------------------

@@ -18,11 +18,11 @@
 ;; The rules live in ONE place — `fuzzy-char-bonus` and `fuzzy-step`, what one matched char
 ;; is worth — and the walks apply them, whether the caller wants a single candidate's
 ;; positions (`match`, to highlight a row) or a whole set ranked (`top`, on every keystroke).
-;; They are also REPLACEABLE at runtime: bind `*fuzzy-scorer*` and every completion UI in the
+;; They are also REPLACEABLE at runtime: bind `fuzzy/*scorer*` and every completion UI in the
 ;; image ranks by your rules instead (ADR-357).
 ;;
 ;; Ranking by the DEFAULT rules is also a native pass (`%fuzzy-top`, ADR-375), taken only
-;; while `*fuzzy-scorer*` has not been rebound — so the code below is what a ranking MEANS
+;; while `fuzzy/*scorer*` has not been rebound — so the code below is what a ranking MEANS
 ;; and the primitive is what an unmodified one costs. Replace the scorer and every ranking
 ;; comes back here. `tests/fuzzy_native_test.blsp` is the contract between them.
 
@@ -45,7 +45,7 @@ an empty query returns the candidates unchanged. `top` is `filter` stopping at t
 rows a UI can actually show. Its options say what is being ranked: `:category :file` scores
 a path's file name above its directories, `:boost` maps a candidate to a number added to its
 score when it matches (frecency, history), and a candidate that IS the query ranks first.
-`*fuzzy-scorer*` replaces the rules."
+`fuzzy/*scorer*` replaces the rules."
   (:shadow match))
 
 ;; ---- the rules --------------------------------------------------------------
@@ -447,7 +447,7 @@ matched chars. To rank a whole set use `top`.
   "A `(cand) -> score | nil` for `query` under the built-in rules — the query prepared once
 and closed over. `options` as `top` takes them (only `:category` reaches a scorer: the boost
 and the exact-match rule are `top`'s, applied over whatever scorer is in force). The default
-`*fuzzy-scorer*`, and what a custom one replaces.
+`fuzzy/*scorer*`, and what a custom one replaces.
 
 Curried on purpose: ranking calls the inner function tens of thousands of times per
 keystroke, so everything that depends only on the query happens out here, once.
@@ -456,7 +456,7 @@ keystroke, so everything that depends only on the query happens out here, once.
     ((fuzzy/scorer \"fb\") \"zz\")   ;=> nil
 
     ; the built-in rules, plus a nudge for what you opened recently
-    (binding (*fuzzy-scorer*
+    (binding (fuzzy/*scorer*
                (fn (q options) (let (base (fuzzy/scorer q options))
                                  (fn (c) (let (s (base c)) (if (nil? s) nil (+ s (recency c))))))))
       (fuzzy/top query files 20))"
@@ -466,7 +466,7 @@ keystroke, so everything that depends only on the query happens out here, once.
       (fn (cand) 0)
       (fn (cand) (let (run (fuzzy-run-terms terms cand file?)) (if (nil? run) nil (first run)))))))
 
-(defdyn *fuzzy-scorer* :default)
+(defdyn fuzzy/*scorer* :default)
 ;; How ranking scores a candidate: a `(query options) -> (cand) -> score | nil`. Bind it to
 ;; rank by your own rules — weight the boundary bonus differently, prefer what you opened
 ;; recently — and `top`/`filter` follow, live, everywhere in the image. `scorer` is the
@@ -485,9 +485,9 @@ keystroke, so everything that depends only on the query happens out here, once.
 ;; it is a scorer, and the declaration is the author saying so (strict: trusted, not verified).
 (check-allow :trusted
   (defn- scorer-in-force ()
-    "The scorer to rank with: whatever `*fuzzy-scorer*` is bound to, or `scorer` when that is
+    "The scorer to rank with: whatever `fuzzy/*scorer*` is bound to, or `scorer` when that is
 still `:default`. The one place the sentinel is resolved."
-    (let (s *fuzzy-scorer*) (if (= s :default) scorer s))))
+    (let (s fuzzy/*scorer*) (if (= s :default) scorer s))))
 (sig scorer-in-force (-> fn))
 
 ;; ---- what `top` adds over any scorer: the boost and the exact match ----------
@@ -535,7 +535,7 @@ letter (smart case, as each term)."
 ;;   1. TOP-K, NOT A SORT. A UI shows ~20 rows; sorting tens of thousands of matches to
 ;;      throw nearly all away dominates. `fuzzy-fold` keeps the best k instead: one int
 ;;      compare rejects the common candidate, and no key is built for one that loses.
-;;   2. SHARDED ACROSS PROCESSES past `*fuzzy-parallel-min*` candidates (`fuzzy-parallel`).
+;;   2. SHARDED ACROSS PROCESSES past `fuzzy/*parallel-min*` candidates (`fuzzy-parallel`).
 
 (defn- fuzzy-segments (cand)
   "How many `/` separate `cand`'s path segments."
@@ -606,20 +606,20 @@ placing re-sorts the kept list.)"
 ;; killed before its slice is ranked in the caller instead, and any reply that landed anyway
 ;; is swept out of the mailbox first — a straggler's message left queued is one nothing will
 ;; ever read, and this caller lives for the length of a session. A worker runs a pure fold,
-;; so the deadline is reached through a loaded machine or a `*fuzzy-scorer*` that throws; the
+;; so the deadline is reached through a loaded machine or a `fuzzy/*scorer*` that throws; the
 ;; ranking then
 ;; costs time and still finishes, rather than hanging the loop.
 
-(defdyn *fuzzy-parallel-min* 4000)
-;; Candidate sets bigger than this rank across `*fuzzy-workers*` processes; smaller ones
+(defdyn fuzzy/*parallel-min* 4000)
+;; Candidate sets bigger than this rank across `fuzzy/*workers*` processes; smaller ones
 ;; rank inline, where spawning would cost more than it saves. Set it huge to keep ranking
 ;; single-process.
 
-(defdyn *fuzzy-workers* 8)
+(defdyn fuzzy/*workers* 8)
 ;; How many processes a big ranking shards across. Past about eight the per-shard fixed
 ;; cost grows faster than the parallelism pays back.
 
-(defdyn *fuzzy-worker-timeout-ms* 1000)
+(defdyn fuzzy/*worker-timeout-ms* 1000)
 ;; How long to wait for a shard before killing that worker and ranking its slice here. A
 ;; ceiling on the damage a wedged worker can do, not a tuning knob.
 
@@ -669,7 +669,7 @@ mailbox is left where it is."
                                            score-of
                                            k
                                            file?))
-      (after *fuzzy-worker-timeout-ms* (fuzzy-abandon tag pending score-of k file? acc)))))
+      (after fuzzy/*worker-timeout-ms* (fuzzy-abandon tag pending score-of k file? acc)))))
 
 (defn- fuzzy-discard-loop (n)
   "The drain itself, tail-recursive: an accumulator rather than `(inc (recur))`, which grows
@@ -691,16 +691,16 @@ ranking; benefit: strays can never accumulate in a caller that lives for a whole
   (fuzzy-discard-loop 0))
 
 (defn- default-rules? (-> bool)
-  "Whether ranking is still scoring by the built-in rules — i.e. `*fuzzy-scorer*` has not
+  "Whether ranking is still scoring by the built-in rules — i.e. `fuzzy/*scorer*` has not
 been rebound. The gate on the native pass (`%fuzzy-top`, ADR-375): the primitive implements
 the rules above and nothing else, so it is only ever correct while they are what a ranking
 means. A custom scorer takes the Brood paths, unchanged."
-  (= *fuzzy-scorer* :default))
+  (= fuzzy/*scorer* :default))
 
 (defn- fuzzy-parallel (score-of cands k file?)
-  "The best `k` of `cands`, ranked across `*fuzzy-workers*` processes and merged here."
+  "The best `k` of `cands`, ranked across `fuzzy/*workers*` processes and merged here."
   (let (_ (fuzzy-discard-stale)
-        shards (into [] (fuzzy-shards cands *fuzzy-workers*))
+        shards (into [] (fuzzy-shards cands fuzzy/*workers*))
         tag (ref)
         me (self)
         ;; `fold`, not `map`: every worker must have been SPAWNED before the gather starts
@@ -719,7 +719,7 @@ means. A custom scorer takes the Brood paths, unchanged."
 `filter` does, stopping at the `limit` a completion UI can actually show. `nil` or a limit
 ≤ 0 means all of them. Ties: fewer path segments (for `:category :file`), shorter candidate,
 then lexicographic. A query with no terms keeps `cands` in their given order. Scores through
-`*fuzzy-scorer*`, and shards across processes past `*fuzzy-parallel-min*` candidates.
+`fuzzy/*scorer*`, and shards across processes past `fuzzy/*parallel-min*` candidates.
 
 `options` (a map, or nil):
 
@@ -740,11 +740,11 @@ then lexicographic. A query with no terms keeps `cands` in their given order. Sc
       (empty? (fuzzy-terms query)) (if bounded (take cands k) cands)
       ;; The default rules, natively (ADR-375). Same rules, same ordering, no shard fan-out
       ;; — and no copy of the candidate set across process boundaries per keystroke. Gated
-      ;; on the scorer still BEING the default: bind `*fuzzy-scorer*` and every ranking
+      ;; on the scorer still BEING the default: bind `fuzzy/*scorer*` and every ranking
       ;; falls back to the Brood paths below, which is the whole of ADR-357 kept intact.
       (default-rules?) (%fuzzy-top query cands limit options)
       (not bounded) (fuzzy-all (fuzzy-score-of query options) cands file?)
-      (> n *fuzzy-parallel-min*) (fuzzy-parallel (fuzzy-score-of query options) cands k file?)
+      (> n fuzzy/*parallel-min*) (fuzzy-parallel (fuzzy-score-of query options) cands k file?)
       ;; The bounded fold only pays once the sort it replaces is mostly waste. The
       ;; crossover is around a hundred candidates per row shown — under that the native
       ;; sort beats an interpreted fold, over it the fold pulls away. A ratio, not a size:
@@ -789,7 +789,7 @@ returns `cands` unchanged. `options` as `top`.
 ;;
 ;; The scorer is resolved in the CALLER at `ranker` and re-bound in the child around each
 ;; ranking, because a dynamic binding does not reach a spawned process — same reason
-;; `fuzzy-parallel` ships its closure. So a session created under a custom `*fuzzy-scorer*`
+;; `fuzzy-parallel` ships its closure. So a session created under a custom `fuzzy/*scorer*`
 ;; keeps it for its lifetime, and one created under the default takes the native pass.
 ;; Narrowing is the default rules' alone: a custom scorer's matches need not shrink as the
 ;; query grows, so that session ranks the whole set every time.
@@ -831,7 +831,7 @@ there is none — a non-blocking selective receive, so a burst of keystrokes ran
 when there is nothing to narrow from (a custom scorer, a query with no terms)."
   (let (terms (fuzzy-terms query))
     (if (or (not (= score-of :default)) (empty? terms))
-      [(binding (*fuzzy-scorer* score-of) (top query cands limit options)) nil]
+      [(binding (fuzzy/*scorer* score-of) (top query cands limit options)) nil]
       (let (subset (if (and previous (fuzzy-refines? (first previous) terms)) (second previous) nil)
             [hits indices] (%fuzzy-top query
                              cands
@@ -860,7 +860,7 @@ each query costs only the query and the asking process never blocks. Returns its
 
 For a caller that ranks repeatedly from an event loop (an editor's minibuffer, a REPL
 completer) rather than once. A query that extends the previous one ranks only what that one
-matched. The rules are whatever `*fuzzy-scorer*` is **here, now**: a dynamic binding does
+matched. The rules are whatever `fuzzy/*scorer*` is **here, now**: a dynamic binding does
 not reach a spawned process, so the session captures it at creation and keeps it.
 
     (let (r (fuzzy/ranker project-files {:category :file :boost frecency}))
@@ -868,7 +868,7 @@ not reach a spawned process, so the session captures it at creation and keeps it
       (receive ([:fuzzy-ranked ^r query hits] hits)))
 
     (let (r (fuzzy/ranker [\"view.blsp\" \"model.blsp\"])) (fuzzy/rank-async r \"view\" 1) (receive ([:fuzzy-ranked ^r _ hits] (do (fuzzy/ranker-stop r) (count hits)))))   ;=> 1"
-  (let (score-of *fuzzy-scorer*)
+  (let (score-of fuzzy/*scorer*)
     (spawn (fn () (ranker-loop cands score-of options nil)))))
 (sig ranker (seqable &optional (or nil map) -> pid))
 

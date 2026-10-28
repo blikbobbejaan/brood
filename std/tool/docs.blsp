@@ -381,8 +381,8 @@ bare-surface (prelude) name, whose references are bare already."
 
     (docs/model-project)   ;~> {:name \"myapp\" :version \"0.1.0\" :guides … :modules […]}"
   (let (root (docs-setup-root "docs"))
-    {:name *project-name*
-     :version *project-version*
+    {:name project/*name*
+     :version project/*version*
      :guides (collect-guides root)
      :modules (apply vector (map (project/source-files root) model-file))}))
 
@@ -515,7 +515,7 @@ and its callee checked — then the fenced blocks of the markdown its `:doc-path
 and a summary, and returns the failure count (0 = all hold). The policy behind
 `nest doctest`."
   (let (root (docs-setup-root "doctest")
-        prefix (str *project-name* "/"))
+        prefix (str project/*name* "/"))
     (project-image/load-sources-cached root)
     (let (fails (doctest/failures-under prefix))
       (each fails (fn (f) (io/puts (str "  FAIL " f))))
@@ -523,10 +523,10 @@ and a summary, and returns the failure count (0 = all hold). The policy behind
                  " documented names checked, "
                  (count fails)
                  " failing example(s)"))
-      (let ([files missing] (doc-files root (or *project-doc-paths* ["README.md"]))
+      (let ([files missing] (doc-files root (or project/*doc-paths* ["README.md"]))
             ;; The default names a file a project may not have; only a path the manifest
             ;; wrote is an error when it is missing.
-            not-found (if *project-doc-paths* missing [])
+            not-found (if project/*doc-paths* missing [])
             markdown (markdown-doctests (map files (fn (f) [(path/join root f) f]))))
         (each not-found
           (fn (e) (io/puts (str "  FAIL :doc-paths names " e ", which does not exist"))))

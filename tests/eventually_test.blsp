@@ -11,7 +11,7 @@
       (assert= true (eventually "the child exiting" (fn () (not (proc/alive? p)))))))
 
   (test "raises, naming what never happened, once the wait is spent"
-    (let (message (binding (*test-wait-ms* 50)
+    (let (message (binding (test/*wait-ms* 50)
                     (try (eventually "the impossible" (fn () nil)) (catch e (error-message e)))))
       (is (includes? message "the impossible did not happen within 50 ms")))))
 

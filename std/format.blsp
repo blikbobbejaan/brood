@@ -24,14 +24,14 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
 ; column budget for the single-line attempt (the built-in default)
 
 ;; The effective column budget: a project's manifest `:width` (ambient
-;; `*project-width*`, set by `setup`) when present, else the built-in
+;; `project/*width*`, set by `setup`) when present, else the built-in
 ;; default. So `nest format` / the LSP / `nest mcp` all honour a project that pins,
 ;; say, `:width 80`, and a bare `brood`-run format uses the default.
 (defn width ()
   "The effective column budget: the project's `:width` when set, else the built-in default.
 
     (format/width)   ;=> 100   ; the column the formatter wraps at"
-  (or *project-width* *width*))
+  (or project/*width* *width*))
 
 ;; ---- CST node accessors -----------------------------------------------------
 ;; Every node is a vector [kind payload]. For leaves payload is the raw source
@@ -151,7 +151,7 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
    ;; actor receive: every clause on its own line, like cond (no scrutinee rides up)
    'receive 0
    ;; assoc / assoc!: the collection rides the head line, then key/value PAIRS
-   ;; (see *format-pair-body*) — `(assoc m :k1 v1 :k2 v2)` not one element per line
+   ;; (see format/*pair-body*) — `(assoc m :k1 v1 :k2 v2)` not one element per line
    'assoc 1
    'assoc! 1
    ;; loop forms
@@ -165,7 +165,7 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
    'describe 1
    ; name
    'test 1
-   ;; the project manifest: head alone, then :key value pairs (see *format-pair-body*)
+   ;; the project manifest: head alone, then :key value pairs (see format/*pair-body*)
    'project 0})
 ; name
 
@@ -174,27 +174,27 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
 ;; `:format-plugins` deps, so `nest format`, the LSP, and `nest mcp` all honour a
 ;; framework's macro shapes (e.g. Hatch's `deflive`/`on`/`tick`). Empty when not in a
 ;; project or when no rules are declared. Entries here win over the built-ins.
-(defdyn *format-headers-extra* {})
+(defdyn format/*headers-extra* {})
 
 (defn use-headers (table: (map symbol int) -> nil)
   "Install `table` (symbol → header count) as the project/plugin rules `nest format`, the
   LSP and `nest mcp` format with, replacing any earlier project's. `project/setup` calls it;
-  the `def` must happen here, where `*format-headers-extra*` is known to be dynamic — a
+  the `def` must happen here, where `format/*headers-extra*` is known to be dynamic — a
   `def` of the same name inside another module before this one loaded would bind a global of
   THAT module's that nothing reads."
-  (def *format-headers-extra* table)
+  (def format/*headers-extra* table)
   nil)
 
 (defn head-header-count (head-node)
   "How many args after this head stay on the first line of a broken list. -1 means
 not a known body form (defaults to call-style — every arg breaks). Consults the
-project/plugin table (`*format-headers-extra*`) first, then the built-ins.
+project/plugin table (`format/*headers-extra*`) first, then the built-ins.
 
     (format/head-header-count [:symbol \"defn\"])   ;=> 2
     (format/head-header-count [:int \"1\"])         ;=> -1"
   (if (= (node-kind head-node) :symbol)
     (let (sym (symbol (node-text head-node)))
-      (get *format-headers-extra* sym (get *format-headers* sym -1)))
+      (get format/*headers-extra* sym (get *format-headers* sym -1)))
     -1))
 
 ;; Forms whose FIRST header arg is a pair-list (alternating name/value). When
@@ -208,8 +208,8 @@ project/plugin table (`*format-headers-extra*`) first, then the built-ins.
 ;; one pair per line. Comments between clauses are kept on their own lines.
 ;; `assoc`/`assoc!` ride one header arg (the collection) and then pair their
 ;; trailing key/value arguments, the same shape as `cond`'s test+result.
-(defdyn *format-pair-body* {'cond true 'case true 'assoc true 'assoc! true 'project true})
-(sig *format-pair-body* (map symbol bool))
+(defdyn format/*pair-body* {'cond true 'case true 'assoc true 'assoc! true 'project true})
+(sig format/*pair-body* (map symbol bool))
 
 (defn pair-bindings? (head-node)
   "True if `head-node` names a form whose first header arg is a pair-list.
@@ -224,7 +224,7 @@ project/plugin table (`*format-headers-extra*`) first, then the built-ins.
 
     (format/pair-body? [:symbol \"cond\"])   ;=> true"
   (and (= (node-kind head-node) :symbol)
-    (get *format-pair-body* (symbol (node-text head-node)) false)))
+    (get format/*pair-body* (symbol (node-text head-node)) false)))
 
 ;; The `defn` family: forms whose second header arg is a PARAMS list — unless the
 ;; function is multi-arity/multi-pattern, in which case that slot holds the first ARM
@@ -463,7 +463,7 @@ keyword (`:next`) is not one.
   ;;   - `let`-family forms (`*format-pair-bindings*`): the first header arg
   ;;     is rendered as a pair-list (name+value per line, aligned under the
   ;;     bindings list's opening element).
-  ;;   - `cond`/`case` (`*format-pair-body*`): body args are emitted two per
+  ;;   - `cond`/`case` (`format/*pair-body*`): body args are emitted two per
   ;;     line (test+result, pattern+body) at the body indent.
   ;; Generic calls (head not in the headers table) also keep their *first*
   ;; arg on the head line — provided it is single-line — so the visual unit
@@ -1108,9 +1108,9 @@ if you are reintroducing hoisting, they are what you have to write back.
 ;; The path vars are `defdyn`, so they are ROOT names (ADR-151) — read bare, not
 ;; as `project/…`, even though `project` is where they are declared.
 (defn- format-roots (root)
-  (append (project/abs-paths root *project-source-paths*)
-    (project/abs-paths root *project-test-paths*)
-    (project/abs-paths root (or *project-format-paths* (list)))))
+  (append (project/abs-paths root project/*source-paths*)
+    (project/abs-paths root project/*test-paths*)
+    (project/abs-paths root (or project/*format-paths* (list)))))
 
 (defn- format-every-blsp (root)
   ;; Every .blsp the project owns, in deterministic order: the root's own files

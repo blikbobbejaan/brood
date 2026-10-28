@@ -114,7 +114,7 @@ Like `reflect/eval`, this tool is bounded by the `nest mcp` process, not by the 
 
 ;; ---- the project sandbox for write/edit -----------------------------------
 ;; Every path the `write`/`edit` tools resolve goes through `project-path`, which
-;; refuses anything outside `*project-root*` — both lexically (no absolute path,
+;; refuses anything outside `project/*root*` — both lexically (no absolute path,
 ;; `~`, or `..` segment) and after `canonicalize`, so a symlinked directory inside
 ;; the project that points outside cannot be used to escape either.
 ;;
@@ -151,13 +151,13 @@ the project that points outside** cannot be used to escape (the lexical check
 alone misses this — a purely-relative, `..`-free path can still resolve out of
 the tree through a symlink)."
   (let (real (os/canonicalize abs)
-        root (os/canonicalize *project-root*))
+        root (os/canonicalize project/*root*))
     (and (string? real)
       (string? root)
       (or (= real root) (string/starts-with? real (str root "/"))))))
 
 (defn- project-path (rel)
-  "Resolve project-relative `rel` to an absolute path under `*project-root*`, or
+  "Resolve project-relative `rel` to an absolute path under `project/*root*`, or
 `throw` if it would escape the project — a lexical violation (absolute/`~`/`..`,
 or no project root), OR a **symlink** whose real target is outside the tree.
 
@@ -165,11 +165,11 @@ Shared by `write` and `edit`, and by **only** those two: it is a guardrail on th
 file-writing tools, not a containment boundary for the server (`reflect/eval` runs
 arbitrary code with full filesystem access, and `reflect/load` takes an unsandboxed
 path). See the section comment above."
-  (when (nil? *project-root*)
+  (when (nil? project/*root*)
     (throw "no project root — nest mcp must run inside a Brood project"))
   (when (not (safe-rel? rel))
     (throw (str "path must be project-relative — no leading '/' or '~', no '..': " (pr-str rel))))
-  (let (abs (path/join *project-root* rel))
+  (let (abs (path/join project/*root* rel))
     (when (not (under-root? abs))
       (throw (str "path escapes the project sandbox — its real target (following symlinks) "
                "is outside the project root: "
@@ -307,16 +307,16 @@ check after the first invocation.
   "`check` — advisory type-check the project. Returns
 `{:diagnostics [{:file :line :col :message} ...]}` (one entry per warning,
 position omitted when the checker can't supply one — ADR-024). Backed by
-`(project-check/check-structured *project-root*)` in `std/tool/project-check.blsp` (step 1c-a). `(or … [])`
+`(project-check/check-structured project/*root*)` in `std/tool/project-check.blsp` (step 1c-a). `(or … [])`
 so a clean project renders as `{:diagnostics []}` rather than `{:diagnostics
 null}` — agents shouldn't have to disambiguate \"no warnings\" from
 \"missing field\".
 
     (mcp/check-tool {})   ;~> {:diagnostics [{:file \"src/app.blsp\" :line 12 :col 5 :message \"…\"} …]} — [] when clean"
-  ;; `*project-root*`, not `(file/cwd)`: the server serves ONE project, and the write
+  ;; `project/*root*`, not `(file/cwd)`: the server serves ONE project, and the write
   ;; sandbox and every other project-scoped tool read that root (KI-46). A nil root
   ;; makes `check-structured` fall back to the cwd and report "not in a Brood project".
-  (attempt (fn () {:diagnostics (or (project-check/check-structured *project-root*) [])})
+  (attempt (fn () {:diagnostics (or (project-check/check-structured project/*root*) [])})
     (fn (shape) {:error shape})))
 
 (defn run-tests-tool (args)
@@ -439,7 +439,7 @@ synthesised by macros aren't included. Complements `lookup` (which gives the
   (let (name (get args :name))
     (when (not (string? name))
       (throw "callers: :name must be a string"))
-    {:references (mapcat (project-check/all-files *project-root*)
+    {:references (mapcat (project-check/all-files project/*root*)
                    (fn (f)
                      (try
                        (map (reflect/references-in-source name (file/slurp f))
@@ -626,7 +626,7 @@ snapshot) — which, with the now-enriched
 `processes`, give an agent the same live view the observer
 (`std/tool/observer.blsp`) shows — the project-scoped editing pair `write`
 (create/overwrite a file) and `edit` (exact-string replace), both sandboxed
-under `*project-root*` so an agent writes code *through* nest mcp rather than
+under `project/*root*` so an agent writes code *through* nest mcp rather than
 the raw filesystem, and the LLM-native pair `error` (a stable error
 code → its Brood-idiomatic fix) and `find-pattern` (an intent → the idiomatic
 Brood pattern, `std/tool/explain.blsp`)."
@@ -806,11 +806,11 @@ Brood pattern, `std/tool/explain.blsp`)."
 ;; The reference texts `resources/read` and `prompts/get` serve, keyed by name. `nest`
 ;; binds it around the server with the documents its binary embeds (the docs and the
 ;; prelude source), so an agent reads them without filesystem access.
-(defdyn *mcp-documents* {})
+(defdyn mcp/*documents* {})
 
 ;; Inside a handler whose `tools/call` carried `_meta.progressToken`: `{:to dispatcher
 ;; :call handler-pid}`, where [[progress]] sends its reports. Nil otherwise.
-(defdyn *mcp-progress-sink* nil)
+(defdyn mcp/*progress-sink* nil)
 
 (def- resources
   [{:uri "brood://docs/brood-for-claude"
@@ -841,7 +841,7 @@ optional `total` (the denominator) and `message` (a label). Streams a
 Returns true if a report was sent.
 
     (mcp/progress 1 3 \"step one\")   ;=> false"
-  (let (sink *mcp-progress-sink*)
+  (let (sink mcp/*progress-sink*)
     (if (nil? sink)
       false
       (do
@@ -1011,7 +1011,7 @@ and send the outcome to `dispatcher`, already projected to JSON data."
   (%capture-begin)
   (let (sink (if reports-progress {:to dispatcher :call (self)} nil)
         outcome (%try-described (fn ()
-                                  (let (value (binding (*mcp-progress-sink* sink)
+                                  (let (value (binding (mcp/*progress-sink* sink)
                                                 (handler arguments)))
                                     (try
                                       [:ok (json-data value)]
@@ -1107,7 +1107,7 @@ does not hide the rest."
 (defn- read-resource (params)
   (let (uri (get params :uri)
         resource (seq/find resources (fn (r) (= (get r :uri) uri)))
-        text (if resource (get *mcp-documents* (get resource :document)) nil))
+        text (if resource (get mcp/*documents* (get resource :document)) nil))
     (cond
       (not (string? uri)) [:error (rpc-error -32602 "missing 'uri'")]
       (not (string? text)) [:error (rpc-error -32602 (str "no such resource: " uri))]
@@ -1124,7 +1124,7 @@ does not hide the rest."
         [:ok
           {:description "Orient an agent for editing this Brood project"
            :messages [{:role "user"
-                       :content {:type "text" :text (get *mcp-documents* "brood-task")}}]}])))
+                       :content {:type "text" :text (get mcp/*documents* "brood-task")}}]}])))
 
 (defn- handle (message session)
   "The reply to one decoded JSON-RPC `message`: a response map, nil for a notification

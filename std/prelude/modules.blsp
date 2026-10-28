@@ -238,7 +238,7 @@ and an unbounded silent spin is far harder to place than an error."
 ;; nothing reads.
 ;;
 ;; The std/ callers are not namespaced: the prelude's own registries and `*protocols*` (std/protocol.blsp is CORE — loaded in the prelude with
-;; no `defmodule`, so its globals are root) are bare and root, `editor/face`'s `*faces*` is
+;; no `defmodule`, so its globals are root) are bare and root, `editor/face`'s `editor/face/*faces*` is
 ;; `defdyn` and therefore ambient (root, never namespaced, ADR-151), and the rest are
 ;; written out qualified. So this resolution must not disturb any of them — which is why it
 ;; checks rather than assumes: an already-qualified name passes through untouched, and

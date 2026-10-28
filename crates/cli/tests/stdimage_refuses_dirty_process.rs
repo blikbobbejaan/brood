@@ -3,7 +3,7 @@
 //! the probe claims nothing, so those roots were silently dropped from the image. Dispatched
 //! from `std/tool/nest.blsp` — whose load pulls the toolchain in — `nest stdimage` wrote an
 //! image with none of `project`'s 31 root globals, and every later `nest check` died on an
-//! unbound `*ns-package*`.
+//! unbound `project/*ns-package*`.
 //!
 //! The build now audits: a root global with no owning section, no definition site (the
 //! prelude's have one) and not a native builtin is a std module's that the probe missed, and
@@ -66,7 +66,7 @@ fn a_build_in_a_process_that_already_loaded_a_tooling_module_is_refused_not_writ
     );
     assert_eq!(code, 0, "{out}");
     assert!(
-        out.contains("refused: stdimage/build:") && out.contains("*ns-package*"),
+        out.contains("refused: stdimage/build:") && out.contains("project/*ns-package*"),
         "the refusal must name the orphaned root:\n{out}"
     );
     assert!(
@@ -94,7 +94,7 @@ fn a_build_in_a_fresh_process_still_writes_and_restores_every_root() {
     let (code, out) = brood(
         &dir,
         &cache,
-        "(require-one 'project)\n(io/puts \"bound=\" (bound? '*ns-package*))\n",
+        "(require-one 'project)\n(io/puts \"bound=\" (bound? 'project/*ns-package*))\n",
     );
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("bound= true"), "{out}");

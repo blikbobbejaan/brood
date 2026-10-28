@@ -175,7 +175,7 @@
       (file/spit (path/join app-dir "tests" "a_test.blsp") "(defmodule a-test)\n")
       (file/spit (path/join app-dir "project.lock.blsp") "(lock)\n")
       (pkg-git-init app-dir)
-      (let (archive (binding (*project-name* "app" *project-version* "0.1.0")
+      (let (archive (binding (project/*name* "app" project/*version* "0.1.0")
                       (package/registry-build-tarball app-dir))
             members (string/split (get (os/cmd "tar" ["-tzf" archive]) :stdout) "\n"))
         (is (includes? members "project.blsp"))
@@ -511,7 +511,7 @@
              (let (ls (http/listen 0))
                (send me [:reg-port (tcp/local-port ls)])
                (http/serve-loop ls handler))))
-    (let (port (receive ([:reg-port p] p) (after *test-wait-ms* :timeout)))
+    (let (port (receive ([:reg-port p] p) (after test/*wait-ms* :timeout)))
       (str "http://127.0.0.1:" port))))
 
 ;; A handler serving one published package `nm`@`version`: search, release metadata
@@ -781,7 +781,7 @@
       "greeter  1.0.0  — greetings")
     (assert= (package/registry-search-line {:name "x" :latest_version "" :description ""}) "x  ?"))
   (test "publishable-deps keeps registry deps and omits local ones"
-    (binding (*project-dependencies* (list (dep-registry 'foo "1.2.0") (dep-path 'bar "../bar")))
+    (binding (project/*dependencies* (list (dep-registry 'foo "1.2.0") (dep-path 'bar "../bar")))
       (let (out (package/registry-publishable-deps))
         (assert= (count out) 1)
         (assert= (get (first out) :name) "foo")
@@ -790,11 +790,11 @@
     (assert= (project/parse-deps [['foo :version "1.2.0"]])
       (list (assoc (dep-registry 'foo "1.2.0") :optional false))))
   (test "an external publish's metadata envelope carries :source_url; a hosted one omits it"
-    (binding (*project-name* "foo"
-              *project-version* "1.0.0"
-              *project-description* ""
-              *project-dependencies* nil
-              *project-enhances* {})
+    (binding (project/*name* "foo"
+              project/*version* "1.0.0"
+              project/*description* ""
+              project/*dependencies* nil
+              project/*enhances* {})
       (let (ext (encoding/base64-decode (package/registry-publish-metadata "abc"
                                           "https://ex/f.tgz" nil nil)))
         (is (includes? ext "\"source_url\":\"https://ex/f.tgz\""))
@@ -911,7 +911,7 @@
                        "2.1.0" {:deps [] :checksum b21s :bytes bar21}}}
           base (mock-registry-start (rr-handler spec)))
       (pkg-write-project app-dir "app" "main" "(defn main () 1)" "")
-      (binding (*config-registry* base)
+      (binding (project/*config-registry* base)
         (let (entries (package/resolve-deps app-dir (list (dep-registry 'foo "^1.0")) nil)
               by-name (fold entries {} (fn (m e) (assoc m (get e :name) e))))
           (assert= 2 (count entries))
@@ -934,14 +934,14 @@
           spec {"foo" {"1.0.0" {:deps [] :checksum fs :bytes foo10}}}
           base (mock-registry-start (rr-handler spec)))
       (pkg-write-project app-dir "app" "main" "(defn main () 1)" "")
-      (binding (*config-registry* base)
+      (binding (project/*config-registry* base)
         ;; first resolve pins foo = 1.0.0 and builds a lock row
         (let (entries (package/resolve-deps app-dir (list (dep-registry 'foo "^1.0")) nil)
               lock (apply vector (map entries dep-lock-vec)))
           (assert= "1.0.0" (get (first entries) :version))
           ;; now point the registry at a server that 404s EVERYTHING — a re-solve would
           ;; fail, so success proves the locked solution was reused without querying it
-          (binding (*config-registry* (mock-registry-start (rr-handler {})))
+          (binding (project/*config-registry* (mock-registry-start (rr-handler {})))
             (let (again (package/resolve-deps app-dir (list (dep-registry 'foo "^1.0")) lock))
               (assert= "1.0.0" (get (first again) :version))))))))
 
@@ -960,7 +960,7 @@
           ;; a prior lock pinning foo = 1.0.0 (bar not yet present)
           prior-lock [['foo :registry "1.0.0" :sha256 f10 :deps []]])
       (pkg-write-project app-dir "app" "main" "(defn main () 1)" "")
-      (binding (*config-registry* base)
+      (binding (project/*config-registry* base)
         (let (entries (package/resolve-deps app-dir
                         (list (dep-registry 'foo "^1.0") (dep-registry 'bar "^2.0"))
                         prior-lock)
@@ -987,7 +987,7 @@
                      "2.0.0" {:deps [] :checksum c20s :bytes c20}}}
           base (mock-registry-start (rr-handler spec)))
       (pkg-write-project app-dir "app" "main" "(defn main () 1)" "")
-      (binding (*config-registry* base)
+      (binding (project/*config-registry* base)
         (let (entries (package/resolve-deps app-dir
                         (list (dep-registry 'a ">= 1.0") (dep-registry 'b ">= 1.0"))
                         nil)
@@ -1009,7 +1009,7 @@
                           "2.0.0" {:deps [] :checksum "y" :bytes #b""}}}
           base (mock-registry-start (rr-handler spec)))
       (pkg-write-project app-dir "app" "main" "(defn main () 1)" "")
-      (binding (*config-registry* base)
+      (binding (project/*config-registry* base)
         (is (includes? (try
                          (package/resolve-deps app-dir
                            (list (dep-registry 'foo "^1.0") (dep-registry 'baz "^1.0"))
@@ -1043,7 +1043,7 @@
     ;; the write with the bound value — masking exactly what this checks. So save and
     ;; restore the root instead, the way a manifest-reading tool would leave it.
     (let (root (pkg-fixture-root)
-          saved *project-enhances*)
+          saved project/*enhances*)
       (file/mkdir (path/join root "src"))
       (file/spit (path/join root "project.blsp")
         (str "(project :name \"bedit-zig\" :version \"0.1.0\""
@@ -1052,12 +1052,12 @@
       ;; handing it the whole `(project …)` form would shift every key by one and find
       ;; nothing — the same mistake as reading a manifest with `plist-get` on the form.
       (project/apply-config (rest (reflect/read-string (file/slurp (path/join root "project.blsp")))))
-      (assert= ">= 0.1" (get *project-enhances* 'bedit))
-      (def *project-enhances* saved)))
+      (assert= ">= 0.1" (get project/*enhances* 'bedit))
+      (def project/*enhances* saved)))
   (test "the publish envelope carries it with STRING keys (JSON has no symbols)"
-    (binding (*project-enhances* {'bedit ">= 0.1"})
+    (binding (project/*enhances* {'bedit ">= 0.1"})
       (assert= {"bedit" ">= 0.1"} (package/registry-publishable-enhances)))
-    (binding (*project-enhances* {})
+    (binding (project/*enhances* {})
       (assert= {} (package/registry-publishable-enhances))))
   (test "search narrows by it through a query parameter, url-encoded"
     (assert= "http://h/api/v1/packages?q=zig"
@@ -1491,7 +1491,7 @@
       (pkg-write-project alpha-dir "alpha" "parser" "(defn tag () \"A\")" "")
       (pkg-write-project beta-dir "beta" "parser" "(defn tag () \"B\")" "")
       ;; Declare `:source-paths` explicitly. `bundle-collect` reads the ambient
-      ;; `*project-source-paths*` (via `apply`, which only sets it when the manifest
+      ;; `project/*source-paths*` (via `apply`, which only sets it when the manifest
       ;; names it — unlike `setup`); a real `nest release` is a fresh process where
       ;; it is the default `["src"]`, but this test shares an image with the rest of the
       ;; suite, so pin it here rather than inherit whatever a prior test left behind.
@@ -1640,7 +1640,7 @@
                                                                  :source_url (str "file://" local)
                                                                  :dependencies []}))
                                         else (http/not-found)))))
-      (binding (*config-registry* base)
+      (binding (project/*config-registry* base)
         (is (includes? (try (package/registry-install "evil" dest) (catch e (error-message e)))
               "non-http(s) source URL")))
       (refute (file/exists? (path/join dest "evil"))))))
@@ -1740,18 +1740,20 @@
           dest (path/join parent "plugins") ; not a _deps — the second install REPLACES it
           [bytes checksum] (mock-package-tarball parent "signedplug")
           [signature pubkey] (mock-sign "signedplug" "1.0.0" checksum)
-          first-install (binding (*config-registry* (mock-registry-start (mock-runtime-registry "signedplug"
-                                                                           "1.0.0" checksum bytes
-                                                                           signature pubkey)))
+          first-install (binding (project/*config-registry* (mock-registry-start (mock-runtime-registry "signedplug"
+                                                                                   "1.0.0" checksum
+                                                                                   bytes signature
+                                                                                   pubkey)))
                           (package/registry-install "signedplug" dest)))
       (assert= (:signature first-install) :verified)
       (assert= (:warning first-install) nil)
       (is (includes? (file/slurp (path/join dest ".signing-pins.blsp")) pubkey))
       ;; the same name, now signed by somebody else
       (let ([other-signature other-pubkey] (mock-sign "signedplug" "1.0.0" checksum)
-            again (binding (*config-registry* (mock-registry-start (mock-runtime-registry "signedplug"
-                                                                     "1.0.0" checksum bytes
-                                                                     other-signature other-pubkey)))
+            again (binding (project/*config-registry* (mock-registry-start (mock-runtime-registry "signedplug"
+                                                                             "1.0.0" checksum bytes
+                                                                             other-signature
+                                                                             other-pubkey)))
                     (package/registry-install "signedplug" dest)))
         (assert= (:signature again) :key-changed)
         (is (includes? (:warning again) "DIFFERENT key"))

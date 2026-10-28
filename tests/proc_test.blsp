@@ -21,7 +21,7 @@
     acc
     (receive
       ([:proc ^p d] (proc-test-drain p want (str acc d)))
-      (after *test-wait-ms* acc))))
+      (after test/*wait-ms* acc))))
 
 (describe "proc: handle + type-of"
   :isolated (test "os/spawn returns a distinct :subprocess handle"
@@ -35,12 +35,12 @@
   :isolated (test "os/write to `cat` comes back as [:proc handle data]"
     (let (p (os/spawn "cat" []))
       (os/write p "ping over proc")
-      (let (got (receive ([:proc ^p d] d) (after *test-wait-ms* :timeout)))
+      (let (got (receive ([:proc ^p d] d) (after test/*wait-ms* :timeout)))
         (assert= got "ping over proc")
         ;; os/close SIGKILLs the child: it exits via a signal, so the final
         ;; [:proc-closed …] carries a nil code (no exit status).
         (os/close p)
-        (let (code (receive ([:proc-closed ^p c] c) (after *test-wait-ms* :timeout)))
+        (let (code (receive ([:proc-closed ^p c] c) (after test/*wait-ms* :timeout)))
           (is (nil? code)))))))
 
 (describe "proc: a child that stops reading cannot pin the caller (KI-97 item 2)"
@@ -80,7 +80,7 @@
       ;; delivers a `bytes` value and os/write accepts one, so they round-trip.
       (let (sent (bytes 0 255 128 65))
         (os/write p sent)
-        (let (got (receive ([:proc ^p d] d) (after *test-wait-ms* :timeout)))
+        (let (got (receive ([:proc ^p d] d) (after test/*wait-ms* :timeout)))
           (assert= got sent)
           (assert= (into [] (seq got)) [0 255 128 65])
           (os/close p)))))
@@ -90,22 +90,22 @@
       (os/set-binary p true)
       ; U+03C0 = 0xCF 0x80 in UTF-8
       (os/write p "π")
-      (let (got (receive ([:proc ^p d] d) (after *test-wait-ms* :timeout)))
+      (let (got (receive ([:proc ^p d] d) (after test/*wait-ms* :timeout)))
         (assert= got (bytes 207 128))
         (os/close p)))))
 
 (describe "proc: stdout stream + exit code"
   :isolated (test "a child's stdout then [:proc-closed handle code] with its exit status"
     (let (p (os/spawn "sh" ["-c" "printf hello; exit 3"]))
-      (let (out (receive ([:proc ^p d] d) (after *test-wait-ms* :timeout)))
+      (let (out (receive ([:proc ^p d] d) (after test/*wait-ms* :timeout)))
         (assert= out "hello")
-        (let (code (receive ([:proc-closed ^p c] c) (after *test-wait-ms* :timeout)))
+        (let (code (receive ([:proc-closed ^p c] c) (after test/*wait-ms* :timeout)))
           (assert= code 3))))))
 
 (describe "proc: stderr is a separate channel"
   :isolated (test "stderr arrives as [:proc-err …], never mixed into [:proc …]"
     (let (p (os/spawn "sh" ["-c" "printf oops 1>&2"]))
-      (let (err (receive ([:proc-err ^p d] d) (after *test-wait-ms* :timeout)))
+      (let (err (receive ([:proc-err ^p d] d) (after test/*wait-ms* :timeout)))
         (assert= err "oops")
         (os/close p)))))
 
@@ -114,15 +114,15 @@
   ;; Without :cwd the child inherits ours; with it, `pwd` reports the given dir.
   (test "os/spawn opts :cwd sets the working directory"
     (let (p (os/spawn "sh" ["-c" "pwd"] {:cwd "/"}))
-      (let (out (receive ([:proc ^p d] d) (after *test-wait-ms* :timeout)))
+      (let (out (receive ([:proc ^p d] d) (after test/*wait-ms* :timeout)))
         (assert= out "/\n")
-        (let (code (receive ([:proc-closed ^p c] c) (after *test-wait-ms* :timeout)))
+        (let (code (receive ([:proc-closed ^p c] c) (after test/*wait-ms* :timeout)))
           (assert= code 0))))))
 
 (describe "proc: :env adds environment variables"
   :isolated (test "os/spawn opts :env is visible to the child"
     (let (p (os/spawn "sh" ["-c" "printf %s \"$MYVAR\""] {:env {"MYVAR" "hello"}}))
-      (let (out (receive ([:proc ^p d] d) (after *test-wait-ms* :timeout)))
+      (let (out (receive ([:proc ^p d] d) (after test/*wait-ms* :timeout)))
         (assert= out "hello")
         (os/close p))))
   ;; One reading of `:env` for every child: os/cmd removed a nil-valued variable and
@@ -130,7 +130,7 @@
   :isolated (test "a nil :env value removes the variable, in os/spawn as in os/cmd"
     (let (script "printf %s \"${HOME-unset}\""
           p (os/spawn "sh" ["-c" script] {:env {"HOME" nil}}))
-      (let (out (receive ([:proc ^p d] d) (after *test-wait-ms* :timeout)))
+      (let (out (receive ([:proc ^p d] d) (after test/*wait-ms* :timeout)))
         (assert= out "unset")
         (os/close p))
       (assert= (get (os/cmd "sh" ["-c" script] {:env {"HOME" nil}}) :stdout) "unset"))))
@@ -161,7 +161,7 @@
     (let (_me (self)
           p (os/spawn "cat" []))
       (spawn (os/write p "from a worker"))
-      (let (got (receive ([:proc ^p d] d) (after *test-wait-ms* :timeout)))
+      (let (got (receive ([:proc ^p d] d) (after test/*wait-ms* :timeout)))
         (os/close p)
         (assert= got "from a worker")))))
 
@@ -180,9 +180,9 @@
   (test "an exited owner's subprocess handle is closed and its child reaped"
     (let (me (self)
           [_owner watch] (spawn-monitor (send me [:handle (os/spawn "cat" [])])))
-      (let (p (receive ([:handle h] h) (after *test-wait-ms* :NO-HANDLE)))
+      (let (p (receive ([:handle h] h) (after test/*wait-ms* :NO-HANDLE)))
         ;; the owner's exit, then its retirement closing the handle
-        (assert= (receive ([:down ^watch _ _] :down) (after *test-wait-ms* :timeout)) :down)
+        (assert= (receive ([:down ^watch _ _] :down) (after test/*wait-ms* :timeout)) :down)
         ;; The handle must be dead: a write to it errors ("no such subprocess").
         (assert= (eventually "the dead owner's handle closing"
                    (fn () (try (do (os/write p "x") nil) (catch e :closed))))
@@ -199,7 +199,7 @@
   (receive
     ([:proc p d] (pty-drain (str acc d)))
     ([:proc-closed p code] acc)
-    (after *test-wait-ms* acc)))
+    (after test/*wait-ms* acc)))
 
 (describe "proc: a pty child is in a terminal, a piped one is not"
   ;; The same command, the same shell, the same question — two answers.
@@ -260,7 +260,7 @@
   "Wait for `p`'s final `[:proc-closed …]` — its handle has finished."
   (receive
     ([:proc-closed ^p _] nil)
-    (after *test-wait-ms* (error "await-closed: no [:proc-closed] for " p))))
+    (after test/*wait-ms* (error "await-closed: no [:proc-closed] for " p))))
 
 (describe "proc: a pty session gives its descriptors back"
   :isolated (test "opening and closing many sessions does not accumulate fds"
@@ -307,7 +307,7 @@ twice — for a test whose answer arrived in milliseconds."
     (receive
       ([:proc p d] (pty-await (str acc d) want))
       ([:proc-closed p code] acc)
-      (after *test-wait-ms* acc))))
+      (after test/*wait-ms* acc))))
 
 (describe "proc: an interactive REPL under a pty"
   :isolated (test "a shell prompts, echoes and answers — none of which it does on a pipe"
@@ -408,7 +408,7 @@ twice — for a test whose answer arrived in milliseconds."
     ([:proc-err ^p d] (proc-test-until-end p (conj acc [:err d])))
     ([:proc-exit ^p c] (conj acc [:exit c]))
     ([:proc-closed ^p c] (conj acc [:closed c]))
-    (after *test-wait-ms* (conj acc :timeout))))
+    (after test/*wait-ms* (conj acc :timeout))))
 
 (defn- proc-test-output-size (events tag)
   "How many characters of `tag` output (`:out` or `:err`) the events carry."
@@ -432,7 +432,7 @@ twice — for a test whose answer arrived in milliseconds."
       (assert= (receive ([:proc-closed ^p c] [:closed c]) (after 300 :still-open)) :still-open)
       ;; os/close ends it promptly: the group is killed and the readers stop
       (os/close p)
-      (assert= (receive ([:proc-closed ^p c] c) (after *test-wait-ms* :timeout)) 3)))
+      (assert= (receive ([:proc-closed ^p c] c) (after test/*wait-ms* :timeout)) 3)))
 
   :isolated (test "everything the child wrote comes before its exit, far past a pipe buffer"
     ;; 300 000 bytes to each stream is several pipe buffers, so most of it is read while
@@ -474,9 +474,9 @@ twice — for a test whose answer arrived in milliseconds."
     ;; would kill it with the group, and the case would pass without testing anything.
     (when (os/which "setsid")
       (let (p (os/spawn "sh" ["-c" "setsid sh -c 'echo escaped; exec sleep 5' & exit 0"]))
-        (assert= (receive ([:proc ^p out] (string/trim out)) (after *test-wait-ms* :timeout))
+        (assert= (receive ([:proc ^p out] (string/trim out)) (after test/*wait-ms* :timeout))
           "escaped")
-        (assert= (receive ([:proc-exit ^p c] c) (after *test-wait-ms* :timeout)) 0)
+        (assert= (receive ([:proc-exit ^p c] c) (after test/*wait-ms* :timeout)) 0)
         (os/close p)
         (assert= (receive ([:proc-closed ^p c] c) (after 3000 :timeout)) 0))))
 
@@ -484,15 +484,15 @@ twice — for a test whose answer arrived in milliseconds."
     ;; the exited child is kept unreaped until the handle finishes, so its process group —
     ;; where `sleep` still runs — is still its own to signal
     (let (p (os/spawn "sh" ["-c" "sleep 60 & exit 0"]))
-      (assert= (receive ([:proc-exit ^p c] c) (after *test-wait-ms* :timeout)) 0)
+      (assert= (receive ([:proc-exit ^p c] c) (after test/*wait-ms* :timeout)) 0)
       (os/signal p :term)
-      (assert= (receive ([:proc-closed ^p c] c) (after *test-wait-ms* :timeout)) 0))))
+      (assert= (receive ([:proc-closed ^p c] c) (after test/*wait-ms* :timeout)) 0))))
 
 (describe "proc: an ordinary child reports output, then exit, then closed"
   :isolated (test "the same code twice, in that order"
     (let (p (os/spawn "sh" ["-c" "printf hello; printf oops >&2; exit 3"])
           events (proc-test-until-end p [])
-          closed (receive ([:proc-closed ^p c] [:closed c]) (after *test-wait-ms* :timeout)))
+          closed (receive ([:proc-closed ^p c] [:closed c]) (after test/*wait-ms* :timeout)))
       (assert= (last events) [:exit 3])
       (assert= (proc-test-output-size events :out) 5)
       (assert= (proc-test-output-size events :err) 4)
@@ -502,10 +502,10 @@ twice — for a test whose answer arrived in milliseconds."
     (let (p (os/spawn "sleep" ["60"]))
       (os/close p)
       (assert= (proc-test-until-end p []) [[:exit nil]])
-      (assert= (receive ([:proc-closed ^p c] [:closed c]) (after *test-wait-ms* :timeout))
+      (assert= (receive ([:proc-closed ^p c] [:closed c]) (after test/*wait-ms* :timeout))
         [:closed nil])))
 
   :isolated (test "a pty child reports its exit too"
     (let (p (os/spawn-pty "sh" ["-c" "exit 4"]))
-      (assert= (receive ([:proc-exit ^p c] c) (after *test-wait-ms* :timeout)) 4)
-      (assert= (receive ([:proc-closed ^p c] c) (after *test-wait-ms* :timeout)) 4))))
+      (assert= (receive ([:proc-exit ^p c] c) (after test/*wait-ms* :timeout)) 4)
+      (assert= (receive ([:proc-closed ^p c] c) (after test/*wait-ms* :timeout)) 4))))

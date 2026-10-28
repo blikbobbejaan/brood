@@ -122,7 +122,7 @@
                      (let (f lazyprobe-race/answer) (f))
                      (catch e [:err (error-message e)]))])))
       (let (results (map (range 16)
-                      (fn (_) (receive ([:race r] r) (after *test-wait-ms* :timeout)))))
+                      (fn (_) (receive ([:race r] r) (after test/*wait-ms* :timeout)))))
         (is (every? results (fn (r) (= r 42))))
         (is (loaded? "lazyprobe-race"))
         ;; One byte: the module body evaluated exactly once.

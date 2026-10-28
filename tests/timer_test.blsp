@@ -12,14 +12,14 @@
   (test "delivers the message after the delay"
     (let (me (self))
       (timer/send-after 30 me [:tick :a])
-      (assert= [:tick :a] (receive ([:tick x] [:tick x]) (after *test-wait-ms* :timeout)))))
+      (assert= [:tick :a] (receive ([:tick x] [:tick x]) (after test/*wait-ms* :timeout)))))
 
   (test "does not deliver early"
     (let (me (self))
       (timer/send-after 200 me :late)
       ;; nothing should arrive in the first ~40ms
       (assert= :quiet (receive (:late :EARLY) (after 40 :quiet)))
-      (assert= :late (receive (:late :late) (after *test-wait-ms* :timeout)))))
+      (assert= :late (receive (:late :late) (after test/*wait-ms* :timeout)))))
 
   (test "the handle is a pid"
     (let (t (timer/send-after 1000 (self) :x))
@@ -33,7 +33,7 @@
 
   (test "timer/cancel is idempotent and safe on a fired timer"
     (let (me (self) t (timer/send-after 10 me :fired))
-      (assert= :fired (receive (:fired :fired) (after *test-wait-ms* :timeout)))
+      (assert= :fired (receive (:fired :fired) (after test/*wait-ms* :timeout)))
       ; already dead — no-op
       (timer/cancel t)
       (timer/cancel t))))
@@ -41,12 +41,12 @@
   (test "ticks repeatedly until cancelled"
     (let (me (self) t (timer/send-interval 20 me :beat) timer-ref (monitor t))
       ;; collect three beats, then cancel
-      (assert= :beat (receive (:beat :beat) (after *test-wait-ms* :timeout)))
-      (assert= :beat (receive (:beat :beat) (after *test-wait-ms* :timeout)))
-      (assert= :beat (receive (:beat :beat) (after *test-wait-ms* :timeout)))
+      (assert= :beat (receive (:beat :beat) (after test/*wait-ms* :timeout)))
+      (assert= :beat (receive (:beat :beat) (after test/*wait-ms* :timeout)))
+      (assert= :beat (receive (:beat :beat) (after test/*wait-ms* :timeout)))
       (timer/cancel t)
       ;; the timer is gone, so every beat it sent is already here: drain, then confirm silence
-      (assert= :down (receive ([:down ^timer-ref _ _] :down) (after *test-wait-ms* :timeout)))
+      (assert= :down (receive ([:down ^timer-ref _ _] :down) (after test/*wait-ms* :timeout)))
       (letrec (drain (fn () (receive (:beat (drain)) (after 0 nil)))) (drain))
       (assert= :quiet (receive (:beat :STILL-TICKING) (after 100 :quiet)))))
 
@@ -57,7 +57,7 @@
       (let (t (timer/send-interval 20 victim :beat)
             m (monitor t))
         (assert= :timer-exited
-          (receive ([:down ^m ^t _] :timer-exited) (after *test-wait-ms* :timeout)))))))
+          (receive ([:down ^m ^t _] :timer-exited) (after test/*wait-ms* :timeout)))))))
 
 ;; A green process's `receive` persists its deadline across resumes, so however a receive
 ;; ends — a match, a timeout, a guard that throws — the deadline has to go, or the NEXT
@@ -78,14 +78,14 @@
                      (receive (_ :when (error "guard throws") :matched) (after 20 :late))
                      (catch _ :threw))))
              (send parent :waiting)
-             (send parent [:second (receive (:go :go) (after *test-wait-ms* :stale))])))))
+             (send parent [:second (receive (:go :go) (after test/*wait-ms* :stale))])))))
 
 (describe "receive deadlines"
   (test "no way of ending a receive carries its deadline into the next one"
     (doseq (ending [:timeout :match :throw])
       (let (worker (deadline-after ending))
-        (assert= (receive (:waiting :waiting) (after *test-wait-ms* :timeout)) :waiting)
+        (assert= (receive (:waiting :waiting) (after test/*wait-ms* :timeout)) :waiting)
         (proc/sleep 60)
         (send worker :go)
-        (assert= (receive ([:second outcome] [ending outcome]) (after *test-wait-ms* :timeout))
+        (assert= (receive ([:second outcome] [ending outcome]) (after test/*wait-ms* :timeout))
           [ending :go])))))

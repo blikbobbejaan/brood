@@ -15,7 +15,7 @@
 (defn lt-collect (pid) (fn-backend (fn (s) (send pid [:line s]))))
 
 ;; Receive one line, or :timeout.
-(defn lt-line () (receive ([:line s] s) (after *test-wait-ms* :timeout)))
+(defn lt-line () (receive ([:line s] s) (after test/*wait-ms* :timeout)))
 
 ;; Tail-recursive drain of `n` lines into a list (ascending arrival order).
 (defn lt-drain (n acc)
@@ -93,8 +93,8 @@
       (info "to-lsp" {:category :lsp})
       (info "to-other")
       ;; collect the two delivered lines, tagged by which backend sent them
-      (let (a (receive ([:line tag s] [tag s]) (after *test-wait-ms* :timeout))
-            b (receive ([:line tag s] [tag s]) (after *test-wait-ms* :timeout)))
+      (let (a (receive ([:line tag s] [tag s]) (after test/*wait-ms* :timeout))
+            b (receive ([:line tag s] [tag s]) (after test/*wait-ms* :timeout)))
         (stop-logger)
         (let (lsp-line (if (= (first (captured a)) :lsp)
                          (second (captured a))
@@ -126,7 +126,7 @@
         ; wait for any prior logger to exit, and so leave the registry
         (let (watch (monitor running))
           (stop-logger)
-          (assert= (receive ([:down ^watch _ _] :down) (after *test-wait-ms* :timeout)) :down))))
+          (assert= (receive ([:down ^watch _ _] :down) (after test/*wait-ms* :timeout)) :down))))
     (is (nil? (logger)))
     ;; fallback path writes to stderr; the call must still return nil cleanly
     (assert= (info "nowhere") nil)))
@@ -151,7 +151,7 @@
     (let (me (self))
       (start-logger {:level :debug :backends [(raw-backend me :debug nil)]})
       (info "structured" {:category :lsp})
-      (let (rec (receive ([:rec r] r) (after *test-wait-ms* :timeout)))
+      (let (rec (receive ([:rec r] r) (after test/*wait-ms* :timeout)))
         (stop-logger)
         (assert= (get rec :level) :info)
         (assert= (get rec :msg) "structured")
@@ -161,7 +161,7 @@
       (start-logger {:level :debug :backends [(raw-backend me :warn nil)]})
       (info "dropped")
       (error "kept")
-      (let (rec (receive ([:rec r] r) (after *test-wait-ms* :timeout)))
+      (let (rec (receive ([:rec r] r) (after test/*wait-ms* :timeout)))
         (stop-logger)
         (assert= (get rec :msg) "kept"))))
   (test "custom and stock backends coexist on one logger"
@@ -172,11 +172,11 @@
       (let (first-message (receive
                             ([:rec r] [:rec r])
                             ([:line s] [:line s])
-                            (after *test-wait-ms* :timeout))
+                            (after test/*wait-ms* :timeout))
             second-message (receive
                              ([:rec r] [:rec r])
                              ([:line s] [:line s])
-                             (after *test-wait-ms* :timeout)))
+                             (after test/*wait-ms* :timeout)))
         (stop-logger)
         (is (not (= (first (captured first-message)) (first (captured second-message)))))))))
 
@@ -184,7 +184,7 @@
   (test "backend builds a line-backend with the documented defaults"
     (let (b (backend (fn-port (fn (s) s))))
       (is (record? b))
-      (assert= (reflect/record-id b) :log/line-backend)
+      (assert= (record-id b) :log/line-backend)
       (assert= (get b :min-level) :debug)
       (is (nil? (get b :filter)))))
   (test "a backend prints as itself, naming its sink"
@@ -193,7 +193,7 @@
       "#<log-backend #<port stderr> min=:warn>")
     (is (includes? (->string (backend (stdout-port) {:filter (fn (r) true)})) "filtered")))
   (test "file-backend writes through a file-port"
-    (assert= (reflect/record-id (get (file-backend "/tmp/brood-log-test.log") :sink)) :io/file-port))
+    (assert= (record-id (get (file-backend "/tmp/brood-log-test.log") :sink)) :io/file-port))
   (test "satisfies? reports whether a value can serve as a backend"
     (is (satisfies? 'LogBackend (stdout-backend)))
     (is (satisfies? 'LogBackend (raw-backend (self) :debug nil)))

@@ -878,7 +878,8 @@ answer that survives the grammars. Ruby's `body_statement` begins at its first
 STATEMENT, and a comment is not one, so the doc comment above a method sits outside the
 method's body and counting blocks puts it a level short — every documented method in the
 Ruby stdlib. Asking what the next code line does is right there and right everywhere."
-    (when (and (not (empty? chain)) (contains? *comment-kinds* (get (last chain) :kind)))
+    (when (and (not (empty? chain))
+            (contains? editor/treesit/*comment-kinds* (get (last chain) :kind)))
       (let (next-bol (ts-next-nonblank-bol text bol))
         (when next-bol (indent-column text lang next-bol spec tree))))))
 
@@ -1035,7 +1036,7 @@ shape `nest format` answers for Brood, and it is checked line-for-line against r
 ;; Each motion is one positional query: `%tree-sitter-kids` hands over exactly the list of
 ;; siblings, so motion cost does not grow with the file as projecting the whole tree would.
 
-(defdyn *comment-kinds*
+(defdyn editor/treesit/*comment-kinds*
   ;; Node kinds that a structural motion steps OVER rather than stopping at. A comment is
   ;; not a form: Emacs gives comments whitespace syntax, so `forward-sexp` skips them,
   ;; and a tree-sitter tree makes them ordinary named nodes — so `C-M-f` from a comment
@@ -1048,9 +1049,9 @@ shape `nest format` answers for Brood, and it is checked line-for-line against r
 
 (defn- ts-siblings (text lang point tree)
   "The named children of the node strictly containing `point` — the siblings a motion
-steps through, comments excluded (see [[*comment-kinds*]])."
+steps through, comments excluded (see [[editor/treesit/*comment-kinds*]])."
   (seq/filter (ts-kids-at text lang point tree)
-    (fn (n) (not (contains? *comment-kinds* (get n :kind))))))
+    (fn (n) (not (contains? editor/treesit/*comment-kinds* (get n :kind))))))
 
 ;; A node's offsets are ints by construction (the kernel writes them), but a `get` on a map
 ;; says `any`, and `(inc any)` is `number` — which the int-taking motions then refuse under

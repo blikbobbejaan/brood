@@ -267,7 +267,7 @@ everything via tools alone.
   `brood-for-claude.md`. The agent has to know that `def` is the loop, not
   "edit file + restart".
 - **The test registry resets per run.** `(describe …)` / `(test …)` *register*
-  by accumulating into `*units*` (`std/tool/test.blsp`); in a long-lived image,
+  by accumulating into `test/*units*` (`std/tool/test.blsp`); in a long-lived image,
   `load`ing the same test file twice would register every unit twice and
   inflate the `run-tests` count. The project test runners call `reset-units`
   before (re)loading test files, so each `run-tests` reflects exactly the
@@ -305,7 +305,7 @@ Since 2026-10-09 the whole server — transport, dispatch, JSON, error mapping a
 catalogue — is Brood (`std/tool/mcp.blsp`), routed like every other Brood `nest`
 subcommand. `crates/nest/src/mcp.rs` supplies only what the binary compiled in: the
 reference documents an agent reads as MCP resources, the prelude source and the
-`brood-task` prompt, bound as `*mcp-documents*` around the dispatcher call. No protocol
+`brood-task` prompt, bound as `mcp/*documents*` around the dispatcher call. No protocol
 crate is involved.
 
 **Transport — newline-delimited JSON, not LSP framing.** The MCP stdio transport
@@ -348,7 +348,7 @@ streamed on the stdout channel during the (synchronous) call: a Brood handler
 calls `(mcp/progress progress total message)` — a no-op without a token, so
 any handler can use it. The `check` tool reports per file
 (`checked foo.blsp`, 3/12). Mechanism: the handler runs in its own process with
-`*mcp-progress-sink*` bound; `mcp/progress` sends each report to the dispatcher,
+`mcp/*progress-sink*` bound; `mcp/progress` sends each report to the dispatcher,
 which writes the notification while it waits for the handler's answer.
 `project-check` calls it only when the `mcp` module is already loaded, so a plain
 `nest check` never loads it.

@@ -27,9 +27,9 @@
         _ (tcp/controlling-process sock (self))
         _ (tcp/set-binary sock true)
         _ (when reply
-            (receive ([:tcp ^sock _query] nil) (after *test-wait-ms* nil))
+            (receive ([:tcp ^sock _query] nil) (after test/*wait-ms* nil))
             (tcp/send sock reply))
-        answer (receive ([:answer a] a) (after *test-wait-ms* :timeout))
+        answer (receive ([:answer a] a) (after test/*wait-ms* :timeout))
         client-end (wait-closed sock))
     (send client :done)
     (tcp/close sock)

@@ -1194,7 +1194,7 @@ tests hand functions literals, and one stdlib defect no gate could see:
 - **A `:keys`/`:or` binder** lowers to `(get m k default)` — the same semantics as the
   `(if (contains? …) (get …) default)` it replaced (a present nil stays nil), one lookup
   instead of two, and the shape the `get` rule reads exactly: `40 | nil` → `40`.
-- **A value sig declared in another file** (`(sig *test-wait-ms* int)` beside the
+- **A value sig declared in another file** (`(sig test/*wait-ms* int)` beside the
   `defdyn`) is read by inference through the same heap store a cross-module arrow sig
   comes from; the checking walk already did.
 

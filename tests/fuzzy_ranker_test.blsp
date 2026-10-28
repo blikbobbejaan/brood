@@ -45,7 +45,7 @@ the strict checker flagged on `main` (2026-09-20), and rightly."
           held (fn (q options)
                  (when (= q "hold") (send me :holding) (receive (:release nil)))
                  (scorer q options))
-          session (binding (*fuzzy-scorer* held) (ranker frt-cands)))
+          session (binding (fuzzy/*scorer* held) (ranker frt-cands)))
       (do
         (rank-async session "hold" 3)
         (receive (:holding nil) (after 5000 (/error "the session never started ranking")))
@@ -73,7 +73,7 @@ the strict checker flagged on `main` (2026-09-20), and rightly."
     ;; a dynamic binding does not reach a spawned process, so `ranker` captures it — without
     ;; that, a session made under custom rules would quietly rank by the default ones
     (let (by-length (fn (q options) (fn (cand) (- 0 (string/length cand))))
-          session (binding (*fuzzy-scorer* by-length) (ranker ["xxx" "z" "yy"])))
+          session (binding (fuzzy/*scorer* by-length) (ranker ["xxx" "z" "yy"])))
       (do
         (rank-async session "q" 3)
         (assert= ["q" (list "z" "yy" "xxx")] (frt-await session))

@@ -26,7 +26,7 @@ the same by hand.")
   "True if `x` is an application made by [[defapp]] or [[new]].
 
     (application/app? (application/new 'store {:start (fn () nil)}))   ;~> true"
-  (and (record? x) (= (reflect/record-id x) :application/app)))
+  (and (record? x) (= (record-id x) :application/app)))
 
 (defn new (name opts)
   "The application called `name` from `opts`: `:start` (a function of no arguments

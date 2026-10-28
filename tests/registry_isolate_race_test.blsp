@@ -55,13 +55,13 @@
           hammer-monitor (monitor hammer)
           ;; Head start: the hammer's first iteration autoloads `table`, and the
           ;; cycles below are fast enough to finish before it registers anything.
-          _ (receive ([:hammering ^hammer] :ok) (after *test-wait-ms* :timeout))
+          _ (receive ([:hammering ^hammer] :ok) (after test/*wait-ms* :timeout))
           resurrected (fold (range 2000)
                         0
                         (fn (acc _) (if (ki89-cycle-once) (+ acc 1) acc))))
       (table/put stop :stop true)
       ; the hammer has stopped registering
-      (receive ([:down ^hammer-monitor ^hammer _] :ok) (after *test-wait-ms* :timeout))
+      (receive ([:down ^hammer-monitor ^hammer _] :ok) (after test/*wait-ms* :timeout))
       (ki89-cleanup)
       ;; Liveness first: the hammer must actually have been registering, or the case
       ;; is vacuous (it once died silently on a renamed builtin and "passed").

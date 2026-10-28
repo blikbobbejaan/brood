@@ -37,13 +37,13 @@ passes. A report that does not match belongs to another test — drop it and kee
 (defn- crash-report-next-of (pids)
   "The next report naming one of `pids`."
   (crash-report-next-where (fn (text) (any? pids (fn (pid) (includes? text (pr-str pid)))))
-    (+ (os/now) *test-wait-ms*)))
+    (+ (os/now) test/*wait-ms*)))
 
 (defn- crash-report-next-saying (fragment)
   "The next report containing `fragment` — for a crash whose pid the test never sees
 (a `spawn-link`ed grandchild)."
   (crash-report-next-where (fn (text) (includes? text fragment))
-    (+ (os/now) *test-wait-ms*)))
+    (+ (os/now) test/*wait-ms*)))
 
 (defn- crash-report-quiet-where? (match? deadline)
   "True if no report satisfying `match?` arrives before `deadline`."
@@ -199,7 +199,7 @@ passes. A report that does not match belongs to another test — drop it and kee
         (telemetry/stop-watch-runtime watcher)
         ;; the watcher has disarmed and exited
         (assert= :down
-          (receive ([:down ^watcher-ref _ _] :down) (after *test-wait-ms* :timeout)))
+          (receive ([:down ^watcher-ref _ _] :down) (after test/*wait-ms* :timeout)))
         ;; the watcher leaving does not take the reporter with it
         (is (running?))
         (assert= 1 (count (proc/system-monitor :all))))

@@ -74,7 +74,7 @@
       (cast pid :idle)
       (receive
         ([:answer value] (assert= [:x] value))
-        (after *test-wait-ms* (assert= [:x] :timeout)))
+        (after test/*wait-ms* (assert= [:x] :timeout)))
       (stop pid))))
 
 (describe "defstatem: state timeouts"
@@ -108,14 +108,14 @@
       (cast pid :finish)
       (receive
         ([:terminated reason] (assert= :normal reason))
-        (after *test-wait-ms* (assert= :normal :timeout)))
+        (after test/*wait-ms* (assert= :normal :timeout)))
       (eventually "the machine exited" (fn () (not (proc/alive? pid))))))
   (test "gen/stop runs terminate too"
     (let (pid (start reporter (self)))
       (stop pid)
       (receive
         ([:terminated reason] (assert= :normal reason))
-        (after *test-wait-ms* (assert= :normal :timeout))))))
+        (after test/*wait-ms* (assert= :normal :timeout))))))
 
 (describe "defstatem: malformed definitions"
   (test "a clause that is no state, init, terminate or any is an error"
@@ -144,10 +144,10 @@
                  (stop pid))))
       (assert= (map (range 0 6) (fn (i) [i]))
         (sort (map (range 0 6)
-                (fn (_) (receive ([:done value] value) (after *test-wait-ms* :timeout))))))))
+                (fn (_) (receive ([:done value] value) (after test/*wait-ms* :timeout))))))))
   (test "one machine answers many processes at once"
     (let (me (self) pid (start door 7))
       (doseq (_ (range 0 8)) (spawn (send me [:saw (call pid :state)])))
       (assert= (seq/repeat 8 :locked)
-        (map (range 0 8) (fn (_) (receive ([:saw state] state) (after *test-wait-ms* :timeout)))))
+        (map (range 0 8) (fn (_) (receive ([:saw state] state) (after test/*wait-ms* :timeout)))))
       (stop pid))))

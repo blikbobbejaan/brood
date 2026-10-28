@@ -193,16 +193,16 @@ dev/release parity for package-rooting (ADR-070). Errors if `root` is nil (not i
     (project/project-check-brood-version)
     ;; Project source dirs first, then resolved dependency dirs (so a project
     ;; module wins a stem clash with a dep — matches `*load-path*` ordering).
-    ;; `*project-dependencies*` only — never `*project-dev-dependencies*` (ADR-172): a
+    ;; `project/*dependencies*` only — never `project/*dev-dependencies*` (ADR-172): a
     ;; `:dev-dependencies` is test/dev-only, so it is deliberately excluded from the
     ;; shipped bundle. (This is the payoff of keeping dev-deps in their own slot.)
-    (let (src-dirs (project/abs-paths root *project-source-paths*)
+    (let (src-dirs (project/abs-paths root project/*source-paths*)
           ;; `ensure-deps` resolves the deps AND, via `package-register-rooting`, writes each
           ;; dep module's ROOTED name → path into `*module-files*` — the exact map the
           ;; dep-embedding below reads. Returns the dep source dirs (used only to attribute
           ;; those registry entries to a bundled dep).
-          dep-dirs (if *project-dependencies*
-                     (do (package/ensure-deps root *project-dependencies*))
+          dep-dirs (if project/*dependencies*
+                     (do (package/ensure-deps root project/*dependencies*))
                      nil))
       ;; The ROOT PROJECT's own modules are embedded by their UNROOTED require-name
       ;; (`src/main.blsp` → `main`, `src/sse.blsp` → `sse`) — a single package cannot
@@ -260,7 +260,7 @@ dev/release parity for package-rooting (ADR-070). Errors if `root` is nil (not i
 ;; cheap half of that check is not left optional. Found by `nest release` succeeding in
 ;; the brood repo itself, which has no Brood app and therefore no entry point.
 (defn- bundle-reject-missing-entry (names)
-  (let (entry (or *project-main-override* *project-main*)
+  (let (entry (or project/*main-override* project/*main*)
         modname (->string (first entry)))
     (unless (or (includes? names modname)
               ;; A baked-in std module as the entry is odd but not this guard's business
@@ -340,15 +340,15 @@ dev/release parity for package-rooting (ADR-070). Errors if `root` is nil (not i
 ;; context. A dependency contributes every embedded module key prefixed by its `:name`; the
 ;; short names (the part after `pkg/`) are that package's intra-package set — the same map
 ;; `%register-package-modules!` builds from disk deps at `setup`. Deps are known from
-;; the embedded manifest (`*project-dependencies*`, already applied); their paths are gone,
+;; the embedded manifest (`project/*dependencies*`, already applied); their paths are gone,
 ;; but the bundle needs only the names. The root project's own modules stay unrooted (they
 ;; are not registered here), so they load at ROOT, matching how `bundle-collect` embedded them.
 (defn- bundle-register-dep-rooting ()
-  ;; `*project-bundled-packages*` is the FULL rooted-package set `bundle-collect` baked into the
+  ;; `project/*bundled-packages*` is the FULL rooted-package set `bundle-collect` baked into the
   ;; manifest (transitive deps included) — use it. Fall back to the direct `:dependencies` names
   ;; for a bundle built before this field existed (its transitive deps stay unrooted, as before).
-  (let (dep-names (or *project-bundled-packages*
-                    (map *project-dependencies* (fn (d) (->string (get d :name)))))
+  (let (dep-names (or project/*bundled-packages*
+                    (map project/*dependencies* (fn (d) (->string (get d :name)))))
         keys (%bundle-module-names))
     (map dep-names
       (fn (pkg)
@@ -433,7 +433,7 @@ dev/release parity for package-rooting (ADR-070). Errors if `root` is nil (not i
     ;; `:use`/`require` resolve through the same embedded table, and require is
     ;; idempotent — so a `(:use foo)` in the first module pulls `foo` on demand.
     (map (%bundle-module-names) (fn (key) (require-one (bundle-require-name key))))
-    (let (entry (or *project-main-override* *project-main*))
+    (let (entry (or project/*main-override* project/*main*))
       ;; No `%root-module-name` here (unlike `run`): a bundle's own modules are embedded
       ;; under their require-name and the rooting context is rebuilt above.
       [(first entry) (second entry) sections])))
@@ -686,7 +686,7 @@ it is asked. See [[build-info-report]] for the printed form.
           :built-at (project/plist-get opts :built-at)
           :built-with (project/plist-get opts :built-with)
           :module-count (count (%bundle-module-names))))
-      (let (root (or *project-root* (project/find-root (file/cwd))))
+      (let (root (or project/*root* (project/find-root (file/cwd))))
         (if (nil? root)
           base
           ;; check-allow :discarded-catch — a best-effort cache, manifest or git read/write: absence is the answer

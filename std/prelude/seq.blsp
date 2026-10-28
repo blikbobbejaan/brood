@@ -693,7 +693,7 @@ callers a type.
 ;; The run's state table while `seq/transduce` builds a transducer stack (ADR-421) — read by
 ;; `seq/stage-slot`. Declared here, not in `std/seq`, because a `defdyn` is an ambient root name
 ;; and the stdlib image attributes root globals to modules: the prelude is the root's home.
-(defdyn *transduce-run* nil)
+(defdyn seq/*transduce-run* nil)
 
 (defn %xmap (f)
   "The `map` stage as a transducer — internal; published as `seq/xmap`."

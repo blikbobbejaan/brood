@@ -134,7 +134,7 @@
         (assert= (fuzzy/top q rank-corpus k) (take (fuzzy/filter q rank-corpus) k))))))
 
 ;; ---- sharding across processes ----------------------------------------------
-;; Past *fuzzy-parallel-min* candidates a ranking is split across *fuzzy-workers*
+;; Past fuzzy/*parallel-min* candidates a ranking is split across fuzzy/*workers*
 ;; processes and merged. The merge has to be invisible: same candidates, same order.
 
 (def- big-corpus
@@ -144,12 +144,12 @@
   (test "a sharded ranking is identical to the single-process one"
     (doseq (q (list "view" "v9" "mod_42" "srcview" "zzq"))
       (assert= (fuzzy/top q big-corpus 20)
-        (binding (*fuzzy-parallel-min* 1000000) (fuzzy/top q big-corpus 20)))))
+        (binding (fuzzy/*parallel-min* 1000000) (fuzzy/top q big-corpus 20)))))
   (test "and identical to sorting the whole set"
     (assert= (fuzzy/top "v9" big-corpus 20) (take (fuzzy/filter "v9" big-corpus) 20)))
   (test "one worker is the same answer as eight"
-    (assert= (binding (*fuzzy-workers* 1) (fuzzy/top "view_9" big-corpus 10))
-      (binding (*fuzzy-workers* 8) (fuzzy/top "view_9" big-corpus 10))))
+    (assert= (binding (fuzzy/*workers* 1) (fuzzy/top "view_9" big-corpus 10))
+      (binding (fuzzy/*workers* 8) (fuzzy/top "view_9" big-corpus 10))))
   ;; A worker runs a pure fold, so it only dies through a scorer that throws — and then the
   ;; caller must still answer. The straggler is killed and its slice ranked in the caller,
   ;; where the same scorer raises: an error you can see, not a loop that hangs.
@@ -160,8 +160,8 @@
   ;; whatever still landed later. Before the sweep, a 1 ms budget over this corpus stranded
   ;; seven replies per ranking, forever.
   (test "a ranking that times out leaves nothing in the caller's mailbox"
-    (let (answer (binding (*fuzzy-parallel-min* 1000000) (fuzzy/top "view_9" big-corpus 5))
-          timed-out (binding (*fuzzy-worker-timeout-ms* 1) (fuzzy/top "view_9" big-corpus 5))
+    (let (answer (binding (fuzzy/*parallel-min* 1000000) (fuzzy/top "view_9" big-corpus 5))
+          timed-out (binding (fuzzy/*worker-timeout-ms* 1) (fuzzy/top "view_9" big-corpus 5))
           ;; give every killed worker time to finish and send, then let one ordinary
           ;; ranking run — its first act is to discard what the timed-out one stranded
           _ (receive (:never nil) (after 600 nil))
@@ -172,31 +172,31 @@
       (assert= timed-out answer) ; the answer is whole either way
       (assert= strays 0)))
   (test "a scorer that throws does not hang the ranking"
-    (assert-error (binding (*fuzzy-scorer* (fn (q options) (fn (c) (throw :boom)))
-                            *fuzzy-worker-timeout-ms* 200)
+    (assert-error (binding (fuzzy/*scorer* (fn (q options) (fn (c) (throw :boom)))
+                            fuzzy/*worker-timeout-ms* 200)
                     (fuzzy/top "view" big-corpus 5)))))
 
 ;; ---- the rules are still replaceable ----------------------------------------
-;; The reason the hot path stayed Brood: bind *fuzzy-scorer* and every ranking follows —
+;; The reason the hot path stayed Brood: bind fuzzy/*scorer* and every ranking follows —
 ;; including the sharded one, whose workers must be HANDED the scorer rather than inheriting
 ;; a dynamic binding (they don't — bindings are per-process).
 
 (def- shortest-first (fn (q options) (fn (c) (if (includes? c q) (- 0 (string/length c)) nil))))
 
-(describe "*fuzzy-scorer*"
+(describe "fuzzy/*scorer*"
   (test "a custom scorer replaces the rules"
-    (assert= (binding (*fuzzy-scorer* shortest-first)
+    (assert= (binding (fuzzy/*scorer* shortest-first)
                (fuzzy/top "o" (list "foo-bar" "fo" "foobar" "zz") 3))
       (list "fo" "foobar" "foo-bar")))
   (test "a custom scorer reaches the sharded path too"
-    (assert= (binding (*fuzzy-scorer* shortest-first) (fuzzy/top "view_9" big-corpus 2))
-      (binding (*fuzzy-scorer* shortest-first *fuzzy-parallel-min* 1000000)
+    (assert= (binding (fuzzy/*scorer* shortest-first) (fuzzy/top "view_9" big-corpus 2))
+      (binding (fuzzy/*scorer* shortest-first fuzzy/*parallel-min* 1000000)
         (fuzzy/top "view_9" big-corpus 2))))
   (test "scorer composes — it is a value, not a rule buried in the walk"
     (let (boosted (fn (q options)
                     (let (base (fuzzy/scorer q options))
                       (fn (c) (let (s (base c)) (if (nil? s) nil (+ s 100)))))))
-      (assert= (binding (*fuzzy-scorer* boosted) (fuzzy/top "fb" rank-corpus 5))
+      (assert= (binding (fuzzy/*scorer* boosted) (fuzzy/top "fb" rank-corpus 5))
         (fuzzy/top "fb" rank-corpus 5)))))
 
 (describe "fuzzy/edit-distance"

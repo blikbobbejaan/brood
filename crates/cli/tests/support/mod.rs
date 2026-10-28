@@ -530,7 +530,7 @@ thing worth catching (an imaged boot that records none takes stdlib `M-.` down).
 ;; whole image at index-install time, before any section loads — deliberately, because a
 ;; section may be materialised at any moment and the mark has to precede it
 ;; (`startup_image.rs`, the v5 directory footer). So an imaged boot carries dynamic marks for
-;; ~49 names in modules it never loaded (`*project-name*`, `*repl-prompt*`, `*test-filter*`),
+;; ~49 names in modules it never loaded (`project/*name*`, `repl/*prompt*`, `test/*filter*`),
 ;; and a boot with no artifacts does not. That difference is intended, documented and
 ;; monotonic, and it is invisible to the per-global lines below because those iterate bound
 ;; names only. Comparing UNBOUND facts would therefore fail the matrix on a design decision

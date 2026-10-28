@@ -62,8 +62,8 @@ version strings that exist for it; `deps-fn` maps a name + a version to that rel
 ;; PubGrub does not backtrack exponentially, so on a well-formed graph the budget is never
 ;; approached. It remains as a guard against a pathological input (or a bug) hanging the
 ;; process. Both are dynvars so a genuinely huge workspace can raise them.
-(defdyn *resolver-time-budget-ms* 10000)
-(defdyn *resolver-max-steps* 2000000)
+(defdyn resolver/*time-budget-ms* 10000)
+(defdyn resolver/*max-steps* 2000000)
 
 ;; The step counter, read as the int it is — `table/get` itself types as `any`, so this is
 ;; trusted, not verified: a table carries no value type.
@@ -75,10 +75,10 @@ version strings that exist for it; `deps-fn` maps a name + a version to that rel
         n (+ 1 (resolver-step-count steps)))
     (table/put steps :n n)
     (when (and (= 0 (math/rem n 256))
-            (> (- (os/now) (table/get steps :start 0)) *resolver-time-budget-ms*))
-      (resolver-budget-exceeded (str "did not finish within " *resolver-time-budget-ms* " ms")))
-    (when (> n *resolver-max-steps*)
-      (resolver-budget-exceeded (str "exceeded " *resolver-max-steps* " search steps")))))
+            (> (- (os/now) (table/get steps :start 0)) resolver/*time-budget-ms*))
+      (resolver-budget-exceeded (str "did not finish within " resolver/*time-budget-ms* " ms")))
+    (when (> n resolver/*max-steps*)
+      (resolver-budget-exceeded (str "exceeded " resolver/*max-steps* " search steps")))))
 
 (defn- resolver-budget-exceeded (why)
   (throw {:resolver-budget-exceeded true

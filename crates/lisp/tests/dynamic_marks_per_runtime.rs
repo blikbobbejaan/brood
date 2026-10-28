@@ -4,7 +4,7 @@
 //! afterwards. While that set was a process-wide static, two runtimes in one process (cargo
 //! test threads, an embedder with several `Interp`s) shared it, so one runtime's restore
 //! dropped the marks another had added meanwhile — and `stdimage/build` refused with "root
-//! global(s) belong to no module … *fuzzy-workers*" when a sibling runtime built at the same
+//! global(s) belong to no module … fuzzy/*workers*" when a sibling runtime built at the same
 //! time. Both directions are pinned here, with the interleaving forced by file handshakes
 //! rather than left to timing: runtime A sits inside `%isolate` while runtime B declares.
 

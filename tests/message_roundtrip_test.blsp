@@ -16,7 +16,7 @@
   (let (me (self) w (spawn (echo me)))
     (do
       (send w v)
-      (receive ([:echoed back] back) (after *test-wait-ms* :timeout)))))
+      (receive ([:echoed back] back) (after test/*wait-ms* :timeout)))))
 
 ;; a random depth-bounded value: ints/bignums/floats/strings/keywords at the
 ;; leaves, lists/vectors/maps in the interior. Deliberately non-tail — the
@@ -82,7 +82,7 @@
     (do
       (send h [:hold f])
       (send h [:call me])
-      (receive ([:got v] v) (after *test-wait-ms* :timeout)))))
+      (receive ([:got v] v) (after test/*wait-ms* :timeout)))))
 
 (describe "closures survive a send by either route (shared handle or copy)"
   (test "a closure capturing no locals runs correctly on the receiver"
@@ -126,7 +126,7 @@
           _ (send h [:hold reload-thunk])
           _ (def reload-target 50)
           _ (send h [:call me]))
-      (assert= 100 (receive ([:got v] v) (after *test-wait-ms* :timeout))))))
+      (assert= 100 (receive ([:got v] v) (after test/*wait-ms* :timeout))))))
 
 ;; ---- receive-mark (ADR-195) -------------------------------------------------
 ;; A `receive` whose every clause pins a ref THIS process minted may skip messages that
@@ -141,8 +141,8 @@
     (let (_ (send (self) [:early 1])
           r (ref)
           _ (send (self) [:reply r :pong])
-          got (receive ([:reply ^r v] v) (after *test-wait-ms* :timeout))
-          leftover (receive ([:early n] n) (after *test-wait-ms* :timeout)))
+          got (receive ([:reply ^r v] v) (after test/*wait-ms* :timeout))
+          leftover (receive ([:early n] n) (after test/*wait-ms* :timeout)))
       (assert= :pong got)
       (assert= 1 leftover)))
 
@@ -155,9 +155,9 @@
                      (do
                        (send me [:handoff theirs])
                        (send me [:reply theirs :from-elsewhere]))))
-          their-ref (receive ([:handoff x] x) (after *test-wait-ms* :timeout))
+          their-ref (receive ([:handoff x] x) (after test/*wait-ms* :timeout))
           _ (ref) ; mint ours AFTER their reply is already queued
-          got (receive ([:reply ^their-ref v] v) (after *test-wait-ms* :timeout)))
+          got (receive ([:reply ^their-ref v] v) (after test/*wait-ms* :timeout)))
       (assert= :from-elsewhere got)))
 
   (test "a second ref evicts the mark; the first ref still receives"
@@ -167,8 +167,8 @@
           _ (send (self) [:reply r1 :first])
           r2 (ref)
           _ (send (self) [:reply r2 :second])
-          got1 (receive ([:reply ^r1 v] v) (after *test-wait-ms* :timeout))
-          got2 (receive ([:reply ^r2 v] v) (after *test-wait-ms* :timeout)))
+          got1 (receive ([:reply ^r1 v] v) (after test/*wait-ms* :timeout))
+          got2 (receive ([:reply ^r2 v] v) (after test/*wait-ms* :timeout)))
       (assert= :first got1)
       (assert= :second got2)))
 
@@ -176,8 +176,8 @@
     (let (r (ref)
           _ (send (self) [:reply r :a])
           _ (send (self) [:reply r :b])
-          a (receive ([:reply ^r v] v) (after *test-wait-ms* :timeout))
-          b (receive ([:reply ^r v] v) (after *test-wait-ms* :timeout)))
+          a (receive ([:reply ^r v] v) (after test/*wait-ms* :timeout))
+          b (receive ([:reply ^r v] v) (after test/*wait-ms* :timeout)))
       (assert= :a a)
       (assert= :b b)))
 
@@ -185,7 +185,7 @@
     (let (r (ref)
           _ (send (self) [:early 2]))
       (assert= :timeout (receive ([:reply ^r v] v) (after 50 :timeout)))
-      (assert= 2 (receive ([:early n] n) (after *test-wait-ms* :timeout)))))
+      (assert= 2 (receive ([:early n] n) (after test/*wait-ms* :timeout)))))
 
   (test "a real round trip through another process, with a backlog queued first"
     (let (me (self)
@@ -193,9 +193,9 @@
           _ (send me [:junk :b])
           r (ref)
           _ (spawn (echo-ref me r))
-          got (receive ([:reply ^r v] v) (after *test-wait-ms* :timeout))
-          j1 (receive ([:junk x] x) (after *test-wait-ms* :timeout))
-          j2 (receive ([:junk x] x) (after *test-wait-ms* :timeout)))
+          got (receive ([:reply ^r v] v) (after test/*wait-ms* :timeout))
+          j1 (receive ([:junk x] x) (after test/*wait-ms* :timeout))
+          j2 (receive ([:junk x] x) (after test/*wait-ms* :timeout)))
       (assert= :pong got)
       (assert= :a j1)
       (assert= :b j2))))

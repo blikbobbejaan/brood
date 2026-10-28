@@ -63,7 +63,7 @@ client died or the link dropped), returns `:close` — which `ui-run` treats as 
 immediate quit, tearing the session down.
 
 Any OTHER mailbox message is returned as app input, matching the local displays
-(`gui-display`/`*term-display*` poll the whole mailbox): a served app's async event
+(`gui-display`/`editor/ui/*term-display*` poll the whole mailbox): a served app's async event
 bus — spawned-task replies, buffer-process pushes (`[:buffer-updated …]`), redirected
 output — reaches its `update` exactly as it would locally. Without the pass-through
 those messages would strand in the session's mailbox (a selective receive never
@@ -313,7 +313,7 @@ frame taken so far, nil at the start."
 
 (defn- attach-ship-key (session key)
   "Ship one terminal `key` to the daemon's `session`, with whether a key is down here."
-  (send session [:key key (display-key-held? *term-display*)]))
+  (send session [:key key (display-key-held? editor/ui/*term-display*)]))
 
 (defn- attach-loop (peer session)
   "The thin client loop: ship any key the terminal already has, FIRST (ADR-490); then draw

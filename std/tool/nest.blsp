@@ -993,7 +993,7 @@ the user config supplies `:registry`, which a `:version` dependency resolves aga
   ;; terminal guard for a panic unwind.
   (if (load-project-image)
     (do
-      (repl/start-in! (first *project-main*))
+      (repl/start-in! (first project/*main*))
       (eputs "nest repl — project sources loaded, in the project's main namespace; Ctrl-D to exit"))
     (eputs "nest repl — no project.blsp here; plain REPL (`brood` would do the same)"))
   (repl/run)

@@ -350,10 +350,10 @@ fn param_inference_respects_shadowing() {
 #[test]
 fn earmuffed_global_types_as_unknown_not_its_default() {
     // A `*earmuffed*` global is dynamic by convention — declared with a `nil` default
-    // but reassigned at runtime (e.g. `*project-root*`) — so the checker must NOT pin
+    // but reassigned at runtime (e.g. `project/*root*`) — so the checker must NOT pin
     // it to `nil` and flag a string-demanding use. (Regression guard for the false
     // positive the sound param-inference tier would otherwise surface at, e.g.,
-    // `(path-join *project-root* rel)` after its `nil?` guard.)
+    // `(path-join project/*root* rel)` after its `nil?` guard.)
     let w = check_with_defs(&["(def *root* nil)"], "(string/length *root*)");
     assert!(
         w.is_empty(),

@@ -93,7 +93,7 @@
                      (do (require-one 'reqrace-mod) (reqrace-mod/ready))
                      (catch e [:err (error-message e)]))])))
       (let (results (map (range 8)
-                      (fn (_) (receive ([:req-race r] r) (after *test-wait-ms* :timeout)))))
+                      (fn (_) (receive ([:req-race r] r) (after test/*wait-ms* :timeout)))))
         (reflect/set-load-path saved-path)
         (file/rm path)
         (is (every? results (fn (r) (= r :ok)))))))

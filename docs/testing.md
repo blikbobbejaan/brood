@@ -107,9 +107,9 @@ a trace is for — the duration and where the test is declared:
 
 It is **opt-in**, and replaces the dots rather than adding to them. The line is
 printed when the test *finishes*, which is what makes the outcome colour possible; a
-hung test still surfaces, because the runner hard-kills it at `*test-timeout-ms*` and
+hung test still surfaces, because the runner hard-kills it at `test/*timeout-ms*` and
 reports it as a timed-out failure. Lines from parallel workers interleave, in waves
-of `*parallel-batch*`.
+of `test/*parallel-batch*`.
 
 **`--formatter <name>`** emits machine-readable output instead of the human report:
 `tap` (TAP version 13, for a CI that speaks it) or `json` (one object carrying the
@@ -382,7 +382,7 @@ overridable as above):
 | knob | default | effect |
 | --- | --- | --- |
 | `*test-slow-ms*` | 1000 | a test over this is **listed** (name + duration) under the summary — still **passes**; informational only |
-| `*test-timeout-ms*` | 120000 | a test over this is **hard-killed** (`(exit worker :kill)`) and **fails** as `test timed out after Ns` |
+| `test/*timeout-ms*` | 120000 | a test over this is **hard-killed** (`(exit worker :kill)`) and **fails** as `test timed out after Ns` |
 
 So a test between the two (1s ≤ t < 120s) is listed but passes; at/over the timeout it's killed and fails. Keep slow < timeout.
 
@@ -390,7 +390,7 @@ So a test between the two (1s ≤ t < 120s) is listed but passes; at/over the ti
 test that exceeds it is **hard-killed** (`(exit worker :kill)`, ADR-063 — so even a
 tight infinite loop is stopped, not just a `receive`-blocked one) and reported as a
 `test timed out after Ns` failure, rather than dragging or wedging the whole suite.
-Override per run with `:timeout MS`, or globally by rebinding `*test-timeout-ms*`.
+Override per run with `:timeout MS`, or globally by rebinding `test/*timeout-ms*`.
 Tests in a batch start together, so the budget is effectively per-test. Any test
 over **1 s** (passing or not) is also listed automatically under the summary.
 

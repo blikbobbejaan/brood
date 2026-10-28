@@ -7,7 +7,7 @@
 (describe "proc/register binds only the living"
   (test "a pid that has already exited binds nothing"
     (let ([gone r] (spawn-monitor :done))
-      (receive ([:down ^r _ _] nil) (after *test-wait-ms* nil))
+      (receive ([:down ^r _ _] nil) (after test/*wait-ms* nil))
       ;; the same outcome as registering it and the process exiting: no binding
       (assert= gone (proc/register :proc-register-test-corpse gone))
       (assert= nil (proc/whereis :proc-register-test-corpse))))
@@ -15,7 +15,7 @@
   (test "a dead pid does not displace a live holder"
     (let (holder (spawn (receive (:stop nil)))
           [gone r] (spawn-monitor :done))
-      (receive ([:down ^r _ _] nil) (after *test-wait-ms* nil))
+      (receive ([:down ^r _ _] nil) (after test/*wait-ms* nil))
       (proc/register :proc-register-test-kept holder)
       (proc/register :proc-register-test-kept gone)
       (assert= holder (proc/whereis :proc-register-test-kept))
@@ -45,7 +45,7 @@
           next-owner (spawn (receive (:stop nil))))
       (proc/register :proc-register-test-freed holder)
       (send holder :stop)
-      (receive ([:down ^r _ _] nil) (after *test-wait-ms* nil))
+      (receive ([:down ^r _ _] nil) (after test/*wait-ms* nil))
       (assert= next-owner (proc/register :proc-register-test-freed next-owner))
       (assert= next-owner (proc/whereis :proc-register-test-freed))
       (proc/unregister :proc-register-test-freed)
@@ -58,5 +58,5 @@
                    (fn (_)
                      (spawn (proc/register :proc-register-test-race (self)))))
           refs (seq/mapv racers monitor))
-      (doseq (r refs) (receive ([:down ^r _ _] nil) (after *test-wait-ms* nil)))
+      (doseq (r refs) (receive ([:down ^r _ _] nil) (after test/*wait-ms* nil)))
       (assert= nil (proc/whereis :proc-register-test-race)))))

@@ -823,7 +823,7 @@
     acc
     (receive
       ([:called arg r] (c-collect-calls (- n 1) (assoc acc arg r)))
-      (after *test-wait-ms* (assoc acc :timeout n)))))
+      (after test/*wait-ms* (assoc acc :timeout n)))))
 
 (describe "contracts across processes"
   :isolated (test "a sig! contract is enforced in a spawned worker"
@@ -844,7 +844,7 @@
 
   (test "a worker that dies of a contract error reports it as its exit reason"
     (let ([pid m] (check-allow :type-mismatch (spawn-monitor (c-add "x" 1)))
-          reason (receive ([:down ^m ^pid r] r) (after *test-wait-ms* :no-down)))
+          reason (receive ([:down ^m ^pid r] r) (after test/*wait-ms* :no-down)))
       (assert= :contract (match reason ([:error m] (get m :kind)) (_ reason)))))
 
   (test "an armed sig is checked in a worker exactly when it is on the runner"

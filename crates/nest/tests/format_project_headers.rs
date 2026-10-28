@@ -1,6 +1,6 @@
 //! A project's `:format-headers` (and its `:format-plugins`' rules) reach `nest format`.
 //!
-//! `project/setup` computed the table and `def`'d `*format-headers-extra*` from inside the
+//! `project/setup` computed the table and `def`'d `format/*headers-extra*` from inside the
 //! `project` module, which namespaced it to `project/*format-headers-extra*` — the formatter
 //! reads the root dynamic var, so every project rule (Hatch's `deflive`/`on`/`tick` among
 //! them) was silently ignored. The unit tests asserted on the helper that computes the

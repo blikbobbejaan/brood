@@ -96,7 +96,7 @@ transitively-closed lock file and puts each dep's source on *load-path*."
 (defn resolve-deps (root:any deps:seqable lock:any -> any)
   "Resolve `deps` (dep records from the manifest) and everything they transitively pull in, into a flat list of resolved entries — each its dep record with `:resolved-path`/`:sha256`/`:deps` (and `:commit`/`:version`) assoc'd on, so it keeps the dep's identity and dispatches through the same `Dependency` impls. `lock` is the prior project.lock.blsp :dependencies (or nil). `:path`/`:git`/`:tarball` deps resolve to their exact source (a matching lock entry reuses the pinned commit/sha, network-free); `:registry` deps carry a version RANGE resolved to a concrete version by the backtracking resolver (ADR-209) — a fully-covering lock reuses the prior solution network-free, so pass nil (or drop names via `nest update`) to force a re-solve.
 
-    (package/resolve-deps \"/path/to/proj\" *project-dependencies* (package/read-lockfile \"/path/to/proj\"))   ;~> (…each dep record with :resolved-path :sha256 :deps…)"
+    (package/resolve-deps \"/path/to/proj\" project/*dependencies* (package/read-lockfile \"/path/to/proj\"))   ;~> (…each dep record with :resolved-path :sha256 :deps…)"
   (let (lock-index (package-lock-index lock)
         ;; Direct git/path/tarball pins override a same-named *transitive* registry
         ;; request (ADR-238): a root that pins a dep to an exact source wins over any
@@ -773,12 +773,12 @@ an http(s) URL is GET'd (following up to *package-max-redirects* redirects) and 
 
 (defn- registry-base-for (index)
   "The registry base URL: `index` when given, else the configured `:registry`."
-  (registry-trim (or index *config-registry*)))
+  (registry-trim (or index project/*config-registry*)))
 
 (defn- registry-token ()
   "The publish auth token: `$HIVE_TOKEN`, else the `:registry-token` config."
   (let (env (os/env "HIVE_TOKEN"))
-    (if (or (nil? env) (= env "")) *config-registry-token* env)))
+    (if (or (nil? env) (= env "")) project/*config-registry-token* env)))
 
 (defn- registry-release-url (base name version)
   (str base "/api/v1/packages/" (->string name) "/releases/" version))
@@ -1185,7 +1185,7 @@ say). Advisory, like every signing check: a bad or changed signature is reported
     " — pin it explicitly in your root manifest"))
 
 (defn- package-check-compatible (existing dep)
-  (if (not (= (reflect/record-id existing) (reflect/record-id dep)))
+  (if (not (= (record-id existing) (record-id dep)))
     (package-conflict dep
       (str "required as both " (dep-kind existing) " and " (dep-kind dep)))
     (dep-check-compatible existing dep)))
@@ -1209,7 +1209,7 @@ say). Advisory, like every signing check: a bad or changed signature is reported
 ;; a source file. A parse error yields `()` — the file is treated as declaring nothing and
 ;; the load surfaces the real error, matching `project-file-feature`'s tolerance.
 (defn- package-modules-by-file (files)
-  (module-index/index-files *project-root* files))
+  (module-index/index-files project/*root* files))
 
 ;; Every `.blsp` file at or under `dir`, recursively (full paths). A hierarchical
 ;; module `(defmodule gui/window)` lives at `gui/window.blsp` in a SUBdirectory
@@ -1264,7 +1264,7 @@ say). Advisory, like every signing check: a bad or changed signature is reported
 ;; is two of YOUR OWN source files declaring the same `(defmodule …)`. So only the
 ;; project's own source dirs are checked; `entries` is kept for signature stability.
 (defn- package-collision-sources (root entries)
-  (map (project/abs-paths root *project-source-paths*) (fn (d) ["your project" d])))
+  (map (project/abs-paths root project/*source-paths*) (fn (d) ["your project" d])))
 
 ;; `main` is a project's ENTRY POINT, not part of its library surface: `nest run` only
 ;; ever uses the ROOT project's `:main`, and nothing `require`s a dependency's. So two
@@ -1410,16 +1410,16 @@ temp, and the second rename would find it gone.
 (defn- package-dep-src-dir (e) (path/join (get e :resolved-path) "src"))
 
 ;; Record each `[package-name src-dir]` provider's `(defmodule …)` names under its package
-;; in `*ns-package*` (ADR-172 package identity). A static scan — the same `defmodule`-name
+;; in `project/*ns-package*` (ADR-172 package identity). A static scan — the same `defmodule`-name
 ;; reads the collision check does — so it never touches the `require`/`defmodule` hot path.
 (defn record-ns-packages (pkg-dir-pairs)
   "Record the modules of each `[package-name src-dir]` pair under that package name in the
-  ambient `*ns-package*` map. The ability system's app-vs-library seam; called at setup.
+  ambient `project/*ns-package*` map. The ability system's app-vs-library seam; called at setup.
 
-    (package/record-ns-packages [[\"json\" \"/path/to/proj/_deps/json/src\"]])   ;~> the modules under that dir now owned by package json in *ns-package*"
-  (def *ns-package*
+    (package/record-ns-packages [[\"json\" \"/path/to/proj/_deps/json/src\"]])   ;~> the modules under that dir now owned by package json in project/*ns-package*"
+  (def project/*ns-package*
     (fold pkg-dir-pairs
-      *ns-package*
+      project/*ns-package*
       (fn (m pair)
         (let (pkg (first pair)
               dir (second pair))
@@ -1444,7 +1444,7 @@ temp, and the second rename would find it gone.
 (defn ensure-deps (root deps)
   "Resolve `deps`, refresh the lock file, and return the list of source dirs to add to *load-path* (one per resolved dep). Called from `setup`; a no-op when there are no deps.
 
-    (package/ensure-deps \"/path/to/proj\" *project-dependencies*)   ;~> (\"/path/to/proj/_deps/json/src\" …) — one source dir per resolved dep"
+    (package/ensure-deps \"/path/to/proj\" project/*dependencies*)   ;~> (\"/path/to/proj/_deps/json/src\" …) — one source dir per resolved dep"
   (if (empty? deps)
     nil
     (let (entries (resolve-deps root deps (read-lockfile root)))
@@ -1452,9 +1452,9 @@ temp, and the second rename would find it gone.
       ;; A dependency may NOT share your project's package name (ADR-172): package identity
       ;; keys the ability app tier on it, so a same-named dep would silently gain app-override
       ;; rights over your own types. Detect-and-reject, like the module-collision check.
-      (when (and *project-name* (includes? (map entries :name) *project-name*))
+      (when (and project/*name* (includes? (map entries :name) project/*name*))
         (error "package: a dependency shares your project's package name '"
-          *project-name*
+          project/*name*
           "' — rename one (package identity keys the ability app tier on it, ADR-172)"))
       (package-write-lockfile-if-changed root entries)
       ;; identity: each dep's modules → the dep's `:name`.
@@ -1465,7 +1465,7 @@ temp, and the second rename would find it gone.
 
 ;; --- the `nest` verbs --------------------------------------------------------
 ;; Read the project manifest as *data* and apply it (populating the `*project-*`
-;; globals, incl. *project-dependencies*), rather than `(reflect/load)`-ing it as code:
+;; globals, incl. project/*dependencies*), rather than `(reflect/load)`-ing it as code:
 ;; the manifest's `(project …)` declaration lives in the `project` namespace now
 ;; (ADR-065), so loading it bare wouldn't resolve. Mirrors `project/setup`'s
 ;; own manifest read.
@@ -1475,7 +1475,7 @@ temp, and the second rename would find it gone.
       (when (and (pair? form) (= (first form) 'project))
         (project/apply-config (rest form))))))
 
-;; Locate the project root, load its manifest (so *project-dependencies* is set),
+;; Locate the project root, load its manifest (so project/*dependencies* is set),
 ;; and hand the root to `body-fn`. Shared preamble for the verbs below.
 (defn- package-in-project (body-fn)
   (let (root (project/require-root "package"))
@@ -1487,10 +1487,10 @@ temp, and the second rename would find it gone.
 
     (package/fetch)   ;~> the resolved lock entries, or nil when no deps are declared"
   (package-in-project (fn (root)
-                        (if (empty? *project-dependencies*)
+                        (if (empty? project/*dependencies*)
                           (do (io/puts "package: no dependencies declared") nil)
                           (let (entries (resolve-deps root
-                                          *project-dependencies*
+                                          project/*dependencies*
                                           (read-lockfile root)))
                             (package-guard-collisions root entries)
                             (write-lockfile root entries)
@@ -1505,11 +1505,11 @@ temp, and the second rename would find it gone.
     (package/update \"json\")   ;~> the re-resolved lock entries; prints \"package: updated json (3 locked)\""
   (package-in-project
     (fn (root)
-      (if (empty? *project-dependencies*)
+      (if (empty? project/*dependencies*)
         (do (io/puts "package: no dependencies declared") nil)
         (let (lock (package-lock-without (read-lockfile root)
                      (map names symbol))
-              entries (resolve-deps root *project-dependencies* lock))
+              entries (resolve-deps root project/*dependencies* lock))
           ;; Reject a namespace collision before writing the lock —
           ;; same guard `fetch`/`add` run (ADR-070). Without it,
           ;; `nest update` would write a lock for a colliding dep set
@@ -1552,12 +1552,12 @@ temp, and the second rename would find it gone.
 (defn tree ()
   "Print the resolved dependency tree of the current project (root → direct → transitive). Backs `nest tree`."
   (package-in-project (fn (root)
-                        (io/puts (or *project-name* "(this project)"))
-                        (if (empty? *project-dependencies*)
+                        (io/puts (or project/*name* "(this project)"))
+                        (if (empty? project/*dependencies*)
                           (io/puts "  (no dependencies)")
-                          (package-print-tree *project-dependencies*
+                          (package-print-tree project/*dependencies*
                             (package-index-by-name (resolve-deps root
-                                                     *project-dependencies*
+                                                     project/*dependencies*
                                                      (read-lockfile root)))
                             "  "
                             nil))
@@ -1744,7 +1744,7 @@ temp, and the second rename would find it gone.
   (package-in-project
     (fn (root)
       (let (dep (project/parse-dep (apply vector (cons (symbol name) (map spec package-spec-token)))))
-        (when (package-has-dep? *project-dependencies* (get dep :name))
+        (when (package-has-dep? project/*dependencies* (get dep :name))
           (error "package: " name " is already a dependency"))
         ;; ATOMIC: the manifest edit has to happen before
         ;; resolution (resolution reads the loaded manifest), so a
@@ -1762,7 +1762,7 @@ temp, and the second rename would find it gone.
                           (do
                             (package-load-manifest manifest)
                             (let (entries (resolve-deps root
-                                            *project-dependencies*
+                                            project/*dependencies*
                                             (read-lockfile root)))
                               (package-guard-collisions root entries)
                               (write-lockfile root entries))
@@ -1782,7 +1782,7 @@ temp, and the second rename would find it gone.
   (package-in-project
     (fn (root)
       (let (name-sym (symbol name))
-        (when (not (package-has-dep? *project-dependencies* name-sym))
+        (when (not (package-has-dep? project/*dependencies* name-sym))
           (error "package: " name " is not a dependency"))
         (let (manifest (path/join root "project.blsp")
               target (package-git-target root name-sym))
@@ -1792,7 +1792,7 @@ temp, and the second rename would find it gone.
           (package-load-manifest manifest)
           ; drop its _deps/ cache, if any
           (when (file/dir? target) (%rm-rf target))
-          (write-lockfile root (resolve-deps root *project-dependencies* (read-lockfile root)))
+          (write-lockfile root (resolve-deps root project/*dependencies* (read-lockfile root)))
           (io/puts (str "package: removed " name)))))))
 
 ;; --- `nest search` / `nest publish` (hive HTTP API) -------------------------
@@ -1887,7 +1887,7 @@ construction, which is the point — see `registry-build-tarball`."
   depend on what you last built is not reproducible. The excludes are applied to that list
   here, in Brood: tar's `--exclude` patterns do not match explicitly named members."
   (let (out (path/join (package-deps-dir root)
-              (str *project-name* "-" *project-version* ".tar.gz")))
+              (str project/*name* "-" project/*version* ".tar.gz")))
     (file/mkdir (package-deps-dir root))
     (when (file/exists? out) (file/rm out))
     (let (code (os/run-process "tar" (into ["-czf" out "-C" root] (registry-source-files root))))
@@ -1899,8 +1899,8 @@ construction, which is the point — see `registry-build-tarball`."
   "The project's `:version` (registry) dependencies as a vector of `{:name :version}` —
   the only deps a published package can carry on the registry. Path/git/tarball deps
   are local, so they are omitted (with a warning)."
-  (let (registry-deps (seq/filter *project-dependencies* (fn (d) (= (dep-kind d) :registry)))
-        other (seq/filter *project-dependencies* (fn (d) (not (= (dep-kind d) :registry)))))
+  (let (registry-deps (seq/filter project/*dependencies* (fn (d) (= (dep-kind d) :registry)))
+        other (seq/filter project/*dependencies* (fn (d) (not (= (dep-kind d) :registry)))))
     (dolist (d other)
       (io/puts (str "package: warning — omitting non-registry dependency "
                  (->string (get d :name))
@@ -1914,7 +1914,7 @@ construction, which is the point — see `registry-build-tarball`."
   "The project's `:enhances` map with STRING keys — JSON has no symbols, and the
 registry indexes these names to answer \"which packages plug into X\". `{}` for an
 ordinary library, which the server stores as \"nothing\"."
-  (fold (%map-pairs *project-enhances*)
+  (fold (%map-pairs project/*enhances*)
     {}
     (fn (acc [name constraint]) (assoc acc (->string name) constraint))))
 
@@ -1982,8 +1982,8 @@ to overwrite an existing key unless `:force true`. Backs `nest key gen`.
     (if (nil? key)
       nil
       [(encoding/hex-encode-bytes (crypto/sign (encoding/hex-decode-bytes (get key :private))
-                                    (package-signing-payload *project-name*
-                                      *project-version* checksum)))
+                                    (package-signing-payload project/*name*
+                                      project/*version* checksum)))
         (get key :public)])))
 
 (defn publish-brood-constraint (declared)
@@ -2028,20 +2028,20 @@ client nor server builds a base64/JSON copy of the whole upload (streaming publi
 docs/design.md in hive). For an EXTERNAL publish there is no body and `source-url` names where
 the bytes live (ADR-211); pass nil for a hosted publish. When the release is signed, `signature`
 + `pubkey` (hex) travel here too (ADR-212); pass nil for both when unsigned."
-  (let (meta {:name *project-name*
-              :version *project-version*
-              :description (or *project-description* "")
+  (let (meta {:name project/*name*
+              :version project/*version*
+              :description (or project/*description* "")
               ;; the runtime-version constraint this release needs (ADR-209): the registry
               ;; stores it per release so the RESOLVER can exclude a release the running
               ;; brood can't satisfy, instead of it only being caught at setup on the root.
-              :brood (publish-brood-constraint *project-brood*)
+              :brood (publish-brood-constraint project/*brood*)
               :dependencies (registry-publishable-deps)
               ;; what this package plugs into (Debian's `Enhances:`) — the registry stores it
               ;; and can filter on its names, without knowing what any of them are
               :enhances (registry-publishable-enhances)
               ;; the package's kind — "app" or "library" (the default) — so the registry can
               ;; list applications apart from the libraries everything depends on
-              :kind (->string *project-kind*)
+              :kind (->string project/*kind*)
               :checksum checksum}
         with-source (if (and source-url (not (= source-url "")))
                       (assoc meta :source_url source-url)
@@ -2067,13 +2067,13 @@ published is refused. Backs `nest publish`.
     (package-in-project (fn (root)
                           (let (base (registry-base-for index)
                                 token (registry-token))
-                            (when (nil? *project-name*) (error "package: project has no :name"))
-                            (when (reflect/reserved-package-name? *project-name*)
+                            (when (nil? project/*name*) (error "package: project has no :name"))
+                            (when (reflect/reserved-package-name? project/*name*)
                               (error "package: cannot publish — the project name '"
-                                *project-name*
+                                project/*name*
                                 "' is reserved by the standard library (it owns the '"
-                                *project-name* "' module namespace); rename the project"))
-                            (when (nil? *project-version*)
+                                project/*name* "' module namespace); rename the project"))
+                            (when (nil? project/*version*)
                               (error "package: nothing to publish — the project has no :version"))
                             (when (or (nil? token) (= token ""))
                               (error "package: publishing needs an auth token — set $HIVE_TOKEN (or :registry-token in your config)"))
@@ -2087,11 +2087,11 @@ published is refused. Backs `nest publish`.
         checksum (hash/sha256-bytes bytes)
         sig (package-sign-checksum checksum))
     (file/rm archive)
-    (report-brood-constraint *project-brood*)
+    (report-brood-constraint project/*brood*)
     (io/puts (str "package: publishing "
-               *project-name*
+               project/*name*
                " "
-               *project-version*
+               project/*version*
                " to "
                base
                (if sig " (signed)" "")
@@ -2107,11 +2107,11 @@ published is refused. Backs `nest publish`.
   (let (bytes (package-fetch-bytes source-url)
         checksum (hash/sha256-bytes bytes)
         sig (package-sign-checksum checksum))
-    (report-brood-constraint *project-brood*)
+    (report-brood-constraint project/*brood*)
     (io/puts (str "package: publishing "
-               *project-name*
+               project/*name*
                " "
-               *project-version*
+               project/*version*
                " to "
                base
                " (external source "
@@ -2134,7 +2134,7 @@ published is refused. Backs `nest publish`.
     (cond
       (= status 0) (error "package: cannot reach the registry at " base ": " (get resp :error))
       (and (>= status 200) (< status 300))
-        (io/puts (str "package: published " *project-name* " " *project-version* "."))
+        (io/puts (str "package: published " project/*name* " " project/*version* "."))
       else (error "package: publish failed (HTTP " status "): " (registry-error-text resp)))))
 
 (defn- semver-bump (current level)

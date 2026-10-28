@@ -156,12 +156,12 @@
                                                            (tcp/close c)))
                                             (after 5000 nil))))
                    (after 5000 nil)))))
-      (let (port (receive ([:port p] p) (after *test-wait-ms* :timeout)))
+      (let (port (receive ([:port p] p) (after test/*wait-ms* :timeout)))
         (connect (str "http://127.0.0.1:" port "/events") me)
-        (let (open (receive ([:sse-open s] s) (after *test-wait-ms* :timeout))
-              e1 (receive ([:sse e] e) (after *test-wait-ms* :timeout))
-              e2 (receive ([:sse e] e) (after *test-wait-ms* :timeout))
-              closed (receive ([:sse-closed r] r) (after *test-wait-ms* :timeout)))
+        (let (open (receive ([:sse-open s] s) (after test/*wait-ms* :timeout))
+              e1 (receive ([:sse e] e) (after test/*wait-ms* :timeout))
+              e2 (receive ([:sse e] e) (after test/*wait-ms* :timeout))
+              closed (receive ([:sse-closed r] r) (after test/*wait-ms* :timeout)))
           (assert= open 200)
           (assert= (get e1 :event) "hello")
           (assert= (get e1 :data) "world")
@@ -177,7 +177,7 @@
         server (spawn (let (ls (http/listen 0))
                         (send me [:listening (tcp/local-port ls)])
                         (http/serve-loop ls handler))))
-    [server (receive ([:listening port] port) (after *test-wait-ms* :timeout))]))
+    [server (receive ([:listening port] port) (after test/*wait-ms* :timeout))]))
 
 (defn- start-tls-server (handler)
   "Serve `handler` over TLS on a fresh port with a `tls/self-signed` cert for localhost:
@@ -189,7 +189,7 @@
                         (http/serve-loop ls handler))))
     (receive
       ([:listening port cert] [server port cert])
-      (after *test-wait-ms* [server :timeout nil]))))
+      (after test/*wait-ms* [server :timeout nil]))))
 
 (defn- serve-raw (payloads)
   "Accept one plain connection, read the request, send each of `payloads` (an iolist
@@ -207,7 +207,7 @@ then close. Returns the port."
                                         (proc/sleep 30))
                                       (tcp/close c)))
                (after 5000 nil))))
-    (receive ([:port p] p) (after *test-wait-ms* :timeout))))
+    (receive ([:port p] p) (after test/*wait-ms* :timeout))))
 
 (defn- collect-stream (acc)
   "Every message of one stream, in order, through its `[:sse-closed …]`."
@@ -215,7 +215,7 @@ then close. Returns the port."
     ([:sse-open status] (collect-stream (conj acc [:open status])))
     ([:sse ev] (collect-stream (conj acc [:event (get ev :event) (get ev :data)])))
     ([:sse-closed reason] (conj acc [:closed reason]))
-    (after *test-wait-ms* (conj acc :timeout))))
+    (after test/*wait-ms* (conj acc :timeout))))
 
 (defn- echo-request (req)
   "A handler streaming back what it was sent: the method, one header, the body."
@@ -313,8 +313,8 @@ then close. Returns the port."
                                 (tcp/close sock)))))
           _ (spawn (do
                      (send me [:reader (connect (str "http://127.0.0.1:" port "/") (self))])
-                     (receive ([:sse _] nil) (after *test-wait-ms* nil))))
-          reader (receive ([:reader pid] pid) (after *test-wait-ms* :timeout))
+                     (receive ([:sse _] nil) (after test/*wait-ms* nil))))
+          reader (receive ([:reader pid] pid) (after test/*wait-ms* :timeout))
           watch (monitor reader))
-      (assert= (receive ([:down ^watch _ _] :stopped) (after *test-wait-ms* :timeout)) :stopped)
+      (assert= (receive ([:down ^watch _ _] :stopped) (after test/*wait-ms* :timeout)) :stopped)
       (exit server :kill))))

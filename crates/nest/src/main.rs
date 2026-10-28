@@ -541,7 +541,7 @@ fn cmd_release(
     //    by `bundle-collect`'s `project--apply`).
     let name = match run_for_value(
         interp,
-        "(if *project-name* (->string *project-name*) \"app\")",
+        "(if project/*name* (->string project/*name*) \"app\")",
     ) {
         Value::Str(id) => interp.heap.string(id).to_string(),
         _ => "app".to_string(),

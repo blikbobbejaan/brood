@@ -976,8 +976,8 @@
                                                             (fn (_)
                                                               (open-tree tsm-inject-src :elixir)))))
                                              (send parent [:opened others])
-                                             (receive (:done :ok) (after *test-wait-ms* :timeout))))
-            others (receive ([:opened others] others) (after *test-wait-ms* []))
+                                             (receive (:done :ok) (after test/*wait-ms* :timeout))))
+            others (receive ([:opened others] others) (after test/*wait-ms* []))
             edited (str (string/substring tsm-inject-src 0 12)
                      "\""
                      (string/substring tsm-inject-src 12 (string/length tsm-inject-src))))
@@ -989,7 +989,7 @@
           (free-tree next))
         ;; the child's trees go with it — and only its own
         (send child :done)
-        (assert= (receive ([:down ^monitor _ _] :down) (after *test-wait-ms* :timeout)) :down)
+        (assert= (receive ([:down ^monitor _ _] :down) (after test/*wait-ms* :timeout)) :down)
         (assert (every? others (fn (other) (not (tree-alive? other)))))
         (assert (tree-alive? tree))
         (free-tree tree)))
@@ -1002,10 +1002,10 @@
                                                  [:dropped (open-tree "y = 2\n" :elixir)]))
             [kept given?] (receive
                             ([:kept tree given?] [tree given?])
-                            (after *test-wait-ms* [nil :timeout]))
-            dropped (receive ([:dropped tree] tree) (after *test-wait-ms* nil)))
-        (receive ([:down ^kept-monitor _ _] :down) (after *test-wait-ms* :timeout))
-        (receive ([:down ^dropped-monitor _ _] :down) (after *test-wait-ms* :timeout))
+                            (after test/*wait-ms* [nil :timeout]))
+            dropped (receive ([:dropped tree] tree) (after test/*wait-ms* nil)))
+        (receive ([:down ^kept-monitor _ _] :down) (after test/*wait-ms* :timeout))
+        (receive ([:down ^dropped-monitor _ _] :down) (after test/*wait-ms* :timeout))
         (assert= given? true)
         (assert (tree-alive? kept))
         (assert= (tree-changes kept) true)
@@ -1020,7 +1020,7 @@
                        [:gave
                          (check-allow :discarded-catch
                            (try (give-tree tree (self)) (catch e (error-message e))))]))
-            answer (receive ([:gave answer] answer) (after *test-wait-ms* :timeout)))
+            answer (receive ([:gave answer] answer) (after test/*wait-ms* :timeout)))
         (assert (includes? answer "does not own"))
         (assert (tree-alive? tree))
         (assert= (give-tree tree parent) true)
@@ -1122,8 +1122,8 @@
             freed (open-tree "y = 2\n" :elixir)
             [child _] (spawn-monitor (let (theirs (open-tree "z = 3\n" :elixir))
                                        (send parent [:theirs theirs])
-                                       (receive (:done :ok) (after *test-wait-ms* :timeout))))
-            theirs (receive ([:theirs tree] tree) (after *test-wait-ms* nil)))
+                                       (receive (:done :ok) (after test/*wait-ms* :timeout))))
+            theirs (receive ([:theirs tree] tree) (after test/*wait-ms* nil)))
         (free-tree freed)
         ;; a test runs in its own process, so this one owns exactly what it opened
         (assert= (owned-trees) [kept])

@@ -25,16 +25,16 @@ identity and may override those paths. The rest of the tool is its siblings:
 
 ;; --- the project, as set by the manifest -------------------------------------
 
-(defdyn *project-root* nil)
-(defdyn *project-name* nil)
-(defdyn *project-version* nil)
+(defdyn project/*root* nil)
+(defdyn project/*name* nil)
+(defdyn project/*version* nil)
 ;; namespace → owning package name (ADR-172 package identity). Populated at project setup
 ;; by a static scan of each provider's `(defmodule …)` names: the project's own `src/`
-;; modules map to `*project-name*`, a dependency's modules to that dep's `:name`. It is the
-;; ability system's app-vs-library seam — an impl whose module's package is `*project-name*`
+;; modules map to `project/*name*`, a dependency's modules to that dep's `:name`. It is the
+;; ability system's app-vs-library seam — an impl whose module's package is `project/*name*`
 ;; is the app (top precedence tier). A module absent here (embedded std, or none) is not the
 ;; app. Purely identity: no name-rooting/prefixing (that stays the deferred ADR-070 upgrade).
-(defdyn *ns-package* {})
+(defdyn project/*ns-package* {})
 
 (defn ns-package (ns-or-name: (or symbol string nil) -> any)
   "The owning package of a namespace or a qualified `mod/fn` name (ADR-172 package identity).
@@ -46,12 +46,12 @@ identity and may override those paths. The rest of the tool is its siblings:
   tooling. `nil` in (an anonymous / top-level trace frame has no `:fn`) yields `nil` out."
   (when ns-or-name
     (let (s (if (symbol? ns-or-name) ns-or-name (symbol ns-or-name)))
-      (or (get *ns-package* s)
+      (or (get project/*ns-package* s)
         ;; not a module directly — treat it as a qualified name, strip the last `/`-segment
         ;; (the def/fn name) and look up its module.
         (let (parts (string/split (str s) "/"))
           (if (> (count parts) 1)
-            (get *ns-package* (symbol (string/join (take parts (- (count parts) 1)) "/")))
+            (get project/*ns-package* (symbol (string/join (take parts (- (count parts) 1)) "/")))
             nil))))))
 
 (defn trace-with-packages (trace:seqable -> (or nil (list any)))
@@ -64,13 +64,13 @@ identity and may override those paths. The rest of the tool is its siblings:
 ;; Only ever set inside `setup` (from the manifest) and read by
 ;; `package` when it publishes — so they must be declared ambient here, like the
 ;; slots above: ambient is a `defdyn` declaration now, not an earmuff spelling.
-(defdyn *project-description* nil)
-(defdyn *project-repository* nil)
+(defdyn project/*description* nil)
+(defdyn project/*repository* nil)
 ;; `:brood` — the runtime-version constraint this project needs (a `std/version` string,
 ;; e.g. `">= 0.2"`, `"^0.1"`). Checked at `setup` against `(system/brood-version)`; an
 ;; unmet constraint is a hard, clear error (ADR-209) that refuses an incompatible
 ;; runtime. Absent = runs on any runtime.
-(defdyn *project-brood* nil)
+(defdyn project/*brood* nil)
 ;; `:enhances` — which APPLICATIONS this package adds functionality to, as a map of
 ;; name → version constraint (`{bedit ">= 0.3"}`). Debian's `Enhances:` field: a
 ;; plugin declares what it plugs into, and the *application* checks the constraint
@@ -84,32 +84,32 @@ identity and may override those paths. The rest of the tool is its siblings:
 ;; `{bedit ">= 0.3"}`, a web-framework plugin `{hatch ">= 1.0"}`, and a registry can
 ;; index and filter on the key (`nest search --enhances bedit`) without learning
 ;; either. Absent = an ordinary library.
-(defdyn *project-enhances* {})
+(defdyn project/*enhances* {})
 ;; `:kind` — whether this package is an APPLICATION (`:app`, something you run) or a generic
 ;; LIBRARY (`:library`, the default — the reusable packages everything else depends on). The
 ;; hive lists them differently. Optional; absent = `:library`. Orthogonal to `:enhances`,
 ;; which marks a plugin (a library that plugs into an app) regardless of kind.
-(defdyn *project-kind* :library)
+(defdyn project/*kind* :library)
 ;; `:bundled-packages` — the FULL rooted-package set `bundle-collect` baked into a release
 ;; (`project-release` reads it at bundle boot); nil outside a bundle.
-(defdyn *project-bundled-packages* nil)
-(defdyn *project-source-paths* (list "src"))
+(defdyn project/*bundled-packages* nil)
+(defdyn project/*source-paths* (list "src"))
 ; conventional default
-(defdyn *project-test-paths* (list "tests"))
+(defdyn project/*test-paths* (list "tests"))
 ; conventional default
-(defdyn *project-main* (list 'main 'main))
+(defdyn project/*main* (list 'main 'main))
 ; (module fn) — `nest run` entry, as declared by the manifest's `:main`
-(defdyn *project-main-override* nil)
+(defdyn project/*main-override* nil)
 ; (module fn) or nil — a `nest run --main` override that wins over the manifest.
-; A separate slot (not `*project-main*`) because the manifest is re-applied
+; A separate slot (not `project/*main*`) because the manifest is re-applied
 ; inside `run` (via `setup`), which would otherwise clobber an
 ; override set before the run.
-(defdyn *project-dependencies* nil)
+(defdyn project/*dependencies* nil)
 ; list of dep records from the manifest's :dependencies (ADR-037)
-(defdyn *project-dev-dependencies* nil)
+(defdyn project/*dev-dependencies* nil)
 ; dev/test-only dep records from the manifest's :dev-dependencies (ADR-172): resolved for
 ; `nest test`/dev and on the dev load path, but excluded from a release bundle. Each
-; carries `:dev true`. Kept separate from *project-dependencies* so a release build (and
+; carries `:dev true`. Kept separate from project/*dependencies* so a release build (and
 ; a published package's declared deps) never pulls a test-only dependency.
 (def *project-format-headers* nil)
 ; the manifest's :format-headers map ({head-symbol → header-count}) — extra formatter
@@ -117,17 +117,17 @@ identity and may override those paths. The rest of the tool is its siblings:
 (def *project-format-plugins* nil)
 ; the manifest's :format-plugins vector ([dep-name …]) — deps whose own
 ; :format-headers this project pulls in (so a framework ships its macro shapes)
-(defdyn *project-format-paths* nil)
+(defdyn project/*format-paths* nil)
 ; the manifest's :format-paths (a vector of directories) — EXTRA trees `nest format`
 ; owns, beyond :source-paths and :test-paths. nil = just those two. `nest format` walks
 ; a whitelist, so a directory holding .blsp the project authors but does not build from
 ; (`std/`, `examples/`, `scripts/`) has to be named here to be formatted. Ambient so
 ; `std/format.blsp` reads it without importing the manifest.
-(defdyn *project-doc-paths* nil)
+(defdyn project/*doc-paths* nil)
 ; the manifest's :doc-paths — the markdown `nest doctest` runs the fenced examples of: files,
 ; directories (every `.md` under them) and `!`-prefixed paths left out. nil = `README.md` when
 ; there is one.
-(defdyn *project-width* nil)
+(defdyn project/*width* nil)
 ; the manifest's :width (an integer column budget for `nest format`, e.g. 80);
 ; nil = use the formatter's built-in default. Ambient so `std/format.blsp` reads it
 ; directly, like the other project knobs the formatter consults.
@@ -182,7 +182,7 @@ identity and may override those paths. The rest of the tool is its siblings:
   "Override the `nest run` entry point from a CLI spec string (`\"module\"`, `\"module/fn\"`, or `\"a/nested/module/fn\"` — with three or more segments the last is the fn), without editing the manifest's `:main`. Sets a dedicated override slot that wins over the manifest even though `run` re-applies the manifest internally. Backs `nest run --main`.
 
     (project/set-project-main \"myapp/serve\")   ;~> the override — `nest run` now calls myapp/serve"
-  (def *project-main-override* (project-parse-main-spec spec)))
+  (def project/*main-override* (project-parse-main-spec spec)))
 
 ;; --- dependency manifest parsing (ADR-037, packages.md) ----------------------
 ;; Each :dependencies entry is a vector: `[name :git URL :ref REF]` or
@@ -234,7 +234,7 @@ identity and may override those paths. The rest of the tool is its siblings:
 
     (project/dep? (project/parse-dep '[foo :path \"../foo\"]))  ;=> true
     (project/dep? {:name 'foo})                                 ;=> false"
-  (and (record? x) (includes? *project-dep-ids* (reflect/record-id x))))
+  (and (record? x) (includes? *project-dep-ids* (record-id x))))
 
 (defn dep-path? (x)
   "True if `x` is a `:path` dependency — the one kind that loads **in place** rather
@@ -242,7 +242,7 @@ than being fetched into `_deps/<name>/`.
 
     (project/dep-path? (project/parse-dep '[foo :path \"../foo\"]))  ;=> true
     (project/dep-path? (project/parse-dep '[foo :version \"^1.0.0\"]))  ;=> false"
-  (and (record? x) (= (reflect/record-id x) :project/dep-path)))
+  (and (record? x) (= (record-id x) :project/dep-path)))
 
 ;; The keys of a flat plist (every other element from the head).
 ;; check-allow: deliberately non-tail — depth = the manifest plist's key count.
@@ -477,39 +477,39 @@ manifest is read, naming the key, not later inside whoever consumes the map."
   "Apply a parsed manifest `opts` (a plist) by `def`ing the `*project-*` globals — name, version, description, paths, `:main` entry, dependencies and formatter settings; returns the project name.
 
     (project/apply-config '(:name \"myapp\" :version \"0.1.0\"))   ;~> \"myapp\" — the *project-* globals now set"
-  (def *project-name* (plist-get opts :name))
-  (def *project-version* (plist-get opts :version))
+  (def project/*name* (plist-get opts :name))
+  (def project/*version* (plist-get opts :version))
   ;; Package-registry metadata (ADR-147): human summary + the git URL this package
   ;; is published from. Optional in general; `nest publish` requires both.
-  (def *project-description* (plist-get opts :description))
-  (def *project-repository* (plist-get opts :repository))
-  (def *project-brood* (plist-get opts :brood))
+  (def project/*description* (plist-get opts :description))
+  (def project/*repository* (plist-get opts :repository))
+  (def project/*brood* (plist-get opts :brood))
   ;; Release-bundle only (ADR-070): the FULL set of dependency packages rooted in the bundle
   ;; — transitive included — written by `bundle-collect` so `run-bundle` roots every one, not
   ;; just the direct deps `:dependencies` lists. nil for an ordinary (non-bundle) manifest.
-  (def *project-bundled-packages* (plist-get opts :bundled-packages))
-  (def *project-enhances* (project-parse-enhances (plist-get opts :enhances)))
-  (def *project-kind* (project-parse-kind (plist-get opts :kind)))
+  (def project/*bundled-packages* (plist-get opts :bundled-packages))
+  (def project/*enhances* (project-parse-enhances (plist-get opts :enhances)))
+  (def project/*kind* (project-parse-kind (plist-get opts :kind)))
   (let (src (plist-get opts :source-paths)
         tst (plist-get opts :test-paths)
         fmt (plist-get opts :format-paths)
         doc-paths (plist-get opts :doc-paths)
         m (plist-get opts :main))
-    (when src (def *project-source-paths* (project-check-paths :source-paths src)))
-    (when tst (def *project-test-paths* (project-check-paths :test-paths tst)))
-    (when fmt (def *project-format-paths* (project-check-paths :format-paths fmt)))
-    (when doc-paths (def *project-doc-paths* (project-check-paths :doc-paths doc-paths)))
-    (when m (def *project-main* (project-parse-main m))))
-  (def *project-dependencies* (parse-deps (plist-get opts :dependencies)))
+    (when src (def project/*source-paths* (project-check-paths :source-paths src)))
+    (when tst (def project/*test-paths* (project-check-paths :test-paths tst)))
+    (when fmt (def project/*format-paths* (project-check-paths :format-paths fmt)))
+    (when doc-paths (def project/*doc-paths* (project-check-paths :doc-paths doc-paths)))
+    (when m (def project/*main* (project-parse-main m))))
+  (def project/*dependencies* (parse-deps (plist-get opts :dependencies)))
   ;; `:dev-dependencies` (ADR-172) — parsed exactly like `:dependencies`, each tagged
   ;; `:dev true` so the resolver can include them for dev/test and a release bundle can
   ;; drop them. Kept in their own slot, never mixed into *project-dependencies*.
-  (def *project-dev-dependencies*
+  (def project/*dev-dependencies*
     (map (parse-deps (plist-get opts :dev-dependencies)) (fn (d) (assoc d :dev true))))
   (def *project-format-headers* (plist-get opts :format-headers))
   (def *project-format-plugins* (plist-get opts :format-plugins))
-  (def *project-width* (plist-get opts :width))
-  *project-name*)
+  (def project/*width* (plist-get opts :width))
+  project/*name*)
 
 ;; --- finding the project + discovering tests ---------------------------------
 ;; Walk up from `dir` toward the filesystem root, looking for project.blsp.
@@ -562,14 +562,14 @@ path ends in `suffix`; nil when `dir` is not a directory."
 order: the project's code, as every tool that walks it sees it.
 
     (project/source-files \"/path/to/proj\")   ;~> (\"/path/to/proj/src/app.blsp\" …)"
-  (apply append (map (abs-paths root *project-source-paths*) collect-sources)))
+  (apply append (map (abs-paths root project/*source-paths*) collect-sources)))
 
 (defn test-files (root)
   "Every `<name>_test.blsp` under the test paths of the project at `root`, in test-path
 order. Co-located tests are [[project-colocated-test-files]].
 
     (project/test-files \"/path/to/proj\")   ;~> (\"/path/to/proj/tests/app_test.blsp\" …)"
-  (apply append (map (abs-paths root *project-test-paths*) collect-tests)))
+  (apply append (map (abs-paths root project/*test-paths*) collect-tests)))
 
 ;; A source file that carries co-located tests (ADR-225): it has a top-level
 ;; `deftest` or `describe` form. Detection is by FORM — not filename, not module
@@ -607,7 +607,7 @@ only; `tests/` files come from [[collect-tests]].
   ;; any registry it builds by rebinding a global (`(def *commands* (assoc *commands* …))`
   ;; starts over, silently emptying it). `%root-module-name` is a no-op for a nameless
   ;; project, so the short name is still the answer there.
-  (let (m (first (module-index/modules-of *project-root* path)))
+  (let (m (first (module-index/modules-of project/*root* path)))
     (when m (->string (%root-module-name m)))))
 
 ;; Whether to (re-)load a source file that provides feature `feat`, given the
@@ -779,7 +779,7 @@ only; `tests/` files come from [[collect-tests]].
 
 (defn- project-load-sequential (root skip-all? before)
   (do
-    (fold (abs-paths root *project-source-paths*)
+    (fold (abs-paths root project/*source-paths*)
       nil
       (fn (_ dir)
         (fold (collect-sources dir)
@@ -813,7 +813,7 @@ only; `tests/` files come from [[collect-tests]].
 ;; Reloading is cheap (`reflect/load` re-`def`s a file's globals); knowing WHICH files
 ;; moved takes one mtime per source file.
 
-(defdyn *loaded-mtimes* {})
+(defdyn project/*loaded-mtimes* {})
 ;; `path -> mtime at the moment this image last loaded it`. In the image rather than in
 ;; the project cache dir, because the question is "what does THIS process hold?" — two
 ;; sessions on one project hold different things, and a shared file on disk would have
@@ -821,7 +821,7 @@ only; `tests/` files come from [[collect-tests]].
 
 (defn- note-loaded (path)
   "Record `path`'s current mtime as what this image holds."
-  (def *loaded-mtimes* (assoc *loaded-mtimes* path (or (file/mtime path) 0))))
+  (def project/*loaded-mtimes* (assoc project/*loaded-mtimes* path (or (file/mtime path) 0))))
 
 (defn- changed-sources (root)
   "The project source files under `root` whose mtime has moved since this image loaded
@@ -831,7 +831,7 @@ Never-loaded counts as changed on purpose: a file added since boot is exactly th
 thing a long-lived image is most likely to be wrong about."
   (into []
     (seq/filter (source-files root)
-      (fn (f) (not (= (get *loaded-mtimes* f) (or (file/mtime f) 0)))))))
+      (fn (f) (not (= (get project/*loaded-mtimes* f) (or (file/mtime f) 0)))))))
 
 (defn reload-changed (root)
   "Reload every project source under `root` that has changed since this image loaded it,
@@ -876,7 +876,7 @@ machine: a root holding no project sources has nothing to reload.
 A `:path` dep loads in place, so its manifest sits at its `:path`; a `:git` /
 `:tarball` / `:registry` dep is fetched into `_deps/<name>/`. Both carry a
 `project.blsp`. nil if the project declares no such dep."
-  (fold *project-dependencies*
+  (fold project/*dependencies*
     nil
     (fn (acc d)
       (cond
@@ -1005,13 +1005,13 @@ rules merged in declaration order, then this project's own `:format-headers` on 
   brood the project refuses would ship the very mismatch the gate exists to stop.
 
     (project/project-check-brood-version)   ;~> nil, or raises \"project: this project requires Brood …\""
-  (when *project-brood*
-    (when (not (string? *project-brood*))
+  (when project/*brood*
+    (when (not (string? project/*brood*))
       (error "project: :brood must be a version-constraint string (e.g. \">= 0.2\"), got "
-        (pr-str *project-brood*)))
-    (when (not (version/satisfies? (system/brood-version) *project-brood*))
+        (pr-str project/*brood*)))
+    (when (not (version/satisfies? (system/brood-version) project/*brood*))
       (error "project: this project requires Brood "
-        (pr-str *project-brood*)
+        (pr-str project/*brood*)
         " but you are running "
         (system/brood-version)
         " — upgrade brood, or relax the :brood constraint in project.blsp"))))
@@ -1020,26 +1020,26 @@ rules merged in declaration order, then this project's own `:format-headers` on 
   "Initialise the project rooted at `root`: reset the path conventions, apply its `project.blsp` manifest, refuse an incompatible runtime, put its sources and dependencies on the load path, and enable package rooting; returns `root`.
 
     (project/setup \"/path/to/proj\")   ;~> \"/path/to/proj\" — manifest applied, sources and deps on the load path"
-  (def *project-root* root)
+  (def project/*root* root)
   ;; Restore the path conventions BEFORE applying the manifest. `apply`
   ;; only assigns these when the manifest names them, so without the reset a root
   ;; with no manifest — or one that omits :source-paths — silently inherits the
   ;; paths of whichever project was set up before it. That is wrong in any
   ;; long-lived tooling image (the LSP and `nest mcp` set up a second project in
   ;; the same image), and it is the same "always reset stale state" discipline as
-  ;; *format-headers-extra* below.
-  (def *project-source-paths* (list "src"))
-  (def *project-test-paths* (list "tests"))
-  ;; Reset `*project-name*` too, for the same reason (a manifest without `:name`, or none
+  ;; format/*headers-extra* below.
+  (def project/*source-paths* (list "src"))
+  (def project/*test-paths* (list "tests"))
+  ;; Reset `project/*name*` too, for the same reason (a manifest without `:name`, or none
   ;; at all, must NOT inherit a prior setup's name). This matters more since package-rooting
   ;; (ADR-070): a leaked name would make `project-root-project-rooting` wrongly root a
   ;; nameless project's modules under the previous project's prefix. `apply` re-sets
   ;; it when the manifest names it.
-  (def *project-name* nil)
+  (def project/*name* nil)
   ;; Reset the runtime-version gate too: a manifest with no `:brood` must not inherit a
   ;; prior setup's constraint in a long-lived tooling image (`apply` re-sets it,
   ;; but only when a manifest is applied — a bare/manifest-less setup skips that).
-  (def *project-brood* nil)
+  (def project/*brood* nil)
   ;; Read the manifest as *data* and apply it — rather than `reflect/load`ing it, which
   ;; would need the `(project …)` macro bound bare in the (root) manifest file
   ;; (it now lives in this namespace). Manifests stay written `(project …)`.
@@ -1047,7 +1047,7 @@ rules merged in declaration order, then this project's own `:format-headers` on 
     (when (file/exists? mf) (project-apply-manifest mf)))
   ;; Refuse an incompatible runtime BEFORE doing any project work (ADR-209).
   (project-check-brood-version)
-  (reflect/set-load-path (append (abs-paths root *project-source-paths*) *load-path*))
+  (reflect/set-load-path (append (abs-paths root project/*source-paths*) *load-path*))
   (project-ensure-deps-on-path root)
   ;; Root-project rooting (ADR-070, uniform model): the project's OWN modules
   ;; root under its `:name` — `(defmodule buffer)` in project `myeditor` becomes the
@@ -1070,13 +1070,13 @@ rules merged in declaration order, then this project's own `:format-headers` on 
 ;; then modules stay short, exactly as before rooting. `module-files` is the
 ;; same static `(defmodule …)`-name scan the dep path uses.
 (defn- project-root-project-rooting (root)
-  (if *project-name*
+  (if project/*name*
     (do
       ;; `:name` may be written as a symbol (`:name demo`) or a string (`:name "demo"`)
       ;; — the manifest is read as data. Normalise to a string so the registry keys
       ;; (and `%require-force-package`'s string-keyed lookup of them) always agree.
-      (let (pkg (->string *project-name*)
-            dirs (abs-paths root *project-source-paths*)
+      (let (pkg (->string project/*name*)
+            dirs (abs-paths root project/*source-paths*)
             module-files (/apply append (map dirs package/module-files))
             short-modules (map module-files first))
         (%register-package-modules! pkg short-modules)
@@ -1124,16 +1124,16 @@ resolve in the advisory checker. Returns the project root.
   ;; project↔package load cycle: the auto-require a qualified ref triggers would load it
   ;; mid-cycle, leaving its defs unbound. `require-one` here loads it in a controlled order.
   (require-one 'package)
-  (when *project-name*
-    (package/record-ns-packages (map (abs-paths root *project-source-paths*)
-                                  (fn (d) (list *project-name* d)))))
+  (when project/*name*
+    (package/record-ns-packages (map (abs-paths root project/*source-paths*)
+                                  (fn (d) (list project/*name* d)))))
   ;; Dev/test setup sees BOTH the production deps and the `:dev-dependencies` (ADR-172):
   ;; a `nest test`/`nest run` in a dev image resolves and load-paths them all, exactly
   ;; like Cargo's dev-dependencies being available for tests locally. The release bundle
-  ;; (`bundle-collect`) reads `*project-dependencies*` alone, so dev-deps are excluded
+  ;; (`bundle-collect`) reads `project/*dependencies*` alone, so dev-deps are excluded
   ;; from a shipped binary — the whole reason they live in their own slot. `ensure-deps`
-  ;; also records each dep's modules → the dep's name in `*ns-package*`.
-  (let (deps (append *project-dependencies* *project-dev-dependencies*))
+  ;; also records each dep's modules → the dep's name in `project/*ns-package*`.
+  (let (deps (append project/*dependencies* project/*dev-dependencies*))
     (when deps
       (reflect/set-load-path (append *load-path* (package/ensure-deps root deps))))))
 
@@ -1141,7 +1141,7 @@ resolve in the advisory checker. Returns the project root.
 ;; A user-level Brood file of tooling preferences — the sibling of project.blsp.
 ;; It's auto-created with documented defaults on first tool use, then loaded by
 ;; the `nest` subcommands. Rust mechanism: os/env (locate it) + os/run-process.
-(defdyn *config-git-init* false)
+(defdyn project/*config-git-init* false)
 ; nest new: run `git init` in the new project?
 
 ;; The default package registry — the base URL of a hosted registry (hive) speaking
@@ -1149,16 +1149,17 @@ resolve in the advisory checker. Returns the project root.
 ;; `:registry` in the user config, or pass an explicit base URL to the registry
 ;; functions (tests do). The publish auth token comes from $HIVE_TOKEN or
 ;; `:registry-token` (never baked into a default).
-(defdyn *config-registry* "https://brood.fly.dev")
-(defdyn *config-registry-token* nil)
+(defdyn project/*config-registry* "https://brood.fly.dev")
+(defdyn project/*config-registry-token* nil)
 
 (defn config (& opts)
   "Set user-level tooling preferences — the form the user config file (`~/.config/brood/config.blsp`) contains. Recognized keys: `:git-init` (whether `nest new` runs `git init`), `:registry` (the package-registry base URL), and `:registry-token` (the Bearer token `nest publish` sends; $HIVE_TOKEN overrides it). Sets only the keys given; returns nil.
 
     (project/config :git-init false :registry \"https://hive.example.org\")   ;~> nil — the preferences are set"
-  (let (gi (plist-get opts :git-init)) (unless (nil? gi) (def *config-git-init* gi)))
-  (let (rg (plist-get opts :registry)) (unless (nil? rg) (def *config-registry* rg)))
-  (let (tok (plist-get opts :registry-token)) (unless (nil? tok) (def *config-registry-token* tok)))
+  (let (gi (plist-get opts :git-init)) (unless (nil? gi) (def project/*config-git-init* gi)))
+  (let (rg (plist-get opts :registry)) (unless (nil? rg) (def project/*config-registry* rg)))
+  (let (tok (plist-get opts :registry-token))
+    (unless (nil? tok) (def project/*config-registry-token* tok)))
   nil)
 
 (defn- config-base-dir ()

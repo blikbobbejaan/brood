@@ -35,11 +35,11 @@ pub(super) fn global_value_ty(heap: &Heap, s: Symbol) -> Option<Ty> {
     // the *default*, but `binding` rebinds it to any type within a dynamic extent,
     // so typing a use against the default would be unsound. The same holds for any
     // **earmuffed** global (`*name*`, the dynamic-variable naming convention) even
-    // when declared with a plain `def` and rebound via `def` — e.g. `*project-root*`
-    // (`(def *project-root* nil)` at load, reassigned to the real path at runtime).
+    // when declared with a plain `def` and rebound via `def` — e.g. `project/*root*`
+    // (`(def project/*root* nil)` at load, reassigned to the real path at runtime).
     // The type philosophy makes a redefinable global `dynamic()`, so pinning it to
     // its load-time default would false-positive on every use once it is reassigned
-    // (`(path-join *project-root* …)` after a `(when (nil? *project-root*) (throw))`
+    // (`(path-join project/*root* …)` after a `(when (nil? project/*root*) (throw))`
     // guard reads the default `nil`, not the string it actually holds).
     if heap.is_dynamic(s) || is_earmuffed(s) {
         return None;
@@ -217,7 +217,7 @@ fn expr_ty_inner(heap: &Heap, form: Value, ctx: &Ctx) -> Option<Ty> {
                 // file redefines skips the heap read — the image's binding is the
                 // OLD value (the file is checked pre-load; a def always wins).
                 // …and a value sig declared in ANOTHER file, read from the same heap store
-                // a cross-module arrow sig comes from: `(sig *test-wait-ms* int)` beside
+                // a cross-module arrow sig comes from: `(sig test/*wait-ms* int)` beside
                 // the `defdyn` types a deadline built from it in every test file, where a
                 // dynamic is otherwise unknown — the declaration is the author's contract
                 // on every `binding` of it (ADR-259), as it is on a `def`.

@@ -123,7 +123,7 @@ come from `*module-files*`).
 
 ;; The included files the last image write recorded for this project, or none.
 (defn- project-included-files ()
-  (let (root (when (bound? '*project-root*) *project-root*)
+  (let (root (when (bound? 'project/*root*) project/*root*)
         listing (when root (path/join root *project-image-includes-file*)))
     (if (and listing (file/exists? listing))
       (seq/reject (string/split (file/slurp listing) "\n") empty?)
@@ -188,7 +188,7 @@ come from `*module-files*`).
 ;; modules ARE imaged, which is why its files have to be in the staleness key.
 (defn- project-image-dep-module? (k)
   (and (contains? *module-files* k)
-    (not (= (first (string/split k "/")) (if *project-name* (->string *project-name*) nil)))))
+    (not (= (first (string/split k "/")) (if project/*name* (->string project/*name*) nil)))))
 
 ;; Whether module `k` is one a project image carries: the project's own or a dependency's —
 ;; both live in `*module-files*` (a project roots its own modules under its `:name` too,
@@ -523,7 +523,7 @@ the record the next partial rebuild reads.
 ;; A name as a source file spells it — `shapes`, `demo/shapes` — as the project module key it
 ;; denotes, or nil for any other module.
 (defn- project-module-key (own s)
-  (let (rooted (if *project-name* (str (->string *project-name*) "/" s) nil))
+  (let (rooted (if project/*name* (str (->string project/*name*) "/" s) nil))
     (cond
       (contains? own s) s
       (and rooted (contains? own rooted)) rooted
@@ -725,7 +725,7 @@ program's and the LSP's protocol channel stays clean.
     (cond
       hit hit
       else
-        (let (name (or *project-name* (path/basename root))
+        (let (name (or project/*name* (path/basename root))
               started (os/now-ns)
               before (reflect/global-names)
               ;; Captured HERE, beside `before`, and for the same reason: what the prune may

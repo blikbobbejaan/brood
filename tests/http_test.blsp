@@ -135,13 +135,13 @@
 (describe "http: client response size accounting"
   ;; The client-collect byte cap measures chunks by type — plaintext chunks are
   ;; `bytes`, TLS chunks are strings — so an endless server body can't OOM the
-  ;; client (it is bounded by *http-max-response-bytes*).
+  ;; client (it is bounded by http/*max-response-bytes*).
   (test "chunk-size measures bytes and strings"
     (assert= (http/http-chunk-size #b"\x01\x02\x03") 3)
     (assert= (http/http-chunk-size "hello") 5))
   (test "the response cap is a positive integer"
-    (is (int? *http-max-response-bytes*))
-    (is (> *http-max-response-bytes* 0))))
+    (is (int? http/*max-response-bytes*))
+    (is (> http/*max-response-bytes* 0))))
 
 (describe "http: routing + mime"
   (test "router dispatches by path and falls back to 404"
@@ -232,7 +232,7 @@
                          (tcp/send sock "data: one\n\n")
                          (tcp/send sock "data: two\n\n")
                          (tcp/close sock))))))))
-      (let (port (receive ([:port p] p) (after *test-wait-ms* :timeout)))
+      (let (port (receive ([:port p] p) (after test/*wait-ms* :timeout)))
         (let (c (tcp/connect "127.0.0.1" port))
           (tcp/send c "GET /events HTTP/1.0\r\nHost: localhost\r\n\r\n")
           (let (resp (string/bytes-> (drain c)))
@@ -262,8 +262,8 @@
 
 (describe "http: responses are records with a Response impl"
   (test "the two stock kinds have distinct identities"
-    (assert= (reflect/record-id (ok "hi")) :http/response)
-    (assert= (reflect/record-id (stream-response 200 {} (fn (sock) nil)))
+    (assert= (record-id (ok "hi")) :http/response)
+    (assert= (record-id (stream-response 200 {} (fn (sock) nil)))
       :http/stream-response))
   (test "streaming? is an identity check, not a key sniff"
     (is (streaming? (stream-response 200 {} (fn (sock) nil))))
@@ -282,13 +282,13 @@
       (assert= (get r :body) "body")))
   (test "a parsed client response is a response record"
     (let (r (parse-response "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nhi"))
-      (assert= (reflect/record-id r) :http/response)
+      (assert= (record-id r) :http/response)
       (assert= (get r :status) 200)
       (assert= (body-text r) "hi")))
   (test "a third-party response type is dispatched by the same op"
     (let (me (self))
       (send-response (probe-response me) :not-a-real-socket)
-      (assert= (receive ([:sent sock] sock) (after *test-wait-ms* :timeout))
+      (assert= (receive ([:sent sock] sock) (after test/*wait-ms* :timeout))
         :not-a-real-socket)))
   (test "a value with no Response impl raises the named ability error"
     (assert-error (send-response {:status 200 :body "x"} :sock))))
@@ -332,7 +332,7 @@
                (let (ls (listen 0))
                  (send me [:port (tcp/local-port ls)])
                  (serve-loop ls (router {"/" (fn (req) (ok "<h1>brood</h1>"))})))))
-      (let (port (receive ([:port p] p) (after *test-wait-ms* :timeout)))
+      (let (port (receive ([:port p] p) (after test/*wait-ms* :timeout)))
         (let (c (tcp/connect "127.0.0.1" port))
           (tcp/send c "GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
           (let (resp (string/bytes-> (drain c)))
@@ -350,7 +350,7 @@
                 (or (tcp/local-port ls) (error "http-test: the listener reported no local port"))))
       (tcp/send bad "GET / HTTP/1.0\r\nHost: x")
       (tcp/close bad)
-      (let (c (receive ([:tcp-accept ^ls c] c) (after *test-wait-ms* :timeout)))
+      (let (c (receive ([:tcp-accept ^ls c] c) (after test/*wait-ms* :timeout)))
         (tcp/set-binary c true)
         (tcp/controlling-process c (self))
         (assert= (read-request c) nil)
@@ -371,7 +371,7 @@
             (serve-loop ls
               (fn (req)
                 (text-response (pr-str (into [] (seq (get req :body))))))))))
-      (let (port (receive ([:port p] p) (after *test-wait-ms* :timeout)))
+      (let (port (receive ([:port p] p) (after test/*wait-ms* :timeout)))
         (let (c (tcp/connect "127.0.0.1" port))
           ;; raw body bytes 0xFF 0x80 0x41 ride as a `bytes` leaf in the request
           ;; iolist — no mode games; sends are mode-independent (ADR-141)
@@ -394,7 +394,7 @@
                (let (ls (listen 0))
                  (send me [:port (tcp/local-port ls)])
                  (serve-loop ls (fn (req) (text-response (get req :path)))))))
-      (let (port (receive ([:port p] p) (after *test-wait-ms* :timeout))
+      (let (port (receive ([:port p] p) (after test/*wait-ms* :timeout))
             n 4)
         ;; Fire N clients at once, each in its own process; the server must serve
         ;; them in N separate handler processes (the connections overlap in time).
@@ -439,7 +439,7 @@
                            (string/bytes-> (get req :body))
                            "|"
                            (get (get req :headers) "x-token"))))))))
-      (let (port (receive ([:port p] p) (after *test-wait-ms* :timeout)))
+      (let (port (receive ([:port p] p) (after test/*wait-ms* :timeout)))
         (let (resp (post (str "http://127.0.0.1:" port "/act")
                      "{\"a\":1}"
                      {:headers {"X-Token" "secret" "Content-Type" "application/json"}}))
@@ -452,7 +452,7 @@
                (let (ls (listen 0))
                  (send me [:port (tcp/local-port ls)])
                  (serve-loop ls (fn (req) (text-response (str "got " (get req :path))))))))
-      (let (port (receive ([:port p] p) (after *test-wait-ms* :timeout)))
+      (let (port (receive ([:port p] p) (after test/*wait-ms* :timeout)))
         (let (resp (fetch (str "http://127.0.0.1:" port "/zen")))
           (assert= (get resp :status) 200)
           (assert= (body-text resp) "got /zen"))))))
@@ -468,7 +468,7 @@
                      ls (tls/listen "127.0.0.1" 0 (first ck) (second ck)))
                  (send me [:ready (tcp/local-port ls) (first ck)])
                  (serve-loop ls (router {"/" (fn (req) (ok "<h1>secure brood</h1>"))})))))
-      (let (pc (receive ([:ready p ct] [p ct]) (after *test-wait-ms* :timeout)))
+      (let (pc (receive ([:ready p ct] [p ct]) (after test/*wait-ms* :timeout)))
         (let (resp (fetch (str "https://localhost:" (first (served pc)) "/")
                      {:ca (second (served pc))}))
           (assert= (get resp :status) 200)
@@ -484,7 +484,7 @@
                      (response 200
                        {"Content-Type" "application/octet-stream"}
                        (bytes 255 128 0 7)))))))
-      (let (pc (receive ([:ready p ct] [p ct]) (after *test-wait-ms* :timeout)))
+      (let (pc (receive ([:ready p ct] [p ct]) (after test/*wait-ms* :timeout)))
         (let (resp (fetch (str "https://localhost:" (first (served pc)) "/blob")
                      {:ca (second (served pc))}))
           (assert= (get resp :status) 200)
@@ -497,7 +497,7 @@
                (let (ls (listen 0))
                  (send me [:port (tcp/local-port ls)])
                  (serve-loop ls (fn (req) (text-response (get req :path)))))))
-      (let (port (receive ([:port p] p) (after *test-wait-ms* :timeout)))
+      (let (port (receive ([:port p] p) (after test/*wait-ms* :timeout)))
         (let (c (tcp/connect "127.0.0.1" port))
           ;; three sends; the blank-line terminator straddles the 2nd/3rd chunk,
           ;; exercising the scan-from backup of (marker-length - 1) bytes
@@ -508,13 +508,13 @@
             (tcp/close c)
             (is (includes? resp "200 OK"))
             (is (includes? resp "/drip")))))))
-  (test "a head over *http-max-head-bytes* with no terminator is dropped, not buffered"
+  (test "a head over http/*max-head-bytes* with no terminator is dropped, not buffered"
     (let (me (self))
       (spawn (do
                (let (ls (listen 0))
                  (send me [:port (tcp/local-port ls)])
                  (serve-loop ls (fn (req) (text-response "never"))))))
-      (let (port (receive ([:port p] p) (after *test-wait-ms* :timeout)))
+      (let (port (receive ([:port p] p) (after test/*wait-ms* :timeout)))
         (let (c (tcp/connect "127.0.0.1" port)
               ;; 70 KiB of header-ish bytes, never a blank line
               junk (bytes/concat (map (range 0 1750)
@@ -539,7 +539,7 @@
                      (response 200
                        {"Content-Type" "application/octet-stream"}
                        (bytes 255 128 65 0 7)))))))
-      (let (port (receive ([:port p] p) (after *test-wait-ms* :timeout)))
+      (let (port (receive ([:port p] p) (after test/*wait-ms* :timeout)))
         (let (resp (fetch (str "http://127.0.0.1:" port "/blob")))
           (assert= (get resp :status) 200)
           (assert= (get (get resp :headers) "content-length") "5")
@@ -550,7 +550,7 @@
                (let (ls (listen 0))
                  (send me [:port (tcp/local-port ls)])
                  (serve-loop ls (fn (req) (text-response "héllo ☃"))))))
-      (let (port (receive ([:port p] p) (after *test-wait-ms* :timeout)))
+      (let (port (receive ([:port p] p) (after test/*wait-ms* :timeout)))
         (let (resp (fetch (str "http://127.0.0.1:" port "/")))
           (assert= (get resp :status) 200)
           ;; 7 codepoints, 10 UTF-8 bytes — the :body carries the bytes,
@@ -565,7 +565,7 @@
                  (serve-loop ls
                    (fn (req)
                      (text-response (pr-str (into [] (seq (get req :body))))))))))
-      (let (port (receive ([:port p] p) (after *test-wait-ms* :timeout)))
+      (let (port (receive ([:port p] p) (after test/*wait-ms* :timeout)))
         (let (resp (post (str "http://127.0.0.1:" port "/up") (bytes 0 255 7)))
           (assert= (get resp :status) 200)
           (assert= (body-text resp) "[0 255 7]"))))))
@@ -574,7 +574,7 @@
 (defn- start-test-server (handler)
   (let (me (self))
     (spawn (do (let (ls (listen 0)) (send me [:port (tcp/local-port ls)]) (serve-loop ls handler))))
-    (receive ([:port p] p) (after *test-wait-ms* :timeout))))
+    (receive ([:port p] p) (after test/*wait-ms* :timeout))))
 
 ;; Send `payload` (an iolist) on a fresh connection and answer the whole response text.
 (defn- exchange (port payload)
@@ -587,7 +587,7 @@
 (defn- echo-body (req) (text-response (str "[" (string/bytes-> (get req :body)) "]")))
 
 (describe "http: the server refuses what it will not read, before reading it"
-  (test "a body over *http-max-body-bytes* is answered 413 without being read"
+  (test "a body over http/*max-body-bytes* is answered 413 without being read"
     ;; Content-Length was trusted to any size: a 100 MB upload took a worker to 601 MB.
     ;; The client here declares 100 MB and sends none of it, so only a server that
     ;; answers from the head alone replies before the read timeout.
@@ -598,7 +598,7 @@
     ;; a spawned worker reads the defaults, so the boundary is the default limit
     (let (port (start-test-server (fn (req) (text-response (str (bytes/length (get req :body))))))
           over (exchange port
-                 (str "POST / HTTP/1.0\r\nContent-Length: " (+ *http-max-body-bytes* 1) "\r\n\r\n"))
+                 (str "POST / HTTP/1.0\r\nContent-Length: " (+ http/*max-body-bytes* 1) "\r\n\r\n"))
           under (exchange port "POST / HTTP/1.0\r\nContent-Length: 10\r\n\r\n0123456789"))
       (is (includes? over "413 Content Too Large"))
       (is (includes? under "200 OK"))

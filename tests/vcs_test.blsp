@@ -138,7 +138,7 @@
       ;; the row is shared: a process that did not register it asks through the same hooks
       (let (me (self))
         (spawn (send me [:asked (files dir) (id dir)]))
-        (assert= (receive ([:asked fs i] [fs i]) (after *test-wait-ms* :timeout))
+        (assert= (receive ([:asked fs i] [fs i]) (after test/*wait-ms* :timeout))
           [(list (str "listed-under-" (path/basename dir))) {:id "fn-id" :dirty? false}]))
       (registry/remove! :vcs/backends :by-fn))))
 

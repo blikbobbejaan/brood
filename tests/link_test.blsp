@@ -44,7 +44,7 @@
     (let (p (spawn :ok)
           pm (monitor p))
       ; wait for it to finish
-      (receive ([:down ^pm ^p _] :ok) (after *test-wait-ms* :timeout))
+      (receive ([:down ^pm ^p _] :ok) (after test/*wait-ms* :timeout))
       (link p)
       (assert= :noproc
         (receive ([:EXIT ^p r] r))))
@@ -66,7 +66,7 @@
     (let (watcher (spawn (do (proc/trap-exit false) (lk-park)))
           wm (monitor watcher))
       (spawn (do (link watcher) (proc/sleep 20) (error "root cause")))
-      (let (reason (receive ([:down ^wm ^watcher r] r) (after *test-wait-ms* :timeout)))
+      (let (reason (receive ([:down ^wm ^watcher r] r) (after test/*wait-ms* :timeout)))
         (assert= :error (first reason))
         (assert= "root cause" (get (first (rest reason)) :message)))))
 
@@ -78,9 +78,9 @@
           cm (monitor c))
       (let (b (spawn (do (proc/trap-exit false) (link c) (send me [:linked (self)]) (lk-park))))
         ; b has linked c
-        (receive ([:linked ^b] :ok) (after *test-wait-ms* :timeout))
+        (receive ([:linked ^b] :ok) (after test/*wait-ms* :timeout))
         (spawn (do (link b) (error "chain root")))
-        (let (reason (receive ([:down ^cm ^c r] r) (after *test-wait-ms* :timeout)))
+        (let (reason (receive ([:down ^cm ^c r] r) (after test/*wait-ms* :timeout)))
           (assert= :error (first reason))
           (assert= "chain root" (get (first (rest reason)) :message))))))
 
@@ -97,7 +97,7 @@
                          ; outlive the child's normal exit
                          (receive
                            ([:down ^child-monitor ^child _] :ok)
-                           (after *test-wait-ms* :timeout))
+                           (after test/*wait-ms* :timeout))
                          (send me [:alive (self)])
                          (receive (:stop :ok))))))
       (assert= true
@@ -128,9 +128,9 @@
           a (spawn (do (proc/trap-exit false) (link b) (send me [:linked (self)]) (lk-park)))
           cm (monitor c))
       ; both links are in place
-      (receive ([:linked ^a] :ok) (after *test-wait-ms* :timeout))
-      (receive ([:linked ^b] :ok) (after *test-wait-ms* :timeout))
+      (receive ([:linked ^a] :ok) (after test/*wait-ms* :timeout))
+      (receive ([:linked ^b] :ok) (after test/*wait-ms* :timeout))
       ; abnormal (≠ :normal) → propagates b→c
       (exit a :stop)
       (assert= :chain-down
-        (receive ([:down ^cm ^c _] :chain-down) (after *test-wait-ms* :timeout))))))
+        (receive ([:down ^cm ^c _] :chain-down) (after test/*wait-ms* :timeout))))))

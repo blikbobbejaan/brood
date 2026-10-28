@@ -497,7 +497,7 @@
     (assert= (evsrv-decode-request "{:id 1 :specs []}") nil))
 
   ;; The reason a session may run tests at all. `describe`/`test` REGISTER by consing onto
-  ;; `*units*`, so an image that loads the same file twice registers every unit twice —
+  ;; `test/*units*`, so an image that loads the same file twice registers every unit twice —
   ;; measured before the reset was called here: a 27-test file answered 27, then 54, then
   ;; 81. A runner that is wrong in a way that looks like a passing suite.
   ;; `:isolated` because these two CLEAR THE TEST REGISTRY, and the suite running them is
@@ -512,8 +512,8 @@
     (let (f (str (test/temp-dir "evsrv-test-") "/x_test.blsp"))
       (file/mkdir (path/dirname f))
       (file/spit f "(defmodule x-test (:use test))\n(describe \"x\" (test \"one\" (is true)))\n")
-      (let (once (do (answer-test {:id 1 :test true :specs [[f nil]]}) (count *units*))
-            twice (do (answer-test {:id 2 :test true :specs [[f nil]]}) (count *units*)))
+      (let (once (do (answer-test {:id 1 :test true :specs [[f nil]]}) (count test/*units*))
+            twice (do (answer-test {:id 2 :test true :specs [[f nil]]}) (count test/*units*)))
         (assert= once twice)
         ;; …and the reset is total: what was registered before this run is gone too, which
         ;; is what makes each run own its registry
@@ -540,7 +540,7 @@
       (assert= (get r :id) 9)
       (assert= (get r :ok) false)
       (is (includes? (get r :error) "test run failed"))
-      (is (nil? *test-report-sink*)))))
+      (is (nil? test/*report-sink*)))))
 
 ;; The channel is shared with whatever the evaluated code prints, and a print with no
 ;; trailing newline does not get a line of its own — it gets the front of the next one.

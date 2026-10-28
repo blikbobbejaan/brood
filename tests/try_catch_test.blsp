@@ -392,7 +392,7 @@
     (reverse acc)
     (receive
       ([:note tag] (finally-notes (- n 1) (cons tag acc)))
-      (after *test-wait-ms* (reverse (cons :timeout acc))))))
+      (after test/*wait-ms* (reverse (cons :timeout acc))))))
 
 (defn- finally-type-error ()
   "A kernel type error raised one frame down."
@@ -472,7 +472,7 @@
     ;; child can run.
     (let ([p m] (spawn-monitor (try (error "worker failed") (finally nil))))
       (assert= "worker failed"
-        (receive ([:down ^m _ [:error e]] (get e :message)) (after *test-wait-ms* :timeout)))))
+        (receive ([:down ^m _ [:error e]] (get e :message)) (after test/*wait-ms* :timeout)))))
 
   (test "(finally) with no body, or not last, is a macro-time error"
     (is (raises? (fn () (reflect/eval-string "(try 1 (finally))"))))
@@ -542,4 +542,4 @@
       (spawn (fn () (send parent [:f (string/->number "x")])))
       (receive
         ([:f f] (do (is (failure? f)) (is (includes? (error-message f) "not a number"))))
-        (after *test-wait-ms* (is false))))))
+        (after test/*wait-ms* (is false))))))

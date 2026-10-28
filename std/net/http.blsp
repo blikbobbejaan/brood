@@ -30,7 +30,7 @@ request map to a response map. Includes request parsing, response rendering, a
 `router`, and static-file serving with MIME guessing. A handler may instead return
 a `stream-response` to keep the connection open and push over the live socket (the
 seam SSE / long-poll / chunked downloads build on). A request body is framed by
-`Content-Length` alone and capped by `*http-max-body-bytes*` (413 past it); a
+`Content-Length` alone and capped by `http/*max-body-bytes*` (413 past it); a
 `Transfer-Encoding` is refused. A handler that raises answers 500. Plaintext only; pure
 Brood."
   (:use file))
@@ -43,7 +43,7 @@ Brood."
 ;; until OOM — the silence timeout never fires while data trickles. Cap the total
 ;; collected response at 64 MiB, mirroring the server's head/body bounds. Past it
 ;; the socket is closed and the request errors.
-(defdyn *http-max-response-bytes* (* 64 1024 1024))
+(defdyn http/*max-response-bytes* (* 64 1024 1024))
 
 ;; ---- reading one request off the wire --------------------------------------
 ;; Bytes arrive as [:tcp sock data] messages (the socket is owned by *this*
@@ -53,13 +53,13 @@ Brood."
 ;; A request head larger than this without its terminator is a bad/hostile
 ;; request (slow-loris memory guard) — give up rather than buffer forever. A head that
 ;; does end but runs past it is answered 431.
-(defdyn *http-max-head-bytes* 65536)
+(defdyn http/*max-head-bytes* 65536)
 
 ;; The largest request body the server will read. `Content-Length` is the client's
 ;; word, and buffering costs several copies of the body (chunks, join, parse). A request
 ;; declaring more is answered 413 BEFORE any of its body is read. Rebind with `binding` around
 ;; `serve` for an upload endpoint.
-(defdyn *http-max-body-bytes* (* 8 1024 1024))
+(defdyn http/*max-body-bytes* (* 8 1024 1024))
 
 ;; The socket is in binary mode, so `[:tcp …]` chunks are `bytes` values: accumulate
 ;; in a reversed chunk list, scan with `bytes-index-of`. The head is ASCII (decoded
@@ -73,7 +73,7 @@ Brood."
 ;; whole buffer per chunk, which is the same O(head²) in copying — the slow-loris
 ;; amplifier had moved from scanning to memcpy rather than gone away.
 (defn- http-read-until (sock chunks have tail marker)
-  (if (> have *http-max-head-bytes*)
+  (if (> have http/*max-head-bytes*)
     nil
     (receive
       ([:tcp ^sock d] (let (probe (bytes/concat tail d)
@@ -125,7 +125,7 @@ Brood."
   ;;
   ;; Everything that decides whether to read a body is settled from the head alone,
   ;; before a byte of the body is read: a head that is not UTF-8, framing the server
-  ;; does not speak, and a body over `*http-max-body-bytes*` each come back as the
+  ;; does not speak, and a body over `http/*max-body-bytes*` each come back as the
   ;; refusal `response` to answer with.
   (let (head (or (http-read-until sock nil 0 #b"" #b"\r\n\r\n") #b"")
         marker (bytes/index-of head #b"\r\n\r\n"))
@@ -133,16 +133,16 @@ Brood."
       nil
       (let (head-text (http-decode-head (bytes/slice head 0 marker)))
         (cond
-          (> marker *http-max-head-bytes*) (http-refusal 431 "the request head is too large")
+          (> marker http/*max-head-bytes*) (http-refusal 431 "the request head is too large")
           (nil? head-text) (http-refusal 400 "the request head is not UTF-8")
           else
             (match (http-body-framing head-text)
               ([:refuse status message] (http-refusal status message))
               ([:length 0] head)
               ([:length length]
-                (if (> length *http-max-body-bytes*)
+                (if (> length http/*max-body-bytes*)
                   (http-refusal 413
-                    (str "the body is over the server's limit of " *http-max-body-bytes* " bytes"))
+                    (str "the body is over the server's limit of " http/*max-body-bytes* " bytes"))
                   ;; `head` already holds everything read so far (incl. any body bytes in
                   ;; the chunk that completed the header); seed the chunk list with it.
                   (http-read-to-length sock
@@ -155,8 +155,8 @@ Brood."
 through the blank line, plus the body when `Content-Length` declares one. Returns
 the raw request as a `bytes` value, nil if the peer closed without sending a whole
 head, or — for a request the server will not read — the refusal `response` to answer
-it with: 413 for a body over `*http-max-body-bytes*`, 431 for a head over
-`*http-max-head-bytes*`, 400 for a head that is not UTF-8 or a `Content-Length` that is
+it with: 413 for a body over `http/*max-body-bytes*`, 431 for a head over
+`http/*max-head-bytes*`, 400 for a head that is not UTF-8 or a `Content-Length` that is
 not one non-negative integer, and 501 for `Transfer-Encoding` (400 beside a
 `Content-Length`), which this server does not decode.
 
@@ -465,7 +465,7 @@ whose body is written incrementally over the socket afterwards (see
 rather than closed after a body. An identity check on the record, not a key sniff.
 
     (http/streaming? (http/ok \"hi\"))   ;=> false"
-  (and (record? resp) (= (reflect/record-id resp) :http/stream-response)))
+  (and (record? resp) (= (record-id resp) :http/stream-response)))
 
 ;; ---- static files -----------------------------------------------------------
 (def *http-mime*
@@ -641,7 +641,7 @@ socket is registered *passive* (no reader until the worker calls
 ;; with no `Response` impl at all fails at dispatch. A `stream-response` (or a kind from
 ;; outside this module) may already have written its head.
 (defn- http-unsent? (resp)
-  (or (not (record? resp)) (= (reflect/record-id resp) :http/response)))
+  (or (not (record? resp)) (= (record-id resp) :http/response)))
 
 ;; Run `handler` on the request and send what it returns. A handler that raises, or a
 ;; response that cannot be rendered, gets the client a 500 and closes the connection
@@ -742,15 +742,15 @@ knows the body is text — the map itself always carries byte-faithful `bytes`.
 ;; [:error msg]. `acc` is the chunks in reverse, `have` their running byte total;
 ;; ONE `bytes-concat` at close (the reversed chunk list is an iolist, so plaintext
 ;; `bytes` chunks and TLS string chunks both land byte-faithfully). Per-chunk
-;; concatenation was O(body²). Bounded by `*http-max-response-bytes*` so an endless
+;; concatenation was O(body²). Bounded by `http/*max-response-bytes*` so an endless
 ;; server body can't OOM the client.
 (defn- http-collect (sock acc have)
   (receive
     ([:tcp ^sock d] (let (have2 (+ have (http-chunk-size d)))
-                      (if (> have2 *http-max-response-bytes*)
+                      (if (> have2 http/*max-response-bytes*)
                         (do
                           (tcp/close sock)
-                          [:error "http: response exceeded *http-max-response-bytes*"])
+                          [:error "http: response exceeded http/*max-response-bytes*"])
                         (http-collect sock (cons d acc) have2))))
     ([:tcp-closed ^sock] [:ok (bytes/concat (reverse acc))])
     ([:tcp-error ^sock msg] [:error msg])
@@ -878,7 +878,7 @@ response map (`:body` is `bytes`; see `body-text`).
     (let (more (http-framed (tcp/read-n sock
                               (- n (bytes/length seed))
                               {:timeout-ms *http-connection-timeout-ms*
-                               :max-bytes *http-max-response-bytes*})))
+                               :max-bytes http/*max-response-bytes*})))
       (if (failure? more) more [(bytes/concat seed (first more)) (second more)]))))
 
 (defn- http-read-line (sock seed)
@@ -897,8 +897,8 @@ response map (`:body` is `bytes`; see `body-text`).
             size (string/->number (first (string/split text ";")) 16))
         (cond
           (or (not (int? size)) (< size 0)) (failure (str "http: a bad chunk size: " text))
-          (> (+ have size) *http-max-response-bytes*)
-            (failure "http: response exceeded *http-max-response-bytes*")
+          (> (+ have size) http/*max-response-bytes*)
+            (failure "http: response exceeded http/*max-response-bytes*")
           (= size 0) (http-read-trailers sock rest (bytes/concat (reverse acc)))
           :else
             (let (chunk (http-read-exactly sock (+ size 2) rest))

@@ -79,7 +79,7 @@ performed it — `[registry-symbol key-path value]` triples.
 The registries are enumerable — `(%registry-names)` is every global a `%registry-update!`
 has written — and each entry's owner is the module that wrote it, which the kernel journals
 at the write (KI-136). Ownership used to be read off the KEY's qualifier, and a key names
-its owner only sometimes: `:syntax/comment` in `*faces*` names no module and landed in the
+its owner only sometimes: `:syntax/comment` in `editor/face/*faces*` names no module and landed in the
 registry's own module's section, so materialising `editor/face` registered the eight faces
 `editor/highlight` declares, and a module that resolved them through `editor/face` worked
 from the image and not from source. A two-level registry (`*methods*`: `{k1 {k2 v}}`) is
@@ -199,12 +199,12 @@ A binding is attributed to the module that DEFINES it, by two different routes:
 
   - by PREFIX — `format/…` belongs to `format`, which is exact and needs no probing;
   - by PROBE, for the globals a module defines at ROOT and so carries no prefix
-    (`*1`/`*2`/`*3` from `repl`, `*lineedit-keymap*` from the line editor,
+    (`*1`/`*2`/`*3` from `repl`, `editor/lineedit/*keymap*` from the line editor,
     `*config-…*` from the project tooling) — 52 names in all.
 
 Root globals cannot be attributed from a plain sequential load: whichever module pulls a
 dependency in FIRST is credited with everything that dependency defined, so
-`*lineedit-keymap*` landed in `repl`'s section and `(require 'editor/lineedit)` restored
+`editor/lineedit/*keymap*` landed in `repl`'s section and `(require 'editor/lineedit)` restored
 the module without it. So each module is probed inside `%isolate` for what it introduces
 ON ITS OWN, and a root global goes to the SMALLEST such set containing it — the module
 that defines it, never one that merely depends on that module. All 95 probes cost ~0.7 s,
@@ -279,7 +279,7 @@ since the prelude is always present.
         ;; (`require-one` is a no-op then, and the diff sees no introductions). That is
         ;; how `nest stdimage`, dispatched from `std/tool/nest.blsp` — whose load pulls the
         ;; toolchain in — wrote an image with none of `project`'s 31 root globals, and
-        ;; every later `nest check` died on an unbound `*ns-package*`. A root the PRELUDE
+        ;; every later `nest check` died on an unbound `project/*ns-package*`. A root the PRELUDE
         ;; binds (its own definitions, the kernel's natives, the registries it seeds) is
         ;; always present and needs no section; any other unowned root is a std module's
         ;; that the probe missed. Refuse — a missing image costs one source boot, a wrong
@@ -297,7 +297,7 @@ since the prelude is always present.
                         (not (%prelude-global? g))))))
         ;; A `defdyn` is the other way to get here, and the message above would send you the
         ;; wrong way: it is AMBIENT — always a root name, so no module can own it, from a fresh
-        ;; process or not (`*transduce-run*` in std/seq, 2026-10-22). Name that case and its fix.
+        ;; process or not (`seq/*transduce-run*` in std/seq, 2026-10-22). Name that case and its fix.
         dynamic-orphans (seq/filter orphans reflect/dynamic?)
         _ (when (not (empty? dynamic-orphans))
             (error "stdimage/build: "

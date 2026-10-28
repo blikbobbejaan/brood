@@ -124,7 +124,7 @@
   (binding (*exit-test-announce-to* parent)
     (try (reflect/eval-string ex-spin-source) (catch e :caught))))
 (defn ex-await-spinning ()
-  (receive (:spinning :spinning) (after *test-wait-ms* :timeout)))
+  (receive (:spinning :spinning) (after test/*wait-ms* :timeout)))
 
 (describe "exit reaches a nested eval (the non-capturing paths)"
   (test "hard :kill stops a tight loop inside eval-string"

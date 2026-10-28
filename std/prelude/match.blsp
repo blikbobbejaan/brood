@@ -550,7 +550,7 @@ NON-LINEAR patterns (the same name twice) work.
                " pattern like {:field p} or {:keys [f]}, got "
                (pr-str mappat))))
     (let (id (%ability-id-kw name))
-      `(if (%eq (reflect/record-id ~target) ~id)
+      `(if (%eq (record-id ~target) ~id)
          ~(if mappat (%match-compile mappat target bound success fail) success)
          ~fail))))
 

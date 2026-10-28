@@ -6,7 +6,7 @@
 (defmodule debug-test (:use test) (:use debug) (:use-internals debug))
 
 ;; Poll the debugger's state until `pred` holds and return true; raise if it has not
-;; within `*test-wait-ms*`.
+;; within `test/*wait-ms*`.
 (defn wait-until (dbg pred)
   (eventually "the debugger's state to settle" (fn () (pred (dbg-state dbg)))))
 
@@ -33,14 +33,14 @@
       (send from [:done n])
       (sl-server))
     ([:halt] nil)
-    (after *test-wait-ms* nil)))
+    (after test/*wait-ms* nil)))
 
 ;; B adopts a context from a message, then spawns a child that reports whether IT sees
 ;; a debugger — used to prove an adopted context does not leak onward through spawn.
 (defn leak-b (reporter)
   (receive
     ([:go] (spawn (send reporter [:child-has (not (nil? (tc-debugger)))])))
-    (after *test-wait-ms* nil)))
+    (after test/*wait-ms* nil)))
 (defn exit-count (state)
   (count (seq/filter (get state :events) (fn (e) (= (get e :kind) :span-exit)))))
 
@@ -58,7 +58,7 @@
           (spawn (with-debugger dbg (fn () (debug/spy (* (inc n) n)) (send me [:done]))))))
       (letrec (drain (fn (k)
                        (if (= k 0)
-                         :ok (receive ([:done] (drain (dec k))) (after *test-wait-ms* :timeout)))))
+                         :ok (receive ([:done] (drain (dec k))) (after test/*wait-ms* :timeout)))))
         (assert= :ok (drain 4)))
       (assert= true (wait-until dbg (fn (s) (>= (trace-count s) 4))))
       (dbg-stop dbg))))
@@ -75,7 +75,7 @@
         (assert= {:v 1} (get snap :vals)))
       ;; only resuming lets it finish
       (resume-all dbg)
-      (assert= :done (receive ([:done] :done) (after *test-wait-ms* :timeout)))
+      (assert= :done (receive ([:done] :done) (after test/*wait-ms* :timeout)))
       (dbg-stop dbg)))
   (test "many processes park simultaneously and all resume (no single-session limit)"
     (let (dbg (start-debugger) me (self))
@@ -89,7 +89,7 @@
                          acc
                          (receive
                            ([:done] (drain (dec k) (inc acc)))
-                           (after *test-wait-ms* acc)))))
+                           (after test/*wait-ms* acc)))))
         (assert= 5 (drain 5 0)))
       (dbg-stop dbg))))
 
@@ -147,7 +147,7 @@
       (assert= true (wait-until dbg (fn (s) (= 1 (count (get s :paused))))))
       (assert= "inherited" (get (first (vals (paused dbg))) :label))
       (resume-all dbg)
-      (assert= :done (receive ([:done] :done) (after *test-wait-ms* :timeout)))
+      (assert= :done (receive ([:done] :done) (after test/*wait-ms* :timeout)))
       (dbg-stop dbg))))
 
 (describe "debugger — send-level causality (context follows a message)"
@@ -159,7 +159,7 @@
             (span "req"
               (fn ()
                 (send srv [:req 6 (self)])
-                (receive ([:done _] :ok) (after *test-wait-ms* :timeout))))))
+                (receive ([:done _] :ok) (after test/*wait-ms* :timeout))))))
         (assert= true (wait-until dbg (fn (s) (>= (exit-count s) 2))))
         (let (tree (causal-tree dbg))
           (assert= 1 (count tree))
@@ -182,7 +182,7 @@
           (fn () (span "a" (fn () (send b [:go])))))
         ;; b adopted a's context to handle [:go], but the child it spawns must not see it
         (assert= [:child-has false]
-          (receive ([:child-has v] [:child-has v]) (after *test-wait-ms* :timeout)))
+          (receive ([:child-has v] [:child-has v]) (after test/*wait-ms* :timeout)))
         (dbg-stop dbg)))))
 
 (describe "debugger — single-step evaluation"
@@ -193,7 +193,7 @@
       ;; it parks at the first node — drive it: resume until it finishes
       (is (eventually "the stepper to park" (fn () (> (count (paused dbg)) 0))))
       ;; stepping is transparent — the expression still yields the right value
-      (assert= 10 (drive-to-result dbg (+ (os/now) *test-wait-ms*)))
+      (assert= 10 (drive-to-result dbg (+ (os/now) test/*wait-ms*)))
       (dbg-stop dbg))))
 
 (describe "debugger — eval in a paused process's captured scope"
@@ -205,7 +205,7 @@
       (assert= 60 (eval-at dbg 1 "(* n total)"))
       (assert= 22 (eval-at dbg 1 "(+ (* n 2) total)"))
       (resume-all dbg)
-      (assert= :done (receive ([:done] :done) (after *test-wait-ms* :timeout)))
+      (assert= :done (receive ([:done] :done) (after test/*wait-ms* :timeout)))
       (dbg-stop dbg))))
 
 (describe "debugger — aggregate / population queries"
@@ -216,7 +216,7 @@
           (spawn (with-debugger dbg (fn () (debug/spy (classify n)) (send me [:done]))))))
       (letrec (drain (fn (k)
                        (if (= k 0)
-                         :ok (receive ([:done] (drain (dec k))) (after *test-wait-ms* :timeout)))))
+                         :ok (receive ([:done] (drain (dec k))) (after test/*wait-ms* :timeout)))))
         (assert= :ok (drain 10)))
       (assert= true (wait-until dbg (fn (s) (>= (trace-count s) 10))))
       ;; n = 0..9: mod 5 == 0 for 0 and 5 -> two :flag, eight :ok
@@ -230,12 +230,12 @@
     (let (dbg (start-debugger) me (self))
       ;; false predicate -> no park, worker runs straight through
       (spawn (with-debugger dbg (fn () (break-when false "no" :x 1) (send me [:passed]))))
-      (assert= :passed (receive ([:passed] :passed) (after *test-wait-ms* :timeout)))
+      (assert= :passed (receive ([:passed] :passed) (after test/*wait-ms* :timeout)))
       ;; true predicate -> parks until resumed
       (spawn (with-debugger dbg (fn () (break-when true "yes" :x 2) (send me [:passed2]))))
       (assert= true (wait-until dbg (fn (s) (= 1 (count (get s :paused))))))
       (resume-all dbg)
-      (assert= :passed2 (receive ([:passed2] :passed2) (after *test-wait-ms* :timeout)))
+      (assert= :passed2 (receive ([:passed2] :passed2) (after test/*wait-ms* :timeout)))
       (dbg-stop dbg))))
 
 ;; A module-level target for the trace-fn/break-fn tests: instrumentation rebinds a
@@ -255,14 +255,14 @@
     (assert= (trace-release 'debug-test/tfn-held) 0)
     (is (nil? (get (trace-holds) 'debug-test/tfn-held)))
     (assert= (tfn-held 1) 2))
-  :isolated (test "trace-fn emits :call and :return through *spy-sink* and is value-transparent"
+  :isolated (test "trace-fn emits :call and :return through debug/*spy-sink* and is value-transparent"
     (let (me (self))
       (trace-fn 'debug-test/tfn-square)
-      (let (r (binding (*spy-sink* (fn (e) (send me [:spy-entry e])))
+      (let (r (binding (debug/*spy-sink* (fn (e) (send me [:spy-entry e])))
                 (tfn-square 7)))
         (assert= 49 r)
-        (let (call (receive ([:spy-entry e] e) (after *test-wait-ms* :timeout))
-              ret (receive ([:spy-entry e] e) (after *test-wait-ms* :timeout)))
+        (let (call (receive ([:spy-entry e] e) (after test/*wait-ms* :timeout))
+              ret (receive ([:spy-entry e] e) (after test/*wait-ms* :timeout)))
           (assert= :call (get call :spy))
           (assert= 'debug-test/tfn-square (get call :fn))
           (assert= (list 7) (get call :args))
@@ -274,7 +274,7 @@
       (trace-fn 'debug-test/tfn-add)
       (untrace-fn 'debug-test/tfn-add)
       (assert= 5
-        (binding (*spy-sink* (fn (e) (send me [:spy-entry e])))
+        (binding (debug/*spy-sink* (fn (e) (send me [:spy-entry e])))
           (tfn-add 2 3)))
       (assert= :quiet (receive ([:spy-entry e] e) (after 50 :quiet)))))
   (test "a function redefined WHILE traced keeps its redefinition through untrace-fn"
@@ -295,16 +295,16 @@
       (trace-fn 'debug-test/tfn-rewrap)
       (is (traced-current? 'debug-test/tfn-rewrap))
       (assert= 3000
-        (binding (*spy-sink* (fn (e) (send me [:spy-entry e])))
+        (binding (debug/*spy-sink* (fn (e) (send me [:spy-entry e])))
           (tfn-rewrap 3)))
       ;; drain BOTH entries — an isolated describe shares one process across its tests,
       ;; and a `:call` left in the mailbox would surface in the next test's receive
-      ;; `*test-wait-ms*`: both WAIT for an entry that is expected, so the timeout is a
+      ;; `test/*wait-ms*`: both WAIT for an entry that is expected, so the timeout is a
       ;; failure deadline. (The `:quiet` assertions elsewhere in this file stay short —
       ;; those prove ABSENCE, where a short wait is the whole point.)
-      (assert= '(3) (receive ([:spy-entry {:spy :call :args a}] a) (after *test-wait-ms* :none)))
+      (assert= '(3) (receive ([:spy-entry {:spy :call :args a}] a) (after test/*wait-ms* :none)))
       (assert= 3000
-        (receive ([:spy-entry {:spy :return :value v}] v) (after *test-wait-ms* :none)))
+        (receive ([:spy-entry {:spy :return :value v}] v) (after test/*wait-ms* :none)))
       (untrace-fn 'debug-test/tfn-rewrap)
       (assert= 3000 (tfn-rewrap 3)))) ; the redefinition is what remains
   (test "REGRESSION: a REFUSED trace registers nothing, so teardown stays clean"
@@ -337,7 +337,7 @@
       (untrace-fn 'debug-test/tfn-add)
       (let (me (self))
         (assert= 5
-          (binding (*spy-sink* (fn (e) (send me [:spy-entry e])))
+          (binding (debug/*spy-sink* (fn (e) (send me [:spy-entry e])))
             (tfn-add 2 3)))
         (assert= :quiet (receive ([:spy-entry e] e) (after 50 :quiet))))))
   (test "traced-fns lists the instrumented names; untrace-all clears them"
@@ -358,7 +358,7 @@
         (assert= (list 6) (get (get snap :vals) :args)))
       (assert= (list 6) (eval-at dbg 1 "args"))
       (resume-all dbg)
-      (assert= 36 (receive ([:result r] r) (after *test-wait-ms* :timeout)))
+      (assert= 36 (receive ([:result r] r) (after test/*wait-ms* :timeout)))
       (untrace-fn 'debug-test/tfn-square)
       (dbg-stop dbg)))
   ;; Two debug sessions breaking one function (two DAP clients, or one setting its
@@ -371,7 +371,7 @@
       (spawn (with-debugger dbg (fn () (send me [:result (tfn-broken-twice 4)]))))
       (assert= true (wait-until dbg (fn (s) (= 1 (count (get s :paused))))))
       (resume-all dbg)
-      (assert= 5 (receive ([:result r] r) (after *test-wait-ms* :timeout)))
+      (assert= 5 (receive ([:result r] r) (after test/*wait-ms* :timeout)))
       (untrace-fn 'debug-test/tfn-broken-twice)
       (assert= 0 (count (seq/filter (traced-fns) (fn (s) (= s 'debug-test/tfn-broken-twice)))))
       (dbg-stop dbg))))
@@ -384,7 +384,7 @@
   ((n) (tfn-countdown (- n 1))))
 
 ;; A sink bounded to `cap` entries, answering `:spy-stop` once it is full — the
-;; bounded-sink contract from `*spy-sink*`, and what every display sink should do.
+;; bounded-sink contract from `debug/*spy-sink*`, and what every display sink should do.
 (defn bounded-sink (acc cap)
   (fn (e)
     (let (n (or (table/get acc :n) 0))
@@ -400,7 +400,7 @@
     (let (acc (table/new))
       (trace-fn 'debug-test/tfn-countdown)
       (assert= :liftoff
-        (binding (*spy-sink* (bounded-sink acc 10))
+        (binding (debug/*spy-sink* (bounded-sink acc 10))
           (tfn-countdown 5000)))
       (untrace-fn 'debug-test/tfn-countdown)
       (assert= 10 (table/get acc :n))
@@ -417,7 +417,7 @@
     (let (acc (table/new))
       (trace-fn 'debug-test/tfn-countdown)
       (assert= :liftoff
-        (binding (*spy-sink* (bounded-sink acc 50))
+        (binding (debug/*spy-sink* (bounded-sink acc 50))
           (tfn-countdown 1200000)))
       (untrace-fn 'debug-test/tfn-countdown)
       (assert= 50 (table/get acc :n))
@@ -426,11 +426,11 @@
     (let (me (self))
       (trace-fn 'debug-test/tfn-square)
       (assert= 81
-        (binding (*spy-sink* (fn (e) (send me [:spy-entry e]) nil))
+        (binding (debug/*spy-sink* (fn (e) (send me [:spy-entry e]) nil))
           (tfn-square 9)))
       (untrace-fn 'debug-test/tfn-square)
-      (assert= :call (:spy (receive ([:spy-entry e] e) (after *test-wait-ms* :timeout))))
-      (assert= :return (:spy (receive ([:spy-entry e] e) (after *test-wait-ms* :timeout)))))))
+      (assert= :call (:spy (receive ([:spy-entry e] e) (after test/*wait-ms* :timeout))))
+      (assert= :return (:spy (receive ([:spy-entry e] e) (after test/*wait-ms* :timeout)))))))
 
 (describe "debugger — step parks carry an eval-at-able :vals map"
   :isolated (test "eval-at resolves `value` at a step park (the :vals shape matches break's)"
@@ -441,16 +441,16 @@
       (let (v (eval-at dbg 1 "value"))
         (is (int? v)))
       ;; drive the remaining steps to completion
-      (assert= 6 (drive-to-result dbg (+ (os/now) *test-wait-ms*)))
+      (assert= 6 (drive-to-result dbg (+ (os/now) test/*wait-ms*)))
       (dbg-stop dbg))))
 
 ;; The `,resume` / `,step` REPL meta-command handlers (driven by `pry` through the REPL
-;; command registry). They read the debugger from the `*debug-session*` dynamic that
+;; command registry). They read the debugger from the `debug/*session*` dynamic that
 ;; `pry` binds, so the tests bind it the same way and call the handlers directly —
 ;; `pry` itself needs a TTY (`run`), which a test can't provide.
 (describe "debugger — ,resume / ,step meta-command handlers"
   :isolated (test "no active session is a friendly no-op, not a crash"
-    ;; *debug-session* defaults to nil; the handler must tolerate that
+    ;; debug/*session* defaults to nil; the handler must tolerate that
     (assert= nil (debug/debug-repl-resume ""))
     (assert= nil (debug/debug-repl-step "")))
 
@@ -459,7 +459,7 @@
       (spawn (with-debugger dbg (fn () (break "a" :x 1) (send me [:done :a]))))
       (spawn (with-debugger dbg (fn () (break "b" :x 2) (send me [:done :b]))))
       (assert= true (wait-until dbg (fn (s) (= 2 (count (get s :paused))))))
-      (binding (*debug-session* dbg) (debug/debug-repl-resume ""))
+      (binding (debug/*session* dbg) (debug/debug-repl-resume ""))
       (assert= true (wait-until dbg (fn (s) (= 0 (count (get s :paused))))))
       (dbg-stop dbg)))
 
@@ -468,10 +468,10 @@
       (spawn (with-debugger dbg (fn () (break "a" :x 1) (send me [:done :a]))))
       (spawn (with-debugger dbg (fn () (break "b" :x 2) (send me [:done :b]))))
       (assert= true (wait-until dbg (fn (s) (= 2 (count (get s :paused))))))
-      (binding (*debug-session* dbg) (debug/debug-repl-resume "1"))
+      (binding (debug/*session* dbg) (debug/debug-repl-resume "1"))
       ;; exactly one released — the queue drops to a single parked process
       (assert= true (wait-until dbg (fn (s) (= 1 (count (get s :paused))))))
-      (binding (*debug-session* dbg) (debug/debug-repl-resume ""))
+      (binding (debug/*session* dbg) (debug/debug-repl-resume ""))
       (assert= true (wait-until dbg (fn (s) (= 0 (count (get s :paused))))))
       (dbg-stop dbg)))
 
@@ -480,9 +480,9 @@
       (spawn (with-debugger dbg (fn () (break "a" :x 1) (send me [:done :a]))))
       (spawn (with-debugger dbg (fn () (break "b" :x 2) (send me [:done :b]))))
       (assert= true (wait-until dbg (fn (s) (= 2 (count (get s :paused))))))
-      (binding (*debug-session* dbg) (debug/debug-repl-step ""))
+      (binding (debug/*session* dbg) (debug/debug-repl-step ""))
       (assert= true (wait-until dbg (fn (s) (= 1 (count (get s :paused))))))
-      (binding (*debug-session* dbg) (debug/debug-repl-resume ""))
+      (binding (debug/*session* dbg) (debug/debug-repl-resume ""))
       (dbg-stop dbg))))
 
 ;; Path B (ADR-174): `break` auto-captures EVERY in-scope local via the `%scope`
@@ -511,7 +511,7 @@
       (assert= 84 (eval-at dbg 1 "(* sum prod)"))
       (resume-all dbg)
       (assert= [:result 7 12]
-        (receive ([:result s p] [:result s p]) (after *test-wait-ms* :timeout)))
+        (receive ([:result s p] [:result s p]) (after test/*wait-ms* :timeout)))
       (dbg-stop dbg)))
 
   (test "an explicitly-named val overrides a captured local of the same name"
@@ -535,7 +535,7 @@
     (let (dbg (start-debugger) me (self))
       (spawn (with-debugger dbg (fn () (let (x 5) (break-when (< x 0) "neg") (send me [:ok])))))
       ;; it should reach :ok without ever parking
-      (assert= [:ok] (receive ([:ok] [:ok]) (after *test-wait-ms* :timeout)))
+      (assert= [:ok] (receive ([:ok] [:ok]) (after test/*wait-ms* :timeout)))
       (assert= 0 (count (paused dbg)))
       (dbg-stop dbg))))
 
@@ -547,12 +547,12 @@
     (let (dbg (start-debugger) me (self))
       (spawn (with-debugger dbg
                (fn () (proc/flag :no-break true) (break "bp" :v 1) (send me [:done]))))
-      (assert= :done (receive ([:done] :done) (after *test-wait-ms* :parked)))
+      (assert= :done (receive ([:done] :done) (after test/*wait-ms* :parked)))
       (assert= 0 (count (paused dbg)))
       (dbg-stop dbg)))
   (test "the flag reads back, and is off by default"
     (let (me (self))
       (spawn (send me [:default (proc/flag :no-break)]))
-      (assert= false (receive ([:default v] v) (after *test-wait-ms* :timeout)))
+      (assert= false (receive ([:default v] v) (after test/*wait-ms* :timeout)))
       (spawn (do (proc/flag :no-break true) (send me [:set (proc/flag :no-break)])))
-      (assert= true (receive ([:set v] v) (after *test-wait-ms* :timeout))))))
+      (assert= true (receive ([:set v] v) (after test/*wait-ms* :timeout))))))

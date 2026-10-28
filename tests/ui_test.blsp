@@ -1,5 +1,5 @@
 ;; The reusable app framework (std/ui.blsp): the `ui-run` loop and the display
-;; composition. The frontends themselves (`*term-display*`/`gui-display`) need a
+;; composition. The frontends themselves (`editor/ui/*term-display*`/`gui-display`) need a
 ;; real terminal / window, so here we drive `ui-run` with a *scripted* display —
 ;; `:poll` reading the test process's own mailbox, `:draw` echoing frames back —
 ;; which is enough to exercise the loop (render → poll → update → done) and the
@@ -57,20 +57,20 @@
   ;; An app asks "is there a loop to send my answer back to?" before it fires work at
   ;; another process — the answer must hold in `update` (where the firing happens) and
   ;; name THIS loop, so a second window's loop is not mistaken for the first's.
-  (test "update runs with *ui-loop* bound to the loop's own pid; outside a loop it is nil"
+  (test "update runs with editor/ui/*loop* bound to the loop's own pid; outside a loop it is nil"
     (let (me (self))
-      (is (nil? *ui-loop*))
+      (is (nil? editor/ui/*loop*))
       (send me "x")
       (ui-run {:done false}
         (fn (m c r) [])
-        (fn (m input c r) (do (send me [:loop *ui-loop*]) (assoc m :done true)))
+        (fn (m input c r) (do (send me [:loop editor/ui/*loop*]) (assoc m :done true)))
         {:enter (fn () nil)
          :leave (fn () nil)
          :size (fn () [80 24])
          :draw (fn (f) nil)
          :poll (fn (ms) (receive (m m) (after 0 :tick)))})
       (assert= (receive ([:loop p] p) (after 200 :none)) me)
-      (is (nil? *ui-loop*))))
+      (is (nil? editor/ui/*loop*))))
 
   (test "a nil poll (timeout) is delivered to update as :tick"
     (let (me (self))
@@ -937,7 +937,7 @@
 
   (test "outside a loop it is just the thunk: plain ops, no marker"
     (assert= (ui-memo [:line 1] [:a] (fn () (list (text 1 0 "x")))) (list [:text 1 0 "x"]))
-    (is (nil? *ui-memo*)))
+    (is (nil? editor/ui/*memo*)))
 
   (test "inside a loop it reuses the ops while deps are =, recomputes when they change"
     (let (me (self)
@@ -1066,7 +1066,7 @@
 
 (describe "ui-memo — a nil key opts out"
   (test "inside a loop table, a nil key computes and emits no marker"
-    (assert= (binding (*ui-memo* {}) (ui-memo nil [:a] (fn () (list (text 1 0 "x")))))
+    (assert= (binding (editor/ui/*memo* {}) (ui-memo nil [:a] (fn () (list (text 1 0 "x")))))
       (list [:text 1 0 "x"]))))
 
 ;; ---- a timer fires when it is DUE, not only when input stops -----------------
@@ -1437,7 +1437,7 @@ error a catch-all sees, so the kernel keeps raising it (sticky) until the window
       (assert= (receive ([:drew frame] frame) (after 300 :nothing-new)) :nothing-new)
       (proc/send-priority loop :quit))))
 
-;; The terminal's quit key, end to end: a real `ui-run` over `*term-display*` under a
+;; The terminal's quit key, end to end: a real `ui-run` over `editor/ui/*term-display*` under a
 ;; pseudo-terminal. Its keys reach the loop through the reader thread `term/forward-input`
 ;; starts, on the priority lane, so a C-g typed while `update` loops forever stops it —
 ;; which the terminal, read by the loop itself, could not do before (ADR-491).
@@ -1471,7 +1471,7 @@ error a catch-all sees, so the kernel keeps raising it (sticky) until the window
             "                          (= input :ctrl-g) (do (mark \"quit-folded\") m)\n"
             "                          (= input \"q\") (assoc m :done true)\n"
             "                          :else m))\n"
-            "  *term-display*)\n"
+            "  editor/ui/*term-display*)\n"
             "(mark \"exited\")\n"))
         (let (nest (sibling-binary "nest")
               p (os/spawn-pty nest ["run" script] {:cols 80 :rows 24}))

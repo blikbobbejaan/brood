@@ -86,7 +86,7 @@ unmodified: `text` is its baseline (`buffer-modified?`).
 
     (editor/buffer/buffer? (editor/buffer/make-buffer \"x\"))   ;=> true
     (editor/buffer/buffer? {:rope nil :point 0})              ;=> false"
-  (and (record? x) (= (reflect/record-id x) :editor/buffer/buffer)))
+  (and (record? x) (= (record-id x) :editor/buffer/buffer)))
 
 ;; A buffer's display form is a short identification — never its text: a buffer can hold
 ;; a megabyte of rope plus an undo history, and `io/puts`ing that (or seeing it in an

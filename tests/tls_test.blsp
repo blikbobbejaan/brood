@@ -18,12 +18,12 @@
                    key (second ck)
                    ls (tls/listen "127.0.0.1" 0 cert key))
                (send me [:ready (tcp/local-port ls) cert])
-               (let (c (receive ([:tcp-accept ^ls cs] cs) (after *test-wait-ms* :timeout)))
+               (let (c (receive ([:tcp-accept ^ls cs] cs) (after test/*wait-ms* :timeout)))
                  (tcp/controlling-process c (self))
                  (receive ([:tcp ^c _] nil) (after 10000 nil))
                  (tcp/send c reply)
                  (tcp/close c)))))
-    (receive ([:ready port cert] [port cert]) (after *test-wait-ms* :timeout))))
+    (receive ([:ready port cert] [port cert]) (after test/*wait-ms* :timeout))))
 
 (defn- exchanged (r)
   "`r` as the `[…]` it should be, or a failed test.
@@ -53,7 +53,7 @@
           (let (ck (tls/self-signed "localhost")
                 ls (tls/listen "127.0.0.1" 0 (first ck) (second ck)))
             (send me [:ready (tcp/local-port ls) (first ck)])
-            (let (c (receive ([:tcp-accept ^ls cs] cs) (after *test-wait-ms* :timeout)))
+            (let (c (receive ([:tcp-accept ^ls cs] cs) (after test/*wait-ms* :timeout)))
               ;; Binary mode BEFORE handing over control, not after. `tcp/controlling-process`
               ;; starts messages flowing to this process, so a request already in flight can
               ;; be delivered in the window before `tcp/set-binary` lands — as a *string*,
@@ -73,10 +73,10 @@
               ;; only AFTER the server has configured the socket, so nothing is in flight.
               (tcp/set-binary c true)
               (tcp/controlling-process c (self))
-              (let (got (receive ([:tcp ^c d] d) (after *test-wait-ms* :timeout)))
+              (let (got (receive ([:tcp ^c d] d) (after test/*wait-ms* :timeout)))
                 (tcp/send c (pr-str (into [] (seq got))))
                 (tcp/close c))))))
-      (let (port-cert (receive ([:ready p ct] [p ct]) (after *test-wait-ms* :timeout))
+      (let (port-cert (receive ([:ready p ct] [p ct]) (after test/*wait-ms* :timeout))
             s (tls/request "localhost"
                 (first (exchanged port-cert))
                 ["HEAD " (bytes 1 254) " TAIL"]
@@ -92,7 +92,7 @@
         (let (out (receive
                     ([:tcp-error ^s msg] [:error msg])
                     ([:tcp-closed ^s] :closed)
-                    (after *test-wait-ms* :timeout)))
+                    (after test/*wait-ms* :timeout)))
           (assert= (first (exchanged out)) :error))))))
 
 ;; ---- tcp/close silences a TLS stream ----------------------------------------------
@@ -109,14 +109,14 @@
         port (or (tcp/local-port ls) (error "the TLS listener reported no local port"))
         client (spawn (let (s (tls/request "localhost" port request cert true))
                         (send me [:received (self) (bytes/length (drain s))])))
-        s (receive ([:tcp-accept ^ls cs] cs) (after *test-wait-ms* (error "no TLS accept"))))
+        s (receive ([:tcp-accept ^ls cs] cs) (after test/*wait-ms* (error "no TLS accept"))))
     (tcp/controlling-process s (self))
-    (receive ([:tcp ^s _] nil) (after *test-wait-ms* (error "the TLS client never wrote")))
+    (receive ([:tcp ^s _] nil) (after test/*wait-ms* (error "the TLS client never wrote")))
     (tcp/send s reply)
     (tcp/close s)
     (late-messages s 0 0)
     (let (late (late-messages s 100 0))
-      [late (receive ([:received ^client n] n) (after *test-wait-ms* :timeout))])))
+      [late (receive ([:received ^client n] n) (after test/*wait-ms* :timeout))])))
 
 (defn- first-noisy-tls-close (ls cert request reply remaining)
   "Run `tls-close-mid-request` `remaining` times; the first round whose result is not

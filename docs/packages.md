@@ -718,7 +718,7 @@ out-of-scope for v1.
 **Manifest extension** (`std/tool/project.blsp`):
 
 - `(project …)` recognises `:dependencies`. Stored in
-  `*project-dependencies*`. Empty when omitted (back-compat with v1
+  `project/*dependencies*`. Empty when omitted (back-compat with v1
   manifests).
 
 **`nest`'s Rust shell** (`crates/nest/src/main.rs`):

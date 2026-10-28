@@ -27,7 +27,7 @@
     (tcp/set-binary ls true)
     (let (c (tcp/connect "127.0.0.1"
               (or (tcp/local-port ls) (error "the listener reported no local port")))
-          s (receive ([:tcp-accept ^ls cs] cs) (after *test-wait-ms* (error "no accept"))))
+          s (receive ([:tcp-accept ^ls cs] cs) (after test/*wait-ms* (error "no accept"))))
       (tcp/controlling-process s (self))
       [c s ls])))
 
@@ -56,7 +56,7 @@
     ([:tcp ^s data] (drain-all s (cons data acc)))
     ([:sent _] (drain-all s acc))
     ([:written] (drain-rest s acc))
-    (after *test-wait-ms* (error "the writer never finished"))))
+    (after test/*wait-ms* (error "the writer never finished"))))
 
 (defn- drain-rest (s acc)
   (receive
@@ -69,7 +69,7 @@
     ([:written] :written)
     ([:sent _] (finished))
     ([:refused] (finished))
-    (after *test-wait-ms* :hung)))
+    (after test/*wait-ms* :hung)))
 
 (describe "tcp send backpressure: a peer that reads nothing"
   :isolated (test "the writer waits well short of all it has to send, and every byte arrives once the peer reads"
@@ -105,7 +105,7 @@
       (writer (self) c payload)
       ;; the reap is found on the reactor's housekeeping tick, about a second
       (assert= (finished) :written)
-      (assert= (receive ([:tcp-closed ^c] :closed) (after *test-wait-ms* :open)) :closed)
+      (assert= (receive ([:tcp-closed ^c] :closed) (after test/*wait-ms* :open)) :closed)
       (tcp/close c)
       (tcp/close s)
       (tcp/close ls))))
@@ -122,7 +122,7 @@
       (tcp/send c "hello")
       ;; past the bound and a housekeeping tick, the connection is still there
       (let (kept (receive ([:tcp-closed ^c] :dropped) (after 1500 :kept))
-            got (receive ([:tcp ^s data] (string/bytes-> data)) (after *test-wait-ms* :none)))
+            got (receive ([:tcp ^s data] (string/bytes-> data)) (after test/*wait-ms* :none)))
         (tcp/close c)
         (tcp/close s)
         (tcp/close ls)

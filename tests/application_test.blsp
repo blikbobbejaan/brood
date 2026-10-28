@@ -11,7 +11,7 @@
     (reverse acc)
     (receive
       ([:event e] (events (- n 1) (cons e acc)))
-      (after *test-wait-ms* (reverse (cons :timeout acc))))))
+      (after test/*wait-ms* (reverse (cons :timeout acc))))))
 
 (defapp base
   {:start (fn () (note [:start 'base]) :base-root) :stop (fn (root) (note [:stop root]))})
@@ -80,7 +80,7 @@
       (shutdown)
       (receive
         ([:ran outcome] (assert= :ok outcome))
-        (after *test-wait-ms* (assert= :ok :timeout)))
+        (after test/*wait-ms* (assert= :ok :timeout)))
       (assert (nil? (proc/whereis :application)))
       (assert= me (os/trap :term nil))))
   ;; Isolated like the test above: `run` traps the whole runtime's SIGTERM and Ctrl-C.
@@ -89,7 +89,7 @@
       (spawn (send me [:ran (try (application/run crashing) (catch e (error-message e)))]))
       (receive
         ([:ran outcome] (assert (includes? outcome "exited")))
-        (after *test-wait-ms* (assert= :raised :timeout))))))
+        (after test/*wait-ms* (assert= :raised :timeout))))))
 
 (describe "os/trap"
   :isolated (test "a trapped signal sent to the runtime arrives as a message"
@@ -97,7 +97,7 @@
     (os/spawn "sh" ["-c" "kill -HUP $PPID"])
     (receive
       ([:signal sig] (assert= :hup sig))
-      (after *test-wait-ms* (assert= :hup :timeout)))
+      (after test/*wait-ms* (assert= :hup :timeout)))
     (assert= (self) (os/trap :hup nil)))
   (test "only :term, :int and :hup can be trapped"
     (assert-error "cannot trap :usr1" (os/trap :usr1))))
@@ -110,10 +110,10 @@
         ([:back value] (assert (app? value))
           (assert= (list 'base 'left 'right 'top) (check value))
           (events 8 ()))
-        (after *test-wait-ms* (assert= :back :timeout)))))
+        (after test/*wait-ms* (assert= :back :timeout)))))
   (test "workers each start and stop their own copy"
     (let (me (self))
       (doseq (i (range 0 4)) (spawn (send me [:checked (check top)])))
       (assert= (seq/repeat 4 (list 'base 'left 'right 'top))
         (map (range 0 4)
-          (fn (_) (receive ([:checked names] names) (after *test-wait-ms* :timeout))))))))
+          (fn (_) (receive ([:checked names] names) (after test/*wait-ms* :timeout))))))))
