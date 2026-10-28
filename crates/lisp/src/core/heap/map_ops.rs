@@ -1238,6 +1238,14 @@ impl Heap {
         if crate::eval::is_special_form(head_sym) || arm.params.contains(&head_sym) {
             return None;
         }
+        // A wrapper over `proc/interruptible` is entered, not elided (ADR-494): its body's
+        // call is what the VM runs as a region, so a `receive` in the window parks. Elided,
+        // the redirect would call the builtin, and the receive would block the worker.
+        static INTERRUPTIBLE: std::sync::LazyLock<Symbol> =
+            std::sync::LazyLock::new(|| crate::core::value::intern("proc/interruptible"));
+        if head_sym == *INTERRUPTIBLE {
+            return None;
+        }
         let mut map: SmallVec<[usize; 4]> = SmallVec::new();
         loop {
             match rest.unpack() {

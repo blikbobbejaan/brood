@@ -208,6 +208,11 @@ fn lazy_call(
 /// with two arguments, and the thunk is a closure with a VM arm for no arguments. Anything
 /// else (`None`) is an ordinary native call, which runs the thunk nested and reports a bad
 /// argument itself. A bad ceiling is raised here, as the builtin would.
+///
+/// `(apply proc/interruptible args)` is the same call (ADR-494): `dispatch` would unfold it
+/// and run the builtin nested, so it is unfolded here first. Only when the head IS that
+/// builtin — any other `apply` costs one flag read — and its list is not a lazy seq-view
+/// (realising one runs Brood; `dispatch` does that, and the thunk runs nested as before).
 fn interruptible_region(
     heap: &mut Heap,
     callee: Value,
@@ -216,7 +221,31 @@ fn interruptible_region(
     let ValueRef::Native(id) = callee.unpack() else {
         return Ok(None);
     };
-    if !heap.native(id).is_interruptible || argv.len() != 2 {
+    let spread: SmallVec<[Value; 4]>;
+    let argv = if heap.native(id).is_apply && argv.len() >= 2 {
+        let ValueRef::Native(head) = argv[0].unpack() else {
+            return Ok(None);
+        };
+        let list = argv[argv.len() - 1];
+        if !heap.native(head).is_interruptible || matches!(list.unpack(), ValueRef::SeqView(_)) {
+            return Ok(None);
+        }
+        // Not a sequence: `dispatch` raises the error `apply` would.
+        let Ok(items) = heap.seq_items(list) else {
+            return Ok(None);
+        };
+        spread = argv[1..argv.len() - 1]
+            .iter()
+            .copied()
+            .chain(items)
+            .collect();
+        &spread[..]
+    } else if heap.native(id).is_interruptible {
+        argv
+    } else {
+        return Ok(None);
+    };
+    if argv.len() != 2 {
         return Ok(None);
     }
     let ValueRef::Fn(thunk) = argv[1].unpack() else {

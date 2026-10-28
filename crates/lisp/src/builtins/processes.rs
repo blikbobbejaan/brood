@@ -449,11 +449,13 @@ pub(crate) fn interrupt_ceiling(heap: &Heap, value: Value) -> Result<Option<u64>
 
 /// `(proc/interruptible ceiling-ms thunk)` — run thunk in an interrupt window (ADR-491).
 ///
-/// The bytecode driver never calls this for a VM thunk: it runs the call as an interrupt
-/// REGION on its own frame stack (`ChunkExit::Interruptible`), so a `receive` in the thunk
-/// parks the process. This is every other path — the tree-walker, `apply`, a native or
-/// tree-walked thunk — where the thunk runs nested under this frame, and a `receive` in it
-/// blocks the worker as any native-nested receive does. Both open and close the window and
+/// The bytecode driver never calls this for a VM thunk: it runs the call — `apply`'d too — as
+/// an interrupt REGION on its own frame stack (`ChunkExit::Interruptible`), and the tier-0
+/// machine as a frame (`KontKind::Interruptible`, ADR-494), so a `receive` in the thunk parks
+/// the process. This is what is left: a thunk with no VM arm above tier 0, or a call made
+/// under a native frame (a builtin's callback), where the thunk runs nested under this frame
+/// and a `receive` in it blocks the worker as any native-nested receive does — the worker
+/// leaves the executors and its queue moves (ADR-100 §7.4). Both open and close the window and
 /// catch the interrupt with no Brood code between a raise and the close for a sticky
 /// re-raise to land in. A window already open makes this a plain call: the outer one owns
 /// the interrupt, which propagates to it.

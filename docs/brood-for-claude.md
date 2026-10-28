@@ -911,7 +911,9 @@ code paints to a terminal or a GUI window unchanged.
   is `{:kind :interrupted :code "E0047"}` and it is STICKY: a `(catch e …)` inside the window
   is interrupted again at its next safepoint, so a catch-all cannot swallow quit. A process
   parked in `receive` is never interrupted; a `receive` inside the window PARKS (the VM runs
-  the call as a region on its own frame stack), so `update` may wait on a reply.
+  the call, `apply`'d too, as a region on its own frame stack, the tier-0 machine as a frame —
+  ADR-494), so `update` may wait on a reply. Only a window opened inside a builtin's callback
+  blocks its worker thread instead, and the scheduler moves the queue off it.
 - **A fragment that need not re-render** = `(ui-memo key deps thunk)` (ADR-336): inside
   a running loop the previous turn's ops are reused while `deps` are `=` — a buffer
   line of its rope and spans, a status bar of its segments — else `(thunk)` runs. Name
