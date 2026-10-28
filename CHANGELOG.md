@@ -6,6 +6,14 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+## v0.47.0 — the bare namespace is the language
+
+A name is bare only when it is syntax, a function most programs use, a built-in kind's
+predicate or coercion, or an operator; 113 others moved to their family's module. Every move is
+in the rename ledger, so an `unbound symbol` names its replacement and `nest check
+--fix-renames` rewrites a caller. The sibling projects, bedit among them, are migrated. The
+narrative is the devlog's 2026-10-28 ADR-506 entry.
+
 **Changed — breaking.**
 - The bare namespace is the language (ADR-506): syntax, the functions most programs use, the
   built-in kinds' predicates and coercions, and the operators. 113 names moved to their
