@@ -515,29 +515,32 @@ faults on a last line the parent reads back.
     (doctest/run-block \"a.md\" 1 \"(+ 1 1)   ;=> 2\")   ;~> prints doctest-faults: []"
   (io/puts (str *faults-prefix* (pr-str (block-faults label start source)))))
 
-(defn- runtime? (exe)
-  (let (name (path/basename exe))
-    (or (string/starts-with? name "nest") (string/starts-with? name "brood"))))
-
-(defn- block-runtime ()
-  ;; The binary running now, when it is a Brood runtime. A harness that is not one (cargo's
-  ;; suite runs as its own test binary, which would read `run` as a test-name filter and never
-  ;; run the block) gets the `nest` or `brood` built beside it, or one directory up.
-  (let (running (or (os/exe-path) "brood"))
-    (if (runtime? running)
-      running
-      (let (directory (path/dirname running))
-        (or (seq/find (for (name ["nest" "brood"] up ["" ".."]) (path/join directory up name))
-              file/exists?)
-          "brood")))))
+(defn- brood-beside (exe)
+  ;; A `brood` binary next to `exe` or one directory up — where cargo keeps the binaries a
+  ;; test harness in `target/<profile>/deps` was built with — or on PATH; nil if none.
+  (let (here (path/dirname exe)
+        candidates [(path/join here "brood") (path/join (path/dirname here) "brood")])
+    (or (first (seq/filter candidates file/exists?)) (os/which "brood"))))
 
 (defn- child-command (file)
-  ;; Run `file` with a Brood runtime: `nest run` keeps a project's sources reachable, so a
-  ;; block in a project's guide can call the project; `brood` runs a file as it is.
-  (let (exe (block-runtime))
-    (if (string/starts-with? (path/basename exe) "nest")
-      [exe ["run" "--no-check" file]]
-      [exe [file]])))
+  ;; Run `file` with the binary running now when it is `nest` or `brood`: `nest run` keeps a
+  ;; project's sources reachable, so a block in a project's guide can call the project;
+  ;; `brood` runs a file as it is. Any other host — the cargo test harness running the
+  ;; in-language suite, an embedding application — cannot run a file, so the block runs
+  ;; under a `brood` found beside it. The name is matched whole: a unit-test binary is
+  ;; called `brood-<hash>`.
+  (let (exe (or (os/exe-path) "brood")
+        name (path/stem exe))
+    (cond
+      (= name "nest") [exe ["run" "--no-check" file]]
+      (= name "brood") [exe [file]]
+      else
+        (let (brood (brood-beside exe))
+          (if brood
+            [brood [file]]
+            (error "doctest: "
+              exe
+              " cannot run a markdown block, and no `brood` binary was found beside it or on PATH"))))))
 
 (defn- block-outcome (label result)
   ;; The faults a child reported on its last `doctest-faults:` line, or one fault saying why
