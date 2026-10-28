@@ -674,7 +674,7 @@ raised again — from where it was first raised."
                 `(%try (fn () ~@init) (fn (~caught) (match ~caught ~@clauses ~@rethrow))))))))))
 
 ;; Every error the language raises is a `{:kind :message [:code :file :line :col :hint
-;; :trace]}` map (ADR-500), but `(throw x)` hands `catch` the value `x` verbatim — a
+;; :trace]}` map (ADR-501), but `(throw x)` hands `catch` the value `x` verbatim — a
 ;; keyword, a string, a program's own map. `error-message` is the one accessor that turns any of
 ;; them into a human string, so a `(catch e …)` handler never has to branch on
 ;; the shape itself.

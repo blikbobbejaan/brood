@@ -4540,7 +4540,17 @@ doctest design; `docs/tooling.md` gains "Checking examples: `nest doctest`". Run
 full `nest doctest` (0 failures), the std doctest engine (0 over 2,036 names), `nest check`,
 `--strict`, `nest format --check`, `cargo fmt --check`. Not run: the test suites.
 
-2026-10-28 (ADR-499, hygiene at every binding site): a template's binders were renamed only
+2026-10-28 (`diff/map-line`; ADR-499): `std/diff` answers where a line of an old text went in
+a new one — `map-line`, and `map-lines` for many positions over one diff — exact for an
+unchanged line, the same offset in the replacing block for a changed one, the following line
+for a deleted one, clamped to a line a cursor can be on. `hunk-changes` turns a parsed
+unified-diff hunk into zero-context hunks, so `hunks-status` (split out of `line-status`)
+reads a diff git printed the way it reads two texts. bedit's time machine dropped its two
+private copies; its auto-revert and format-on-save now keep point on its line. Run here:
+`tests/diff_test.blsp`, `tests/doc_examples_test.blsp`, `tests/audit_test.blsp`, `nest check
+--strict std/diff.blsp`. Not run: the full suites.
+
+2026-10-28 (ADR-500, hygiene at every binding site): a template's binders were renamed only
 in plain-symbol `let`/`letrec`/`fn` positions. A probe macro binding `a` and splicing the
 caller's `a` captured it in ten of twelve shapes: destructuring `let`/`fn`, `match`,
 `when-let`, `if-let`, `for`, a template `defn`'s params and more. The rename now follows the
@@ -4553,7 +4563,7 @@ now `x__609:int`. Still literal by decision: a user's binding macro, computed bi
 doctest engine, clippy `--all-features` on the crate, `cargo fmt --check`. Not run: the
 test suites (`tests/hygiene_test.blsp` gains a block per site and a cross-process case).
 
-2026-10-28 (ADR-500, every error is a map; `catch` takes a pattern): a `catch` handler saw
+2026-10-28 (ADR-501, every error is a map; `catch` takes a pattern): a `catch` handler saw
 four shapes, not the three ROADMAP listed — `error` and `assert` raised plain strings,
 a failed pattern raised `[:match-error ctx value patterns]` (and printed as that vector
 uncaught), a built-in error was a map, and `throw` was raw. Every error the language raises

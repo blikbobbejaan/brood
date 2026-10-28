@@ -620,7 +620,7 @@ NON-LINEAR patterns (the same name twice) work.
       " elements: "
       (pr-str-bounded pat))))
 
-;; The no-match failure: an error map (ADR-500) carrying the context (:match / :case / :let / a
+;; The no-match failure: an error map (ADR-501) carrying the context (:match / :case / :let / a
 ;; fn name), the value, and the patterns tried. The lowered form is `(%raise (%match-error …))`,
 ;; whose arguments sit where the checker looks for them (`guards::match_coverage`).
 (defn %match-error (context target patterns)

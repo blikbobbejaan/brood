@@ -35,6 +35,7 @@ const DOCUMENTS: &[(&str, &str)] = &[
             include_str!("../../../docs/decisions/adr-200-299.md"),
             include_str!("../../../docs/decisions/adr-300-399.md"),
             include_str!("../../../docs/decisions/adr-400-499.md"),
+            include_str!("../../../docs/decisions/adr-500-599.md"),
         ),
     ),
     ("types", include_str!("../../../docs/types.md")),

@@ -81,7 +81,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![map_ty], Ty::NEVER),
         &["error"],
-        "Raise the error map `error` — `{:kind k :message s :code c …}`, `c` one of the codes the language raises itself (`E0090` `error`, `E0091` `assert`, `E0092` a failed match). A catch binds the map with the `:file`/`:line`/`:col` and `:trace` of the raise added, as for a built-in error; uncaught it renders as `error: <message>`. The primitive behind `error`, `assert` and a failed pattern (ADR-500).",
+        "Raise the error map `error` — `{:kind k :message s :code c …}`, `c` one of the codes the language raises itself (`E0090` `error`, `E0091` `assert`, `E0092` a failed match). A catch binds the map with the `:file`/`:line`/`:col` and `:trace` of the raise added, as for a built-in error; uncaught it renders as `error: <message>`. The primitive behind `error`, `assert` and a failed pattern (ADR-501).",
         raise,
     );
     primitives.def(

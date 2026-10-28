@@ -1510,7 +1510,7 @@ Clauses are **wrapped** `(pattern [:when guard] body…)`; the first whose patte
 ```
 
 A `match` in tail position is TCO-safe (loops and receive loops won't overflow).
-No clause matching **raises** an error of kind `:match` (ADR-500) —
+No clause matching **raises** an error of kind `:match` (ADR-501) —
 `{:kind :match :message … :context <form> :value <value> :patterns <patterns-tried>}` —
 which a `catch` pattern can pick out. Add a `_` clause to make a match total:
 
@@ -1774,7 +1774,7 @@ Raise with `error` (a formatted message) or `throw` (any value), and handle with
 (throw :boom)                       ; raise an arbitrary value, as it is
 ```
 
-**Every error the language raises is an error map** (ADR-500):
+**Every error the language raises is an error map** (ADR-501):
 `{:kind <keyword> :message <string> [:code :file :line :col :hint :trace]}`. A built-in
 error's kind names what went wrong (`:type`, `:arity`, `:unbound`, `:runtime`,
 `:contract`, …); `error` raises kind `:error`, `assert` kind `:assert`, and a pattern that

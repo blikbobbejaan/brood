@@ -426,7 +426,7 @@ innermost frame first (each location is the call site that entered the frame)."
 `{:kind :message [:line :col] [:trace …] …}`, a user `throw` arrives as the raw
 value."
   (if (and (map? e) (contains? e :message))
-    ;; The language's own raises (`error`, `assert`, a failed pattern — ADR-500) read as a
+    ;; The language's own raises (`error`, `assert`, a failed pattern — ADR-501) read as a
     ;; plain "error:"; their message already says what failed.
     (str (if (and (contains? e :kind) (not (includes? [:error :assert :match] (get e :kind))))
            (str (->string (get e :kind)) " error")

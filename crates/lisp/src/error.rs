@@ -323,7 +323,7 @@ pub mod error_codes {
     /// (`:blame :function :argument :expected :got`) as the caught value, plus the
     /// position and trace a built-in error carries (see [`LispError::caught_value`]).
     pub const CONTRACT_VIOLATION: &str = "E0080";
-    /// `(error part…)` — the language's own raise for a caller's mistake (ADR-500). Raised by
+    /// `(error part…)` — the language's own raise for a caller's mistake (ADR-501). Raised by
     /// `%raise` with `{:kind :error :message …}`; caught enriched like a contract violation.
     pub const RAISED_ERROR: &str = "E0090";
     /// `(assert test …)` found `test` falsy: `{:kind :assert :message "assert failed: …"}`.
@@ -633,7 +633,7 @@ impl LispError {
             "type" => ErrorKind::Type,
             "runtime" => ErrorKind::Runtime,
             "user" => ErrorKind::User,
-            // The language's own raises (ADR-500) render as a plain `error: <message>`.
+            // The language's own raises (ADR-501) render as a plain `error: <message>`.
             "error" | "assert" | "match" => ErrorKind::User,
             "interrupted" => ErrorKind::Interrupted,
             _ => return None,

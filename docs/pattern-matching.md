@@ -337,7 +337,7 @@ Structured means a handler can match on the failure itself:
   after a catch-all (an irrefutable pattern must come last)`;
 - a clause that isn't `(pattern body…)`, or a `:when` with no guard.
 
-The raised value is an error map (ADR-500): `{:kind :match :message … :context <form>
+The raised value is an error map (ADR-501): `{:kind :match :message … :context <form>
 :value <value> :patterns <patterns>}` with code `E0092`, so it prints as a sentence
 (`error: let: no clause matches [1] — tried [a b]`) and a `catch` pattern picks it out.
 

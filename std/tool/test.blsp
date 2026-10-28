@@ -481,7 +481,7 @@ the test rather than hanging the run.
   ;; Built-in errors come through `catch` as a structured map (`{:kind :code
   ;; :message :hint}`); flatten to the legacy "kind error: message" string so
   ;; tests can pin exact text. The language's own raises — `error`, `assert`, a failed
-  ;; pattern (ADR-500) — render as their message alone, the text they were written with. A
+  ;; pattern (ADR-501) — render as their message alone, the text they were written with. A
   ;; `(throw v)` lands here as the raw value `v` — pass it through unchanged (matches the
   ;; macro's stated contract).
   (cond

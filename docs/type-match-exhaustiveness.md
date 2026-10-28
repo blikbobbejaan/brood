@@ -1,6 +1,6 @@
 # Match exhaustiveness checking over literal-enum types (ADR-118, generalized in ADR-121)
 
-> **Since ADR-500** the failure branch is `(%raise (%match-error (quote context) target (quote
+> **Since ADR-501** the failure branch is `(%raise (%match-error (quote context) target (quote
 > patterns)))` rather than a `(throw [:match-error …])` vector; the arguments sit in the same
 > positions, and `guards::match_failure_parts` is the one recogniser. The text below predates
 > that.

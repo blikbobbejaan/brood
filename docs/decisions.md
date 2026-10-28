@@ -20,7 +20,7 @@ settled questions. Newest at the bottom.
 
 ## Index
 
-The **in-force** ADRs live in five files by number, each in number order:
+The **in-force** ADRs live in six files by number, each in number order:
 
 | ADRs | File |
 |------|------|
@@ -28,7 +28,8 @@ The **in-force** ADRs live in five files by number, each in number order:
 | 100–199 | [decisions/adr-100-199.md](decisions/adr-100-199.md) |
 | 200–299 | [decisions/adr-200-299.md](decisions/adr-200-299.md) |
 | 300–399 | [decisions/adr-300-399.md](decisions/adr-300-399.md) |
-| 400–499 | [decisions/adr-400-499.md](decisions/adr-400-499.md) — a new ADR goes at the bottom |
+| 400–499 | [decisions/adr-400-499.md](decisions/adr-400-499.md) |
+| 500–599 | [decisions/adr-500-599.md](decisions/adr-500-599.md) — a new ADR goes at the bottom |
 
 To jump to one, open its file and search for its `## ADR-NNN` header. The per-entry
 **Status** line is the source of truth for current state (the table below is a navigation

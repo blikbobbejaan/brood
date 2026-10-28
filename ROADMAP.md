@@ -156,7 +156,7 @@ another Lisp has it.
 
 #### B. Design problems — decide, then fix
 
-1. ✅ **Hygiene has holes (2026-10-28, ADR-499).** Only plain-symbol `let`/`letrec`/`fn` binders in a template
+1. ✅ **Hygiene has holes (2026-10-28, ADR-500).** Only plain-symbol `let`/`letrec`/`fn` binders in a template
    are renamed. Destructuring binders, `match` pattern binders and computed `~params`
    binders stay literal (language.md §Macro hygiene, "v1 limit"). Capture can therefore
    still happen silently, exactly where the docs say hygiene is automatic. Extend the
@@ -164,7 +164,7 @@ another Lisp has it.
    **Done:** destructuring, `match`/`receive` clauses and the standard binding macros
    are renamed, and a typed binder keeps its annotation (it lost it before). Still literal,
    by decision: a user's own binding macro, computed binders and `{:keys [a]}` names.
-2. ✅ **One shape for a caught error (2026-10-28, ADR-500).** Today a `catch` handler sees three shapes:
+2. ✅ **One shape for a caught error (2026-10-28, ADR-501).** Today a `catch` handler sees three shapes:
    - a built-in error: a map `{:kind :message …}`;
    - an unmatched `match`/`case`: a `[:match-error ctx value patterns]` vector;
    - a user `throw`: the raw value.

@@ -874,7 +874,7 @@ fn throw_and_catch() {
         run("(try (/ 1 0) (catch e (string? (get e :message))))"),
         "true"
     );
-    // error: raise a formatted message — an error map of kind :error, code E0090 (ADR-500)
+    // error: raise a formatted message — an error map of kind :error, code E0090 (ADR-501)
     assert_eq!(
         run("(try (error \"nope: \" 5) (catch e [(get e :kind) (get e :message) (get e :code)]))"),
         "[:error \"nope: 5\" \"E0090\"]"

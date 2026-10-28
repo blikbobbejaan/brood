@@ -88,7 +88,7 @@
     (let (me (self) _ (spawn (sumto-worker me)))
       (assert= (receive) 55))))
 
-;; ---- every binding site of the one pattern grammar (ADR-499) -----------------
+;; ---- every binding site of the one pattern grammar (ADR-500) -----------------
 ;; Each macro binds `a` itself and splices caller code `e`; the caller's own `a` is 10,
 ;; so a hygienic expansion answers 11 and a capturing one 2.
 

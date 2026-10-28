@@ -1,4 +1,4 @@
-;; Every error the language raises is an error map, and `catch` takes a pattern (ADR-500).
+;; Every error the language raises is an error map, and `catch` takes a pattern (ADR-501).
 ;;
 ;; A handler used to see four shapes — a built-in error's map, a plain string from `error`
 ;; and `assert`, a `[:match-error …]` vector from a failed pattern, and a `throw`n value as

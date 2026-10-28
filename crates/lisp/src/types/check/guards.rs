@@ -945,7 +945,7 @@ pub(super) enum MatchCoverage {
 
 /// The `[context target patterns]` of the error a `match` raises when no clause matched —
 /// `(%match-error (quote context) target (quote patterns))`, the argument of the
-/// `(%raise …)` its failure branch lowers to (`%match-no-match`, ADR-500) — or `None` for
+/// `(%raise …)` its failure branch lowers to (`%match-no-match`, ADR-501) — or `None` for
 /// any other value.
 pub(super) fn match_failure_parts(heap: &Heap, raised: Value) -> Option<[Value; 3]> {
     let items = list_items(heap, raised)?;

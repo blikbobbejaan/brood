@@ -1,10 +1,10 @@
-//! Automatic binding hygiene (ADR-066 amendment, ADR-499): a quasiquote template's own
+//! Automatic binding hygiene (ADR-066 amendment, ADR-500): a quasiquote template's own
 //! binders are alpha-renamed before the template is built.
 
 use super::*;
 
 // ============================================================================
-// Automatic binding hygiene (ADR-066 amendment — "Option A"; ADR-499)
+// Automatic binding hygiene (ADR-066 amendment — "Option A"; ADR-500)
 // ============================================================================
 //
 // A quasiquote template's OWN lexical binders — the names it introduces as *literal*
