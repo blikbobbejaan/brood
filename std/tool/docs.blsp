@@ -479,6 +479,20 @@ returns the failure count (0 = all hold). The policy behind `nest doctest`."
                  " failing example(s)"))
       (count fails))))
 
+(defn run-markdown-doctests (paths)
+  "Run the fenced examples in the markdown files `paths` with `doctest/markdown-failures`,
+each block in a process of its own. Prints each failure and a summary, and returns the
+failure count (0 = all hold). The policy behind `nest doctest FILE.md…`."
+  (let (fails (fold paths [] (fn (acc p) (append acc (doctest/markdown-failures p)))))
+    (each fails (fn (f) (io/puts (str "  FAIL " f))))
+    (io/puts (str (count paths)
+               " file(s), "
+               (fold paths 0 (fn (n p) (+ n (count (doctest/fenced-blocks (file/slurp p))))))
+               " block(s) checked, "
+               (count fails)
+               " failing example(s)"))
+    (count fails)))
+
 (defn generate (& args)
   "Print Markdown documentation to stdout: the whole project with no args, or a single module given its name. The policy behind `nest doc`.
 

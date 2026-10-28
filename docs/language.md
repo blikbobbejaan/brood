@@ -685,6 +685,13 @@ Elixir doctest — so it is written with the full namespace: `(demo/double 4)`, 
 qualified name is always callable; a bare call to the module's own function fails naming the
 spelling to write (`examples run at the top level: write `demo/double``).
 
+The same markers work in **markdown**: `nest doctest README.md docs/guide.md` runs every
+```` ```clojure ````, ```` ```lisp ```` and ```` ```brood ```` fenced block, each in a process of its
+own under a 10 s timeout. A block is a small program: unmarked lines are setup, run in order
+(setup that raises fails the block), and each ` ;=> ` / ` ;~> ` line is checked as above — a
+marked line may close a form the lines above it opened. A block tagged
+```` ```clojure fragment ```` is never run, nor is an untagged block or another language.
+
 The expected side is **read**, not evaluated, so `(:a :b)` is the list it depicts rather than
 a call; and values are compared as values, so a map's key order (the trie's, not insertion
 order) cannot break an example. A trailing `; comment` is ignored, and only *indented* lines

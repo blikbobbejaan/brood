@@ -141,7 +141,8 @@ whose callee must exist, but that are not evaluated.
   ;; like Elixir's doctests, it is written with the full namespace, so it pastes into any
   ;; REPL as it stands. The slip that rule invites is the module's own bare name: when
   ;; `bare` is unbound here but bound in that module, say what to write instead.
-  (let (slash (string/last-index-of name-str "/")
+  ;; A nil `name-str` is an example with no owning name — a markdown block — so no hint.
+  (let (slash (if name-str (string/last-index-of name-str "/") -1)
         qualified (if (< slash 0)
                     nil
                     (str (string/substring name-str 0 slash) "/" bare)))
@@ -149,30 +150,36 @@ whose callee must exist, but that are not evaluated.
       (str " — examples run at the top level: write `" qualified "`")
       "")))
 
+(defn- illustration-fault (label owner src form)
+  ;; nil when the illustration's read `form` has a head that is bound or a special form and,
+  ;; for a function head, an argument count one of its arms takes. `label` opens the message,
+  ;; `owner` is the documented name a qualify hint is drawn from (nil for none).
+  (let (head (if (pair? form) (first form) nil))
+    (cond
+      (and (symbol? head)
+        (not (bound? head))
+        (not (includes? (reflect/special-forms) (->string head))))
+        (str label
+          ": "
+          src
+          "  ;~> illustration calls `"
+          head
+          "`, which is not defined"
+          (qualify-hint owner (->string head)))
+      (and (symbol? head) (bound? head) (arity-fault head form))
+        (str label ": " src "  ;~> " (arity-fault head form))
+      else nil)))
+
 (defn- check-illustration (name-str src)
   ;; nil when the illustration's form `src` reads as one form whose head is bound or a special
   ;; form, and, for a function head, is called with an argument count one of its arms takes.
   ;; Never run — so after a rename or a reorder this is the only thing that notices it went
   ;; stale.
   ;; check-allow :discarded-catch — a form that does not read is the failure reported below
-  (let (parsed (check-allow :discarded-catch (try [:ok (reflect/read-string src)] (catch _ nil)))
-        form (if parsed (second parsed) nil)
-        head (if (pair? form) (first form) nil))
-    (cond
-      (nil? parsed) (str name-str ": " src "  ;~> illustration does not read as one form")
-      (and (symbol? head)
-        (not (bound? head))
-        (not (includes? (reflect/special-forms) (->string head))))
-        (str name-str
-          ": "
-          src
-          "  ;~> illustration calls `"
-          head
-          "`, which is not defined"
-          (qualify-hint name-str (->string head)))
-      (and (symbol? head) (bound? head) (arity-fault head form))
-        (str name-str ": " src "  ;~> " (arity-fault head form))
-      else nil)))
+  (let (parsed (check-allow :discarded-catch (try [:ok (reflect/read-string src)] (catch _ nil))))
+    (if (nil? parsed)
+      (str name-str ": " src "  ;~> illustration does not read as one form")
+      (illustration-fault name-str name-str src (second parsed)))))
 
 (defn- holds? (value expected)
   ;; Does `value` satisfy the documented result text `expected`?
@@ -195,15 +202,16 @@ whose callee must exist, but that are not evaluated.
                  (try [:ok (reflect/read-string expected)] (catch _ nil))))
     (if parsed (= value (second parsed)) (= (pr-str value) expected))))
 
-(defn- check-case (name-str src expected)
-  (let (outcome (try
-                  [:ok (reflect/eval (reflect/read-string src))]
-                  (catch e [:raised (str "RAISED " (error-message e))]))
+(defn- case-fault (label owner src run expected)
+  ;; nil when calling `run` — the case's evaluation — gives a value `expected` describes, or
+  ;; raises exactly the `RAISED …` text it documents; else how it failed. `owner` as for
+  ;; `illustration-fault`.
+  (let (outcome (try [:ok (run)] (catch e [:raised (str "RAISED " (error-message e))]))
         ok (if (= (first outcome) :raised)
              (= (second outcome) expected)
              (holds? (second outcome) expected)))
     (when (not ok)
-      (str name-str
+      (str label
         ": "
         src
         "  ;=> got "
@@ -212,11 +220,14 @@ whose callee must exist, but that are not evaluated.
         expected
         (if (and (= (first outcome) :raised)
               (string/starts-with? (second outcome) "RAISED unbound symbol: "))
-          (qualify-hint name-str
+          (qualify-hint owner
             (string/substring (second outcome)
               (string/length "RAISED unbound symbol: ")
               (string/length (second outcome))))
           "")))))
+
+(defn- check-case (name-str src expected)
+  (case-fault name-str name-str src (fn () (reflect/eval (reflect/read-string src))) expected))
 
 (defn check (name-str line)
   "nil when `line` is not an example at all, or when the example it carries holds; else a
@@ -297,3 +308,225 @@ whether that is a failure, so this is usable as a report as well as a gate.
 
     (doctest/failures)   ;~> [] — or one description per example that does not hold"
   (failures-under nil))
+
+;; ── Markdown: fenced blocks ──────────────────────────────────────────────────────────────
+;;
+;; A fenced block in a document is an example the same way a docstring line is, and it drifts
+;; the same way — ADR-308's argument reorder survived in docs/language.md because nothing ran
+;; it. A block is a small program: its unmarked lines are setup, run in order, and each
+;; ` ;=> ` or ` ;~> ` line is checked as in a docstring. A marked line may close a form opened
+;; by the lines above it, so a multi-line `let` ending in ` ;=> 3` is one case.
+;;
+;; Each block runs in a child process of its own, under a timeout. In-process, a block's
+;; `def` would land in the image every later block shares — one that redefines `map` breaks
+;; the rest of the run — and a block that serves a socket or sleeps would stall it.
+
+(def- *runnable-fences* ["clojure" "lisp" "brood"])
+
+(def- *block-timeout-ms* 10000)
+
+(def- *faults-prefix* "doctest-faults: ")
+
+(defn- indent-of (line)
+  (- (string/length line) (string/length (string/triml line))))
+
+(defn- dedent (line indent)
+  ;; `line` without the fence's own indent, or without whatever indent it has when that is
+  ;; less — a block inside a list item is indented with the item.
+  (if (string/starts-with? line (string/repeat " " indent))
+    (string/substring line indent (string/length line))
+    (string/triml line)))
+
+(defn- runnable-fence? (info)
+  (let (words (seq/filter (string/split info " ") (fn (w) (not (= w "")))))
+    (and (not (empty? words))
+      (includes? *runnable-fences* (first words))
+      (not (includes? words "fragment")))))
+
+(defn fenced-blocks (text)
+  "The runnable fenced blocks of markdown `text`, in order, each `{:line n :source s}` with
+`n` the 1-based line of its first line of code. A block runs when its info string opens with
+`clojure`, `lisp` or `brood` and does not carry the word `fragment`; an untagged block or any
+other language is never run. A block indented inside a list item loses that indent.
+
+    (doctest/fenced-blocks \"x\\n```clojure\\n(+ 1 1)\\n```\")   ;=> [{:line 3 :source \"(+ 1 1)\"}]
+    (doctest/fenced-blocks \"```clojure fragment\\n(f …)\\n```\")   ;=> []"
+  (letrec (walk (fn (lines n open blocks)
+                  (if (empty? lines)
+                    blocks
+                    (let (line (first lines)
+                          trimmed (string/triml line)
+                          fence? (string/starts-with? trimmed "```"))
+                      (cond
+                        (and (nil? open) fence?)
+                          (walk (rest lines)
+                            (+ n 1)
+                            {:start (+ n 1)
+                             :indent (indent-of line)
+                             :runnable (runnable-fence? (string/drop-prefix trimmed "```"))
+                             :lines []}
+                            blocks)
+                        (nil? open) (walk (rest lines) (+ n 1) nil blocks)
+                        fence?
+                          (walk (rest lines)
+                            (+ n 1)
+                            nil
+                            (if (:runnable open)
+                              (append blocks
+                                [{:line (:start open)
+                                  :source (string/join (:lines open) "\n")}])
+                              blocks))
+                        else
+                          (walk (rest lines)
+                            (+ n 1)
+                            (assoc open
+                              :lines (append (:lines open) [(dedent line (:indent open))]))
+                            blocks))))))
+    (apply vector (walk (string/split text "\n") 1 nil []))))
+
+(defn- read-forms (text)
+  ;; `[:ok forms]`, or `[:unreadable message]` when `text` does not read.
+  (try
+    [:ok (apply vector (reflect/read-all text))]
+    (catch e [:unreadable (error-message e)])))
+
+(defn- run-setup (label forms)
+  ;; nil when every form evaluates; else the fault naming the one that raised.
+  (if (empty? forms)
+    nil
+    (let (fault (try
+                  (do (reflect/eval (first forms)) nil)
+                  (catch e
+                    (str label ": setup raised: " (error-message e) " — in " (pr-str (first forms))))))
+      (or fault (run-setup label (rest forms))))))
+
+(defn block-faults (label start source)
+  "How the fenced block `source` fails, as a vector of descriptions — empty when it holds.
+`label` names the document and `start` is the line the block's code begins on, so each
+description points at its line. Unmarked lines are setup, evaluated in order; a setup line
+that raises stops the block, since the cases after it depend on it. Evaluates the block in
+THIS process — `markdown-failures` gives each block a process of its own.
+
+    (doctest/block-faults \"a.md\" 1 \"(def x 2)\\n(+ x 1)   ;=> 3\")   ;=> []
+    (count (doctest/block-faults \"a.md\" 1 \"(+ 1 1)   ;=> 3\"))   ;=> 1"
+  (letrec (walk (fn (lines n buffer faults)
+                  (if (empty? lines)
+                    (let (pending (read-forms (string/join buffer "\n")))
+                      (cond
+                        (= (first pending) :unreadable)
+                          (append faults
+                            [(str label ":" n ": setup does not read: " (second pending))])
+                        else
+                          (let (fault (run-setup (str label ":" n) (second pending)))
+                            (if fault (append faults [fault]) faults))))
+                    (let (line (first lines)
+                          padded (str "    " line)
+                          here (str label ":" n)
+                          continue (fn (fault)
+                                     (walk (rest lines)
+                                       (+ n 1)
+                                       []
+                                       (if fault (append faults [fault]) faults)))
+                          checked (fn (form-text check)
+                                    ;; The setup above this line, then the line's own form —
+                                    ;; which may close a form the setup opened.
+                                    (let (parsed (read-forms (string/join (append buffer
+                                                                            [form-text])
+                                                               "\n")))
+                                      (if (= (first parsed) :unreadable)
+                                        (continue (str here
+                                                    ": "
+                                                    form-text
+                                                    "  — does not read: "
+                                                    (second parsed)))
+                                        (let (forms (second parsed)
+                                              fault (run-setup here (but-last forms)))
+                                          (if fault
+                                            (append faults [fault])
+                                            (continue (check (last forms)))))))))
+                      (if (old-marker? padded)
+                        (continue (str here
+                                    ": "
+                                    (string/trim line)
+                                    "  — old marker: write ` ;=> ` for a case, ` ;~> ` for an illustration"))
+                        (match (marked padded ";=>")
+                          ([:malformed] (continue (str here
+                                                    ": "
+                                                    (string/trim line)
+                                                    "  — malformed example: expected one form, a marker, one result")))
+                          ([:example form-text expected] (checked form-text
+                                                           (fn (form)
+                                                             (case-fault here
+                                                               nil
+                                                               (pr-str form)
+                                                               (fn () (reflect/eval form))
+                                                               expected))))
+                          (_ (match (marked padded ";~>")
+                               ([:malformed] (continue (str here
+                                                         ": "
+                                                         (string/trim line)
+                                                         "  — malformed example: expected one form, a marker, one result")))
+                               ([:example form-text _] (checked form-text
+                                                         (fn (form)
+                                                           (illustration-fault here
+                                                             nil
+                                                             (pr-str form)
+                                                             form))))
+                               (_ (walk (rest lines) (+ n 1) (append buffer [line]) faults))))))))))
+    (apply vector (walk (string/split source "\n") start [] []))))
+
+(defn run-block (label start source)
+  "The child half of `markdown-failures`: check one block with `block-faults` and print the
+faults on a last line the parent reads back.
+
+    (doctest/run-block \"a.md\" 1 \"(+ 1 1)   ;=> 2\")   ;~> prints doctest-faults: []"
+  (io/puts (str *faults-prefix* (pr-str (block-faults label start source)))))
+
+(defn- child-command (file)
+  ;; Run `file` with the binary running now: `nest run` keeps a project's sources reachable,
+  ;; so a block in a project's guide can call the project; `brood` runs a file as it is.
+  (let (exe (os/exe-path))
+    (if (string/starts-with? (path/basename exe) "nest")
+      [exe ["run" "--no-check" file]]
+      [exe [file]])))
+
+(defn- block-outcome (label result)
+  ;; The faults a child reported on its last `doctest-faults:` line, or one fault saying why
+  ;; there is no such line — a timeout, a crash, a block that exited the process.
+  (let (reported (seq/filter (string/split (:stdout result) "\n")
+                   (fn (l) (string/starts-with? l *faults-prefix*))))
+    (if (empty? reported)
+      [(str label
+         ": block did not finish — "
+         (if (:timed-out result)
+           (str "timed out after " *block-timeout-ms* " ms")
+           (str "exit " (:exit result)))
+         (let (stderr (string/trim (:stderr result)))
+           (if (= stderr "") "" (str ": " (last (string/split stderr "\n"))))))]
+      (reflect/read-string (string/drop-prefix (last reported) *faults-prefix*)))))
+
+(defn markdown-failures (path)
+  "Every fenced block example in the markdown file at `path` that does not hold, each block
+run in a child process of its own under a timeout. A vector of descriptions, empty when every
+block holds.
+
+    (doctest/markdown-failures \"docs/guide.md\")   ;~> [] — or one description per failure"
+  (let (blocks (fenced-blocks (file/slurp path)))
+    (apply vector
+      (fold blocks
+        []
+        (fn (faults block)
+          (let (label (str path ":" (:line block))
+                file (str (path/temp "brood-doctest-") ".blsp")
+                command (child-command file))
+            (file/spit file
+              (str "(doctest/run-block "
+                (pr-str path)
+                " "
+                (:line block)
+                " "
+                (pr-str (:source block))
+                ")\n"))
+            (let (result (os/cmd (first command) (second command) {:timeout-ms *block-timeout-ms*}))
+              (file/rm file)
+              (append faults (block-outcome label result)))))))))

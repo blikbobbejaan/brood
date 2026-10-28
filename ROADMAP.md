@@ -115,7 +115,16 @@ another Lisp has it.
   2. ✅ **The sweep.** Every std and Rust builtin docstring and the generated `defrecord`
      docs, done by a one-shot converter. Doctest over the std image: 0 failures across 2,029
      documented names.
-  3. ⬜ Markdown: each fenced block runs as one isolated session, `;=>`/`;~>` per line.
+  3. ✅ **Markdown blocks (2026-10-28).** `nest doctest FILE.md…` runs every ```` ```clojure ````,
+     ```` ```lisp ```` and ```` ```brood ```` block. Each block runs in a child process of its own
+     (`nest run`, so a project's sources are reachable) with a 10 s timeout, so a block's `def`
+     cannot reach the next block and a block that hangs fails instead of stalling the run.
+     Unmarked lines are setup and run in order; setup that raises fails the block. A marked
+     line may close a form opened above it. ```` ```clojure fragment ```` opts a block out.
+     A trial over README, `language.md`, `brood-for-claude.md` and `pattern-matching.md`:
+     164 blocks in 57 s, 120 failures. Most are trailing prose after a result and setup that
+     names values the block never defines; that is step 5's triage. One is real drift:
+     `language.md`'s `(area (rect 3 4)) ;=> 12` fails its own `sig` contract.
   4. ⬜ `:doc-paths` in `project.blsp`.
   5. ⬜ Triage Brood's docs.
   6. ⬜ ADR, `docs/tooling.md`, devlog.

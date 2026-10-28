@@ -38,8 +38,10 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
    "docs" {:about "Generate a browsable HTML documentation site from docstrings (default `doc/`)."
            :flags {"--all" :bool "--out" "DIR" "-o" "DIR"}
            :run (fn (options) (run-docs options))}
-   "doctest" {:about "Check every `expr ;=> result` docstring example still holds; exit non-zero on a mismatch."
+   "doctest" {:about "Check every `expr ;=> result` docstring example still holds, or, given markdown FILEs, run their ```clojure, ```lisp and ```brood blocks (each in a process of its own; ```clojure fragment opts one out); exit non-zero on a mismatch."
               :flags {}
+              :positional ["file" nil]
+              :many true
               :run (fn (options) (run-doctest options))}
    "grammar" {:about "Emit an editor syntax grammar generated from `(reflect/special-forms)` (ADR-092), to stdout."
               :flags {}
@@ -547,7 +549,8 @@ so at the CLI boundary and returns false (exit 2), rather than a trace from deep
 
 (defn- run-doctest (options)
   (if (require-project "doctest" nil)
-    (let (failures (docs/run-doctests))
+    (let (files (get options :positionals)
+          failures (if (empty? files) (docs/run-doctests) (docs/run-markdown-doctests files)))
       (if (and (int? failures) (> failures 0)) 1 0))
     2))
 

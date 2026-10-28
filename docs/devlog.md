@@ -4496,3 +4496,19 @@ illustration whose head is undefined, where `X` is bound in the documented name'
 ends `— examples run at the top level: write `module/X``. `docs/language.md`'s one leftover
 `→` example is converted. Run here: the hint over `string/trim` with a bare and a qualified
 example (probe), `nest check` and `--strict`, `nest format --check`. Not run: `doctest_test`.
+
+2026-10-28 (doctest runs markdown blocks): `nest doctest FILE.md…` runs every ```clojure,
+```lisp and ```brood fenced block (`doctest/markdown-failures`); ```clojure fragment, untagged
+blocks and other languages are skipped. Each block runs in a child process of its own
+(`nest run --no-check`, or `brood` when that is the running binary) under a 10 s timeout: in
+one process a block's `def` reaches every later block, and a block that serves or sleeps
+stalls the run. Unmarked lines are setup, run in order, and setup that raises fails the block
+so a broken block cannot pass by never reaching its cases; a marked line may close a form the
+setup opened, so a multi-line `let` ending in ` ;=> 3` is one case. The child prints its
+faults on a `doctest-faults:` line; a block with no such line (a timeout, a crash, a `halt`)
+is reported with its exit status. A trial over README, `language.md`, `brood-for-claude.md`
+and `pattern-matching.md`: 164 blocks in 57 s, 120 failures, mostly prose after a result and
+setup naming values the block never defines (the triage is ROADMAP A3 step 5). Run here: the
+std doctest engine (0 failures over 2,035 names), `nest check` and `--strict`,
+`nest format --check`, and probes of isolation, `halt` and the timeout through
+`nest doctest`. Not run: `doctest_test`.
