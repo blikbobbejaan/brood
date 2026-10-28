@@ -53,7 +53,7 @@ Operators — arithmetic, comparison and the reader's own punctuation. Bare by c
 - `>`
 - `>=`
 
-## dynamic (75)
+## dynamic (76)
 
 Dynamic variables (`defdyn`) — earmuffed, so they cannot be mistaken for ordinary bindings, and bare because `binding` sites read better unqualified. The largest group and the least contentious; note how many are one subsystem's configuration (`*project-*`, `*test-*`, `*repl-*`).
 - `*comment-kinds*`
@@ -130,6 +130,7 @@ Dynamic variables (`defdyn`) — earmuffed, so they cannot be mistaken for ordin
 - `*transduce-run*`
 - `*ui-loop*`
 - `*ui-memo*`
+- `*ui-slow-reports*`
 - `*units*`
 
 ## predicate (40)
