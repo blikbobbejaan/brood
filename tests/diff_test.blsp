@@ -245,3 +245,47 @@ index 0000000..3333333
       (let (answers (fold (range 4) [] (fn (acc _) (conj acc (receive)))))
         (is (> (count here) 30))
         (is (every? answers (fn (answer) (= answer here))))))))
+
+(describe "map-line / map-lines"
+  (test "an unchanged line follows the lines added and removed above it"
+    (assert= (diff/map-line "a\nb\nc\n" "x\ny\na\nb\nc\n" 2) 4)
+    (assert= (diff/map-line "a\nb\nc\nd\n" "a\nd\n" 3) 1)
+    (assert= (diff/map-line "a\nb\nc\n" "a\nb\nc\n" 1) 1))
+
+  (test "a changed line lands on its replacement at the same offset, or the block's last"
+    (assert= (diff/map-line "a\nb\nc\nd\n" "a\nB\nC\nd\n" 2) 2)
+    (assert= (diff/map-line "a\nb\nc\nd\n" "a\nX\nd\n" 2) 1))
+
+  (test "a deleted line lands on the line that followed it, clamped to the new text's last line"
+    (assert= (diff/map-line "a\nb\nc\n" "a\nc\n" 1) 1)
+    (assert= (diff/map-line "a\nb\nc\n" "a\nb\n" 2) 2)
+    (assert= (diff/map-line "a\nb\n" "" 1) 0)
+    (assert= (diff/map-line "a\nb\n" "a\nb\n" 9) 2)
+    (assert= (diff/map-line "a\nb" "a\nb" 9) 1))
+
+  (test "one diff serves many lines, and a rope maps as its text"
+    (let (old "one\ntwo\nthree\nfour\n" new "zero\none\nthree\nfour\nfive\n")
+      (assert= (diff/map-lines old new [0 1 2 3]) [1 2 2 3])
+      (assert= (diff/map-lines (text/from-string old) (text/from-string new) [0 1 2 3])
+        [1 2 2 3]))))
+
+(describe "hunk-changes / hunks-status"
+  (test "a parsed hunk's change runs as zero-context hunks"
+    (let (hunk (first (:hunks (first (diff/parse-unified "--- a/f\n+++ b/f\n@@ -1,6 +1,6 @@\n a\n-b\n+B\n+C\n c\n d\n-e\n f\n")))))
+      (assert= (diff/hunk-changes hunk) [[1 1 1 2] [4 1 5 0]])
+      (assert= (diff/hunks-status (diff/hunk-changes hunk)) {1 :modified 2 :added 5 :deleted})))
+
+  (test "a zero-context hunk reads as line-hunks does"
+    (let (old "a\nb\nc\n"
+          new "a\nx\nb\n"
+          text "--- a/f\n+++ b/f\n@@ -1,0 +2 @@\n+x\n@@ -3 +3,0 @@\n-c\n"
+          hunks (:hunks (first (diff/parse-unified text))))
+      (assert= (into [] (mapcat hunks diff/hunk-changes)) (diff/line-hunks old new))))
+
+  (test "a hunk adding a file starts at line 0"
+    (assert= (diff/hunk-changes {:old-start 0
+                                 :old-count 0
+                                 :new-start 1
+                                 :new-count 2
+                                 :lines ["+a" "+b"]})
+      [[0 0 0 2]])))
