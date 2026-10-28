@@ -4712,3 +4712,11 @@ binary and `interrupt` at both tiers, `doc_refs`, `sig_in_docstring`, `registry_
 `type_check_catalog`, sixteen record/sequence/numeric `.blsp` files at both tiers; build,
 clippy, fmt. Not run here: the suite, GC stress, and a benchmark (the offer is two stores per
 native call through `dispatch`; `make ab` on the benchmark machine).
+2026-10-28 (v0.46.0, tagged ahead of CI again): cut at the user's call while CI on `dd009963`
+(the dependency upgrade merged with ADR-505) was still queued behind the manual nightly. What
+it rests on: `cargo +1.97 check --workspace --all-targets` and clippy `--all-targets
+--all-features` on 1.99.1 clean, fmt, `nest format`, `nest check` and `--strict`; ADR-505's
+own runs (interrupt tests at both tiers, 16 record/sequence/numeric files, bedit's full suite
+on a release build of the branch). Unrun at the tag: the suite on the merged tree, the wasm
+tests under wasmtime 50's new fuel charging, the nightly's ASan job and soaks, and the
+benchmark rows ADR-502 and ADR-505 name. A defect any of these finds ships as v0.46.1.

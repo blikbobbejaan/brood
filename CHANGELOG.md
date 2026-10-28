@@ -6,7 +6,16 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+## v0.46.0 — sends that wait for their reader, and parks inside a record's methods
+
+A TCP send now waits on its peer, so a producer streams at its reader's pace instead of
+holding everything it sent. A `receive` reached through a record's arithmetic, comparison or
+sequence methods parks the process instead of blocking its worker. wasmtime moves to 50 and
+cranelift to 0.137, which raises the minimum Rust to 1.97. The narrative is the devlog's
+2026-10-28 entries.
+
 **Changed — breaking.**
+- Brood now needs Rust 1.97 or newer to build: wasmtime 50 and cranelift 0.137 require it.
 - `tcp/send` waits on its peer (ADR-504). Once about a megabyte is unwritten it parks until
   the peer has taken most of it, or the connection is gone, so a producer streaming to a slow
   reader runs at the reader's pace and holds a megabyte rather than all it sends; a response
@@ -25,6 +34,11 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   to the engine instead of making it from Rust (ADR-505). So does one in a wrapper over
   `proc/interruptible` bound under another name. A `compare-to` that answers no int under
   `<` now raises an `error` naming the operator, where it was a runtime error.
+
+**Dependencies.**
+- wasmtime 50 and cranelift 0.137; 25 more crates to their latest compatible versions.
+  wasmtime 50 charges fuel for more host allocations, so a wasm guest near its fuel budget
+  may run out a little sooner. CI uses cargo-nextest 0.9.150.
 
 ## v0.45.0 — C-g, one shape for errors, and macros at every level
 
