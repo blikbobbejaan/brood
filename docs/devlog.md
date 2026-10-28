@@ -4401,3 +4401,10 @@ fixed: `process_wide_statics`, red on main since ADR-491, now declares the termi
 `tree_sitter`, `doc_examples`, `audit`; `cargo test -p brood --lib treesit` (11) and
 `process_wide_statics`; clippy (treesit-grammars, all targets); cargo fmt. Nothing was
 measured.
+
+2026-10-28 (ADR-495 follow-up, `owned-trees`): `%tree-sitter-owned-trees` /
+`editor/treesit/owned-trees` list the tree handles the calling process owns, so a holder can
+sweep handles it lost track of. A turn that opened a tree and was then rolled back used to be
+cleaned up by the 32-entry LRU, and is now held until its owner exits unless swept. bedit's
+`syntaxtree` sweeps on its idle beat. Run here: `treesit_module` (85; the new test was red
+before), `doc_examples`, `audit`, `cargo test --lib owned::`; clippy and fmt.

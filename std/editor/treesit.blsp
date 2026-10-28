@@ -526,6 +526,17 @@ the owner can give a tree away: anyone else's call is an error.
     (editor/treesit/give-tree (ref) (self))   → false"
   (%tree-sitter-tree-give tree pid))
 
+(defn owned-trees ()
+  "Every tree handle the calling process owns, as a vector by ascending id: the ones it opened
+or updated and has not freed or given away, and the ones given to it. A handle is freed only
+by its holder or its owner's exit, so one a holder lost track of — opened by a turn an editor
+then rolled back — stays until that exit. Free every owned handle you no longer reference, at
+some quiet moment, and that is the whole sweep.
+
+    (editor/treesit/owned-trees)   ;=> [] — or the handles this process holds
+    (vector? (editor/treesit/owned-trees))   → true"
+  (%tree-sitter-owned-trees))
+
 (defn tree-changes (tree &optional (injections nil))
   "Where `tree`'s colouring may differ from the tree it was updated from: a sorted vector of
 disjoint char ranges `[start end]` — the edited text, plus every range whose syntax the edit

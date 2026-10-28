@@ -787,6 +787,14 @@ pub(super) fn register_tree_ownership(primitives: &mut super::Primitives) {
         "Hand the tree handle tree to the LOCAL process pid: from now on it is pid's, freed when pid frees it or dies, where it was the caller's. A handle belongs to the process that opened it (%tree-sitter-tree, %tree-sitter-tree-reparse) and is freed when that process exits, so a task that parses off the loop gives its tree to the process it reports to BEFORE replying — else the tree dies with the task. true when pid holds it now; false when the handle was already gone, or pid has died (the tree dies with it). An error when the caller does not own the handle — only the owner decides where it goes — or pid is on another node. false in a build without feature `treesit`.",
         tree_sitter_tree_give,
     );
+    primitives.def(
+        "%tree-sitter-owned-trees",
+        Arity::exact(0),
+        Sig::new(vec![], vec_ty),
+        &[],
+        "Every tree handle the calling process owns, as a vector of refs by ascending id: those it opened or reparsed and has not freed or given away, and those given to it. What a holder sweeps against the handles it still references, freeing the rest — a handle it lost track of (opened by a turn that was then rolled back) is otherwise held until the process exits (ADR-495). [] in a build without feature `treesit`.",
+        tree_sitter_owned_trees,
+    );
 }
 
 /// `(%tree-sitter-tree-give tree pid)` — `crate::host::treesit::tree_give`.
@@ -809,4 +817,13 @@ pub(super) fn tree_sitter_tree_give(args: &[Value], _: EnvId, heap: &mut Heap) -
             "{who}: this process does not own the tree — only its owner can give it away"
         ))),
     }
+}
+
+/// `(%tree-sitter-owned-trees)` — `crate::host::treesit::owned_trees` of the caller.
+pub(super) fn tree_sitter_owned_trees(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let owned = crate::host::treesit::owned_trees(crate::process::self_pid())
+        .into_iter()
+        .map(Value::Ref)
+        .collect();
+    Ok(heap.alloc_vector(owned))
 }

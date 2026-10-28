@@ -2159,6 +2159,15 @@ pub fn tree_give(handle: u64, from: u64, to: u64) -> Result<bool, GiveRefused> {
     Ok(false)
 }
 
+/// `(%tree-sitter-owned-trees)` — every handle `pid` owns, by ascending id. What a holder sweeps against what it still references: a handle it lost
+/// track of (a turn rolled back after opening one) is otherwise held until it exits.
+#[cfg(feature = "treesit")]
+pub fn owned_trees(pid: u64) -> Vec<u64> {
+    let mut owned = crate::core::sync::lock(&TREE_HANDLES).owned_by(pid);
+    owned.sort_unstable();
+    owned
+}
+
 /// Free every tree `pid` owns — the process-death hook, beside the socket, subprocess and
 /// wasm sweeps in the scheduler's retirement path. O(the trees it owned).
 #[cfg(feature = "treesit")]
@@ -2251,6 +2260,11 @@ pub fn tree_give(_handle: u64, _from: u64, _to: u64) -> Result<bool, GiveRefused
 
 #[cfg(not(feature = "treesit"))]
 pub fn close_process_trees(_pid: u64) {}
+
+#[cfg(not(feature = "treesit"))]
+pub fn owned_trees(_pid: u64) -> Vec<u64> {
+    Vec::new()
+}
 
 #[cfg(not(feature = "treesit"))]
 pub fn tree_chain(_heap: &mut crate::core::heap::Heap, _handle: u64, _offset: i64) -> LispResult {

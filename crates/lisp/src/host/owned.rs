@@ -62,6 +62,16 @@ impl<T> OwnedTable<T> {
         self.entries.contains_key(id)
     }
 
+    /// The ids `owner` holds, in no order — O(what it owns).
+    // Used by the tree-sitter host (`treesit`), which a build without it does not carry.
+    #[cfg_attr(not(feature = "treesit"), allow(dead_code))]
+    pub(crate) fn owned_by(&self, owner: u64) -> Vec<u64> {
+        self.by_owner
+            .get(&owner)
+            .map(|ids| ids.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
     /// The process that owns entry `id`, or `None` for an unknown id.
     // Used by the tree-sitter host (`treesit`), which a build without it does not carry.
     #[cfg_attr(not(feature = "treesit"), allow(dead_code))]
