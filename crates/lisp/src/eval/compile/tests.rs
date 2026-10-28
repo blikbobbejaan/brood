@@ -410,7 +410,7 @@ fn a_chunk_reading_proc_interruptible_stays_out_of_the_jit_subset() {
         let crate::core::value::ValueRef::Fn(id) = f.unpack() else {
             panic!("{name} is not a closure");
         };
-        let arm = compiled_arm_for(&mut interp.heap, id, 2).expect("the arm compiles");
+        let arm = compiled_arm_for(&interp.heap, id, 2).expect("the arm compiles");
         let chunk = arm.chunk.as_ref().expect("the arm has a chunk");
         crate::eval::compile::jit_plan::chunk_in_jit_subset(&chunk.code)
     };
