@@ -26,7 +26,10 @@
 
 (describe "documented examples evaluate as written"
 
-  (test "every indented `form ;=> result` example in a docstring holds"
+  ;; `:isolated` (the whole group): the first test loads every module and runs thousands of
+  ;; examples, minutes of the whole runtime's time under the sanitizer, and beside it the
+  ;; JIT tests' arms read `:untried` or `:bailed` for load alone.
+  :isolated (test "every indented `form ;=> result` example in a docstring holds"
     ;; Load the whole library so the examples of every module are in scope, not just
     ;; whatever the test runner happened to pull in.
     ;; check-allow :discarded-catch — builtin modules with no file behind them are expected to fail to load
