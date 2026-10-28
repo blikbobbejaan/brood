@@ -515,10 +515,26 @@ faults on a last line the parent reads back.
     (doctest/run-block \"a.md\" 1 \"(+ 1 1)   ;=> 2\")   ;~> prints doctest-faults: []"
   (io/puts (str *faults-prefix* (pr-str (block-faults label start source)))))
 
+(defn- runtime? (exe)
+  (let (name (path/basename exe))
+    (or (string/starts-with? name "nest") (string/starts-with? name "brood"))))
+
+(defn- block-runtime ()
+  ;; The binary running now, when it is a Brood runtime. A harness that is not one (cargo's
+  ;; suite runs as its own test binary, which would read `run` as a test-name filter and never
+  ;; run the block) gets the `nest` or `brood` built beside it, or one directory up.
+  (let (running (or (os/exe-path) "brood"))
+    (if (runtime? running)
+      running
+      (let (directory (path/dirname running))
+        (or (seq/find (for (name ["nest" "brood"] up ["" ".."]) (path/join directory up name))
+              file/exists?)
+          "brood")))))
+
 (defn- child-command (file)
-  ;; Run `file` with the binary running now: `nest run` keeps a project's sources reachable,
-  ;; so a block in a project's guide can call the project; `brood` runs a file as it is.
-  (let (exe (or (os/exe-path) "brood"))
+  ;; Run `file` with a Brood runtime: `nest run` keeps a project's sources reachable, so a
+  ;; block in a project's guide can call the project; `brood` runs a file as it is.
+  (let (exe (block-runtime))
     (if (string/starts-with? (path/basename exe) "nest")
       [exe ["run" "--no-check" file]]
       [exe [file]])))
