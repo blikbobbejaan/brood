@@ -4662,3 +4662,14 @@ templates by level. Guard: `tests/nested_quasiquote_test.blsp`; `syntax_finaliza
 ADR-152 rejection case now pins the level-2 copy instead. Not run here (no tests on the
 desktop): the suite; checked here, a script of the cases in the tests run once with
 `brood`, fmt, clippy `--all-features`, `nest format --check`, `nest check` and `--strict`.
+2026-10-28 (v0.45.0, tagged ahead of CI): tagged on `ad737a7d` at the user's call, before
+main CI reached a verdict on it — every push of the day cancelled the run before it, so the
+nested-quasiquote work (ADR-503) never finished a main run before the tag. The manual nightly
+(run 40727675509, on `0af2f07f`) failed GC stress and suite run 1 on one case,
+`nested_quasiquote_test:62`: a macro's inner template writes a root call head as `/name`, so
+the case's `(list ~x)` read `(/list 7)`. A test expectation, fixed in `ad737a7d`, the tagged
+commit. Open when tagged: that nightly's ASan job (does building `brood`/`nest` beside the
+harness fix the doctest and C-g tests; do the JIT tests still read `:untried`/`:bailed` under
+load — `settle` now prints why), both soaks, and ADR-502's benchmark, never run:
+`make ab BASE=11601fe6 ROWS="nqueens pipeline json reduce"` on the benchmark machine. If any
+of these turns up a defect, it ships as v0.45.1.
