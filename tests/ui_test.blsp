@@ -12,7 +12,8 @@
   (:use editor/display)
   ;; `:exclude [inspect]` — `io/inspect` WRITES, while the root `inspect` is the `Inspect`
   ;; ability op that RETURNS a string. Referring the writer bare here would shadow the op.
-  (:use io :exclude [inspect]))
+  (:use io :exclude [inspect])
+  (:use suite-helpers))
 
 ;; Collect every [:saw x] message now in the mailbox, in send order — the tests
 ;; below have `view` announce each model it renders with `(send me [:saw …])`, so
@@ -1440,6 +1441,9 @@ error a catch-all sees, so the kernel keeps raising it (sticky) until the window
 ;; pseudo-terminal. Its keys reach the loop through the reader thread `term/forward-input`
 ;; starts, on the priority lane, so a C-g typed while `update` loops forever stops it —
 ;; which the terminal, read by the loop itself, could not do before (ADR-491).
+;; The app runs under `nest run`, found beside the running binary: under the cargo suite
+;; `(os/exe-path)` is the libtest harness, which reads `run` as a test-name filter and
+;; never draws.
 (defn- term-quit-await-file (path ms)
   "Poll for `path` to exist, every 10 ms, up to `ms`: true when it does."
   (cond
@@ -1469,7 +1473,8 @@ error a catch-all sees, so the kernel keeps raising it (sticky) until the window
             "                          :else m))\n"
             "  *term-display*)\n"
             "(mark \"exited\")\n"))
-        (let (p (os/spawn-pty (os/exe-path) ["run" script] {:cols 80 :rows 24}))
+        (let (nest (sibling-binary "nest")
+              p (os/spawn-pty nest ["run" script] {:cols 80 :rows 24}))
           (is (term-quit-await-file (marker "drawn") 20000))
           (os/write p "s")
           (is (term-quit-await-file (marker "spinning") 20000))
