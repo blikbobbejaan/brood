@@ -221,9 +221,10 @@ enum KontKind {
     /// A callback whose value is the call's (a `%try` handler).
     Callback,
     /// `proc/interruptible`'s thunk (ADR-494): its value is answered `[:ok v]`, an interrupt
-    /// unwinding into it `[:interrupted e]`. `owner` when this call opened the window — one
-    /// inside an open window owns nothing, and every error passes through it.
-    Interruptible { owner: bool },
+    /// unwinding into it `[:interrupted e]` when it was raised for this frame's `window`, the
+    /// depth this call opened (ADR-493: windows nest, the innermost takes a request); any other
+    /// error passes through. However the frame ends, it closes its window and any inside it.
+    Interruptible { window: u32 },
 }
 
 /// The natives the tree-walker treats specially under a tier-0 ceiling: `try`/`binding` and
@@ -756,11 +757,12 @@ impl<'e> Machine<'e> {
                             }
                             // The window this frame opened closes BEFORE the interrupt is
                             // noted as caught, so the sticky re-raise is not armed (ADR-491).
-                            KontKind::Interruptible { owner: true }
+                            KontKind::Interruptible { window }
                                 if !e.is_control()
-                                    && e.kind == crate::error::ErrorKind::Interrupted =>
+                                    && e.kind == crate::error::ErrorKind::Interrupted
+                                    && crate::process::interrupt_raised_for(window) =>
                             {
-                                crate::process::set_interrupt_window(None);
+                                crate::process::close_interrupt_window(window);
                                 k.marks.restore(heap);
                                 let caught = e.caught_value(heap);
                                 Ok(Step::Value(
@@ -779,8 +781,8 @@ impl<'e> Machine<'e> {
                                     }
                                     // Any other error, a kill included, still ends the
                                     // window this frame opened.
-                                    KontKind::Interruptible { owner: true } => {
-                                        crate::process::set_interrupt_window(None)
+                                    KontKind::Interruptible { window } => {
+                                        crate::process::close_interrupt_window(*window)
                                     }
                                     _ => {}
                                 }
@@ -939,10 +941,8 @@ impl<'e> Machine<'e> {
                 marks.restore(heap);
                 Ok(Step::Value(v))
             }
-            KontKind::Interruptible { owner } => {
-                if owner {
-                    crate::process::set_interrupt_window(None);
-                }
+            KontKind::Interruptible { window } => {
+                crate::process::close_interrupt_window(window);
                 marks.restore(heap);
                 Ok(Step::Value(heap.alloc_vector2(value::kw("ok"), v)))
             }
@@ -2044,7 +2044,8 @@ impl Machine<'_> {
             FrameNative::Receive => return None,
             // The thunk runs on this machine, so a `receive` in it parks a capturing one
             // where, run nested under the builtin, it blocked the worker (ADR-494). The
-            // window opens once the frame is saved, so a frame past the limit opens none.
+            // window opens before the frame is saved, which needs its depth: a frame past
+            // the limit is still pushed, and the depth error unwinding through it closes it.
             FrameNative::Interruptible => {
                 let ValueRef::Fn(thunk) = argv[1].unpack() else {
                     return None;
@@ -2053,19 +2054,16 @@ impl Machine<'_> {
                     Ok(ceiling) => ceiling,
                     Err(e) => return Some(Err(e.or_form_pos(heap, call_form))),
                 };
-                let owner = !crate::process::current_interrupt_window_open();
+                let window = crate::process::open_interrupt_window(ceiling);
                 if !self.save(
                     heap,
                     Marks::take(heap),
-                    KontKind::Interruptible { owner },
+                    KontKind::Interruptible { window },
                     Some(call_form),
                 ) {
                     return Some(Err(
                         tw_frame_depth_error(MAX_TW_FRAMES).or_form_pos(heap, call_form)
                     ));
-                }
-                if owner {
-                    crate::process::set_interrupt_window(Some(ceiling));
                 }
                 return Some(self.enter(heap, thunk, &[], None));
             }

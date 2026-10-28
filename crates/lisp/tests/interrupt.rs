@@ -304,8 +304,8 @@ fn an_error_passes_through_a_region_and_closes_its_window() {
     assert_eq!(run_at(Tier::Bytecode, src.into()), "[:caught false 100000]");
 }
 
-/// Windows nest (ADR-493), on both paths that open one: the bytecode driver's REGION and the
-/// builtin the tree-walker calls.
+/// Windows nest (ADR-493) on every path that opens one: the bytecode driver's REGION, the tier-0
+/// machine's FRAME (ADR-494), and the builtin under a native frame.
 const NESTING_TIERS: [Tier; 2] = [Tier::Bytecode, Tier::TreeWalk];
 
 #[test]
@@ -382,6 +382,27 @@ fn a_request_lands_in_the_innermost_window_and_the_outer_needs_its_own() {
     );
 }
 
+#[test]
+fn windows_nest_across_the_frame_and_the_builtin() {
+    // The outer window is the engine's own (the VM's region, the tier-0 machine's frame); the
+    // inner one is opened in a `reduce` callback, under a native frame, so the builtin opens
+    // it. Depths are one count whoever opens them: the inner ceiling is the inner's, and the
+    // outer's passes through the inner to the outer.
+    let src = r#"
+        (defn spin (n) (spin (inc n)))
+        (defn count-to (n limit) (if (= n limit) n (count-to (inc n) limit)))
+        (defn inner (ceiling) (reduce [ceiling] nil (fn (_ c) (proc/interruptible c (fn () (spin 0))))))
+        [(proc/interruptible nil (fn () [(first (inner 0)) (count-to 0 100000)]))
+         (first (proc/interruptible 0 (fn () (do (inner nil) :inner-answered))))]
+    "#;
+    for tier in NESTING_TIERS {
+        assert_eq!(
+            run_at(tier, src.into()),
+            "[[:ok [:interrupted 100000]] :interrupted]",
+            "{tier:?}"
+        );
+    }
+}
 #[test]
 fn a_catch_all_in_an_inner_window_cannot_keep_an_outer_ceiling() {
     // The outer ceiling's interrupt is sticky through a `try` inside the INNER window too: the
