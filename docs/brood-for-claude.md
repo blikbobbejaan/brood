@@ -1271,7 +1271,8 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
 - **Docstring examples**: an indented `    (f 1)   ;=> 2` line is EXECUTED by the doc tests and
   must equal the result after the marker; for a function whose result depends on the world (files,
   clock, network, pids, the image) write `    (file/slurp "a.txt")   ;~> "…text…"` — read and
-  callee-checked, never run.
+  callee-checked, never run. Examples run at the top level, so write the **full namespace**
+  (`(myapp/parse "x")`, not `(parse "x")`), even inside the module's own docstrings.
 - **Declare low, derive high.** The checker infers most signatures from the body — std
   deleted 323 `sig`s it inferred verbatim. Write one where a *leaf* knows a fact nothing
   above it can prove (a kernel boundary, a callback's contract, a constant's type:

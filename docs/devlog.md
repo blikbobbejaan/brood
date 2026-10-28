@@ -4486,3 +4486,13 @@ asserted only the exit code); it now asserts the compared values. Run here: the 
 the std image, 0 failures across 2,029 documented names; `nest check` and `--strict` over
 std/tests(/examples); `cargo fmt --check`; `nest format --check`. Not run: `doctest_test`,
 `doc_examples_test`, `docs_test`, `blsp_dispatch`.
+
+2026-10-28 (docstring examples take the full namespace): decided, like Elixir's doctests, that
+an example runs at the top level and is written fully qualified — `(demo/lies/two)`, never
+`(two)` — so it pastes into any REPL as it stands; only public names are checked, so the
+qualified name is always callable. No "evaluate inside module M" capability is added. The
+slip the rule invites now explains itself: a case that raises `unbound symbol: X`, or an
+illustration whose head is undefined, where `X` is bound in the documented name's module,
+ends `— examples run at the top level: write `module/X``. `docs/language.md`'s one leftover
+`→` example is converted. Run here: the hint over `string/trim` with a bare and a qualified
+example (probe), `nest check` and `--strict`, `nest format --check`. Not run: `doctest_test`.

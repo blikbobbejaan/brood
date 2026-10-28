@@ -33,6 +33,10 @@ must exist with an arity that takes the arguments — so a rename or a typo fail
 
     (file/slurp \"notes.txt\")   ;~> \"…the file's text…\"
 
+An example runs at the top level, not inside its module, so it is written with the full
+namespace — `(myapp/parse \"x\")`, never `(parse \"x\")` — and pastes into any REPL as it
+stands. Only public names are checked, so the qualified name is always callable.
+
 An indented line still carrying the old ` → ` marker is reported, never skipped.
 
     (doctest/failures-under \"myapp/\")   ;; the examples that do not hold
@@ -132,6 +136,19 @@ whose callee must exist, but that are not evaluated.
           "`, which takes "
           (string/join (map arms pr-str) " or ")))))
 
+(defn- qualify-hint (name-str bare)
+  ;; An example runs at the top level, not inside the module of the name it documents —
+  ;; like Elixir's doctests, it is written with the full namespace, so it pastes into any
+  ;; REPL as it stands. The slip that rule invites is the module's own bare name: when
+  ;; `bare` is unbound here but bound in that module, say what to write instead.
+  (let (slash (string/last-index-of name-str "/")
+        qualified (if (< slash 0)
+                    nil
+                    (str (string/substring name-str 0 slash) "/" bare)))
+    (if (and qualified (bound? (symbol qualified)))
+      (str " — examples run at the top level: write `" qualified "`")
+      "")))
+
 (defn- check-illustration (name-str src)
   ;; nil when the illustration's form `src` reads as one form whose head is bound or a special
   ;; form, and, for a function head, is called with an argument count one of its arms takes.
@@ -146,7 +163,13 @@ whose callee must exist, but that are not evaluated.
       (and (symbol? head)
         (not (bound? head))
         (not (includes? (reflect/special-forms) (->string head))))
-        (str name-str ": " src "  ;~> illustration calls `" head "`, which is not defined")
+        (str name-str
+          ": "
+          src
+          "  ;~> illustration calls `"
+          head
+          "`, which is not defined"
+          (qualify-hint name-str (->string head)))
       (and (symbol? head) (bound? head) (arity-fault head form))
         (str name-str ": " src "  ;~> " (arity-fault head form))
       else nil)))
@@ -186,7 +209,14 @@ whose callee must exist, but that are not evaluated.
         "  ;=> got "
         (if (= (first outcome) :raised) (second outcome) (pr-str (second outcome)))
         ", documented "
-        expected))))
+        expected
+        (if (and (= (first outcome) :raised)
+              (string/starts-with? (second outcome) "RAISED unbound symbol: "))
+          (qualify-hint name-str
+            (string/substring (second outcome)
+              (string/length "RAISED unbound symbol: ")
+              (string/length (second outcome))))
+          "")))))
 
 (defn check (name-str line)
   "nil when `line` is not an example at all, or when the example it carries holds; else a

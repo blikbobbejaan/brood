@@ -119,15 +119,14 @@ another Lisp has it.
   4. ⬜ `:doc-paths` in `project.blsp`.
   5. ⬜ Triage Brood's docs.
   6. ⬜ ADR, `docs/tooling.md`, devlog.
-- ⬜ **Docstring examples run outside their module.** An example is evaluated at the top
-  level, not in the namespace of the name it documents. So in a project's
-  `(defmodule lies)`, the example `(two) ;=> 2` fails as `unbound symbol: two`, and the
-  author has to write `(demo/lies/two)`. Std hides this because its examples are qualified
-  by habit (`(string/trim …)`). A reader expects the examples in a module's docs to read
-  the way code in that module does. Decide whether an example is evaluated in its owner's
-  namespace. That needs an "evaluate in module M" capability the evaluator does not have;
-  `%eval-in` takes locals, not a module. The same question applies to markdown blocks (step 3
-  above): what namespace does a block run in?
+- ✅ **Docstring examples take the full namespace (2026-10-28).** An example is evaluated at
+  the top level, not in the namespace of the name it documents, so in a project's
+  `(defmodule lies)` the example `(two) ;=> 2` fails as `unbound symbol: two`. Decided, like
+  Elixir's doctests: examples are written fully qualified (`(demo/lies/two) ;=> 2`) and paste
+  into any REPL as they stand. Only public names are checked, so the qualified name is always
+  callable. No "evaluate in module M" capability. The failure now names the spelling to write
+  when the bare name is bound in the documented name's module. Markdown blocks (step 3) follow
+  the same rule: a block runs at the top level.
 
 #### B. Design problems — decide, then fix
 

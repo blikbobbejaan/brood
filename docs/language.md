@@ -677,7 +677,13 @@ example audit counts it.
 
     "Twice `n`.
 
-        (demo/double 4)   → 8"
+        (demo/double 4)   ;=> 8"
+
+An example runs at the **top level**, not inside the module of the name it documents — like an
+Elixir doctest — so it is written with the full namespace: `(demo/double 4)`, never
+`(double 4)`. It then pastes into any REPL as it stands. Only public names are checked, so the
+qualified name is always callable; a bare call to the module's own function fails naming the
+spelling to write (`examples run at the top level: write `demo/double``).
 
 The expected side is **read**, not evaluated, so `(:a :b)` is the list it depicts rather than
 a call; and values are compared as values, so a map's key order (the trie's, not insertion

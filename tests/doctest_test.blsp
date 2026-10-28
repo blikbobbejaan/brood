@@ -55,6 +55,21 @@
     (assert= nil (doctest/check "p" "not indented   ;=> 2"))
     (assert= nil (doctest/check "p" "    ;; a comment line   ;=> 2"))))
 
+(describe "examples are written with the full namespace"
+  ;; An example runs at the top level, like an Elixir doctest — not inside the module of the
+  ;; name it documents. The module's own bare name is the slip that invites, so the failure
+  ;; names the qualified spelling.
+  (test "a case calling its module's bare name fails, naming the qualified one"
+    (let (fault (doctest/check "string/trim" "    (trim \" a \")   ;=> \"a\""))
+      (is (includes? fault "unbound symbol: trim"))
+      (is (includes? fault "write `string/trim`"))))
+  (test "so does an illustration"
+    (is (includes? (doctest/check "string/trim" "    (trim s)   ;~> \"a\"") "write `string/trim`")))
+  (test "the qualified spelling holds"
+    (assert= nil (doctest/check "string/trim" "    (string/trim \" a \")   ;=> \"a\"")))
+  (test "a name bound nowhere gets no hint"
+    (is (not (includes? (doctest/check "string/trim" "    (nope 1)   ;=> 1") "write `")))))
+
 (describe "the retired ` → ` marker"
   ;; The sweep that moved every docstring to ` ;=> ` is only complete if a line it missed is
   ;; loud. Skipping it would drop that example from the gate without a word.
