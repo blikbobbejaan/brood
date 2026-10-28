@@ -65,8 +65,11 @@
 
 ;; ---- the session -----------------------------------------------------------------
 
+;; Serial: each session loads the same `dap-fixture` module and breaks its functions, and
+;; a module's definitions are global to the runtime. Two sessions at once would reload and
+;; re-break one another's program.
 (describe "dap: a session against a real program"
-  (test "a function breakpoint stops the call; its locals are variables; evaluate and continue"
+  :serial (test "a function breakpoint stops the call; its locals are variables; evaluate and continue"
     (let (sock (connect)
           program (fixture)
           _ (send-request sock 1 "initialize" {:adapterID "brood"})

@@ -243,6 +243,7 @@
 (defn tfn-redef (x) (* x 10)) ; redefined under a trace by the untrace-fn test
 (defn tfn-rewrap (x) (* x 10)) ; redefined under a trace, then traced again
 (defn tfn-held (x) (inc x)) ; held and released by the trace-hold test
+(defn tfn-broken-twice (x) (inc x)) ; break-fn'd twice over
 (describe "debugger — function-boundary instrumentation (trace-fn / break-fn)"
   :isolated (test "trace-hold counts holders, trace-holds shows them, the last release untraces"
     (trace-hold 'debug-test/tfn-held)
@@ -357,6 +358,20 @@
       (resume-all dbg)
       (assert= 36 (receive ([:result r] r) (after *test-wait-ms* :timeout)))
       (untrace-fn 'debug-test/tfn-square)
+      (dbg-stop dbg)))
+  ;; Two debug sessions breaking one function (two DAP clients, or one setting its
+  ;; breakpoints again) wrapped the first wrapper: a call parked twice, and the second park
+  ;; had no one to resume it.
+  (test "breaking a name twice parks a call once"
+    (let (dbg (start-debugger) me (self))
+      (break-fn 'debug-test/tfn-broken-twice)
+      (break-fn 'debug-test/tfn-broken-twice)
+      (spawn (with-debugger dbg (fn () (send me [:result (tfn-broken-twice 4)]))))
+      (assert= true (wait-until dbg (fn (s) (= 1 (count (get s :paused))))))
+      (resume-all dbg)
+      (assert= 5 (receive ([:result r] r) (after *test-wait-ms* :timeout)))
+      (untrace-fn 'debug-test/tfn-broken-twice)
+      (assert= 0 (count (seq/filter (traced-fns) (fn (s) (= s 'debug-test/tfn-broken-twice)))))
       (dbg-stop dbg))))
 
 ;; A tail-recursive countdown, as a GLOBAL so trace-fn has a name to rebind. The

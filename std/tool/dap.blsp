@@ -46,6 +46,7 @@ debugger breaks at (`debug/break-fn`); stepping is not supported.")
 
 ;; ---- the session: one editor connection ----------------------------------------------
 ;; State: {:sock :buf :seq :dbg :program :function :fn-bps [names] :line-bps {path [names]}
+;;         :broken [the symbols this session broke]
 ;;         :runner pid :thread-ids {pid id} :threads {id pid} :paused {pid snapshot}}
 
 (defn- emit (state message)
@@ -115,16 +116,23 @@ debugger breaks at (`debug/break-fn`); stepping is not supported.")
   (into [] (seq/distinct (append (:fn-bps state) (apply append (vals (:line-bps state)))))))
 
 (defn- apply-breakpoints (names)
-  ;; break on every name that is bound to a function now; the names that took
+  ;; break on every name that is bound to a function now; the symbols that took
+  (into []
+    (seq/filter (map names symbol)
+      (fn (sym)
+        (and (bound? sym)
+          (fn? (reflect/eval sym))
+          (not (failure? (try (debug/break-fn sym) (catch e (failure (error-message e)))))))))))
+
+(defn- release (state)
+  ;; undo what this session did to the runtime: its own breakpoints (another session's,
+  ;; or a tool's trace, are not its to remove), every process it parked, its program
   (do
-    (debug/untrace-all)
-    (into []
-      (seq/filter names
-        (fn (name)
-          (let (sym (symbol name))
-            (and (bound? sym)
-              (fn? (reflect/eval sym))
-              (not (failure? (try (debug/break-fn sym) (catch e (failure (error-message e)))))))))))))
+    ;; check-allow :discarded-catch — a name redefined or untraced since is already restored
+    (doseq (sym (:broken state))
+      (check-allow :discarded-catch (try (debug/untrace-fn sym) (catch _ nil))))
+    (debug/resume-all (:dbg state))
+    (when (:runner state) (exit (:runner state) :kill))))
 
 (defn- launch-program (session dbg path function)
   ;; the runner: load `path` under the debugger, wait for the go-ahead (breakpoints are
@@ -164,12 +172,8 @@ debugger breaks at (`debug/break-fn`); stepping is not supported.")
            :variablesReference 0})))))
 
 (defn- end-session (state request)
-  ;; release every parked process, stop the program, answer, and mark the session done
-  (do
-    (debug/untrace-all)
-    (debug/resume-all (:dbg state))
-    (when (:runner state) (exit (:runner state) :kill))
-    (assoc (respond state request nil) :done true)))
+  ;; answer, and mark the session done; the loop releases what it held
+  (assoc (respond state request nil) :done true))
 
 (defn- handle (state request)
   ;; one DAP request: the next state
@@ -254,7 +258,8 @@ debugger breaks at (`debug/break-fn`); stepping is not supported.")
 
 (defn- session-loop (state)
   (if (:done state)
-    (do (tcp/close (:sock state)) (debug/dbg-stop (:dbg state)))
+    ;; a disconnect, or an editor that closed the socket without one
+    (do (release state) (tcp/close (:sock state)) (debug/dbg-stop (:dbg state)))
     (let (sock (:sock state))
       (receive
         ([:tcp ^sock data] (let ([messages rest] (take-messages (bytes/concat (:buf state) data)
@@ -262,10 +267,9 @@ debugger breaks at (`debug/break-fn`); stepping is not supported.")
                              (session-loop (fold messages (assoc state :buf rest) handle))))
         ([:tcp-closed ^sock] (session-loop (assoc state :done true)))
         ([:dap-loaded runner loaded] (if (= loaded :ok)
-                                       (do
-                                         (apply-breakpoints (all-breakpoints state))
+                                       (let (broken (apply-breakpoints (all-breakpoints state)))
                                          (send runner [:dap-go])
-                                         (session-loop state))
+                                         (session-loop (assoc state :broken broken)))
                                        (session-loop (event (event state
                                                               "output"
                                                               {:category "stderr"
@@ -303,6 +307,7 @@ debugger breaks at (`debug/break-fn`); stepping is not supported.")
                    :dbg dbg
                    :fn-bps []
                    :line-bps {}
+                   :broken []
                    :runner nil
                    :thread-ids {}
                    :threads {}

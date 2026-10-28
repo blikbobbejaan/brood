@@ -278,59 +278,63 @@ function stops being traced too.
     ;; every call twice). A redefined name falls through and is wrapped afresh.
     (if (traced-current? sym)
       sym
-      (trace-fn-install sym orig))))
+      (debug-install sym
+        orig
+        (fn (& args)
+          ;; `:spy-stop` from the sink = "everything from here is discarded". Put the
+          ;; original back (so no later call even builds an entry) and delegate in TAIL
+          ;; position — no post-call emit, no frame — so a traced tail loop is a tail loop
+          ;; again for the rest of its run.
+          (if (= :spy-stop (%spy-emit {:spy :call :fn sym :args args}))
+            (do
+              (debug-rebind sym orig)
+              ;; the self-restore is OUR rebind — re-stamp so `untrace-fn` does not read
+              ;; it as the user's redefinition
+              (%swap-registry! debug/*trace-generations*
+                (fn (m) (assoc m sym (%global-generation sym))))
+              (apply orig args))
+            (let (value (apply orig args))
+              (%spy-emit {:spy :return :fn sym :value value})
+              value)))))))
 
-(defn- trace-fn-install (sym orig)
+(defn- debug-install (sym orig wrapper)
+  ;; Bind `wrapper` over `sym` and record `orig` as what `untrace-fn` restores. Every
+  ;; instrumentation goes through here, so `debug-original` always recognises a wrapper:
+  ;; one it did not stamp would be taken for the original, and the next install would wrap
+  ;; it — two parks per call, the second one nobody resumes.
   (do
     ;; REBIND FIRST, register second. A rebind can still be refused after every check
     ;; above passes — a reserved prelude/std name is the case (E0030, ADR-166) — and a
     ;; registry entry written before that refusal is a trap: the name is not traced, yet
     ;; `untrace-fn`/`untrace-all` will try to restore it and raise the same refusal
     ;; again, out of a caller that has long since handled the failed install. Ordering it
-    ;; this way makes a failed `trace-fn` leave nothing behind, so callers that offer
-    ;; names speculatively (an editor tracing whatever a snippet calls) can simply catch.
-    (let (wrapper (fn (& args)
-                    ;; `:spy-stop` from the sink = "everything from here is discarded". Put
-                    ;; the original back (so no later call even builds an entry) and
-                    ;; delegate in TAIL position — no post-call emit, no frame — so a traced
-                    ;; tail loop is a tail loop again for the rest of its run.
-                    (if (= :spy-stop (%spy-emit {:spy :call :fn sym :args args}))
-                      (do
-                        (debug-rebind sym orig)
-                        ;; the self-restore is OUR rebind — re-stamp so `untrace-fn`
-                        ;; does not read it as the user's redefinition
-                        (%swap-registry! debug/*trace-generations*
-                          (fn (m) (assoc m sym (%global-generation sym))))
-                        (apply orig args))
-                      (let (value (apply orig args))
-                        (%spy-emit {:spy :return :fn sym :value value})
-                        value))))
-      (debug-rebind sym wrapper)
-      (%swap-registry! debug/*traced-fns* (fn (m) (assoc m sym orig)))
-      ;; The generation the wrapper was bound at, so `untrace-fn` can tell "still my
-      ;; wrapper" from "redefined since" without comparing handles (a `def` promotes the
-      ;; closure, so the bound handle is never the local one).
-      (%swap-registry! debug/*trace-generations*
-        (fn (m) (assoc m sym (%global-generation sym))))
-      sym)))
+    ;; this way makes a failed install leave nothing behind, so callers that offer names
+    ;; speculatively (an editor tracing whatever a snippet calls) can simply catch.
+    (debug-rebind sym wrapper)
+    (%swap-registry! debug/*traced-fns* (fn (m) (assoc m sym orig)))
+    ;; The generation the wrapper was bound at, so `untrace-fn` can tell "still my
+    ;; wrapper" from "redefined since" without comparing handles (a `def` promotes the
+    ;; closure, so the bound handle is never the local one).
+    (%swap-registry! debug/*trace-generations*
+      (fn (m) (assoc m sym (%global-generation sym))))
+    sym))
 
 (defn break-fn (sym)
   "A function-boundary breakpoint: rebind `sym` so every call first parks the calling
 process (`break`, label = the fn name, `:args` = the argument list in scope for
 `eval-at`) and then delegates to the original. A no-op park when no debugger is in
 context (`break`'s own rule), so a break-fn'd function still works un-debugged.
+Breaking a name already traced or broken replaces that wrapper: a call parks once.
 `untrace-fn` restores the original.
 
     (debug/break-fn 'myapp/handle)   ;~> every call to myapp/handle now parks first"
   (let (orig (debug-original sym))
     (when (not (fn? orig)) (error "break-fn: not a function: " sym))
-    ;; rebind before registering, for the reason `trace-fn` explains
-    (debug-rebind sym
+    (debug-install sym
+      orig
       (fn (& args)
         (break (str sym) :args args)
-        (apply orig args)))
-    (%swap-registry! debug/*traced-fns* (fn (m) (assoc m sym orig)))
-    sym))
+        (apply orig args)))))
 
 (defn untrace-fn (sym)
   "Restore `sym` to its pre-`trace-fn`/`break-fn` definition and drop it from the

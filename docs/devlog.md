@@ -4630,3 +4630,19 @@ at both; at the default tier `--lib regex_native`, `--lib process::interrupt`,
 Nothing was measured: a closure-reducer fold over a vector or range now runs a Brood loop
 where it ran a Rust loop with a fast frame per call — `nqueens`, `pipeline`, `json`, `reduce`
 want `make ab` on the benchmark machine.
+2026-10-28 (dap_test's lost `exited`, and binding-macro binders in templates): the DAP session
+test failed once in CI with every step passing until `continue`, after which no `exited`
+came. The dap tests ran in parallel, each session loading the same `dap-fixture` module and
+calling `untrace-all` then `break-fn` on `dap-fixture/square`. `break-fn` recorded the
+original but never stamped the rebinding generation, so `debug-original` took its wrapper for
+the original: interleaved, the second session wrapped the first's wrapper, the first program
+parked twice, and `continue` released only one. `trace-fn` and `break-fn` now install through
+one `debug-install`, so a name broken twice parks once (and `untrace-fn` keeps a redefinition
+made while a name was broken). A DAP session now undoes only the breakpoints it set, and does
+so on a closed socket as well as on `disconnect`, instead of `untrace-all` over the runtime.
+The dap tests are `:serial`: a module's definitions are global to the runtime, so two
+sessions on one program cannot be isolated. Guard: "breaking a name twice parks a call once"
+(debug_test; with the old `break-fn` the second park is never resumed and it times out).
+Separately, the resolver now reads the hygiene pass's shape table: inside a template it
+qualified the binders of `defn`, `when-let`, `for`, `catch`, … under a runtime `eval`, and a
+qualified name is never renamed, so they escaped ADR-500 (CI's `hygiene_test:145`).
