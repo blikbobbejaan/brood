@@ -354,7 +354,7 @@ jobs:
       # ran). Bump deliberately, after it installs cleanly.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest@0.9.148
+          tool: cargo-nextest@0.9.150
 
       # The no-default-features build (no JIT, no dev-tools): keeps every
       # `#[cfg(feature = …)]` seam honest without a second full test run.
@@ -441,7 +441,7 @@ jobs:
       # Pinned for the same reason as build-test's.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest@0.9.148
+          tool: cargo-nextest@0.9.150
 
       # No --all-features here: this job only needs the default surface (the
       # engine under test), so it skips the gui/audio system-dep install above.

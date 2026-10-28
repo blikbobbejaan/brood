@@ -317,7 +317,7 @@ breakagetests: ## Run the aggressive `breakage/` stress suite (JIT on, GC tripwi
 
 # The cargo-nextest CI installs. `crates/lisp/tests/tool_pins.rs` fails when this and the
 # workflows' `cargo-nextest@…` pins disagree.
-NEXTEST_VERSION := 0.9.148
+NEXTEST_VERSION := 0.9.150
 
 ensure-nextest: ## Install CI's pinned cargo-nextest into ~/.local/bin (prebuilt binary) unless that version is already there
 	@cargo nextest --version 2>/dev/null | grep -qw "$(NEXTEST_VERSION)" && { echo "cargo-nextest $(NEXTEST_VERSION) already installed"; } || { \

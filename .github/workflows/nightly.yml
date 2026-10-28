@@ -49,7 +49,7 @@ jobs:
       # Pinned like ci.yml's, never the floating `@nextest` tag.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest@0.9.148
+          tool: cargo-nextest@0.9.150
 
       # Identical to CI's `test` step on purpose. A nightly that runs a DIFFERENT command
       # from the per-push gate cannot tell a flake from a configuration difference.
@@ -238,7 +238,7 @@ jobs:
           cache-on-failure: true
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest@0.9.148
+          tool: cargo-nextest@0.9.150
 
       - name: Test (nextest, --features brood/perf-stats, targeted)
         run: >-
@@ -285,7 +285,7 @@ jobs:
       # Pinned like ci.yml's: `make asan` runs through nextest (process per test).
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest@0.9.148
+          tool: cargo-nextest@0.9.150
 
       - name: make asan
         run: make asan
