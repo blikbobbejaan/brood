@@ -4372,3 +4372,17 @@ treesit-grammars), `--lib` filters `interrupt`, `mailbox`, `quantum`, `preempt`,
 files, `mailbox_order`, `doc_examples`, `audit`; `cargo test -p cli --test serve_attach --test
 distribution` (46); clippy (gui, treesit-grammars, all targets); `nest check` over
 std/tests/examples and `--strict` over std+tests, zero warnings. Nothing was measured.
+
+2026-10-28 (ADR-493, ADR-491's two limits): an UNBOUNDED regex pattern over a text past a
+window is now STEPPED — its lazy DFA driven a byte at a time by a loop of ours
+(`regex_native::find_stepped`, `hybrid`'s `find_fwd`/`find_rev` without the unrolling, the
+prefix prefilter kept and confined to the window), the DFA state carried across an interrupt
+poll every 64 KB; every search, the lexer's and the anchored longest-match walk's included,
+goes through one `find_polled`. Left as one search: an unbounded pattern with a Unicode `\b`
+over non-ASCII text (the lazy DFA quits; `meta` answers) and the groups of one match a window
+long. And interrupt windows NEST: each has a depth, a request is raised for the innermost
+window open, a ceiling for its own window, only that window's `proc/interruptible` answers,
+and closing it consumes the interrupt — Emacs's `with-local-quit`. A region carries its
+window depth instead of `owner`. Run here: `cargo test -p brood --test interrupt`,
+`cargo test -p brood --lib regex_native process::interrupt`, `doc_examples`, `audit`,
+`regex`, `ui_test`; clippy; cargo fmt. Nothing was measured.

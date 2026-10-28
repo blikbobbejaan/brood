@@ -656,12 +656,12 @@ pub(crate) enum HandlerKind {
     /// driver runs as a frame of its own rather than a native call that runs the thunk
     /// nested, so a `receive` in the thunk parks the process instead of blocking its worker.
     /// The thunk's frame returning to `base` closes it and answers `[:ok value]`.
-    /// `owner`: this region opened the process's interrupt window — it closes the window
-    /// however it ends, and it alone catches the interrupt, answering `[:interrupted e]` at
-    /// `ip` with the value pushed at `sp`; any other error passes through it. A region
-    /// opened inside an open window owns nothing, as the builtin's nested call did. `tail`:
+    /// `window`: the depth of the interrupt window it opened (ADR-493) — it closes that
+    /// window however it ends, and catches an interrupt raised FOR it, answering
+    /// `[:interrupted e]` at `ip` with the value pushed at `sp`; any other error, an
+    /// interrupt raised for an outer window among them, passes through it. `tail`:
     /// the call was in tail position, so its answer RETURNS from the `base` frame.
-    Region { owner: bool, tail: bool },
+    Region { window: u32, tail: bool },
 }
 
 /// One open inline `try` (ADR-400) or interrupt region (ADR-491) — see

@@ -1192,14 +1192,24 @@ pub(crate) fn set_quit_key(
     });
 }
 
-/// Open (`Some(ceiling_ms)`) or close (`None`) the calling process's interrupt window —
-/// `proc/interruptible`'s two ends (ADR-491).
-pub fn set_interrupt_window(open: Option<Option<u64>>) {
-    let ctx = current_process();
-    match open {
-        Some(ceiling_ms) => ctx.mailbox.interrupt.open(ceiling_ms),
-        None => ctx.mailbox.interrupt.close(),
-    }
+/// Open an interrupt window for the calling process, inside any already open, with an
+/// optional ceiling — `proc/interruptible`'s start (ADR-491). Answers the window's depth,
+/// which [`close_interrupt_window`] and [`interrupt_raised_for`] take (ADR-493).
+pub fn open_interrupt_window(ceiling_ms: Option<u64>) -> u32 {
+    current_process().mailbox.interrupt.open(ceiling_ms)
+}
+
+/// Close the calling process's interrupt window `depth`, and any inside it — however the
+/// `proc/interruptible` that opened it ends (ADR-491, ADR-493).
+pub fn close_interrupt_window(depth: u32) {
+    current_process().mailbox.interrupt.close(depth)
+}
+
+/// Is the interrupt the calling process raised for its window `depth` — so that window's
+/// `proc/interruptible` answers it, rather than letting it pass to the window it is for
+/// (ADR-493)?
+pub(crate) fn interrupt_raised_for(depth: u32) -> bool {
+    current_process().mailbox.interrupt.raised_for(depth)
 }
 
 /// `(proc/interrupt pid)` (ADR-491): interrupt `pid` at its next safepoint, if it is a live
@@ -1216,12 +1226,6 @@ pub fn interrupt_process(pid: u64) -> bool {
 /// `Some(by_ceiling)`. One thread-local borrow and a relaxed load when nothing is armed.
 pub(crate) fn take_current_interrupt() -> Option<bool> {
     super::scheduler::with_current_mailbox(|mailbox| mailbox.interrupt.take()).flatten()
-}
-
-/// Is the calling process inside an interrupt window (`proc/interruptible`)?
-pub(crate) fn current_interrupt_window_open() -> bool {
-    super::scheduler::with_current_mailbox(|mailbox| mailbox.interrupt.open_for_us().is_some())
-        .unwrap_or(false)
 }
 
 /// A `catch` inside the interrupted work bound an interrupt (ADR-491): it is sticky, so end
