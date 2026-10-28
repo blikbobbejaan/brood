@@ -29,10 +29,13 @@ authors = ["Wilhelm Kirschbaum"]
 # Raised to **1.96** on 2026-10-15: wasmtime 49 and cranelift 0.136 declare
 # `rust-version = "1.96.0"`. Verified with `cargo +1.96 check --workspace --all-targets`.
 #
+# Raised to **1.97** on 2026-10-28: wasmtime 50 and cranelift 0.137 declare
+# `rust-version = "1.97.0"`. Verified with `cargo +1.97 check --workspace --all-targets`.
+#
 # Raise it deliberately, never by accident: a bump is a real compatibility decision, and this
 # is the one place it is visible. Verify by building on the version you claim — the number
 # below is the oldest actually exercised, not a guess.
-rust-version = "1.96"
+rust-version = "1.97"
 
 # The test and dev profiles are OPTIMIZED with debug assertions armed and line-table debuginfo
 # — a 16x suite-time difference, measured. Why each key: docs/build-and-ci.md.
