@@ -1,0 +1,85 @@
+;;; Nested quasiquote (ADR-503): each ` raises the level by one and each ~ / ~@ lowers it by
+;;; one; only a hole that brings it to zero is evaluated, and anything deeper is rebuilt as
+;;; written for the inner template to expand when it runs. What it is for: a macro whose
+;;; expansion defines another macro.
+;;;
+;;; The expected forms are spelled with root names (`list`, `vector`, `+`) so a template's
+;;; free names come out as written.
+
+(defmodule nested-quasiquote-test (:use test))
+
+;; A macro that defines a macro: `(def-tagged ok :ok)` defines `ok`, and `(ok x)` is
+;; `[:ok x]`. `~'~tag` puts the value `tag` has NOW into the inner template as a constant.
+(defmacro def-tagged (name tag)
+  `(defmacro ~name (body) `[~'~tag ~body]))
+
+(def-tagged nq-ok :ok)
+(def-tagged nq-error :error)
+
+;; The inner template binds `t`. That binder belongs to the GENERATED macro, so it is
+;; renamed each time `nq-add5` expands, not once when `def-adder` did.
+(defmacro def-adder (name n)
+  `(defmacro ~name (e) `(let (t ~e) (+ t ~'~n))))
+
+(def-adder nq-add5 5)
+
+;; A hole back to the outer level inside the inner template reads the OUTER template's
+;; binder — which the outer expansion renamed, so the hole must be renamed with it.
+(defmacro outer-binder (v) `(let (x ~v) `(list ~x)))
+
+(describe "nested quasiquote: levels"
+  (test "an inner hole is copied, not evaluated, by the outer template"
+    (assert= `(list `(vector ~(+ 1 2))) '(list (quasiquote (vector (unquote (+ 1 2)))))))
+  (test "~~x evaluates x at the outer level and leaves the inner ~"
+    (let (x 'y)
+      (assert= `(list `(vector ~~x)) '(list (quasiquote (vector (unquote y)))))))
+  (test "~'~x puts the outer value into the inner template as a constant"
+    (let (x 5)
+      (assert= `(list `(vector ~'~x)) '(list (quasiquote (vector (unquote (quote 5))))))))
+  (test "~@~xs and ~~@xs"
+    (let (xs '(p q))
+      (assert= `(list `(vector ~@~xs)) '(list (quasiquote (vector (unquote-splicing (p q))))))
+      (assert= `(list `(vector ~~@xs)) '(list (quasiquote (vector (unquote p q)))))))
+  (test "three levels: each ~ peels one"
+    (let (x 1)
+      (assert= `(list `(list `(vector ~~~x)))
+        '(list (quasiquote (list (quasiquote (vector (unquote (unquote 1))))))))))
+  (test "x# belongs to the template that directly holds it"
+    ;; (list (quasiquote (vector c# (unquote d__12))))
+    (let ((_ (_ (_ inner (_ outer)))) `(list `(vector c# ~d#)))
+      (assert= 'c# inner)
+      (is (string/starts-with? (->string outer) "d"))
+      (refute (= 'd# outer)))))
+
+(describe "nested quasiquote: macros that define macros"
+  (test "a generated macro carries the outer value"
+    (assert= [:ok 3] (nq-ok (+ 1 2)))
+    (assert= [:error "x"] (nq-error "x")))
+  (test "the generated macro's own binder is hygienic"
+    (assert= 105 (let (t 100) (nq-add5 t)))
+    (assert= 11 (nq-add5 (nq-add5 1))))
+  (test "a hole back to the outer level reads the outer binder"
+    (assert= '(list 7) (outer-binder 7))))
+
+;; A name free in the inner template means the DEFINING module's binding, like any other
+;; template name: the generated macro expands in the user's module, which defines its own.
+(describe "nested quasiquote: names resolve where the macro was written"
+  :isolated (test "the inner template's free name is the defining module's"
+    (%load-string
+      "(defmodule nq-maker)
+       (defn tag-with (tag x) [tag x])
+       (defmacro def-tagger (name tag)
+         `(defmacro ~name (body) `(tag-with ~'~tag ~body)))")
+    (%load-string
+      "(defmodule nq-user (:use nq-maker))
+       (defn tag-with (tag x) :captured)
+       (def-tagger ok :ok)
+       (defn run () (ok (+ 1 2)))")
+    (assert= [:ok 3] (check-allow :unbound (nq-user/run)))))
+
+(defn- nq-worker (parent) (send parent [(nq-ok 1) (nq-add5 2) `(list `(vector ~~(+ 1 1)))]))
+
+(describe "nested quasiquote across processes"
+  :isolated (test "a generated macro's expansions and a nested template, built in another process"
+    (let (me (self) _ (spawn (nq-worker me)))
+      (assert= [[:ok 1] 7 '(list (quasiquote (vector (unquote 2))))] (receive)))))

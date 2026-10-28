@@ -177,9 +177,13 @@ another Lisp has it.
    language raises is now a map — `:error`, `:assert` and `:match` (with `:context`,
    `:value`, `:patterns`) joined the built-in kinds — and `throw` stays raw. `catch` takes a
    pattern with an optional `:when`, several clauses, and rethrows what none matches.
-3. ⬜ **Nested quasiquote.** It is rejected (levels are not tracked), so macros that write
+3. ✅ **Nested quasiquote (2026-10-28, ADR-503).** It is rejected (levels are not tracked), so macros that write
    macros need `` `(a ~(inner-template x)) `` workarounds. Track levels. The rejection was
    chosen precisely so this lands additively (ADR-011).
+   **Done:** each `` ` `` raises the level and each `~`/`~@` lowers it; only a hole that reaches
+   zero is evaluated, so `~~x`, `~'~x` and `~@~xs` reach out to the level that fills them. A free
+   name at any level means the defining module's, an inner template's binders are renamed
+   when the macro it builds expands, and an `x#` belongs to the template that holds it.
 4. ⬜ **The bare/module boundary has no rule a newcomer can predict.** `mapv` is bare but
    `seq/filterv` is not; `filter` is `seq/filter`; `reduce-kv`, `merge-with` and `zipmap`
    are `map/…`; `even?` is `math/even?` while `inc` is bare. Write down the rule ADR-227

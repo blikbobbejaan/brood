@@ -1099,17 +1099,60 @@ thread_local! {
     static TEMPLATE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
-/// Is the resolve walk inside a quasiquote template (and not back in code through a `~` hole)?
-/// The guard restores the previous depth on drop, so a hole can zero it for its extent.
+/// Quoted data inside a template: its symbols are left as written, and every `~` hole or
+/// nested template in it is resolved as `resolve_list` resolves one.
+fn resolve_quoted_holes(
+    heap: &mut Heap,
+    form: Value,
+    ns_name: &str,
+    locals: &[value::Symbol],
+) -> Value {
+    crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || match form.unpack() {
+        ValueRef::Pair(_) => {
+            let Some(items) = heap.list_items(form) else {
+                return form;
+            };
+            if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack())
+                && (value::symbol_is(h, kw::UNQUOTE)
+                    || value::symbol_is(h, kw::UNQUOTE_SPLICING)
+                    || value::symbol_is(h, kw::QUASIQUOTE))
+            {
+                return resolve_list(heap, form, ns_name, locals);
+            }
+            let out: Vec<Value> = items
+                .iter()
+                .map(|&it| resolve_quoted_holes(heap, it, ns_name, locals))
+                .collect();
+            reuse_or_rebuild(heap, form, &items, out)
+        }
+        ValueRef::Vector(id) => {
+            let items = heap.vector(id).to_vec();
+            let out: Vec<Value> = items
+                .iter()
+                .map(|&it| resolve_quoted_holes(heap, it, ns_name, locals))
+                .collect();
+            if all_unchanged(&items, &out) {
+                return form;
+            }
+            heap.alloc_vector(out)
+        }
+        _ => form,
+    })
+}
+
+/// The quasiquote level of the resolve walk: 0 in code, one more inside each template, one
+/// less inside each `~` hole. The guard restores the previous level on drop.
 struct TemplateDepth(u32);
 
 impl TemplateDepth {
     fn enter() -> Self {
         Self::set(TEMPLATE_DEPTH.with(|d| d.get()) + 1)
     }
-    /// A `~`/`~@` hole: macro-time code again, where `/name` resolves as anywhere else.
+    /// A `~`/`~@` hole: one quasiquote level down (ADR-503). Out of the outermost template
+    /// it is macro-time code again, where `/name` resolves as anywhere else; inside a
+    /// nested one it is still template — the outer template's own.
     fn hole() -> Self {
-        Self::set(0)
+        Self::set(TEMPLATE_DEPTH.with(|d| d.get()).saturating_sub(1))
     }
     fn set(n: u32) -> Self {
         TemplateDepth(TEMPLATE_DEPTH.with(|d| d.replace(n)))
@@ -1196,6 +1239,11 @@ fn resolve_list(heap: &mut Heap, form: Value, ns_name: &str, locals: &[value::Sy
     };
     if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack()) {
         if value::symbol_is(h, kw::QUOTE) {
+            if TemplateDepth::inside() {
+                // In a template a quote is data too, but its `~` holes still are holes:
+                // `'~(helper x)` calls `helper`, and `~'~tag` reads `tag` (ADR-503).
+                return resolve_quoted_holes(heap, form, ns_name, locals);
+            }
             return form; // pure data — never descend (ADR-034)
         }
         if value::symbol_is(h, kw::QUASIQUOTE) {

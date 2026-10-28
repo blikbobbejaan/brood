@@ -4646,3 +4646,19 @@ sessions on one program cannot be isolated. Guard: "breaking a name twice parks 
 Separately, the resolver now reads the hygiene pass's shape table: inside a template it
 qualified the binders of `defn`, `when-let`, `for`, `catch`, … under a runtime `eval`, and a
 qualified name is never renamed, so they escaped ADR-500 (CI's `hygiene_test:145`).
+2026-10-28 (ADR-503, quasiquote has levels): a template inside a template is no longer an
+error. The expander carries a level — 1 in the template being built, one more per nested
+`` ` ``, one less per `~`/`~@` — and fills only a hole that reaches 0; deeper, it rebuilds
+the form as written, markers included. The passes that read templates before they expand
+learned the same count. The resolver's template depth lowers by one at a hole instead of
+returning to code, so an inner template's free names qualify to the defining module (a
+generated macro calls `nq-maker/tag-with` from a module that defines its own `tag-with`), and
+a quote inside a template now resolves its holes (`'~(helper x)` left `helper` unqualified
+before this, nested or not). The hygiene pass leaves an inner template's binders for the
+macro that runs it, but renames a hole back to level 1, which reads the outer binders. An
+`x#` is replaced at level 1 only. A nested template takes the runtime expansion path. The
+prelude's root escapes (ADR-423) are written at every level. The checker already walked
+templates by level. Guard: `tests/nested_quasiquote_test.blsp`; `syntax_finalization_test`'s
+ADR-152 rejection case now pins the level-2 copy instead. Not run here (no tests on the
+desktop): the suite; checked here, a script of the cases in the tests run once with
+`brood`, fmt, clippy `--all-features`, `nest format --check`, `nest check` and `--strict`.

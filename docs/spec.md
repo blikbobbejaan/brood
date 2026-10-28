@@ -228,12 +228,14 @@ replaced by the value of `x`, and `~@xs` (`(unquote-splicing xs)`) splices the
 elements of the sequence `xs` into the surrounding list/vector. Unquoting works
 inside both lists and vectors.
 
-A **nested quasiquote** — a `` ` `` template inside another `` ` `` template — is a
-**runtime error**. Levels are not tracked, so an inner `~x` would be expanded at
-the outer level (`` `(a `(b ~(+ 1 2))) `` evaluated `(+ 1 2)` where the standard
-reading leaves it alone), and computing the wrong thing quietly is worse than
-refusing. A `` ` `` inside an `~unquote` is ordinary code at level 0 and stays
-legal. Level tracking may be added later; it can only widen what is accepted.
+Quasiquote has **levels** (ADR-503). The template being built is level 1; a nested
+`` ` `` raises the level by one and each `~`/`~@` lowers it by one. A hole that brings
+the level to 0 is evaluated (or spliced); anything at level 1 or deeper is rebuilt as
+written, including its `quasiquote`, `unquote` and `unquote-splicing` markers, so
+`` `(a `(b ~(+ 1 2))) `` is `(a (quasiquote (b (unquote (+ 1 2)))))` and, with `x`
+bound to `y`, `` `(a `(b ~~x)) `` is `(a (quasiquote (b (unquote y))))`. An `x#`
+auto-gensym is replaced only at level 1. A `` ` `` inside an `~unquote` that reaches
+level 0 is ordinary code, starting a template of its own.
 
 ### 7.3 Macros
 

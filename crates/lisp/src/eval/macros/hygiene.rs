@@ -145,6 +145,78 @@ fn hyg_walk_inner(heap: &mut Heap, v: Value, scope: &[(value::Symbol, value::Sym
     }
 }
 
+/// A template nested in the one being renamed, at quasiquote `level` (2 just inside it). Its
+/// own symbols belong to the code the outer template builds, and are renamed when THAT code
+/// expands it (ADR-503), so they are left as written. A hole that brings the level back to 1
+/// is the outer template's own code again: `` `(let (x 1) `(f ~x)) `` — the inner `~x`
+/// reads the `let`'s `x`, so it takes the same replacement.
+fn hyg_nested(
+    heap: &mut Heap,
+    v: Value,
+    scope: &[(value::Symbol, value::Symbol)],
+    level: u32,
+) -> Value {
+    crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || match v.unpack() {
+        ValueRef::Pair(_) => {
+            let Some(items) = heap.list_items(v) else {
+                return v; // improper list — leave verbatim
+            };
+            let inner_level = match items.first().map(|h| h.unpack()) {
+                Some(ValueRef::Sym(h))
+                    if items.len() == 2 && value::symbol_is(h, kw::QUASIQUOTE) =>
+                {
+                    level + 1
+                }
+                Some(ValueRef::Sym(_)) if items.len() == 2 && hyg_is_unquote(heap, v) => level - 1,
+                _ => level,
+            };
+            if inner_level == 1 {
+                let held = hyg_walk(heap, items[1], scope);
+                return rebuild_list(heap, v, vec![items[0], held]);
+            }
+            if inner_level != level {
+                let held = hyg_nested(heap, items[1], scope, inner_level);
+                return rebuild_list(heap, v, vec![items[0], held]);
+            }
+            let out = items
+                .iter()
+                .map(|&it| hyg_nested(heap, it, scope, level))
+                .collect();
+            rebuild_list(heap, v, out)
+        }
+        ValueRef::Vector(id) => {
+            let items = heap.vector(id).to_vec();
+            let out = items
+                .into_iter()
+                .map(|it| hyg_nested(heap, it, scope, level))
+                .collect();
+            heap.alloc_vector(out)
+        }
+        ValueRef::Map(id) => {
+            let entries = heap.map_entries(id);
+            let pairs = entries
+                .into_iter()
+                .map(|(k, val)| {
+                    (
+                        hyg_nested(heap, k, scope, level),
+                        hyg_nested(heap, val, scope, level),
+                    )
+                })
+                .collect();
+            heap.map_from_pairs(pairs)
+        }
+        ValueRef::Set(id) => {
+            let items = heap.set_elems(id);
+            let out = items
+                .into_iter()
+                .map(|e| hyg_nested(heap, e, scope, level))
+                .collect();
+            heap.set_from_elems(out)
+        }
+        _ => v,
+    })
+}
+
 /// How a standard-library binding macro binds, by its bare head name. The pass runs before
 /// the macros in a template expand, so this is the only way it can see their binders.
 #[derive(Clone, Copy)]
@@ -198,13 +270,17 @@ fn hyg_list(heap: &mut Heap, form: Value, scope: &[(value::Symbol, value::Symbol
         // Data / holes — never descend for renaming: `quote` is data;
         // `unquote`/`unquote-splicing` are caller code resolved in the caller's
         // scope (also where `~'it` — the anaphora opt-out — lands, emitting a
-        // literal `it`); a nested `quasiquote` is another template (rejected later).
+        // literal `it`).
         if value::symbol_is(h, kw::QUOTE)
             || value::symbol_is(h, kw::UNQUOTE)
             || value::symbol_is(h, kw::UNQUOTE_SPLICING)
-            || value::symbol_is(h, kw::QUASIQUOTE)
         {
             return form;
+        }
+        // A nested template: only its holes back to this level are renamed.
+        if value::symbol_is(h, kw::QUASIQUOTE) && items.len() == 2 {
+            let held = hyg_nested(heap, items[1], scope, 2);
+            return rebuild_list(heap, form, vec![items[0], held]);
         }
         if value::symbol_is(h, kw::LET) || value::symbol_is(h, kw::LETREC) {
             return hyg_let(heap, form, &items, scope);
@@ -801,9 +877,10 @@ fn hyg_clause(
 
 /// True if `v` contains a form that binds — a `let`/`letrec`/`fn` or a standard binding
 /// macro — so the static-quasiquote optimisation must defer to the runtime expand path
-/// (fresh gensyms per expansion). Skips `quote`/`unquote`/`quasiquote` subtrees (a `let`
-/// in caller code or quoted data isn't the template's). Conservative: a binding form
-/// whose binders are all `_` or computed also takes the runtime path.
+/// (fresh gensyms per expansion). Skips `quote`/`unquote` subtrees (a `let` in caller code or
+/// quoted data isn't the template's). Conservative: a binding form whose binders are all `_`
+/// or computed also takes the runtime path, and so does a nested template, whose holes back
+/// to this level may bind (ADR-503).
 pub(super) fn template_introduces_binder(heap: &Heap, v: Value) -> bool {
     crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
         template_introduces_binder_inner(heap, v)
@@ -821,13 +898,13 @@ fn template_introduces_binder_inner(heap: &Heap, v: Value) -> bool {
                 if value::symbol_is(h, kw::QUOTE)
                     || value::symbol_is(h, kw::UNQUOTE)
                     || value::symbol_is(h, kw::UNQUOTE_SPLICING)
-                    || value::symbol_is(h, kw::QUASIQUOTE)
                 {
                     return false;
                 }
                 if value::symbol_is(h, kw::LET)
                     || value::symbol_is(h, kw::LETREC)
                     || value::symbol_is(h, kw::FN)
+                    || value::symbol_is(h, kw::QUASIQUOTE)
                     || binding_shape(h).is_some()
                 {
                     return true;

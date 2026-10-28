@@ -29,6 +29,9 @@ use super::*;
 //   ambient names (always root), nor `x#` auto-gensyms or the `~`/`~@` markers.
 // - `~` holes are macro-time code: not escaped, but a quasiquote nested inside one is
 //   another template of the same macro and is escaped in turn.
+// - A template nested in a template (ADR-503) is escaped at every level: its heads are what
+//   the code the macro builds will emit. Only a hole out of the outermost level is macro-time
+//   code.
 
 /// Forms whose second element is a binding list of `binder expr` pairs.
 const PAIR_BINDERS: &[&str] = &[
@@ -91,16 +94,22 @@ fn fn_binders(heap: &Heap, items: &[Value], out: &mut HashSet<Symbol>) {
 
 /// Collect the template's binder names (see the module comment). Holes and quoted data are
 /// skipped: a hole's binders are macro-time locals, not template structure.
-fn collect_template_binders(heap: &Heap, form: Value, out: &mut HashSet<Symbol>) {
+fn collect_template_binders(heap: &Heap, form: Value, level: u32, out: &mut HashSet<Symbol>) {
     crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
         let Some(items) = heap.list_or_vector_items(form) else {
             return;
         };
+        let mut level = level;
         if matches!(form.unpack(), ValueRef::Pair(_))
             && let Some(h) = head_name(&items)
         {
             match h.as_str() {
-                "unquote" | "unquote-splicing" | "quote" | "quasiquote" => return,
+                "quote" => return,
+                "unquote" | "unquote-splicing" if level == 1 => return,
+                // a nested template (ADR-503): its binders, and those of its holes back to
+                // this level, are the template's too
+                "unquote" | "unquote-splicing" => level -= 1,
+                "quasiquote" => level += 1,
                 "fn" | "defn" | "defn-" | "defmacro" => fn_binders(heap, &items, out),
                 h if PAIR_BINDERS.contains(&h) => {
                     if let Some(binds) = items.get(1).and_then(|b| heap.list_or_vector_items(*b)) {
@@ -122,7 +131,7 @@ fn collect_template_binders(heap: &Heap, form: Value, out: &mut HashSet<Symbol>)
             }
         }
         for it in items {
-            collect_template_binders(heap, it, out);
+            collect_template_binders(heap, it, level, out);
         }
     })
 }
@@ -142,18 +151,27 @@ fn escapes(heap: &Heap, s: Symbol, binders: &HashSet<Symbol>) -> bool {
         && heap.env_get(heap.global(), s).is_some()
 }
 
-/// Rewrite one template (the argument of a `quasiquote`).
-fn escape_template(heap: &mut Heap, form: Value, binders: &HashSet<Symbol>) -> Value {
+/// Rewrite one template (the argument of a `quasiquote`) at quasiquote `level`: 1 in the
+/// template itself, more inside a nested one, whose heads are escaped too (ADR-503).
+fn escape_template(heap: &mut Heap, form: Value, level: u32, binders: &HashSet<Symbol>) -> Value {
     crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || match form.unpack() {
         ValueRef::Pair(_) => {
             let Some(items) = heap.list_items(form) else {
                 return form; // improper (dotted) list: leave verbatim
             };
             if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack()) {
-                if value::symbol_is(h, kw::QUOTE) || value::symbol_is(h, kw::QUASIQUOTE) {
+                if value::symbol_is(h, kw::QUOTE) {
                     return form;
                 }
-                if value::symbol_is(h, kw::UNQUOTE) || value::symbol_is(h, kw::UNQUOTE_SPLICING) {
+                let is_hole =
+                    value::symbol_is(h, kw::UNQUOTE) || value::symbol_is(h, kw::UNQUOTE_SPLICING);
+                if items.len() == 2 && (value::symbol_is(h, kw::QUASIQUOTE) || is_hole && level > 1)
+                {
+                    let inner_level = if is_hole { level - 1 } else { level + 1 };
+                    let held = escape_template(heap, items[1], inner_level, binders);
+                    return rebuild_list(heap, form, vec![items[0], held]);
+                }
+                if is_hole {
                     // macro-time code: only its own nested templates are escaped
                     let mut out = Vec::with_capacity(items.len());
                     out.push(items[0]);
@@ -169,7 +187,7 @@ fn escape_template(heap: &mut Heap, form: Value, binders: &HashSet<Symbol>) -> V
                     ValueRef::Sym(s) if i == 0 && escapes(heap, s, binders) => {
                         Value::symbol(value::intern(&format!("/{}", value::symbol_name_ref(s))))
                     }
-                    _ => escape_template(heap, it, binders),
+                    _ => escape_template(heap, it, level, binders),
                 };
                 out.push(it);
             }
@@ -179,7 +197,7 @@ fn escape_template(heap: &mut Heap, form: Value, binders: &HashSet<Symbol>) -> V
             let items = heap.vector(id).to_vec();
             let out: Vec<Value> = items
                 .into_iter()
-                .map(|v| escape_template(heap, v, binders))
+                .map(|v| escape_template(heap, v, level, binders))
                 .collect();
             heap.alloc_vector(out)
         }
@@ -202,12 +220,12 @@ pub(super) fn escape_macro_code(heap: &mut Heap, form: Value) -> Value {
                 if value::symbol_is(h, kw::QUASIQUOTE) {
                     let mut binders = HashSet::new();
                     for &t in &items[1..] {
-                        collect_template_binders(heap, t, &mut binders);
+                        collect_template_binders(heap, t, 1, &mut binders);
                     }
                     let mut out = Vec::with_capacity(items.len());
                     out.push(items[0]);
                     for &t in &items[1..] {
-                        out.push(escape_template(heap, t, &binders));
+                        out.push(escape_template(heap, t, 1, &binders));
                     }
                     return rebuild_list(heap, form, out);
                 }

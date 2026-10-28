@@ -1222,6 +1222,42 @@ remains available for a fresh symbol outside a template. New code needs neither.
 - a **`{:keys [a]}`** name — the names are the keys looked up, so a renamed `a` would read
   `:a__12`. Bind with `{:a a}` (which requires the key) when that matters.)
 
+### Macros that write macros — nested quasiquote
+
+A template may hold another template. Each `` ` `` raises the **level** by one and each
+`~`/`~@` lowers it by one; only a hole that brings the level to zero is filled when the
+outer template is built. A deeper hole is copied as written, to be filled when the inner
+template runs (ADR-503):
+
+```clojure
+`(list `(vector ~(+ 1 2)))           ;=> (list (quasiquote (vector (unquote (+ 1 2)))))
+(let (x 'y) `(list `(vector ~~x)))   ;=> (list (quasiquote (vector (unquote y))))
+(let (x 5) `(list `(vector ~'~x)))   ;=> (list (quasiquote (vector (unquote (quote 5)))))
+```
+
+What it is for: a macro whose expansion defines another macro. There are two moments of
+expansion — when `def-tagged` runs (it fills `~name` and `~tag`), and when the macro it
+defined runs (it fills `~body`). `~'~tag` fills `tag` at the first and keeps the value as
+a constant for the second:
+
+```clojure
+(defmacro def-tagged (name tag)
+  `(defmacro ~name (body) `[~'~tag ~body]))
+
+(def-tagged as-ok :ok)   ; defines the macro `as-ok`
+(as-ok (+ 1 2))          ;=> [:ok 3]
+```
+
+The rest of the template rules hold at every level:
+
+- a **free name** in the inner template means the defining module's binding, so the
+  generated macro works from any module;
+- an inner template's **binders** belong to the macro it builds: they are renamed each time
+  that macro expands, not once when the outer one did. A hole back to the outer level
+  (`` `(let (x 1) `(f ~x)) ``) reads the outer template's binders;
+- an **`x#`** belongs to the template that directly holds it: `` `(a `(b c#)) `` leaves
+  `c#` for the inner template, while `` `(a `(b ~c#)) `` takes the outer one's gensym.
+
 The `->` and `as->` threading macros are also defined in the prelude. There is only
 **one** pipe: every collection function takes its collection first (ADR-308), so a
 thread-*last* variant would have nothing to thread (`->>` and friends were deleted):
@@ -1368,13 +1404,6 @@ no-op to silence it without editing code:
 (binding (*spy-sink* (fn (entry) nil)) (spy (heavy-computation)))  ; value, no output
 ```
 
-> Note: a **nested quasiquote** (a `` ` `` inside a `` ` `` template) is
-> **rejected**, with a hint. Levels are not tracked, so an inner `~x` would be
-> expanded at the outer level — `` `(a `(b ~(+ 1 2))) `` used to yield
-> `(a (quasiquote (b 3)))` where the standard reading leaves `(+ 1 2)`
-> unevaluated. A `` ` `` inside an `~unquote` is ordinary code and stays legal, so
-> the macro-writing-a-macro spelling is `` `(a ~(inner-template x)) ``. Level
-> tracking can land later without breaking anything accepted today (ADR-011).
 > Macros are hygienic both ways automatically: a template's introduced `let`/`fn`
 > **binders** are alpha-renamed so they can't capture spliced caller code (ADR-066
 > amendment; opt a binder out with `~'name`), and its *free* references

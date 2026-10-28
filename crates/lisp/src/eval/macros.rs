@@ -86,7 +86,7 @@ pub fn expand_quasiquote(heap: &mut Heap, template: Value) -> LispResult {
     // A no-op for a binder-free template. Runs before `qq_elem` builds the template.
     let template = hygiene_rename(heap, template);
     let mut autogen = AutoGen::new();
-    qq_elem(heap, template, 0, &mut autogen)
+    qq_elem(heap, template, 0, 1, &mut autogen)
 }
 
 /// Clojure-style auto-gensym: a literal template symbol whose name ends in `#`
@@ -123,56 +123,65 @@ fn quote_form(heap: &mut Heap, v: Value) -> Value {
 /// by the normal evaluator); a list/vector/map recurses; a literal symbol is
 /// quoted (after auto-gensym rewriting `x#`); a self-evaluating atom is emitted
 /// verbatim.
-fn qq_elem(heap: &mut Heap, v: Value, depth: u32, autogen: &mut AutoGen) -> LispResult {
+///
+/// `level` is the quasiquote level (ADR-503): 1 in the template being expanded, one
+/// more inside each nested `` ` ``, one less inside each `~`/`~@`. Only a hole that
+/// brings it to 0 is evaluated here; anything deeper is rebuilt as written, its
+/// `quasiquote`/`unquote` markers included, for the inner template to expand when it
+/// runs. `` `(a `(b ~(+ 1 2))) `` is `(a `(b ~(+ 1 2)))`, and with `x` bound to `y`,
+/// `` `(a `(b ~~x)) `` is `(a `(b ~y))`.
+fn qq_elem(heap: &mut Heap, v: Value, depth: u32, level: u32, autogen: &mut AutoGen) -> LispResult {
     if depth >= MAX_DEPTH {
         return Err(LispError::runtime(format!(
             "quasiquote template nested too deeply (max {} levels)",
             MAX_DEPTH
         )));
     }
-    // ~x → x : the unquoted form is evaluated in place when the builder runs.
-    if let Some(inner) = tagged(heap, v, kw::UNQUOTE) {
-        return Ok(inner);
-    }
-    // ~@x at a non-sequence position has nothing to splice into — `qq_seq`
-    // handles splices inline, so reaching here means a top-level `~@`. Reject it
-    // rather than silently mis-building `(list 'unquote-splicing x)`.
-    if tagged(heap, v, kw::UNQUOTE_SPLICING).is_some() {
-        return Err(LispError::runtime(
-            "unquote-splicing (~@) outside a list/vector context",
-        ));
-    }
-    // A **nested** quasiquote in template position. Levels are not tracked, so an
-    // `~unquote` inside the inner template would be expanded at the OUTER level —
-    // `` `(a `(b ~(+ 1 2))) `` silently produced `(a (quasiquote (b 3)))` where the
-    // standard reading leaves `(+ 1 2)` unevaluated at level 2. Reject it rather
-    // than quietly compute the wrong thing; level tracking can land later without
-    // breaking anything this accepts (ADR-011: defer the power feature).
-    //
-    // Only *template* position: a `` ` `` inside an `~unquote` is ordinary code
-    // (the unquote returns above, before this walk descends), so the common
-    // macro-writing-a-macro spelling — unquoting a helper that builds the inner
-    // template — keeps working.
-    if tagged(heap, v, kw::QUASIQUOTE).is_some() {
-        return Err(LispError::runtime(
-            "nested quasiquote (a ` inside a ` template) is not supported",
-        )
-        .with_hint(
-            "quasiquote levels are not tracked, so an inner `~x` would be expanded at \
-             the outer level. Build the inner template from the outside instead — put \
-             the ` in an unquoted position, e.g. `` `(a ~(inner-template x)) ``, where \
-             `inner-template` is a fn/macro that returns the inner form — or assemble \
-             it with `list`/`quote`.",
-        ));
+    if level == 1 {
+        // ~x → x : the unquoted form is evaluated in place when the builder runs.
+        if let Some(inner) = tagged(heap, v, kw::UNQUOTE) {
+            return Ok(inner);
+        }
+        // ~@x at a non-sequence position has nothing to splice into — `qq_seq`
+        // handles splices inline, so reaching here means a top-level `~@`. Reject it
+        // rather than silently mis-building `(list 'unquote-splicing x)`.
+        if tagged(heap, v, kw::UNQUOTE_SPLICING).is_some() {
+            return Err(LispError::runtime(
+                "unquote-splicing (~@) outside a list/vector context",
+            ));
+        }
     }
     match v.unpack() {
         ValueRef::Pair(_) => {
             let items = heap.list_to_vec(v)?;
-            qq_seq(heap, &items, false, depth + 1, autogen)
+            // A marker form changes the level of what it holds; the marker symbol itself
+            // is data, quoted like any other.
+            let inner_level = match items.first().map(|h| h.unpack()) {
+                Some(ValueRef::Sym(h))
+                    if items.len() == 2 && value::symbol_is(h, kw::QUASIQUOTE) =>
+                {
+                    level + 1
+                }
+                Some(ValueRef::Sym(h))
+                    if level > 1
+                        && items.len() == 2
+                        && (value::symbol_is(h, kw::UNQUOTE)
+                            || value::symbol_is(h, kw::UNQUOTE_SPLICING)) =>
+                {
+                    level - 1
+                }
+                _ => level,
+            };
+            if inner_level != level {
+                let marker = quote_form(heap, items[0]);
+                let held = qq_seq(heap, &items[1..], false, depth + 1, inner_level, autogen)?;
+                return Ok(heap.list(vec![sym("cons"), marker, held]));
+            }
+            qq_seq(heap, &items, false, depth + 1, level, autogen)
         }
         ValueRef::Vector(id) => {
             let items = heap.vector(id).to_vec();
-            qq_seq(heap, &items, true, depth + 1, autogen)
+            qq_seq(heap, &items, true, depth + 1, level, autogen)
         }
         ValueRef::Map(id) => {
             // No `~@` splicing into a map (ill-defined); expand each key/value.
@@ -180,8 +189,8 @@ fn qq_elem(heap: &mut Heap, v: Value, depth: u32, autogen: &mut AutoGen) -> Lisp
             let mut out = Vec::with_capacity(entries.len() * 2 + 1);
             out.push(sym("hash-map"));
             for (k, val) in entries {
-                out.push(qq_elem(heap, k, depth + 1, autogen)?);
-                out.push(qq_elem(heap, val, depth + 1, autogen)?);
+                out.push(qq_elem(heap, k, depth + 1, level, autogen)?);
+                out.push(qq_elem(heap, val, depth + 1, level, autogen)?);
             }
             Ok(heap.list(out))
         }
@@ -197,13 +206,18 @@ fn qq_elem(heap: &mut Heap, v: Value, depth: u32, autogen: &mut AutoGen) -> Lisp
             let mut out = Vec::with_capacity(elems.len() + 1);
             out.push(sym("%set"));
             for (e, _) in elems {
-                out.push(qq_elem(heap, e, depth + 1, autogen)?);
+                out.push(qq_elem(heap, e, depth + 1, level, autogen)?);
             }
             Ok(heap.list(out))
         }
-        // A literal symbol is data — quote it (auto-gensym `x#` first).
+        // A literal symbol is data — quote it (auto-gensym `x#` first). An `x#` belongs to
+        // the template that directly holds it: deeper, it is left for that template.
         ValueRef::Sym(_) => {
-            let sv = maybe_autogensym(v, autogen);
+            let sv = if level == 1 {
+                maybe_autogensym(v, autogen)
+            } else {
+                v
+            };
             Ok(quote_form(heap, sv))
         }
         // Self-evaluating atoms (int/float/string/keyword/bool/nil) emit verbatim.
@@ -222,6 +236,7 @@ fn qq_seq(
     items: &[Value],
     is_vector: bool,
     depth: u32,
+    level: u32,
     autogen: &mut AutoGen,
 ) -> LispResult {
     // A dotted unquote tail: `` `(a b . ~t) `` reads as `(a b unquote t)` — the pair
@@ -237,24 +252,37 @@ fn qq_seq(
         {
             let prefix = &items[..items.len() - 2];
             let tail = items[items.len() - 1];
+            if level > 1 {
+                // Deeper than the template being expanded: rebuild `(a unquote t)` as
+                // written, `t` one level down.
+                let mut out = vec![sym("list")];
+                for &it in prefix {
+                    out.push(qq_elem(heap, it, depth, level, autogen)?);
+                }
+                out.push(quote_form(heap, marker));
+                out.push(qq_elem(heap, tail, depth, level - 1, autogen)?);
+                return Ok(heap.list(out));
+            }
             let prefix_has_splice = prefix
                 .iter()
                 .any(|&it| tagged(heap, it, kw::UNQUOTE_SPLICING).is_some());
             if prefix_has_splice {
-                let built = qq_seq(heap, prefix, false, depth, autogen)?;
+                let built = qq_seq(heap, prefix, false, depth, level, autogen)?;
                 return Ok(heap.list(vec![sym("append"), built, tail]));
             }
             let mut out = tail;
             for &it in prefix.iter().rev() {
-                let e = qq_elem(heap, it, depth, autogen)?;
+                let e = qq_elem(heap, it, depth, level, autogen)?;
                 out = heap.list(vec![sym("cons"), e, out]);
             }
             return Ok(out);
         }
     }
-    let has_splice = items
-        .iter()
-        .any(|&it| tagged(heap, it, kw::UNQUOTE_SPLICING).is_some());
+    // A `~@` splices only into the template being expanded; deeper it is data.
+    let has_splice = level == 1
+        && items
+            .iter()
+            .any(|&it| tagged(heap, it, kw::UNQUOTE_SPLICING).is_some());
     if !has_splice {
         let mut out = Vec::with_capacity(items.len() + 1);
         out.push(if is_vector {
@@ -263,7 +291,7 @@ fn qq_seq(
             sym("list")
         });
         for &it in items {
-            out.push(qq_elem(heap, it, depth, autogen)?);
+            out.push(qq_elem(heap, it, depth, level, autogen)?);
         }
         return Ok(heap.list(out));
     }
@@ -273,7 +301,7 @@ fn qq_seq(
         if let Some(inner) = tagged(heap, it, kw::UNQUOTE_SPLICING) {
             segs.push(inner); // splice the sequence's elements in place
         } else {
-            let e = qq_elem(heap, it, depth, autogen)?;
+            let e = qq_elem(heap, it, depth, level, autogen)?;
             let one = heap.list(vec![sym("list"), e]);
             segs.push(one);
         }

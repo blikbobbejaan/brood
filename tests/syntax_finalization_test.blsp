@@ -197,12 +197,11 @@
     (is (string? (system/module-doc 'encoding)))
     (is (> (string/length (system/module-doc 'encoding)) 100))))
 
-(describe "ADR-152: a nested quasiquote is rejected"
-  (test "a ` inside a ` template is an error, not an outer-level expansion"
-    ;; Was: `(a `(b ~(+ 1 2))) => (a (quasiquote (b 3))) — the inner unquote fired
-    ;; at the outer level.
-    (is (includes? (err-of "`(a `(b ~(+ 1 2)))") "nested quasiquote"))
-    (is (includes? (hint-of "`(a `(b ~(+ 1 2)))") "not tracked")))
+(describe "ADR-503: a nested quasiquote keeps its levels"
+  (test "a ` inside a ` template leaves the inner hole for the inner level"
+    ;; Before ADR-152 this gave (a (quasiquote (b 3))) — the inner unquote fired at the
+    ;; outer level; ADR-152 rejected it until levels were tracked.
+    (assert= `(list `(vector ~(+ 1 2))) '(list (quasiquote (vector (unquote (+ 1 2)))))))
 
   (test "a ` inside an ~unquote is ordinary code and stays legal"
     (defn- sf-inner (x) `(b ~x))
