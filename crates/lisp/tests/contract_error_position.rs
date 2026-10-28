@@ -21,7 +21,7 @@ const PROGRAM: &str = r#"
   (let (r (thin x 1)) r))
 (defn call-checked (x)
   (let (r (checked x 1)) r))
-(defn where (e) [(get e :file) (get e :line) (mapv (get e :trace) (fn (f) (get f :file)))])
+(defn where (e) [(get e :file) (get e :line) (seq/mapv (get e :trace) (fn (f) (get f :file)))])
 [(where (try (call-thin "s") (catch e e)))
  (where (try (call-checked "s") (catch e e)))]
 "#;

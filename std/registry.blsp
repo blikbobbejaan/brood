@@ -69,7 +69,8 @@ so a module that registers at load is safe to reload. Returns `entry`.
   ;; Sort keys computed ONCE per row, then compared — `sort-by` asks its key function on
   ;; every comparison, and a printed key per comparison made reading a fourteen-row
   ;; registry a visible slice of an editor's cursor blink.
-  (map (sort-by (map (%map-pairs table) (fn ([key entry]) [(rank-of entry) (pr-str key) key entry]))
+  (map (seq/sort-by (map (%map-pairs table)
+                      (fn ([key entry]) [(rank-of entry) (pr-str key) key entry]))
          (fn (row) [(nth row 0) (nth row 1)]))
     (fn (row) [(nth row 2) (nth row 3)])))
 

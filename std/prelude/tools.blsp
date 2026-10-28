@@ -44,7 +44,7 @@ degrades to a plain case-insensitive name/docstring search, e.g.
   (let (terms (%doc-search-terms query))
     (when (not (empty? terms))
       (map
-        (sort-by
+        (seq/sort-by
           (seq/keep (%discoverable-names)
             (fn (s)
               ;; check-allow :discarded-catch — a best-effort probe (doc / parse / ls / image index): absence is the answer

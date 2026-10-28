@@ -307,9 +307,9 @@ module included), built from the whole `files` universe — the KI-17 reachabili
 ;; pool idled. Dealt by size, every chunk carries about the same bytes, and bytes are what
 ;; a check costs.
 (defn- project-deal-chunks (n files)
-  (let (heaviest (sort-by files (fn (f) (- 0 (project-entry-bytes f))))
+  (let (heaviest (seq/sort-by files (fn (f) (- 0 (project-entry-bytes f))))
         dealt (fold heaviest
-                [(vec (repeat n nil)) 0]
+                [(vec (seq/repeat n nil)) 0]
                 (fn (acc f)
                   (let ([chunks i] acc)
                     [(update chunks (math/mod i n) (fn (chunk) (cons f chunk))) (inc i)]))))

@@ -39,6 +39,6 @@
     (let (me (self))
       (dotimes (_ 8)
         (spawn (send me [:r (try-require "ki127-ghost-fan")])))
-      (assert= (repeat 8 :refused)
+      (assert= (seq/repeat 8 :refused)
         (map (range 8) (fn (_) (receive ([:r v] v) (after 20000 :timeout)))))
       (assert (not (contains? *features* "ki127-ghost-fan"))))))

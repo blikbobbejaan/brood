@@ -136,7 +136,7 @@ resolution; `%impl-for` is what picks the winner."
   "The impl fn `f`'s shape as `[fixed-count variadic?]` — the number of fixed params (before
   any `&`) and whether it takes a `&`-rest — read from `(arglist f)`."
   (let (params (arglist f)
-        fixed (count (take-while params (fn (s) (not (= s '&))))))
+        fixed (count (seq/take-while params (fn (s) (not (= s '&))))))
     [fixed (includes? params '&)]))
 
 (defn- %register-impl-check-arity (aname op f)
@@ -385,8 +385,8 @@ which is meaningless for a rope, so falling through unconditionally would swap a
   call-position argument — a direct `(impl self & rest)` would pass the symbol `&` as an
   argument (an unbound-symbol error at every call)."
   (if (includes? arg-syms '&)
-    (let (fixed (take-while arg-syms (fn (s) (not (= s '&))))
-          rest-sym (second (drop-while arg-syms (fn (s) (not (= s '&))))))
+    (let (fixed (seq/take-while arg-syms (fn (s) (not (= s '&))))
+          rest-sym (second (seq/drop-while arg-syms (fn (s) (not (= s '&))))))
       (append (list '/apply impl-sym) (append fixed (list rest-sym))))
     (cons impl-sym arg-syms)))
 
@@ -658,8 +658,8 @@ error is a `:blame :callee` contract error, like a function's own result mismatc
 ;; `(next-impl)`: `(list a b)`, or `(append (list a) rest)` after a `&`. Nil when a parameter
 ;; is a pattern, which has no single value to pass on.
 (defn- %impl-args-expr (params)
-  (let (fixed (take-while params (fn (p) (not (= p '&))))
-        tail (rest (drop-while params (fn (p) (not (= p '&))))))
+  (let (fixed (seq/take-while params (fn (p) (not (= p '&))))
+        tail (rest (seq/drop-while params (fn (p) (not (= p '&))))))
     (cond
       (not (every? (append fixed tail) symbol?)) nil
       (empty? tail) (cons 'list fixed)
@@ -929,7 +929,7 @@ An optional leading docstring is carried onto the generated function.
           (if multi-doc (str "\n\n" multi-doc) ""))
         (list 'let
           (list 'key
-            (list '/mapv 'args '%identity-of)
+            (list 'seq/mapv 'args '%identity-of)
             'f
             (list '%multi-resolve (list 'quote mname) 'key))
           (list 'if
@@ -975,7 +975,7 @@ An optional leading docstring is carried onto the generated function.
             (count pattern)
             " position(s)"))
         ; resolve each position to the id keyword a value presents (records qualified, `impl`).
-        (let (key (mapv pattern %ability-id-kw))
+        (let (key (seq/mapv pattern %ability-id-kw))
           (list '%register-method
             (list 'quote mname)
             (list 'quote key)

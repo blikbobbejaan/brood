@@ -70,7 +70,7 @@ parenthesised call on its own line — the shapes the stdlib actually uses."
 (defn- report (label xs)
   (io/puts "")
   (io/puts "== " label " (" (count xs) ")")
-  (doseq (chunk (partition (sort xs) 6))
+  (doseq (chunk (seq/partition (sort xs) 6))
     (io/puts "   " (reduce chunk "" (fn (a b) (if (= a "") b (str a "  " b)))))))
 
 (let (names (map (public-names) ->string)

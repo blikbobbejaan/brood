@@ -54,9 +54,9 @@
   ;; Many processes racing for one name, each dying right after: whoever binds it, the
   ;; name never outlives its holder — the bind and the death's sweep are one step apart.
   (test "a name never outlives the process it is bound to, under a race"
-    (let (racers (mapv (range 32)
+    (let (racers (seq/mapv (range 32)
                    (fn (_)
                      (spawn (proc/register :proc-register-test-race (self)))))
-          refs (mapv racers monitor))
+          refs (seq/mapv racers monitor))
       (doseq (r refs) (receive ([:down ^r _ _] nil) (after *test-wait-ms* nil)))
       (assert= nil (proc/whereis :proc-register-test-race)))))

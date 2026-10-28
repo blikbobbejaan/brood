@@ -28,7 +28,7 @@ will get wrong if you write Brood like Clojure, Scheme, or Common Lisp.
    but slow to reach and wasteful. (`for` exists, but it is a *comprehension*.)
 
 3. **The collection comes FIRST, the function LAST.** `(map xs f)`, `(fold xs init f)`,
-   `(reduce xs init f)` / `(reduce xs f)`, `(seq/filter xs pred)`, `(sort-by xs key-fn)`,
+   `(reduce xs init f)` / `(reduce xs f)`, `(seq/filter xs pred)`, `(seq/sort-by xs key-fn)`,
    `(seq/find xs pred)` — the reverse of Clojure's `(map f xs)`. Predicates are data-first
    too: `(string/starts-with? s "#")`, `(contains? m k)`, `(index-of coll x)`. Writing
    `(map inc xs)` fails loudly (a function where a collection belongs); a callback's own
@@ -194,7 +194,7 @@ muscle-memory reaches for, and what Brood actually has:
 | `set!` / `swap!` / atoms | nothing — state is a process or a `table` (trap #1) |
 | `combinator/memoize`, `combinator/juxt`, `combinator/fnil`, `condp`, `if-some` | all exist; the first three in `combinator/` (or bare under `(:use combinator)`), the last two bare. `condp` is value-first: `(condp < 15 10 :small 100 :medium :large)` → `:medium` |
 | `for` into a vector/map | `(for (x xs :when p :into []) …)`; an accumulating walk is `(fold-for (acc 0 x xs) (+ acc x))` |
-| `pmap` / `take-while` transducer | `seq/pmap` (a process per item, order kept); `seq/transduce` with `seq/reduced` to stop early |
+| `pmap` / `seq/take-while` transducer | `seq/pmap` (a process per item, order kept); `seq/transduce` with `seq/reduced` to stop early |
 | raw ANSI (`clear`/`home`/cursor) | `(:use editor/ansi)` → `(ansi-clear)`/`(ansi-home)`/`(ansi-cursor r c)` are **zero-arg fns returning an escape string** — `(io/write (ansi-clear))`, never `(io/write ansi-clear)`. A render loop wants `editor/display` + `ui-run` |
 | a built-in RNG (`rand`) | `rand/int`, `rand/float`, `rand/rng`, plus `seq/shuffle`/`seq/sample` — pure & seedable: each takes a seed (`(rand/seed n)` from any int) and returns `[value next-seed]`; thread the seed through your state. `(rand/token n)` is the exception — `n` OS-random bytes as hex, for ids/secrets |
 | a set / `#{}` | first-class: `#{1 2 3}`, `(set? s)`, `(contains? s x)`, `(conj s x)`/`(disj s x)` with no import; `set/union`/`set/intersection`/`set/difference`/`set/subset?` for the algebra |

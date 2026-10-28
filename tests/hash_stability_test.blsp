@@ -73,7 +73,7 @@
   (test "workers each build, collect and look up their own function-keyed map"
     (let (me (self))
       (hs-spawn-workers me 16)
-      (assert= (hs-collect-results 16 nil) (repeat 16 [:found 1 true]))))
+      (assert= (hs-collect-results 16 nil) (seq/repeat 16 [:found 1 true]))))
   (test "a function-keyed map sent to a worker and back is found by its own key"
     (let (me (self)
           worker (spawn (hs-echo me)))

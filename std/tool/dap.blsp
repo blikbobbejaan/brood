@@ -164,7 +164,7 @@ debugger breaks at (`debug/break-fn`); stepping is not supported.")
 (defn- variables-of (snapshot)
   (let (locals (merge (or (get snapshot :scope) {}) (or (get snapshot :vals) {})))
     (into []
-      (map (sort-by (into [] locals) (fn ([k _]) (pr-str k)))
+      (map (seq/sort-by (into [] locals) (fn ([k _]) (pr-str k)))
         (fn ([k v])
           {:name (let (s (pr-str k))
                    (if (string/starts-with? s ":") (string/substring s 1 (string/length s)) s))

@@ -554,7 +554,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
   (and (map? caught) (= (get caught :kind) :suite-failed)))
 
 ;; [name ms] pairs, slowest first.
-(defn- sort-by-ms (xs) (reverse (sort-by xs second)))
+(defn- sort-by-ms (xs) (reverse (seq/sort-by xs second)))
 
 ;; --- results -----------------------------------------------------------------
 ;; A result is (group name fails ms): `fails` is the list of failure records for

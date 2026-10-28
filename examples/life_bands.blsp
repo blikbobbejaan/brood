@@ -32,7 +32,7 @@ Run:  brood examples/life_bands.blsp")
 
 (defn step (grid)
   "One generation of the whole grid, in this process."
-  (let (empty-row (vec (repeat (count (first grid)) 0)))
+  (let (empty-row (vec (seq/repeat (count (first grid)) 0)))
     (step-band empty-row grid empty-row)))
 
 ;; A band's process. Each generation it sends its top row up and its bottom row down, then
@@ -45,7 +45,7 @@ Run:  brood examples/life_bands.blsp")
     (do
       (when up (send up [:halo g :below (first band)]))
       (when down (send down [:halo g :above (last band)]))
-      (let (empty-row (vec (repeat (count (first band)) 0))
+      (let (empty-row (vec (seq/repeat (count (first band)) 0))
             above (if up (receive ([:halo ^g :above row] row)) empty-row)
             below (if down (receive ([:halo ^g :below row] row)) empty-row))
         (band-loop parent k (step-band above band below) (+ g 1) generations up down)))))

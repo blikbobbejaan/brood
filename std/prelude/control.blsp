@@ -224,7 +224,7 @@ the reason `include-str` gives.)"
       (= form '$) g
       (and (pair? form) (= (first form) 'quote)) form
       (pair? form) (map form (fn (x) (%thread-fill x g)))
-      (vector? form) (mapv form (fn (x) (%thread-fill x g)))
+      (vector? form) (seq/mapv form (fn (x) (%thread-fill x g)))
       (map? form)
         (fold (keys form)
           {}
@@ -549,7 +549,7 @@ clause, else `[body nil]`. A `finally` anywhere but last is an error."
       (do
         (when (empty? (rest clause))
           (error "try: `(finally)` has no body — write `(finally cleanup…)` or drop the clause."))
-        [(but-last body) (rest clause)])
+        [(seq/but-last body) (rest clause)])
       (do
         ;; `any?` lives in seq.blsp, concatenated AFTER this file — walk by hand.
         (letrec (misplaced? (fn (forms)
@@ -596,7 +596,7 @@ line is EXECUTED by `doctest` (tests/doc_examples_test.blsp), so it has to be ru
   (letrec (split (fn (forms catches)
                    (let (clause (last forms))
                      (if (and (pair? clause) (= (first clause) 'catch))
-                       (split (but-last forms) (cons clause catches))
+                       (split (seq/but-last forms) (cons clause catches))
                        [forms catches]))))
     (split body ())))
 

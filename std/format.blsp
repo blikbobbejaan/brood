@@ -1094,7 +1094,7 @@ if you are reintroducing hoisting, they are what you have to write back.
     (fn (file)
       (let (parts (path/split (path/relative-to file dir)))
         (and (format-source-file? (path/basename file))
-          (not (any? (but-last parts) format-ignored-dir?)))))))
+          (not (any? (seq/but-last parts) format-ignored-dir?)))))))
 
 ;; The root's OWN .blsp files, non-recursively — `project.blsp` and any top-level
 ;; script. Non-recursive on purpose: descending is exactly what the whitelist is

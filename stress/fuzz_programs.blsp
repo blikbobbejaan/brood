@@ -685,7 +685,7 @@
 
 (defn- all-paths (forms)
   ;; every replaceable child, largest subtree first
-  (sort-by (mapcat (range (count forms)) (fn (index) (child-paths (nth forms index) [index])))
+  (seq/sort-by (mapcat (range (count forms)) (fn (index) (child-paths (nth forms index) [index])))
     (fn (path) (- (node-size (node-at forms path))))))
 
 (def- shrinker (table/new))

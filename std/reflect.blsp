@@ -285,7 +285,7 @@ a module's under a Types heading.
   (let (prefix (if (nil? module) nil (str (->string module) "/"))
         entries (seq/filter (%type-aliases)
                   (fn (entry) (or (nil? prefix) (string/starts-with? (first entry) prefix)))))
-    (sort-by (map entries (fn (entry) {:name (first entry) :type (pr-str (second entry))}))
+    (seq/sort-by (map entries (fn (entry) {:name (first entry) :type (pr-str (second entry))}))
       :name)))
 
 (defn type-signature (name)

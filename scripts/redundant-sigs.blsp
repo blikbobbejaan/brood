@@ -125,7 +125,7 @@ A sig under a `kept for cost` comment (KI-150) is not a candidate."
 
 (defn- remove-spans (text spans)
   "`text` without the lines the spans occupy, spans given in any order."
-  (fold (reverse (sort-by spans first))
+  (fold (reverse (seq/sort-by spans first))
     text
     (fn (t [start end _])
       (let (ls (line-start-of t start)
@@ -146,7 +146,7 @@ hands its caller, and without it `(+ bol target)` reads `number`. Only the gate 
 (defn- remove-one-at-a-time (path spans baseline)
   "Remove each span in turn, keeping a removal only when the file's strict count stays at
 `baseline`; returns `[removed kept]` counts. Last span first, so earlier offsets hold."
-  (fold (reverse (sort-by spans first))
+  (fold (reverse (seq/sort-by spans first))
     [0 0]
     (fn ([removed kept] span)
       (let (text (file/slurp path)

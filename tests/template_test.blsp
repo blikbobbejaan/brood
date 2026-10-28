@@ -48,10 +48,10 @@
   (test "many markers render correctly, not just quickly"
     ;; 500 markers: the old implementation got this right but quadratically. Guards the
     ;; rewrite's chunk ordering — an off-by-one in the split/join reverses or drops text.
-    (let (tmpl (apply str (repeat 500 "x{{a}}"))
+    (let (tmpl (apply str (seq/repeat 500 "x{{a}}"))
           out (template/render tmpl {"a" "-"}))
       (assert= 1000 (string/length out))
-      (assert= (apply str (repeat 500 "x-")) out))))
+      (assert= (apply str (seq/repeat 500 "x-")) out))))
 
 (describe "render-all"
   (test "maps template over a list of rows"

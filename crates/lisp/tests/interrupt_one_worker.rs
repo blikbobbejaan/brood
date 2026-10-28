@@ -139,7 +139,7 @@ fn a_window_in_a_fold_callback_parks() {
         "(fn (ceiling thunk) (let (step (fn (_ i) (proc/interruptible ceiling thunk))) (fold (range 1) nil step)))",
         // what folds underneath: map, and through it mapv, sort-by, each
         "(fn (ceiling thunk) (first (map [ceiling] (fn (c) (proc/interruptible c thunk)))))",
-        "(fn (ceiling thunk) (first (mapv [ceiling] (fn (c) (proc/interruptible c thunk)))))",
+        "(fn (ceiling thunk) (first (seq/mapv [ceiling] (fn (c) (proc/interruptible c thunk)))))",
         // a ui-run turn: the window outside, the receive in a callback of the update
         "(fn (ceiling thunk) (proc/interruptible ceiling (fn () (first (map [1] (fn (_) (thunk)))))))",
         // a window inside a callback inside a window: the inner is the callback's

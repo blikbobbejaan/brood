@@ -374,10 +374,10 @@ A string is not a sequence here — reverse its `string/->list` if you need that
 ;; that runs no namespace-resolve pass, which is what made `receive` the one prelude macro
 ;; whose template could not use the `/name` root escape (KI-73). It needs only `reverse`
 ;; (just above) and the kernel `rest`, so it costs nothing to define this early.
-(defn but-last (xs)
+(defn seq/but-last (xs)
   "All but the last item of `xs`, as a list.
 
-    (but-last [1 2 3])   ;=> (1 2)"
+    (seq/but-last [1 2 3])   ;=> (1 2)"
   (reverse (rest (reverse xs))))
 
 (defn- %reverse-onto (coll tail)

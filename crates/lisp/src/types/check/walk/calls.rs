@@ -592,7 +592,7 @@ pub(super) fn clause_literal_takes(heap: &Heap, f: Value) -> Option<usize> {
 /// pair alongside it.
 pub(super) const ELEMENT_CALLBACK_COMBINATORS: &[&str] = &[
     "map",
-    "mapv",
+    "seq/mapv",
     "mapcat",
     // Both spellings: the qualified one is how `seq/` names are written outside a
     // `(:use seq)` module, the bare one how they read inside it. Unlike the curated
@@ -608,9 +608,9 @@ pub(super) const ELEMENT_CALLBACK_COMBINATORS: &[&str] = &[
     // `dolist`'s expansion: `(%dolist-loop coll (fn (x) body…))` — the loop variable is an
     // element, exactly as `each`'s is.
     "%dolist-loop",
-    "take-while",
-    "drop-while",
-    "sort-by",
+    "seq/take-while",
+    "seq/drop-while",
+    "seq/sort-by",
     "group-by",
     "any?",
     "all?",

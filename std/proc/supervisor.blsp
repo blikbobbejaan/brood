@@ -140,7 +140,7 @@ address the child by a stable name even though its pid changes across restarts."
 
 (defn- supervisor-ordered (children)
   "Every child record in **start order**, reconstructed from each record's `:seq`."
-  (sort-by (vals children) (fn (c) (get c :seq))))
+  (seq/sort-by (vals children) (fn (c) (get c :seq))))
 
 (defn- supervisor-find-by-key (children ids key)
   "Find a child by its `:pid` *or* its `:id` — the runtime child API
@@ -339,8 +339,8 @@ the child with `:pid` `pid`. `:one-for-all` → everything is affected;
 the earlier-started prefix left untouched. (`children` is an ordered *sequence* of
 records here — callers pass `supervisor-ordered`.)"
   (if (= strategy :rest-for-one)
-    [(take-while children (fn (c) (not (= (get c :pid) pid))))
-      (drop-while children (fn (c) (not (= (get c :pid) pid))))]
+    [(seq/take-while children (fn (c) (not (= (get c :pid) pid))))
+      (seq/drop-while children (fn (c) (not (= (get c :pid) pid))))]
     [() children]))
 (defn- supervisor-maybe-restart (child reason)
   "After a group termination, restart `child` if its `:restart` type permits given

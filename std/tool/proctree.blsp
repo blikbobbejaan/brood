@@ -22,7 +22,7 @@ view). Pure — no IO, no UI deps — so a TUI (std/observer) and a buffer edito
   "Sort `procs` ascending by `:id` (stable spawn order) — the flat view.
 
     (proctree/by-id [{:id 3} {:id 1} {:id 2}])   ;=> ({:id 1} {:id 2} {:id 3})"
-  (sort-by procs :id))
+  (seq/sort-by procs :id))
 
 (defn tree-walk (p procs depth limit)
   "DFS: emit `p` (tagged `:depth`) then its children's subtrees, each child sorted by

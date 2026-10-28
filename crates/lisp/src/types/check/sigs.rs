@@ -150,7 +150,7 @@ static CURATED_SIGS: LazyLock<SymbolMap<Sig>> = LazyLock::new(|| {
     // (drop can return its input unchanged, so even "list" would be wrong);
     // precise results for the inferable ones come from `infer.rs`'s arms, which
     // run independently of these domains.
-    for n in ["each", "take-while", "drop-while"] {
+    for n in ["each", "seq/take-while", "seq/drop-while"] {
         put(n, Sig::new(vec![seq, cb1.clone()], any));
     }
     // `mapcat`, `seq/filter`, `seq/reject` and `seq/keep` build a fresh list like `map`

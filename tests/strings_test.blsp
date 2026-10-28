@@ -363,11 +363,11 @@
   (test "the length is right for a freshly built string, not just a literal"
     (assert= 11 (string/length (str "héllo" " " "wörld")))
     (assert= 4 (string/length (string/substring "héllo wörld" 0 4)))
-    (assert= 3 (string/length (apply str (repeat 3 "é"))))
+    (assert= 3 (string/length (apply str (seq/repeat 3 "é"))))
     ;; 1300 chars / 2600 BYTES, and over SHARED_BLOB_THRESHOLD — so this also covers the
     ;; shared-blob construction path, where the count is measured through the blob rather
     ;; than an inline String.
-    (assert= 1300 (string/length (apply str (repeat 1300 "é")))))
+    (assert= 1300 (string/length (apply str (seq/repeat 1300 "é")))))
   (test "the length survives a round-trip through another process"
     ;; A send deep-copies into the receiver's heap, rebuilding the slot — and so its count.
     (let (me (self))
@@ -420,7 +420,7 @@
 
   (test "last-index-of finds the last of many, at scale"
     ;; 4000 occurrences: the old forward-scan-per-match shape was quadratic here.
-    (let (s (apply str (repeat 4000 "xyNEEDLE")))
+    (let (s (apply str (seq/repeat 4000 "xyNEEDLE")))
       (assert= (- (* 8 4000) 6) (string/last-index-of s "NEEDLE"))))
   ; clamped to length, no infinite loop
   (test "last-index-of handles the empty needle without looping"
@@ -680,11 +680,11 @@
 
 ;; 1-, 2-, 3- and 4-byte chars in every stride position; 500 chars / 1000 bytes.
 (def- mb-unit "aé漢🙂x")
-(def- mb-text (apply str (repeat 100 mb-unit)))
+(def- mb-text (apply str (seq/repeat 100 mb-unit)))
 (def- mb-chars (into [] (string/->list mb-text)))
 ;; The other shape that matters: an ASCII run whose string is non-ASCII only at the end,
 ;; so a conversion inside the run cannot take either fast path.
-(def- mb-tail (str (apply str (repeat 400 "x")) "é"))
+(def- mb-tail (str (apply str (seq/repeat 400 "x")) "é"))
 
 ;; Every occurrence of `needle`, by char index — one `index-of` per hit with a rising
 ;; `from`, which is the shape whose conversion cost the index removes.

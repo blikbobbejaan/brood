@@ -136,13 +136,13 @@
     (load-hot "undef-many")
     (let (spin (hot "undef-many" "spin")
           before (concurrently 8 (fn (_) (spin 2000 0))))
-      (assert= (repeat 8 2000) before)
+      (assert= (seq/repeat 8 2000) before)
       (reflect/undef 'undef-many/step)
       (let (after (concurrently 8
                     (fn (_)
                       (mentions? (error-message-of (fn () (spin 2000 0)))
                         "unbound symbol: undef-many/step"))))
-        (assert= (repeat 8 true) after)))))
+        (assert= (seq/repeat 8 true) after)))))
 
 (describe "a contracted function takes its module-boundary alias with it"
   :isolated (test "a same-module caller compiled against the alias raises too"

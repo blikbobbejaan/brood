@@ -99,7 +99,7 @@ wrapper needed (`((fn () 1 2 3))` → `3`). Same for `let`/`when`/`letrec` bodie
 
 **Argument order is collection-first, callback-last** (ADR-308) — the reverse of
 Clojure: `(map xs f)`, `(fold xs init f)`, `(reduce xs init f)`, `(seq/filter xs pred)`,
-`(sort-by xs key-fn)`, `(seq/find xs pred)`. Predicates and lookups are data-first too —
+`(seq/sort-by xs key-fn)`, `(seq/find xs pred)`. Predicates and lookups are data-first too —
 `(string/starts-with? s "#")`, `(contains? m k)`, `(index-of coll x)`. A callback's own
 parameters keep the familiar order: `(fold xs 0 (fn (acc x) (+ acc x)))`.
 
@@ -251,7 +251,7 @@ Scheme/Clojure reading is vacuous here and `!` is per-context by decision (ADR-1
 contracts are armed), `(! pid payload)` = a cast in `gen`.
 **Don't add a `!` to a name of your own.**
 
-**Names come from whichever language named the thing best** — `partition` (Clojure)
+**Names come from whichever language named the thing best** — `seq/partition` (Clojure)
 next to `chunk-every`, `enumerate` (Python), `scan` (Haskell), `&optional`
 (CL), `letrec` (Scheme). So a name can't always be guessed: reach for `(apropos
 "part")` or `(doc-search "chunk")` instead of assuming (ADR-163).
@@ -513,9 +513,9 @@ Prefer the higher-order combinators:
 (reduce xs 0 +)                    ;=> 10
 (map xs sq)                        ;=> (1 4 9 16)
 (seq/filter xs math/even?)         ;=> (2 4)   ; even?/odd?/… live in the `math` module (ADR-227)
-(seq/reject xs math/even?)         ;=> (1 3)   ; the complement — `reject`, not `remove` (ADR-330)
+(seq/reject xs math/even?)         ;=> (1 3)   ; the combinator/complement — `reject`, not `remove` (ADR-330)
 (fold (range 10) {} (fn (m k) (assoc m k (* k k))))   ;=> {0 0, 1 1, 2 4, 3 9, 4 16, 5 25, 6 36, 7 49, 8 64, 9 81}
-(map xs (partial + 10))            ;=> (11 12 13 14)   ; partial / complement / constantly / comp all exist
+(map xs (partial + 10))            ;=> (11 12 13 14)   ; partial and comp are bare, complement and constantly are combinator/
 ```
 
 **One sequence view over every collection.** `count` `empty?` `first` `rest` `last`
@@ -537,7 +537,7 @@ is an error, because in `match` a bare symbol silently *binds* instead of compar
 ```
 
 **A keyword is callable — `(:name p)` ≡ `(get p :name)`** (ADR-165), and it is a
-first-class value, so `(map people :name)` / `(sort-by rows :id)` / `(seq/filter zones :cursor)`
+first-class value, so `(map people :name)` / `(seq/sort-by rows :id)` / `(seq/filter zones :cursor)`
 all work. That is the point: no throwaway `(fn (p) (get p :name))`. Receivers
 mirror `get` (map by key, set by membership, `nil` empty); anything else — notably a
 *list of maps* — is a type error naming the keyword. Use `(get m k)` when the key is
@@ -1070,7 +1070,7 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
   `d` a `rest`, right to left: `list/cadr` is `(first (rest x))`, ADR-447)
   `reverse` `map` `reduce` `fold` `append` (variadic, over
   lists *and* vectors, returning a list) `mapcat` `sort` `take`
-  `drop` `range` `partition` `repeat`. Everything else sequence-shaped lives in the
+  `drop` `range`. Everything else sequence-shaped lives in the
   **`seq` module** (`(:use seq)` for bare access, or a qualified `seq/frequencies`
   loads it on first use): `seq/filter` `seq/reject` `seq/keep` `seq/find`
   `seq/distinct` `seq/zip` `seq/zip-with` `seq/subvec` `seq/remove-nth`
@@ -1370,7 +1370,7 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
 - **`sort` on heterogeneous / non-numeric items uses *structural* order.**
   `(sort coll)` is `<` for numbers, lexicographic for vectors/lists, text order
   for strings/symbols/keywords (so `(sort [[1 0] [2 1]])` works, no comparator
-  needed). For custom orderings use `(sort coll less?)` or `(sort-by coll key-fn)`.
+  needed). For custom orderings use `(sort coll less?)` or `(seq/sort-by coll key-fn)`.
 - **`index-of` works on strings *and* on lists/vectors.** Strings → substring
   search; lists/vectors → linear element search (structural `=`). Returns **`-1`**
   if absent — which is truthy, so `(when (index-of s "x") …)` runs every time; test

@@ -98,10 +98,10 @@
   ;; The same ceiling a range is realised under: past it the list is one call eating the
   ;; machine, ending in an abort.
   (test "past the realise cap is a catchable error"
-    (is (includes? (message (fn () (repeat 100000000000 :x))) "too many")))
+    (is (includes? (message (fn () (seq/repeat 100000000000 :x))) "too many")))
   (test "ordinary counts are unchanged"
-    (assert= (repeat 3 :a) '(:a :a :a))
-    (assert= (repeat 0 :a) nil)))
+    (assert= (seq/repeat 3 :a) '(:a :a :a))
+    (assert= (seq/repeat 0 :a) nil)))
 
 (describe "a pattern nested past the lowering cap"
   ;; The pattern compiler's work before the 256-level expansion cap refused the result

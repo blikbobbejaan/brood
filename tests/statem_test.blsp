@@ -148,6 +148,6 @@
   (test "one machine answers many processes at once"
     (let (me (self) pid (start door 7))
       (doseq (_ (range 0 8)) (spawn (send me [:saw (call pid :state)])))
-      (assert= (repeat 8 :locked)
+      (assert= (seq/repeat 8 :locked)
         (map (range 0 8) (fn (_) (receive ([:saw state] state) (after *test-wait-ms* :timeout)))))
       (stop pid))))

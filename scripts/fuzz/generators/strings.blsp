@@ -49,7 +49,7 @@
     ["\\\"" 3]])
 
 (def character-pool
-  (into [] (mapcat weighted-characters (fn ([character weight]) (repeat weight character)))))
+  (into [] (mapcat weighted-characters (fn ([character weight]) (seq/repeat weight character)))))
 
 (defn draw-text (length)
   (apply str (map (range length) (fn (_) (draw-choice character-pool)))))
@@ -130,7 +130,7 @@
 
 ;; the form-start scanner (ADR-214's safepoint table) as a property: the answer is at or
 ;; before `pos`, at a line start, and is a bracket — or 0 when there is no form start.
-(def src (apply str (repeat "
+(def src (apply str (seq/repeat "
       source-lines
       " \"(defn f (a) (str \\\"x\\\" a))\\n\")))
 (defn chk-form (pos acc)

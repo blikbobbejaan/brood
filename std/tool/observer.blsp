@@ -363,10 +363,10 @@ the observer's testable core; `observe-loop` feeds it live data.
 `:mailbox` / `:memory` / `:reds` descending (busiest/biggest first; `:reds` is
 the live reductions/second rate, so the *currently* busiest process floats up)."
   (cond
-    (= key :mailbox) (sort-by procs (fn (p) (- (get p :mailbox))))
-    (= key :memory) (sort-by procs (fn (p) (- (or (get p :memory) 0))))
-    (= key :reds) (sort-by procs (fn (p) (- (or (get p :reds-rate) 0))))
-    else (sort-by procs :id)))
+    (= key :mailbox) (seq/sort-by procs (fn (p) (- (get p :mailbox))))
+    (= key :memory) (seq/sort-by procs (fn (p) (- (or (get p :memory) 0))))
+    (= key :reds) (seq/sort-by procs (fn (p) (- (or (get p :reds-rate) 0))))
+    else (seq/sort-by procs :id)))
 
 (defn- observe-tree-order (procs)
   "Order `procs` as a parent→child forest (roots first, each followed by its DFS

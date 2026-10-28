@@ -64,22 +64,22 @@
 
 (describe "take-while / drop-while"
   (test "take-while keeps the leading run that satisfies pred"
-    (assert= (take-while (range 10) (fn (x) (< x 4))) (list 0 1 2 3))
-    (assert= (take-while (list 2 4 5 6) even?) (list 2 4))
-    (assert= (take-while (list 1 2 3) even?) nil))
+    (assert= (seq/take-while (range 10) (fn (x) (< x 4))) (list 0 1 2 3))
+    (assert= (seq/take-while (list 2 4 5 6) even?) (list 2 4))
+    (assert= (seq/take-while (list 1 2 3) even?) nil))
   (test "drop-while skips the leading run that satisfies pred"
-    (assert= (drop-while (range 10) (fn (x) (< x 4))) (list 4 5 6 7 8 9))
-    (assert= (drop-while (list 2 4 5 6) even?) (list 5 6))
-    (assert= (drop-while (list 1 2 3) even?) (list 1 2 3)))
+    (assert= (seq/drop-while (range 10) (fn (x) (< x 4))) (list 4 5 6 7 8 9))
+    (assert= (seq/drop-while (list 2 4 5 6) even?) (list 5 6))
+    (assert= (seq/drop-while (list 1 2 3) even?) (list 1 2 3)))
   ;; KI-65: both guarded on `pair?`, false for a VECTOR, so each walked zero items and
   ;; answered `nil` / the input unchanged — a wrong VALUE, not an error. Every case above
   ;; passes a list or a range, which is why it survived; these are the vector ones.
   (test "both accept a vector, not just a list (KI-65)"
-    (assert= (take-while [1 2 3 1] (fn (x) (< x 3))) (list 1 2))
-    (assert= (drop-while [1 2 3 1] (fn (x) (< x 3))) (list 3 1))
-    (assert= (take-while [5 1] (fn (x) (< x 3))) nil)
+    (assert= (seq/take-while [1 2 3 1] (fn (x) (< x 3))) (list 1 2))
+    (assert= (seq/drop-while [1 2 3 1] (fn (x) (< x 3))) (list 3 1))
+    (assert= (seq/take-while [5 1] (fn (x) (< x 3))) nil)
     ;; nothing dropped => `coll` itself, exactly as `(drop 0 [1 2 3])` gives `[1 2 3]`
-    (assert= (drop-while [5 1] (fn (x) (< x 3))) [5 1])))
+    (assert= (seq/drop-while [5 1] (fn (x) (< x 3))) [5 1])))
 
 (describe "any? / every? / find"
   (test "any? is true iff any element satisfies pred"
@@ -119,19 +119,19 @@
 
 (describe "partition"
   (test "partition chunks into n-sized groups, dropping a trailing partial"
-    (assert= (partition (range 6) 2) (list (list 0 1) (list 2 3) (list 4 5)))
-    (assert= (partition (range 7) 2) (list (list 0 1) (list 2 3) (list 4 5)))
-    (assert= (partition (range 9) 3) (list (list 0 1 2) (list 3 4 5) (list 6 7 8))))
+    (assert= (seq/partition (range 6) 2) (list (list 0 1) (list 2 3) (list 4 5)))
+    (assert= (seq/partition (range 7) 2) (list (list 0 1) (list 2 3) (list 4 5)))
+    (assert= (seq/partition (range 9) 3) (list (list 0 1 2) (list 3 4 5) (list 6 7 8))))
   (test "partition of too-short input is empty"
-    (assert= (partition (range 3) 5) nil)
-    (assert= (partition nil 1) nil))
+    (assert= (seq/partition (range 3) 5) nil)
+    (assert= (seq/partition nil 1) nil))
   ;; A size <= 0 never consumes the input, so these used to run until memory ran out.
   (test "a chunk size of zero or less is an error, not an endless loop"
-    (assert= (try (partition [1 2 3] 0) (catch e (error-message e)))
+    (assert= (try (seq/partition [1 2 3] 0) (catch e (error-message e)))
       "partition: chunk size must be positive, got 0")
-    (assert= (try (partition nil 0) (catch e (error-message e)))
+    (assert= (try (seq/partition nil 0) (catch e (error-message e)))
       "partition: chunk size must be positive, got 0")
-    (assert= (try (partition [1 2 3] -2) (catch e (error-message e)))
+    (assert= (try (seq/partition [1 2 3] -2) (catch e (error-message e)))
       "partition: chunk size must be positive, got -2")))
 
 (describe "sort / sort-by"
@@ -147,8 +147,8 @@
       (assert= (sort pairs (fn (x y) (< (first x) (first y))))
         (list [0 :b] [0 :d] [1 :a] [1 :c]))))
   (test "sort-by orders by a key function"
-    (assert= (sort-by (list "ccc" "a" "bb") (fn (s) (string/length s))) (list "a" "bb" "ccc"))
-    (assert= (sort-by (list -3 1 -2 4) abs) (list 1 -2 -3 4)))
+    (assert= (seq/sort-by (list "ccc" "a" "bb") (fn (s) (string/length s))) (list "a" "bb" "ccc"))
+    (assert= (seq/sort-by (list -3 1 -2 4) abs) (list 1 -2 -3 4)))
   (test "sort handles a larger, reversed input correctly"
     (assert= (sort (range 50 0 -1)) (range 1 51)))
   ;; Structural sort for non-numeric items, no custom comparator needed —
@@ -315,8 +315,8 @@
 
 (describe "repeat / repeatedly"
   (test "repeat builds a list of n copies"
-    (assert= (repeat 3 :x) (list :x :x :x))
-    (assert= (repeat 0 :x) nil))
+    (assert= (seq/repeat 3 :x) (list :x :x :x))
+    (assert= (seq/repeat 0 :x) nil))
   (test "repeatedly calls a thunk n times, in order"
     (assert= (seq/repeatedly 3 (fn () 7)) (list 7 7 7))
     (assert= (seq/repeatedly 0 (fn () 7)) nil)))
@@ -479,9 +479,9 @@
       (assert= (seq v) (list 0 10 20 30)))))
 (describe "mapv / filterv"
   (test "mapv returns a VECTOR of mapped items"
-    (assert= [2 4 6] (mapv (list 1 2 3) (fn (x) (* x 2))))
-    (is (vector? (mapv (list 1 2 3) inc)))
-    (assert= [] (mapv nil inc)))
+    (assert= [2 4 6] (seq/mapv (list 1 2 3) (fn (x) (* x 2))))
+    (is (vector? (seq/mapv (list 1 2 3) inc)))
+    (assert= [] (seq/mapv nil inc)))
 
   (test "filterv returns a VECTOR of kept items"
     (assert= [2 4] (seq/filterv (list 1 2 3 4) even?))
@@ -489,9 +489,9 @@
     (assert= [] (seq/filterv (list 1 3) even?)))
 
   (test "both accept any seqable source"
-    (assert= [1 2 3] (mapv (range 3) inc))
+    (assert= [1 2 3] (seq/mapv (range 3) inc))
     (assert= [0 2 4] (seq/filterv (range 6) even?))
-    (assert= [10 20] (mapv [1 2] (fn (x) (* x 10))))))
+    (assert= [10 20] (seq/mapv [1 2] (fn (x) (* x 10))))))
 
 ;; `fold` over a VECTOR takes an indexed fast path (`fold-vec`) rather than the generic
 ;; `first`/`rest` walk, because `(rest v)` on a vector materialises a list of the tail —

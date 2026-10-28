@@ -122,8 +122,9 @@ whose callee must exist, but that are not evaluated.
 
 (defn- arm-accepts? (params n)
   ;; Does one arm's parameter list take `n` arguments?
-  (let (fixed (count (take-while params (fn (p) (not (string/starts-with? (->string p) "&")))))
-        optional (count (take-while (rest (drop-while params (fn (p) (not (= p '&optional)))))
+  (let (fixed (count (seq/take-while params (fn (p) (not (string/starts-with? (->string p) "&")))))
+        optional (count (seq/take-while (rest (seq/drop-while params
+                                                (fn (p) (not (= p '&optional)))))
                           (fn (p) (not (= p '&)))))
         rest? (includes? params '&))
     (and (>= n fixed) (or rest? (<= n (+ fixed optional))))))
@@ -468,7 +469,7 @@ THIS process — `markdown-failures` gives each block a process of its own.
                                                     "  — does not read: "
                                                     (second parsed)))
                                         (let (forms (second parsed)
-                                              fault (run-setup here (but-last forms)))
+                                              fault (run-setup here (seq/but-last forms)))
                                           (if fault
                                             (append faults [fault])
                                             (continue (check (last forms)))))))))

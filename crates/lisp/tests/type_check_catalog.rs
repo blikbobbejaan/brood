@@ -55,7 +55,7 @@ const SHOULD_WARN: &[(&str, &str)] = &[
     ("(string/length (first (reverse [1 2 3])))", "string/length"), // reverse vector<int> → int
     ("(string/length (first (sort [1 2 3])))", "string/length"),    // sort preserves int
     (
-        "(string/length (first (sort-by [1 2 3] (fn (x) x))))",
+        "(string/length (first (seq/sort-by [1 2 3] (fn (x) x))))",
         "string/length",
     ), // sort-by preserves int
     ("(string/length (first (take [1 2 3] 2)))", "string/length"),  // take preserves int

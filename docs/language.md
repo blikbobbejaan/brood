@@ -273,7 +273,7 @@ A **keyword is callable** — the one exception to "the head of a form is a func
 (:name person)              ; ≡ (get person :name)
 (:name person "unknown")    ; ≡ (get person :name "unknown")
 (map :name people)          ; the reason for the exception
-(sort-by :id procs)
+(seq/sort-by :id procs)
 (seq/filter zones :cursor)
 ```
 
@@ -2984,7 +2984,7 @@ In the `math` module: `math/mod`  `math/rem`  `math/quot`  `math/floor`  `math/m
   raises. `pow` is exponentiation by squaring (O(log exp) multiplications), and a
   result that would exceed 2^27 bits — `bit/shift-left`'s own cap — is refused as a
   catchable error rather than built: `(math/pow 2 100000000000)` used to run out of
-  memory. The same ceiling bounds `(repeat n x)` at 2^26 elements, the limit a
+  memory. The same ceiling bounds `(seq/repeat n x)` at 2^26 elements, the limit a
   range is realised under. `string/repeat` builds by doubling and refuses a result
   past a gibibyte.
 - A source file may begin with a `#!` shebang line (skipped) or a byte-order mark
@@ -3077,13 +3077,13 @@ In the `math` module: `math/mod`  `math/rem`  `math/quot`  `math/floor`  `math/m
   below.
 
 ### Lists & sequences
-`cons`  `first`  `rest`  `second`  `third`  `last`  `but-last`
+`cons`  `first`  `rest`  `second`  `third`  `last`  `seq/but-last`
 `list`  `vector`  `vec`  `conj`  `disj`  `into`  `seq`
 `append`  `reverse`  `%reverse-onto`  `nth`  `count`  `empty?`
-`range`  `take`  `drop`  `split-at`  `take-last`  `drop-last`  `take-while`  `drop-while`
+`range`  `take`  `drop`  `split-at`  `take-last`  `drop-last`  `seq/take-while`  `seq/drop-while`
 `includes?`  `any?`  `every?`  `find`  `index-of`  `zip`
-`partition`  `sort`  `sort-by`  `subvec`  `remove`  `remove-nth`  `keep`
-`distinct`  `flatten`  `repeat`  `repeatedly`  `seq/cycle`  `seq/prewalk`  `seq/postwalk`
+`seq/partition`  `sort`  `seq/sort-by`  `subvec`  `remove`  `remove-nth`  `keep`
+`distinct`  `flatten`  `seq/repeat`  `repeatedly`  `seq/cycle`  `seq/prewalk`  `seq/postwalk`
 
 - **`seq/cycle`** is bounded — `(seq/cycle [1 2] 5)` is `(1 2 1 2 1)` — because there is no
   lazy cons to make it infinite (ADR-111). **`seq/postwalk`/`seq/prewalk`** rebuild a nested
@@ -3095,8 +3095,8 @@ In the `math` module: `math/mod`  `math/rem`  `math/quot`  `math/floor`  `math/m
 > *derived* sequence helpers live in the `seq` module rather than the bare prelude: `dedupe`, `distinct-by`,
 > `group-by`, `frequencies`, `chunk-by`, `chunk-every`, `interpose`, `interleave`,
 > `scan`, `zip-with`, `reduce-while`, `min-by`, `max-by`, `enumerate`, `index-where`.
-> The *core* protocol above (`map`/`reduce`/`fold`/`take`/`drop`/`take-while`/
-> `partition`/…) stays bare. **`filter` is not bare** — it is `seq/filter`, moved here in
+> The *core* protocol above (`map`/`reduce`/`fold`/`take`/`drop`/`sort`/…) stays bare;
+> `take-while`, `partition`, `repeat`, `sort-by`, `mapv` and friends are `seq/` (ADR-506). **`filter` is not bare** — it is `seq/filter`, moved here in
 > ADR-330 to sit beside its complement `seq/reject`; so are `distinct`, `zip` and `find`. Reach the helpers with `(:use seq)`
 > in your module header, or call them qualified (`seq/group-by`). The descriptions
 > below cover them all; the enum ones just need the import.
@@ -3134,7 +3134,7 @@ In the `math` module: `math/mod`  `math/rem`  `math/quot`  `math/floor`  `math/m
   empty range is `nil`. `(range? x)` tests for the lazy handle (realised ranges
   are ordinary lists, so `range?` is false for them).
 - `take`/`drop` clamp to the sequence length; `take-last`/`drop-last` take/drop
-  from the end. `take-while`/`drop-while` split on the first element that fails
+  from the end. `seq/take-while`/`seq/drop-while` split on the first element that fails
   the predicate. `split-at` returns `[front back]` — the first `n` items and the
   rest — in a single pass (the fused `take`+`drop`).
 - `any?`/`every?` return booleans (`every?` is vacuously true on the empty
@@ -3162,17 +3162,17 @@ In the `math` module: `math/mod`  `math/rem`  `math/quot`  `math/floor`  `math/m
 - `interpose` inserts a separator between adjacent items; `interleave` alternates
   two sequences, stopping at the shorter. `zip` pairs two sequences into `[x y]`
   vectors, stopping at the shorter. `(zip-with a b f)` combines two sequences element-wise via a
-  binary function, the function last like every combinator. `partition` chunks into `n`-sized groups, dropping a trailing partial
+  binary function, the function last like every combinator. `seq/partition` chunks into `n`-sized groups, dropping a trailing partial
   chunk; `chunk-every` keeps the remainder. `chunk-by` partitions consecutive equal-key runs.
 - `scan` is a running fold — returns a list of all intermediate accumulator
   values starting with the initial value (like Haskell's `scanl`).
 - `mapcat` maps a list-valued function and concatenates the results. `min-by`/`max-by`
   select the extremum of a collection by a key function. `(clamp x lo hi)` constrains a
   number to the closed range `[lo, hi]`.
-- `repeat` builds a list of `n` copies of a value; `repeatedly` calls a
+- `seq/repeat` builds a list of `n` copies of a value; `repeatedly` calls a
   zero-argument function `n` times and collects the results.
 - `sort` orders ascending (or with a strict less-than predicate:
-  `(sort xs >)`); `sort-by` orders by a key function. Both are a **stable**
+  `(sort xs >)`); `seq/sort-by` orders by a key function. Both are a **stable**
   merge sort. All of these are tail-recursive (stack-safe on long inputs).
 - **Lazy, fusing pipelines.** `map`/`seq/filter`/`seq/keep`/`seq/reject` are **eager** — they
   return a concrete list and run their function immediately (so `(map xs f)` for
@@ -3270,7 +3270,7 @@ in **O(1)** — the CHAMP root node tracks its size (exposed by the `%map-count`
 kernel primitive), so neither walks nor materialises the entries.
 
 ### Higher-order
-`map`  `seq/filter`  `seq/reject`  `mapv`  `seq/filterv`  `seq/rejectv`  `reduce`  `fold`  `apply`
+`map`  `seq/filter`  `seq/reject`  `seq/mapv`  `seq/filterv`  `seq/rejectv`  `reduce`  `fold`  `apply`
 `comp`  `partial`  `combinator/complement`  `combinator/constantly`  `identity`  `combinator/juxt`  `combinator/fnil`  `combinator/memoize`  `seq/pmap`
 
 `combinator/juxt` applies several functions to the same arguments and returns the results as a
@@ -3291,13 +3291,13 @@ closure: put a `(sig …)` beside the `def` to give its callers a type.
 (map (list 1 2 3) inc)                      ;=> (2 3 4)
 (seq/filter (list -1 2 -3 4) math/positive?) ;=> (2 4)
 (seq/reject (list -1 2 -3 4) math/positive?) ;=> (-1 -3)
-(mapv (list 1 2 3) inc)                     ;=> [2 3 4]   ; vector result; `mapv` is BARE
+(seq/mapv (list 1 2 3) inc)                     ;=> [2 3 4]   ; vector result; `seq/mapv` beside `seq/filterv`
 (seq/filterv (range 5) math/even?)          ;=> [0 2 4]   ; vector result
 (reduce (list 1 2 3 4) 0 +)                 ;=> 10
 (apply + (list 1 2 3))                      ;=> 6
 ```
 
-`map`/`seq/filter`/`seq/reject` return lists; `mapv`/`seq/filterv`/`seq/rejectv` are the
+`map`/`seq/filter`/`seq/reject` return lists; `seq/mapv`/`seq/filterv`/`seq/rejectv` are the
 vector-returning variants for when the caller needs indexed access — the named form of
 `(into [] (map …))`.
 
@@ -3995,7 +3995,7 @@ its names bare. Run `nest doc <module>` for the full API of any module.
 | `std/file.blsp` | `'file` | Filesystem policy over the kernel's fs primitives: `read-lines`, `write-lines`, `regular?`, `list-files`, `list-dirs`, `walk-files`. Pure path-string ops (`extension`, `stem`, …) live in `path` (ADR-234). All Brood (ADR-006), no new Rust |
 | `std/io.blsp` | `'io` | Output **ports** — the `Port` ability (`io-write`), `stdout-port`, `stderr-port`, `process-port`, `file-port`, `fn-port`, and the `with-out`/`with-err` redirections — so output has a first-class destination instead of a fixed stdout. Also the writers themselves: `io/write`, `io/puts`, `io/inspect`, each taking an optional trailing `:to <port>` (see also `std/log.blsp`) |
 | `std/text.blsp` | `'text` | Plain-text transforms with no editor/buffer/IO dependency: `fill`, greedy word-wrap to a column width. Pure Brood over the string primitives, so it is reusable anywhere (fill-paragraph, wrapping help text or REPL output) |
-| `std/seq.blsp` | `'seq` | Derived **sequence helpers** (ADR-227) layered over the bare collection protocol: `dedupe`, `distinct-by`, `group-by`, `frequencies`, `chunk-by`, `chunk-every`, `interpose`, `interleave`, `scan`, `zip-with`, `reduce-while`, `min-by`, `max-by`, `enumerate`, `index-where`. Also `filter`/`reject`/`keep`/`filterv`/`rejectv`/`distinct`/`zip`/`find`/`flatten` and the transducer + lazy stages. The core ops (`map`/`reduce`/`fold`/`take`/`drop`/`take-while`/`partition`) stay bare in the prelude; `(:use seq)` for bare access or call qualified |
+| `std/seq.blsp` | `'seq` | Derived **sequence helpers** (ADR-227) layered over the bare collection protocol: `dedupe`, `distinct-by`, `group-by`, `frequencies`, `chunk-by`, `chunk-every`, `interpose`, `interleave`, `scan`, `zip-with`, `reduce-while`, `min-by`, `max-by`, `enumerate`, `index-where`. Also `filter`/`reject`/`keep`/`filterv`/`rejectv`/`distinct`/`zip`/`find`/`flatten` and the transducer + lazy stages. The core ops (`map`/`reduce`/`fold`/`take`/`drop`/`sort`) stay bare in the prelude, and `take-while`/`partition`/`repeat`/`sort-by`/`mapv` are here (ADR-506); `(:use seq)` for bare access or call qualified |
 | `std/map.blsp` | `'map` | Derived **map-transformation helpers** (ADR-227): `reduce-kv`, `merge-with`, `update-vals`, `update-keys`, `select-keys`, `zipmap`. The core map protocol (`assoc`/`dissoc`/`get`/`keys`/`vals`/`contains?`/`update`/`get-in`/`update-in`/`merge`) stays bare in the prelude; `(:use map)` for bare access or call qualified (the bare `map` *function* is unaffected) |
 | `std/math.blsp` | `'math` | The derived **math library** (ADR-227): `sqrt`, `pow`, `ceil`, `round`, `round-to`, `clamp`, `abs`, `sum`, `product`, the sign/parity predicates (`positive?`/`negative?`/`even?`/`odd?`), and the constants `pi`/`e`. Only the **operators** (`+` `-` `*` `/` `<` `=` …) and `inc`/`dec` stay bare in the prelude — `quot`/`mod`/`rem`/`floor`/`min`/`max` are derived arithmetic and live here too, so they are `math/quot`, `math/min`, … unless `(:use math)` brings them back bare |
 | `std/ansi.blsp` | `'ansi` | ANSI/VT100 escape-sequence **stripping** for pipe output — `strip-ansi` removes CSI colour/cursor sequences (reading a subprocess that emits colour). For *emitting* escapes in a display frontend, see `std/editor/ansi.blsp` instead |

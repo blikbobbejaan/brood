@@ -41,13 +41,13 @@
     (drop [1 2] 9)      ;=> nil"
   (if (or (<= n 0) (empty? coll)) coll (drop (rest coll) (- n 1))))
 
-;; (take-while pred coll) / (drop-while pred coll) split on the first failure.
-(defn take-while (coll pred)
+;; (seq/take-while pred coll) / (seq/drop-while pred coll) split on the first failure.
+(defn seq/take-while (coll pred)
   "The leading items of `coll` for which `(pred x)` holds, as a list — like `take`, which
 also returns a list whatever it was given.
 
-    (take-while [1 2 3 1] (fn (x) (< x 3)))   ;=> (1 2)
-    (take-while [5 1] (fn (x) (< x 3)))       ;=> nil
+    (seq/take-while [1 2 3 1] (fn (x) (< x 3)))   ;=> (1 2)
+    (seq/take-while [5 1] (fn (x) (< x 3)))       ;=> nil
 
 Works on any collection `take` does — vectors and strings included."
   (%take-while-acc pred coll nil))
@@ -155,7 +155,7 @@ Internal — the published name is `seq/zip`."
     (reverse acc)
     (%zip-acc (rest a) (rest b) (cons [(first a) (first b)] acc))))
 
-;; (partition n coll) -> consecutive n-sized chunks; a trailing partial chunk is
+;; (seq/partition n coll) -> consecutive n-sized chunks; a trailing partial chunk is
 ;; dropped (Clojure `partition` semantics). `%has-at-least?` avoids re-counting.
 (defn- %has-at-least? (n coll)
   "True when `coll` has at least `n` items, walking only that far — the O(n) test that lets
@@ -171,7 +171,7 @@ Always true for `n` <= 0.
     (reverse acc)))
 
 ;; (sort coll) ascending via `<` (numbers) or structural order (anything else);
-;; (sort coll less?) with a strict less-than predicate. (sort-by coll key-fn)
+;; (sort coll less?) with a strict less-than predicate. (seq/sort-by coll key-fn)
 ;; sorts by `(< (key-fn x) (key-fn y))`. A stable, O(n log n) merge sort: the
 ;; merge prefers the left run on ties (stable) and is tail-recursive; recursion
 ;; depth is O(log n), so it's stack-safe.
@@ -562,11 +562,11 @@ prelude declares one, so `:derives` always names an ability from your own code."
     `(do ~ctor ~ctor-sig ~@accs ~@acc-sigs ~@derive-calls (%record-register ~id '~rec) nil)))
 
 (defn- %repeat-acc (n x acc) (if (<= n 0) acc (%repeat-acc (dec n) x (cons x acc))))
-(defn repeat (n x)
+(defn seq/repeat (n x)
   "A list of `x` repeated `n` times (empty if `n` <= 0).
 
-    (repeat 3 :a)   ;=> (:a :a :a)
-    (repeat 0 :a)   ;=> nil"
+    (seq/repeat 3 :a)   ;=> (:a :a :a)
+    (seq/repeat 0 :a)   ;=> nil"
   ;; The same ceiling a range is realised under (`MAX_REALISED_RANGE`, 2^26): past it
   ;; the list is a single call eating the machine, and the allocation failure it ends
   ;; in is an abort, not an error anything can catch.
@@ -619,14 +619,14 @@ The workhorse for handing a configured function to a higher-order op.
   "A predicate that returns the logical negation of `pred`: `((complement odd?) 2)`
 is `true`. The named form of `(fn (& args) (not (apply pred args)))`.
 
-    ((complement math/even?) 3)   ;=> true"
+    ((combinator/complement math/even?) 3)   ;=> true"
   (fn (& args) (not (apply pred args))))
 
 (defn combinator/constantly (x)
   "A function of any arguments that always returns `x` — the placeholder callback
 for a higher-order op that wants a fixed answer.
 
-    ((constantly 7) 1 2)   ;=> 7"
+    ((combinator/constantly 7) 1 2)   ;=> 7"
   (fn (& _ignored) x))
 
 ;; The rest of the combinator family (ADR-379): `juxt`, `fnil`, `memoize`.
@@ -635,18 +635,18 @@ for a higher-order op that wants a fixed answer.
 vector, in order: `((juxt f g) x)` is `[(f x) (g x)]`. The named form of \"the same
 arguments, several views\" — a sort key of two fields, a split of a value into parts.
 
-    ((juxt first count) [7 8 9])                 ;=> [7 3]
-    (sort-by [\"bb\" \"a\" \"ab\"] (juxt count identity))   ;=> (\"a\" \"ab\" \"bb\")"
-  (fn (& args) (mapv fns (fn (f) (apply f args)))))
+    ((combinator/juxt first count) [7 8 9])                 ;=> [7 3]
+    (seq/sort-by [\"bb\" \"a\" \"ab\"] (combinator/juxt count identity))   ;=> (\"a\" \"ab\" \"bb\")"
+  (fn (& args) (seq/mapv fns (fn (f) (apply f args)))))
 
 (defn combinator/fnil (f default)
   "`f` with a `nil` FIRST argument replaced by `default` — the other arguments pass
 through. Reads a map's missing entry as a starting value without spelling the `or` at every
 call: `(update m :n (fnil inc 0))`.
 
-    ((fnil inc 0) nil)              ;=> 1
-    ((fnil inc 0) 5)                ;=> 6
-    ((fnil conj []) nil :a)         ;=> [:a]"
+    ((combinator/fnil inc 0) nil)              ;=> 1
+    ((combinator/fnil inc 0) 5)                ;=> 6
+    ((combinator/fnil conj []) nil :a)         ;=> [:a]"
   (fn (x & more) (apply f (if (nil? x) default x) more)))
 
 (defn combinator/memoize (f)
@@ -663,7 +663,7 @@ inside a loop in a long-lived process still keeps a table per call until then. A
 memoized function is an anonymous closure: a `(sig …)` beside the `def` is what gives its
 callers a type.
 
-    (let (m (memoize (fn (n) (* n n)))) [(m 4) (m 4)])   ;=> [16 16]"
+    (let (m (combinator/memoize (fn (n) (* n n)))) [(m 4) (m 4)])   ;=> [16 16]"
   ;; The kernel prims, not `table/new` & co.: the prelude cannot require `std/table`, and
   ;; these are what those wrappers forward to.
   (let (cache (%table))
@@ -948,17 +948,17 @@ A trailing `:into coll` collects with `conj` onto `coll` instead of building a l
 ;; (`but-last` moved to core.blsp — `receive` expands during the prelude's own boot,
 ;; which is earlier than this file. See the note at its definition.) Everything else in the sequence library moved to `seq/`.
 
-(defn drop-while (coll pred)
+(defn seq/drop-while (coll pred)
   "`coll` with its leading items for which `(pred x)` holds removed. Returns `coll` itself
 when nothing is dropped, exactly as `(drop [1 2 3] 0)` does.
 
-    (drop-while [1 2 3 1] (fn (x) (< x 3)))   ;=> (3 1)
-    (drop-while [5 1] (fn (x) (< x 3)))       ;=> [5 1]   ; nothing dropped, so `coll` itself
+    (seq/drop-while [1 2 3 1] (fn (x) (< x 3)))   ;=> (3 1)
+    (seq/drop-while [5 1] (fn (x) (< x 3)))       ;=> [5 1]   ; nothing dropped, so `coll` itself
 
 Works on any collection `drop` does — vectors and strings included."
   (if (empty? coll)
     coll
-    (if (pred (first coll)) (drop-while (rest coll) pred) coll)))
+    (if (pred (first coll)) (seq/drop-while (rest coll) pred) coll)))
 
 (%defseq mapcat
   (f)
@@ -967,34 +967,34 @@ Works on any collection `drop` does — vectors and strings included."
     (mapcat [1 2] (fn (n) (list n n)))   ;=> (1 1 2 2)"
   (%append-onto acc (f item)))
 
-(defn mapv (coll f)
+(defn seq/mapv (coll f)
   "A VECTOR of `(f x)` for each `x` in `coll` — `map` when the caller needs
 indexed access or a vector literal shape (`(into [] (map coll f))`, named).
 
-    (mapv [1 2 3] inc)   ;=> [2 3 4]
+    (seq/mapv [1 2 3] inc)   ;=> [2 3 4]
     (map [1 2 3] inc)    ;=> (2 3 4)   ; the list-returning sibling"
   (into [] (map coll f)))
 
-(defn partition (coll:seqable n:number -> any)
+(defn seq/partition (coll:seqable n:number -> any)
   "Split `coll` into consecutive `n`-sized chunks; a trailing partial chunk is dropped.
 `n` must be positive — a size of zero or less is an error, never an endless run of
 empty chunks.
 
-    (partition [1 2 3 4] 2)    ;=> ((1 2) (3 4))
-    (partition [1 2 3] 2)      ;=> ((1 2))          ; the odd 3 is dropped
-    (partition [1 2] 5)        ;=> nil"
+    (seq/partition [1 2 3 4] 2)    ;=> ((1 2) (3 4))
+    (seq/partition [1 2 3] 2)      ;=> ((1 2))          ; the odd 3 is dropped
+    (seq/partition [1 2] 5)        ;=> nil"
   ;; A size <= 0 never shrinks `coll` (`(drop coll 0)` is `coll`, and a zero-sized chunk
   ;; always "fits"), so the accumulator would grow until memory ran out.
   (if (> n 0)
     (%partition-acc n coll nil)
     (error "partition: chunk size must be positive, got " n)))
 
-(defn sort-by (coll key-fn)
+(defn seq/sort-by (coll key-fn)
   "Sort `coll` (stable, ascending) by comparing `(key-fn x)` of each item with the
 structural order (`compare`) — or a key's own `compare-to` if the key is a record. Numeric,
 string, keyword, vector, and record keys all work.
 
-    (sort-by [\"aaa\" \"b\"] count)   ;=> (\"b\" \"aaa\")"
+    (seq/sort-by [\"aaa\" \"b\"] count)   ;=> (\"b\" \"aaa\")"
   ;; Each key is computed ONCE, paired with its item, and the pairs sorted — rather than
   ;; `key-fn` running on both sides of every comparison, ~2·n·log n calls, which is what
   ;; a completion menu sorting by a computed score paid.

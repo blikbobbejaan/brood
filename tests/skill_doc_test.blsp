@@ -35,7 +35,8 @@
     ;; the replacements named in the retired-names trap
     (list 'first 'rest 'append 'count 'any? 'mapcat)
     ;; collection protocol claimed to work with no import
-    (list 'contains? 'conj 'disj 'get 'empty? 'into 'vec 'seq 'sort 'sort-by 'index-of 'includes?)
+    (list 'contains?
+      'conj 'disj 'get 'empty? 'into 'vec 'seq 'sort 'seq/sort-by 'index-of 'includes?)
     ;; introspection the skill tells you to use instead of guessing
     (list 'bound? 'reflect/private?)))
 

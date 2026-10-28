@@ -76,7 +76,7 @@ never throws: a broken config file must not stop the program it configures.
     (try
       (let (form (reflect/read-first text))
         (if (and (pair? form) (= (first form) head))
-          (fold (partition (rest form) 2)
+          (fold (seq/partition (rest form) 2)
             {}
             (fn (acc pair) (if (= (count pair) 2) (assoc acc (first pair) (second pair)) acc)))
           {}))

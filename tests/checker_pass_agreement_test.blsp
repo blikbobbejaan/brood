@@ -29,7 +29,7 @@
       (if (< i 0) d (string/substring d (+ i 11) (string/length d))))))
 
 (defn- messages (diags)
-  (sort (mapv (or diags []) message-of)))
+  (sort (seq/mapv (or diags []) message-of)))
 
 (defn- both-passes (src)
   "[expanded surface] — the two entry points' message sets for the same source text."

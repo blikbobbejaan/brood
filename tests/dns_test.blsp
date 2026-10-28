@@ -106,4 +106,5 @@
     ;; whatever this machine's resolver returns for localhost: once a v4 address is
     ;; seen, no v6 one may follow
     (let (addrs (into [] (dns/lookup-all "localhost")))
-      (is (every? (drop-while addrs (fn (a) (includes? a ":"))) (fn (a) (not (includes? a ":"))))))))
+      (is (every? (seq/drop-while addrs (fn (a) (includes? a ":")))
+            (fn (a) (not (includes? a ":"))))))))

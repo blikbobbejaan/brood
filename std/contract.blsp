@@ -291,7 +291,7 @@ type; `i` is the position of the first rest argument."
 (defn- %contract-shim (name orig spec)
   (let (declared (count (first spec))
         params (arglist orig)
-        fixed (count (take-while params (fn (s) (not (or (= s '&) (= s '&optional))))))
+        fixed (count (seq/take-while params (fn (s) (not (or (= s '&) (= s '&optional))))))
         variadic (or (second spec)
                    (third spec)
                    (includes? params '&)

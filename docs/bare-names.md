@@ -178,7 +178,7 @@ Predicates — `x?` type and shape tests. Bare because they read as English at a
 - `type-matches?`
 - `vector?`
 
-## core (172)
+## core (148)
 
 Core vocabulary — the language's own words: special-form companions, sequence and map operations, the process primitives, and the test/dev macros. **This is the group with a real budget.** Before adding here, ask whether the name belongs to a module instead: `string/`, `seq/`, `proc/`, `test/` all exist precisely so a name does not have to be bare.
 - `*e`
@@ -196,7 +196,6 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `assoc`
 - `assoc-in`
 - `binding`
-- `but-last`
 - `bytes`
 - `case`
 - `check-allow`
@@ -236,7 +235,6 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `dotimes`
 - `doto`
 - `drop`
-- `drop-while`
 - `each`
 - `error`
 - `error-message`
@@ -272,7 +270,6 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `macroexpand-1`
 - `map`
 - `mapcat`
-- `mapv`
 - `match`
 - `match*`
 - `merge`
@@ -286,7 +283,6 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `ok->`
 - `or`
 - `partial`
-- `partition`
 - `pr-str`
 - `pr-str-bounded`
 - `provide`
@@ -296,7 +292,6 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `record-id`
 - `reduce`
 - `ref`
-- `repeat`
 - `require-one`
 - `rest`
 - `reverse`
@@ -308,7 +303,6 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `sig!`
 - `sleep`
 - `sort`
-- `sort-by`
 - `spawn`
 - `spawn-link`
 - `spawn-monitor`
@@ -316,7 +310,6 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `str`
 - `symbol`
 - `take`
-- `take-while`
 - `tap`
 - `then`
 - `third`

@@ -44,7 +44,7 @@ both as element text and inside a double-quoted attribute.
 (defn- md-url-scrub (url)
   (let (kept (seq/reject (string/->codepoints url) (fn (cp) (or (= cp 9) (= cp 10) (= cp 13))))
         edge? (fn (cp) (<= cp 32)))
-    (string/codepoints-> (reverse (drop-while (reverse (drop-while kept edge?)) edge?)))))
+    (string/codepoints-> (reverse (seq/drop-while (reverse (seq/drop-while kept edge?)) edge?)))))
 
 ;; The scheme of a scrubbed URL — the text before its first `:`, when that comes before any
 ;; `/`, `?` or `#` — lower-cased; nil for a relative URL or a fragment.
@@ -186,7 +186,7 @@ both as element text and inside a double-quoted attribute.
 ;; block's common indentation, so an example indented for the docstring it sits in renders
 ;; flush-left.
 (defn- md-close-indented (state)
-  (let (lines (reverse (drop-while (get state :buf) (fn (l) (= (string/trim l) ""))))
+  (let (lines (reverse (seq/drop-while (get state :buf) (fn (l) (= (string/trim l) ""))))
         indent (fold lines
                  (string/length (or (first lines) ""))
                  (fn (least l)

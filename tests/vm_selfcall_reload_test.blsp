@@ -92,4 +92,4 @@
     (assert= [:new 4 1] (scr-alias-old 5 0))
     (assert= [:new 99999 1] (scr-alias-old 100000 0))
     ;; Called often enough to tier again, it still hands on.
-    (assert= [:new 9 1] (last (mapv (range 3000) (fn (_) (scr-alias-old 10 0)))))))
+    (assert= [:new 9 1] (last (seq/mapv (range 3000) (fn (_) (scr-alias-old 10 0)))))))

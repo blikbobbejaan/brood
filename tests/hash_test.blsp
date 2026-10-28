@@ -168,7 +168,7 @@
 ;; 0x0b key, so this is exactly what the raw variants are for.
 
 ; 0x0b × 20
-(def- hash-test-rfc4231-key (into [] (repeat 20 11)))
+(def- hash-test-rfc4231-key (into [] (seq/repeat 20 11)))
 (def- hash-test-rfc4231-msg (string/->bytes "Hi There"))
 
 (describe "hmac-sha256-raw"

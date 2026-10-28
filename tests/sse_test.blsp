@@ -42,7 +42,7 @@
       (assert= rest "")))
   (test "many events in ONE chunk all come out, in order"
     ;; The shape the `sse frames-1c` sweep row measures: one socket read holding k events.
-    (let (blob (apply str (repeat 500 "data: tick\n\n"))
+    (let (blob (apply str (seq/repeat 500 "data: tick\n\n"))
           [blocks rest] (sse/frames blob))
       (assert= (count blocks) 500)
       (assert= (first blocks) "data: tick")

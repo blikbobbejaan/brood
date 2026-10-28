@@ -458,7 +458,7 @@ fn a_receive_inside_a_region_parks_and_an_interrupt_lands_after_it_resumes() {
                 :else (do (sleep 10) (interrupt-until pid (dec tries)))))
         (send woken :go)
         [ran
-         (= answers (vec (repeat 256 [:ok :went])))
+         (= answers (vec (seq/repeat 256 [:ok :went])))
          (receive ([:late r] r) (after 10000 :late-lost))
          (interrupt-until woken 500)
          (receive ([:woken r] r) (after 10000 :woken-lost))]

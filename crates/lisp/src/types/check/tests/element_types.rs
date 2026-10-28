@@ -150,7 +150,7 @@ fn element_type_flows_through_more_combinators() {
     for src in [
         r#"(+ 1 (second ["a" "b"]))"#,
         r#"(+ 1 (first (rest ["a" "b"])))"#,
-        r#"(+ 1 (first (but-last ["a" "b"])))"#,
+        r#"(+ 1 (first (seq/but-last ["a" "b"])))"#,
         r#"(+ 1 (first (seq/distinct ["a" "b"])))"#,
         r#"(+ 1 (first (seq/dedupe ["a" "b"])))"#,
         r#"(+ 1 (first (seq/reject ["a" "b"] (fn (x) false))))"#,

@@ -2008,7 +2008,7 @@ changed the buffer, survivors get a push (they see the cursor vanish)."
       ;; local copy already contained them when it computed these positions
       ;; (local-apply-first), so shifting over them again would land a pipelined
       ;; second keystroke one column too far. The push carries the splice AS APPLIED.
-      ([:splice lo hi repl origin base] (let (since (reverse (take-while rec
+      ([:splice lo hi repl origin base] (let (since (reverse (seq/take-while rec
                                                                (fn (e) (> (first e) base))))
                                               foreign (seq/filter since
                                                         (fn (e)

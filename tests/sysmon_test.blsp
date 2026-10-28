@@ -91,7 +91,7 @@ worker's mailbox so it can't satisfy a later test's receive."
     (let (me (self)
           quiet (spawn (do (proc/system-monitor (self) {}) (send me :armed) (receive (:go nil)))))
       (assert= :armed (receive (:armed :armed) (after *test-wait-ms* :timeout)))
-      (assert= [quiet] (mapv (proc/system-monitor :all) (fn (c) (get c :pid))))
+      (assert= [quiet] (seq/mapv (proc/system-monitor :all) (fn (c) (get c :pid))))
       (send quiet :go)
       (assert= [] (sysmon-wait-empty))))
 
@@ -181,7 +181,7 @@ worker's mailbox so it can't satisfy a later test's receive."
       (receive ([:armed ^watcher] :ok) (after *test-wait-ms* :timeout))
       ;; the read form is the CALLER's subscription — the watcher's shows under :all
       (assert= nil (proc/system-monitor))
-      (assert= [watcher] (mapv (proc/system-monitor :all) (fn (c) (get c :pid))))
+      (assert= [watcher] (seq/mapv (proc/system-monitor :all) (fn (c) (get c :pid))))
       (exit watcher :kill)
       (assert= [] (sysmon-wait-empty))))
 
@@ -202,7 +202,7 @@ worker's mailbox so it can't satisfy a later test's receive."
       ;; clearing OURS leaves the other's in place; clearing BY PID removes it
       (proc/system-monitor nil)
       (assert= nil (proc/system-monitor))
-      (assert= [other] (mapv (proc/system-monitor :all) (fn (c) (get c :pid))))
+      (assert= [other] (seq/mapv (proc/system-monitor :all) (fn (c) (get c :pid))))
       (assert= other (get (proc/system-monitor nil other) :pid))
       (assert= [] (proc/system-monitor :all))
       (exit other :kill))

@@ -9,7 +9,7 @@
     (assert= [3 1] ((combinator/juxt + -) 2 1))
     (assert= [] ((combinator/juxt) 1 2)))
   (test "juxt is the two-field sort key"
-    (assert= (list "a" "ab" "bb") (sort-by ["bb" "a" "ab"] (combinator/juxt count identity))))
+    (assert= (list "a" "ab" "bb") (seq/sort-by ["bb" "a" "ab"] (combinator/juxt count identity))))
   (test "fnil patches a nil FIRST argument only"
     (assert= 1 ((combinator/fnil inc 0) nil))
     (assert= 6 ((combinator/fnil inc 0) 5))

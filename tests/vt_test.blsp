@@ -138,7 +138,7 @@
     (assert= (vt/colour 196 vt/xterm-palette) [255 0 0])
     (assert= (vt/colour 232 vt/xterm-palette) [8 8 8]))
   (test "bright colours are palette 8–15, resolved through the caller's palette"
-    (let (s (vt/screen (fed 4 1 "\e[91mx") {:colors (into [] (repeat 16 [1 1 1]))}))
+    (let (s (vt/screen (fed 4 1 "\e[91mx") {:colors (into [] (seq/repeat 16 [1 1 1]))}))
       (assert= (:spans s) [[0 1 {:fg [1 1 1]}]])))
   (test "inverse swaps fg and bg, falling back to the palette's defaults"
     (assert= (vt/face {:inverse true :fg 1} {:fg [9 9 9] :bg [0 0 0]}) {:fg [0 0 0] :bg [205 0 0]}))

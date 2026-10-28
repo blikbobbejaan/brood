@@ -83,7 +83,7 @@ fn a_parked_process_costs_no_more_than_the_floor() {
         ;; O(n²) — 20k children asked for a 7 GiB block and a 7 GB GitHub runner was
         ;; shut down rather than failed, three pushes running (2026-09-21). A `mapv`
         ;; frame holds one index and nothing that grows.
-        (defn spawn-all (n) (mapv (range n) (fn (_) (spawn (parked)))))
+        (defn spawn-all (n) (seq/mapv (range n) (fn (_) (spawn (parked)))))
         (def warm (spawn-all 5000))
         (sleep 200)
         (def b0 (%mem-bytes))

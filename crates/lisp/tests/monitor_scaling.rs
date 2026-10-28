@@ -27,7 +27,7 @@ fn killing_a_monitored_process_costs_no_more_than_an_unmonitored_one() {
         ;; O(n²) — 20k children asked for a 7 GiB block and a 7 GB GitHub runner was
         ;; shut down rather than failed, three pushes running (2026-09-21). A `mapv`
         ;; frame holds one index and nothing that grows.
-        (defn spawn-all () (mapv (range n) (fn (_) (spawn (parked)))))
+        (defn spawn-all () (seq/mapv (range n) (fn (_) (spawn (parked)))))
         (defn live () (let (s (%sched-stats)) (- (get s :spawned) (get s :exited))))
         (defn wait-dead (base) (if (> (live) base) (do (sleep 1) (wait-dead base)) nil))
         (defn kill-all (kids) (fold kids nil (fn (_ p) (exit p :kill))))

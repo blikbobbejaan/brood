@@ -239,26 +239,26 @@
 ;; Was O(n^2): the scan re-sliced the REST of the template per marker AND re-`str`'d the
 ;; whole output so far. Both are gone; keep the row so it cannot come back.
 
-(defn tmpl-of (k) (str utf8-lead (apply str (repeat k "xxxxxxxxxx {{a}} "))))
+(defn tmpl-of (k) (str utf8-lead (apply str (seq/repeat k "xxxxxxxxxx {{a}} "))))
 (defn tmpl-render (k) (template/render (tmpl-of k) {"a" "VALUE"}))
 
 ;; ---- format: N small top-level forms through the formatter ------------------
 
 (defn src-of (k)
-  (str utf8-src-lead (apply str (repeat k "(defn f (a b) (if (> a b) (+ a 1) (- b 1)))\n\n"))))
+  (str utf8-src-lead (apply str (seq/repeat k "(defn f (a b) (if (> a b) (+ a 1) (- b 1)))\n\n"))))
 (defn fmt-source (k) (format/source (src-of k)))
 
 ;; ---- ansi: strip escapes from colourised subprocess output ------------------
 
 (defn colored-of (k)
-  (str utf8-lead (apply str (repeat k "\e[32mok\e[0m  some test name here\r\n"))))
+  (str utf8-lead (apply str (seq/repeat k "\e[32mok\e[0m  some test name here\r\n"))))
 (defn ansi-strip (k) (ansi/strip (colored-of k)))
 
 ;; ---- stream-lines: k lines arriving in ONE chunk ----------------------------
 ;; The drip case (many small chunks) was always linear; this is the shape that was not.
 
 (defn stream-lines-1chunk (k)
-  (let (blob (str utf8-lead (apply str (repeat k "some log line of moderate length here\n"))))
+  (let (blob (str utf8-lead (apply str (seq/repeat k "some log line of moderate length here\n"))))
     (count (stream/->list (stream/lines (stream/list-> (list blob)))))))
 
 ;; ---- SSE frame extraction from one accumulated chunk ------------------------
@@ -268,13 +268,13 @@
 ;; of short events is the normal case, which is why this is measured with all k events in a
 ;; single buffer rather than dripped.
 (defn sse-frames-1chunk (k)
-  (let (blob (str utf8-lead (apply str (repeat k "event: tick\ndata: some payload here\n\n"))))
+  (let (blob (str utf8-lead (apply str (seq/repeat k "event: tick\ndata: some payload here\n\n"))))
     (count (first (sse/frames blob)))))
 
 ;; ---- string search: reverse, and a forward incremental scan -----------------
 
 (defn doc-of (k)
-  (str utf8-lead (apply str (repeat k "lorem ipsum dolor NEEDLE sit amet consectetur "))))
+  (str utf8-lead (apply str (seq/repeat k "lorem ipsum dolor NEEDLE sit amet consectetur "))))
 (defn scan-all (s needle i n)
   (let (j (index-of s needle i)) (if (< j 0) n (scan-all s needle (inc j) (inc n)))))
 ;; Linear in BOTH encoding regimes since ADR-213 (was 16.85x under UTF8=1, and effectively

@@ -59,10 +59,10 @@ host owns the pty and the scrollback."
 (def- blank-cell [" " nil])
 
 (defn- row-of (cols:int cell:cell -> row)
-  (into [] (repeat cols cell)))
+  (into [] (seq/repeat cols cell)))
 
 (defn- blank-grid (cols:int rows:int -> (vector row))
-  (into [] (repeat rows (row-of cols blank-cell))))
+  (into [] (seq/repeat rows (row-of cols blank-cell))))
 
 (def default-modes
   ;; the DEC private + ANSI modes a program can switch, at their reset values
@@ -170,7 +170,7 @@ bottom; with `history?` the leaving rows are kept when they are history."
   (let (n (min n (inc (- bottom top)))
         grid (:grid vt)
         leaving (seq/subvec grid top (+ top n))
-        fresh (repeat n (row-of (:cols vt) (erase-cell vt)))
+        fresh (seq/repeat n (row-of (:cols vt) (erase-cell vt)))
         region (into (seq/subvec grid (+ top n) (inc bottom)) fresh)
         keep? (and history? (= top 0) (not (mode vt :alt-screen))))
     (assoc vt
@@ -181,7 +181,7 @@ bottom; with `history?` the leaving rows are kept when they are history."
   "Rows `[top, bottom]` scrolled down `n`: blanks enter at the top, the bottom `n` leave."
   (let (n (min n (inc (- bottom top)))
         grid (:grid vt)
-        fresh (repeat n (row-of (:cols vt) (erase-cell vt)))
+        fresh (seq/repeat n (row-of (:cols vt) (erase-cell vt)))
         region (into (into [] fresh) (seq/subvec grid top (inc (- bottom n)))))
     (assoc vt :grid (splice grid top (inc bottom) region))))
 
@@ -283,7 +283,7 @@ per grapheme, which is what a frame used to cost."
 
 (defn- fill (row:row from:int to:int cell:cell -> row)
   "`row` with cells `[from, to)` set to `cell`."
-  (splice row from to (repeat (- to from) cell)))
+  (splice row from to (seq/repeat (- to from) cell)))
 
 (defn- erase-line (vt:terminal what:int -> terminal)
   "EL: 0 to the end of the line, 1 to its start, 2 the whole line."
@@ -301,7 +301,7 @@ per grapheme, which is what a frame used to cost."
 (defn- erase-rows (vt:terminal from:int to:int -> terminal)
   "Rows `[from, to)` blanked."
   (let (blank (row-of (:cols vt) (erase-cell vt)))
-    (assoc vt :grid (splice (:grid vt) from to (repeat (- to from) blank)))))
+    (assoc vt :grid (splice (:grid vt) from to (seq/repeat (- to from) blank)))))
 
 (defn- erase-display (vt:terminal what:int -> terminal)
   "ED: 0 from the cursor down, 1 from the top to the cursor, 2 (and 3) everything."
@@ -320,14 +320,14 @@ per grapheme, which is what a frame used to cost."
   (let (col (:col vt)
         n (min n (- (:cols vt) col)))
     (set-cursor-row vt
-      (into (splice (cursor-row vt) col (+ col n) []) (repeat n (erase-cell vt))))))
+      (into (splice (cursor-row vt) col (+ col n) []) (seq/repeat n (erase-cell vt))))))
 
 (defn- insert-chars (vt:terminal n:int -> terminal)
   "ICH: `n` blanks at the cursor, the rest pushed right off the end."
   (let (col (:col vt)
         n (min n (- (:cols vt) col)))
     (set-cursor-row vt
-      (seq/subvec (splice (cursor-row vt) col col (repeat n (erase-cell vt))) 0 (:cols vt)))))
+      (seq/subvec (splice (cursor-row vt) col col (seq/repeat n (erase-cell vt))) 0 (:cols vt)))))
 
 ;; ---- SGR: the attribute state ------------------------------------------------------------
 
@@ -704,7 +704,7 @@ A chunk ending mid-sequence carries its tail into the next.
     (cond
       (= n cols) row
       (> n cols) (seq/subvec row 0 cols)
-      else (into row (repeat (- cols n) blank-cell)))))
+      else (into row (seq/repeat (- cols n) blank-cell)))))
 
 (defn- fit-grid (grid: (vector row) cols:int rows:int -> (vector row))
   "`grid` made `rows` tall: rows leave at the TOP when it shrinks (the cursor is usually
@@ -714,7 +714,7 @@ near the bottom), blanks enter at the bottom when it grows."
     (cond
       (= n rows) fitted
       (> n rows) (seq/subvec fitted (- n rows))
-      else (into fitted (repeat (- rows n) (row-of cols blank-cell))))))
+      else (into fitted (seq/repeat (- rows n) (row-of cols blank-cell))))))
 
 (defn resize (vt:terminal cols:int rows:int -> terminal)
   "`vt` at `cols` × `rows`: rows that leave at the top of the main screen go to

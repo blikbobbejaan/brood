@@ -21,9 +21,9 @@
 (defmodule seq
   "Sequence helpers — the derived enumeration API over the bare collection protocol.
 
-The core ops (`map` `reduce` `fold` `into` `count` `take` `drop`
-`take-while` `drop-while` `partition` `sort` …) stay bare in the
-prelude and need no import. `filter` is NOT bare: it is [[filter]] here, beside its
+The core ops (`map` `reduce` `fold` `into` `count` `take` `drop` `sort` …) stay bare in the
+prelude and need no import; `take-while`, `drop-while`, `partition`, `repeat`, `sort-by`,
+`mapv` and `but-last` are here (ADR-506). `filter` is NOT bare: it is [[filter]] here, beside its
 complement [[reject]] (ADR-330), so the pair shares one home. `distinct`, `zip`, `find`
 and `flatten` are not bare either —
 they are `seq/distinct` and friends, defined here. This module adds the higher-level helpers: grouping
@@ -516,7 +516,7 @@ or an `n` of zero or less.
 (check-allow :non-tail-recursion
   (defn- %walk-children (form inner)
     (cond
-      (vector? form) (mapv form inner)
+      (vector? form) (seq/mapv form inner)
       (map? form) (into {} (map (seq form) inner))
       (set? form) (into #{} (map (seq form) inner))
       (list? form) (map form inner)

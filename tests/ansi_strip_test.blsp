@@ -62,8 +62,8 @@
   ;; off-by-one would silently eat or duplicate characters far into the input.
   (test "many lines strip to exactly the plain text"
     (let (line (str "\e" "[32mok" "\e" "[0m  a test name\r\n")
-          want (apply str (repeat 2000 "ok  a test name\n"))
-          got (strip (apply str (repeat 2000 line))))
+          want (apply str (seq/repeat 2000 "ok  a test name\n"))
+          got (strip (apply str (seq/repeat 2000 line))))
       (assert= (string/length want) (string/length got))
       (assert= want got))))
 
