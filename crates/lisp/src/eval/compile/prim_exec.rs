@@ -259,6 +259,47 @@ pub(crate) fn prim2_dispatch_rooted(
     result.map_err(|e| tag_pos(e, pos))
 }
 
+/// [`prim2_dispatch_rooted`] for an operand that is a map — a record is one — where the
+/// builtin may hand its call back: a record's `num/add` under `+`, its `compare-to` under
+/// `<` (ADR-505). Dispatched as a call, so a closure comes back un-run as `Step::Tail` and
+/// the caller pushes its frame where the result goes; a `receive` inside then parks.
+#[inline(never)]
+pub(crate) fn prim2_dispatch_step(
+    heap: &mut Heap,
+    head: Symbol,
+    save: usize,
+    pos: Option<Pos>,
+    genv: EnvRoot,
+) -> Result<Step, LispError> {
+    crate::perf_bump!(prim2_fallback);
+    let cur_env = heap.read_root_env(genv);
+    let callee = match heap.env_get(cur_env, head) {
+        Some(c) => c,
+        // Autoload (ADR-335): operands are rooted at `save..`; `cur_env` is re-read.
+        None => match crate::eval::derive::global_miss(heap, cur_env, head) {
+            Ok(c) => c,
+            Err(e) => {
+                heap.truncate_roots(save);
+                return Err(tag_pos(e, pos));
+            }
+        },
+    };
+    let cur_env = heap.read_root_env(genv);
+    let sa = heap.root_at(save);
+    let sb = heap.root_at(save + 1);
+    let argv: SmallVec<[Value; 4]> = SmallVec::from_slice(&[sa, sb]);
+    let step = dispatch(heap, callee, argv, true, cur_env);
+    heap.truncate_roots(save);
+    step.map_err(|e| tag_pos(e, pos))
+}
+
+/// Whether a binary primitive's fallback may run Brood under the builtin — an operand is a
+/// map, which every record is — and so goes through [`prim2_dispatch_step`] (ADR-505).
+#[inline]
+pub(crate) fn prim2_may_redirect(a: Value, b: Value) -> bool {
+    matches!(a.unpack(), ValueRef::Map(_)) || matches!(b.unpack(), ValueRef::Map(_))
+}
+
 /// [`prim2_dispatch_rooted`]'s 3-ary sibling: operands already rooted at
 /// `[save..save+3)`; look up `head`, dispatch, truncate, return.
 #[inline(never)]

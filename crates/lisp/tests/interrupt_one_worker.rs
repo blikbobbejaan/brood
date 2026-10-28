@@ -9,9 +9,11 @@
 //!
 //! A fold over a vector or a range calls a closure reducer from the prelude's walk, not from
 //! the native span (ADR-502), so a window in a `map` / `fold` / `reduce` callback parks too.
-//! What still runs nested — Brood a builtin calls back into, such as a record's `num/add`
-//! under `+` — blocks its worker, which leaves the executors so the queue moves on (ADR-100
-//! §7.4), and an interrupt reaches it once it runs again, as it reaches a parked one.
+//! A builtin that would call Brood from Rust — a record's `num/add` under `+`, its `->seq`
+//! under `first` — hands the call back to the engine (ADR-505), so a window there parks as
+//! well. What still runs nested (`isolate`'s thunk, a JIT fallback's callback) blocks its
+//! worker, which leaves the executors so the queue moves on (ADR-100 §7.4), and an interrupt
+//! reaches it once it runs again, as it reaches a parked one.
 //!
 //! Its own binary: the pool size is process-wide and fixed at the first spawn. The tests
 //! share the dirty-receive counter, so they run one at a time.
@@ -149,25 +151,52 @@ fn a_window_in_a_fold_callback_parks() {
 }
 
 #[test]
-fn a_window_under_a_kernel_dispatch_blocks_but_starves_nobody_and_is_still_interrupted() {
-    // What still runs Brood under a native frame (ADR-502): a method the kernel dispatches
-    // from inside a builtin — here `+` on two records calls `num/add` — runs nested, and a
-    // receive in it blocks the one worker. It leaves the executors, so the next process
-    // runs all the same, and the interrupts land as they do on a parked one.
+fn a_window_under_a_kernel_dispatch_parks() {
+    // A builtin that would call Brood from Rust — a record's method under an operator, its
+    // `->seq` under `first` — hands the call back to the engine instead (ADR-505), which
+    // makes it as an ordinary call. So a window the method opens, and the receive inside,
+    // park the process: until then these blocked the worker (ADR-502's "what still blocks").
+    // A method that must answer an int (`compare-to`, `->count`) sends the window's answer
+    // to its caller instead. Each one is bound to a name, then called through `open`.
     let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    let dirty = process::dirty_receive_block_count();
-    assert_eq!(
-        waits_in_a_window(
-            "(do (defrecord knock (ceiling thunk))
-                 (defmethod num/add [knock knock] (a b) (proc/interruptible (get a :ceiling) (get a :thunk)))
-                 (fn (ceiling thunk) (+ (knock ceiling thunk) (knock ceiling thunk))))"
-        ),
-        ANSWERED
-    );
-    assert!(
-        process::dirty_receive_block_count() > dirty,
-        "a receive under a builtin's frame no longer blocks: this test no longer covers that path"
-    );
+    for open in [
+        // a record's `num/add` under `+`, the case ADR-502 pinned as blocking
+        "(do (defrecord knock (ceiling thunk))
+             (defmethod num/add [knock knock] (a b) (proc/interruptible (get a :ceiling) (get a :thunk)))
+             (fn (ceiling thunk) (+ (knock ceiling thunk) (knock ceiling thunk))))",
+        // through a function of two arguments: the operator's operands are its locals
+        "(do (defrecord knock (ceiling thunk))
+             (defmethod num/sub [knock knock] (a b) (proc/interruptible (get a :ceiling) (get a :thunk)))
+             (defn minus (a b) (- a b))
+             (fn (ceiling thunk) (minus (knock ceiling thunk) (knock ceiling thunk))))",
+        // `compare-to` under `<`
+        "(do (defrecord knock (ceiling thunk))
+             (defmethod compare-to [knock knock] (a b)
+               (do (send (self) [:window (proc/interruptible (get a :ceiling) (get a :thunk))]) 0))
+             (fn (ceiling thunk)
+               (do (< (knock ceiling thunk) (knock ceiling thunk)) (receive ([:window r] r)))))",
+        // a record's `->seq` under `first`
+        "(do (defrecord knock (ceiling thunk))
+             (impl Seqable knock (->seq [k] (list (proc/interruptible (get k :ceiling) (get k :thunk)))))
+             (fn (ceiling thunk) (first (knock ceiling thunk))))",
+        // its `->count` under `count`, and under `empty?`
+        "(do (defrecord knock (ceiling thunk))
+             (impl Counted knock
+               (->count [k] (do (send (self) [:window (proc/interruptible (get k :ceiling) (get k :thunk))]) 1)))
+             (fn (ceiling thunk) (do (count (knock ceiling thunk)) (receive ([:window r] r)))))",
+        "(do (defrecord knock (ceiling thunk))
+             (impl Counted knock
+               (->count [k] (do (send (self) [:window (proc/interruptible (get k :ceiling) (get k :thunk))]) 1)))
+             (fn (ceiling thunk) (do (empty? (knock ceiling thunk)) (receive ([:window r] r)))))",
+        // `apply` taken as a value: the engine unfolds it wherever it is called from Brood
+        "(fn (ceiling thunk) (let (call apply) (call proc/interruptible [ceiling thunk])))",
+        // a wrapper over the builtin bound under another name (ADR-494 §3)
+        "(do (def interruptibly proc/interruptible)
+             (defn through-alias (ceiling thunk) (interruptibly ceiling thunk))
+             through-alias)",
+    ] {
+        parks_in_a_window(open);
+    }
 }
 
 #[test]

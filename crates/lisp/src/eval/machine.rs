@@ -1799,9 +1799,22 @@ impl<'e> Machine<'e> {
                             return step;
                         }
                     }
-                    return call_native(heap, id, &cur_argv, env)
-                        .map(Step::Value)
-                        .map_err(|e| e.or_form_pos(heap, call_form));
+                    // A builtin that hands its call back (ADR-505) — a record's `num/add`
+                    // under `+` — has it made here, in its place: a closure's body becomes
+                    // this frame's, so a `receive` inside parks a capturing machine.
+                    match call_native_redirectable(heap, id, &cur_argv, env) {
+                        Err(error) if error.is_redirect() => {
+                            let (callee, argv) = heap.take_redirect();
+                            cur_callee = callee;
+                            cur_argv = SmallVec::from_slice(&argv);
+                            continue 'dispatch;
+                        }
+                        result => {
+                            return result
+                                .map(Step::Value)
+                                .map_err(|e| e.or_form_pos(heap, call_form));
+                        }
+                    }
                 }
                 ValueRef::Fn(id) => {
                     // Thin-wrapper elision: redirect a pure pass-through arm (`(%add a b)`
@@ -1875,7 +1888,7 @@ impl<'e> Machine<'e> {
                         let self_cycle =
                             matches!(inner.unpack(), ValueRef::Fn(iid) if iid.0 == id.0);
                         if !self_cycle
-                            && passthrough_redirect_ok(inner)
+                            && passthrough_redirect_ok(heap, inner)
                                 .map_err(|e| e.or_form_pos(heap, call_form))?
                         {
                             let mut next_argv: SmallVec<[Value; 8]> =

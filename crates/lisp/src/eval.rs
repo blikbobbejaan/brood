@@ -692,6 +692,23 @@ fn call_native(heap: &mut Heap, id: NativeId, argv: &[Value], env: EnvId) -> Lis
     }
 }
 
+/// [`call_native`] from an engine that can make the call a builtin hands back (ADR-505): the
+/// builtin may answer [`Control::Redirect`](crate::error::Control::Redirect) instead of
+/// calling Brood from Rust, and the caller takes the call with [`Heap::take_redirect`] and
+/// makes it in the builtin's place. Every other caller of `call_native` offers nothing, so
+/// the builtin keeps its nested call there.
+pub(crate) fn call_native_redirectable(
+    heap: &mut Heap,
+    id: NativeId,
+    argv: &[Value],
+    env: EnvId,
+) -> LispResult {
+    let previous = heap.offer_redirect(argv);
+    let result = call_native(heap, id, argv, env);
+    heap.withdraw_redirect(previous);
+    result
+}
+
 /// Construct an "unbound symbol: …" error, attaching the scheduler-race hint
 /// when we're currently executing in a *green* (spawned) process. The hint
 /// covers the under-load failure mode `docs/claude-demo-findings.md` flagged
@@ -958,9 +975,16 @@ fn unbound_namespace_hint(heap: &Heap, sym: Symbol) -> Option<String> {
 /// passthrough operator semantics. The inner-head *resolution* (a full `eval` in
 /// the tree-walker vs. a direct `env_get` in the VM) and the per-engine argv
 /// remap stay at the call sites — they're genuinely engine-specific.
-pub(crate) fn passthrough_redirect_ok(inner: Value) -> Result<bool, LispError> {
-    if !matches!(inner.unpack(), ValueRef::Fn(_) | ValueRef::Native(_)) {
-        return Ok(false);
+///
+/// `proc/interruptible` is never redirected to, under any name: a wrapper over it is
+/// entered, so its call is the VM's interrupt region rather than the builtin running its
+/// thunk nested (ADR-494 §3). `compute_passthrough` refuses the name at closure creation;
+/// this catches an alias bound to the builtin under another name (ADR-505).
+pub(crate) fn passthrough_redirect_ok(heap: &Heap, inner: Value) -> Result<bool, LispError> {
+    match inner.unpack() {
+        ValueRef::Fn(_) => {}
+        ValueRef::Native(id) if !heap.native(id).is_interruptible => {}
+        _ => return Ok(false),
     }
     // The same tick also honours an untrappable hard `:kill` (checked only on the
     // reduction rollover — `tick_nested`). This site is load-bearing for

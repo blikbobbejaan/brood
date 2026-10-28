@@ -19,6 +19,13 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   connection is dropped (60 s by default, 0 disarms), which ends a send waiting on a peer that
   stopped reading.
 
+**Fixed.**
+- A `receive` in a record's method parks the process under `+ - * /`, `< <= > >=`, `first`,
+  `rest`, `count` and `empty?`, where it blocked its worker: the builtin hands the call back
+  to the engine instead of making it from Rust (ADR-505). So does one in a wrapper over
+  `proc/interruptible` bound under another name. A `compare-to` that answers no int under
+  `<` now raises an `error` naming the operator, where it was a runtime error.
+
 ## v0.45.0 — C-g, one shape for errors, and macros at every level
 
 A busy program can now be stopped without killing it: C-g interrupts a running update or
