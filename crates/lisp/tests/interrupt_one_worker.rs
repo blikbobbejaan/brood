@@ -7,8 +7,10 @@
 //! now a frame. With one worker, a process that blocked its thread would leave the next
 //! process to an overflow thread; the dirty-receive count is what tells a park from a block.
 //!
-//! What still runs nested — a window opened inside a builtin's callback, under a native
-//! frame — blocks its worker, which leaves the executors so the queue moves on (ADR-100
+//! A fold over a vector or a range calls a closure reducer from the prelude's walk, not from
+//! the native span (ADR-502), so a window in a `map` / `fold` / `reduce` callback parks too.
+//! What still runs nested — Brood a builtin calls back into, such as a record's `num/add`
+//! under `+` — blocks its worker, which leaves the executors so the queue moves on (ADR-100
 //! §7.4), and an interrupt reaches it once it runs again, as it reaches a parked one.
 //!
 //! Its own binary: the pool size is process-wide and fixed at the first spawn. The tests
@@ -110,16 +112,55 @@ fn a_receive_in_an_applied_window_parks() {
     );
 }
 
+/// `waits_in_a_window(open)` answers [`ANSWERED`] and no receive in it blocked the worker.
+fn parks_in_a_window(open: &str) {
+    let dirty = process::dirty_receive_block_count();
+    assert_eq!(waits_in_a_window(open), ANSWERED, "{open}");
+    assert_eq!(
+        process::dirty_receive_block_count(),
+        dirty,
+        "a receive blocked its worker: {open}"
+    );
+}
+
 #[test]
-fn a_window_under_a_builtin_blocks_but_starves_nobody_and_is_still_interrupted() {
-    // Opened in a `reduce` callback, the window's thunk runs under the builtin's native frame,
-    // which nothing captures: the receive blocks the one worker. It leaves the executors, so
-    // the next process runs all the same, and the interrupts land as they do on a parked one.
+fn a_window_in_a_fold_callback_parks() {
+    // ADR-502: a fold over a vector or a range calls a closure reducer from the prelude's
+    // walk, on the process's own engine, not from the native span's loop — so the window it
+    // opens, and the receive inside, park the process. The reducers are bound to a name so
+    // the compiler's counted-loop rewrite of a literal (ADR-360) does not take the call.
+    let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    for open in [
+        // the reduce ADR-494 had to leave blocking
+        "(fn (ceiling thunk) (let (step (fn (_ c) (proc/interruptible c thunk))) (reduce [ceiling] nil step)))",
+        // a range
+        "(fn (ceiling thunk) (let (step (fn (_ i) (proc/interruptible ceiling thunk))) (fold (range 1) nil step)))",
+        // what folds underneath: map, and through it mapv, sort-by, each
+        "(fn (ceiling thunk) (first (map [ceiling] (fn (c) (proc/interruptible c thunk)))))",
+        "(fn (ceiling thunk) (first (mapv [ceiling] (fn (c) (proc/interruptible c thunk)))))",
+        // a ui-run turn: the window outside, the receive in a callback of the update
+        "(fn (ceiling thunk) (proc/interruptible ceiling (fn () (first (map [1] (fn (_) (thunk)))))))",
+        // a window inside a callback inside a window: the inner is the callback's
+        "(fn (ceiling thunk)
+           (second (proc/interruptible nil (fn () (first (map [ceiling] (fn (c) (proc/interruptible c thunk))))))))",
+    ] {
+        parks_in_a_window(open);
+    }
+}
+
+#[test]
+fn a_window_under_a_kernel_dispatch_blocks_but_starves_nobody_and_is_still_interrupted() {
+    // What still runs Brood under a native frame (ADR-502): a method the kernel dispatches
+    // from inside a builtin — here `+` on two records calls `num/add` — runs nested, and a
+    // receive in it blocks the one worker. It leaves the executors, so the next process
+    // runs all the same, and the interrupts land as they do on a parked one.
     let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let dirty = process::dirty_receive_block_count();
     assert_eq!(
         waits_in_a_window(
-            "(fn (ceiling thunk) (reduce [ceiling] nil (fn (_ c) (proc/interruptible c thunk))))"
+            "(do (defrecord knock (ceiling thunk))
+                 (defmethod num/add [knock knock] (a b) (proc/interruptible (get a :ceiling) (get a :thunk)))
+                 (fn (ceiling thunk) (+ (knock ceiling thunk) (knock ceiling thunk))))"
         ),
         ANSWERED
     );
@@ -154,5 +195,24 @@ fn a_receive_lane_parks_inside_a_window_and_out() {
         process::dirty_receive_block_count(),
         dirty,
         "a receive-lane blocked its worker"
+    );
+}
+
+#[test]
+fn a_native_walk_that_hosts_a_park_blocks_once_and_then_parks() {
+    // The walk is a self-tail loop, so the JIT compiles it once it is hot. Native code cannot
+    // be captured, so the first receive under a native walk blocks the worker; the
+    // suspend-host latch then takes the walk off native code for the runtime (ADR-410's net,
+    // the fate `%fold-loop` over a list always had), and the program's two later waits park.
+    // On the tree-walker or the bytecode VM alone none blocks.
+    let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let hot = "(fn (ceiling thunk)
+                 (let (step (fn (acc i) (if (= i 4999) (proc/interruptible ceiling thunk) acc)))
+                   (fold (into [] (range 5000)) nil step)))";
+    let dirty = process::dirty_receive_block_count();
+    assert_eq!(waits_in_a_window(hot), ANSWERED);
+    assert!(
+        process::dirty_receive_block_count() <= dirty + 1,
+        "a native walk blocked more than once: the latch did not take it off native code"
     );
 }

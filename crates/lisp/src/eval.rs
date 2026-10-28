@@ -1085,7 +1085,16 @@ pub(crate) fn interrupted_error(by_ceiling: bool) -> LispError {
 /// items it makes the safepoint's probe — one thread-local borrow and a relaxed load — and
 /// raises a due interrupt. Between probes it is a counter decrement, so the loop it sits in
 /// does not get measurably slower.
-pub(crate) struct InterruptPoll(u32);
+pub(crate) struct InterruptPoll {
+    left: u32,
+    /// Unit tests only: how many probes this poll has made, and whether each raises as if an
+    /// interrupt were due ([`InterruptPoll::raising`]) — so a test can hand a loop's second
+    /// phase a pending interrupt without a process, a window or a timing guess.
+    #[cfg(test)]
+    probes: u32,
+    #[cfg(test)]
+    raise: bool,
+}
 
 impl InterruptPoll {
     /// Items between probes: a few microseconds of the cheapest per-item work, so an
@@ -1093,7 +1102,28 @@ impl InterruptPoll {
     pub(crate) const EVERY: u32 = 4096;
 
     pub(crate) const fn new() -> Self {
-        InterruptPoll(Self::EVERY)
+        InterruptPoll {
+            left: Self::EVERY,
+            #[cfg(test)]
+            probes: 0,
+            #[cfg(test)]
+            raise: false,
+        }
+    }
+
+    /// A poll whose every probe finds a request due, as if `proc/interrupt` had landed just
+    /// before the loop it is handed to started.
+    #[cfg(test)]
+    pub(crate) const fn raising() -> Self {
+        let mut poll = Self::new();
+        poll.raise = true;
+        poll
+    }
+
+    /// How many probes this poll has made.
+    #[cfg(test)]
+    pub(crate) fn probes(&self) -> u32 {
+        self.probes
     }
 
     /// One item.
@@ -1105,13 +1135,20 @@ impl InterruptPoll {
     /// `n` items at once — a byte count, a chunk.
     #[inline]
     pub(crate) fn advance(&mut self, n: u32) -> Result<(), LispError> {
-        match self.0.checked_sub(n) {
+        match self.left.checked_sub(n) {
             Some(left) if left > 0 => {
-                self.0 = left;
+                self.left = left;
                 Ok(())
             }
             _ => {
-                self.0 = Self::EVERY;
+                self.left = Self::EVERY;
+                #[cfg(test)]
+                {
+                    self.probes += 1;
+                    if self.raise {
+                        return Err(interrupted_error(false));
+                    }
+                }
                 check_interrupt()
             }
         }

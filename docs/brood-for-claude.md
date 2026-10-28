@@ -917,8 +917,9 @@ code paints to a terminal or a GUI window unchanged.
   is interrupted again at its next safepoint, so a catch-all cannot swallow quit. A process
   parked in `receive` is never interrupted; a `receive` inside the window PARKS (the VM runs
   the call, `apply`'d too, as a region on its own frame stack, the tier-0 machine as a frame —
-  ADR-494), so `update` may wait on a reply. Only a window opened inside a builtin's callback
-  blocks its worker thread instead, and the scheduler moves the queue off it. Windows
+  ADR-494), so `update` may wait on a reply, in a `map`/`fold` callback too (ADR-502). Only
+  Brood a builtin calls back into (a record's `num/add` under `+`) blocks its worker thread
+  instead, and the scheduler moves the queue off it. Windows
   NEST (ADR-493): a request (C-g, `proc/interrupt`) is answered by the innermost open window
   and a ceiling by its own window, and an interrupt one window answered does not stop the
   window around it — a command's own `proc/interruptible` inside a `ui-run` turn gets the

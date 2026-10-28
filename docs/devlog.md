@@ -4611,3 +4611,22 @@ Guard: `a_match_too_big_to_splice_still_has_its_clauses_domain` (a 4-clause matc
 the thunk rule disabled). The typed-binder hygiene test expanded a module's macro through a
 QUOTED bare head, which has no namespace at run time (the same rule as doctest examples); it
 uses a syntax-quote, which qualifies it.
+2026-10-28 (ADR-502, a fold calls a closure reducer from Brood): the inventory behind ADR-494's
+"resumable builtins" came to two natives. Every higher-order prelude function walks through
+`fold`, `fold` over a list is Brood, and only the vector and range spans called a reducer from
+Rust. They now fold only an inlined `+`/`*` and answer `:%fold-walk` for anything else, which
+`fold` walks in Brood (`%vector-fold-walk`, `%range-fold-walk`), so a `receive` in a `map`,
+`fold` or `reduce` callback — or a window opened there — parks on both engines. A walk the JIT
+compiled blocks once, then the suspend-host latch takes it off native code, as `%fold-loop`
+always did (checked: a list fold blocks exactly once too). What still blocks is kernel
+dispatch under a builtin (a record's `num/add` under `+`). Also ADR-493's missing test: the
+regex group pass over a 100 000-character match, handed an interrupt between the two phases
+(`groups_polled` split out, a `cfg(test)` `InterruptPoll::raising`), stops at its first probe;
+red with the pass given a fresh poll. Run here, default tier and `BROOD_TIER=0`: `--test
+interrupt`, `--test interrupt_one_worker`; `ui_test`, `sequence_test`, `receive_loop_jit_test`
+at both; at the default tier `--lib regex_native`, `--lib process::interrupt`,
+`preemption_shapes` (serially, as nextest runs it), `preemption`, `regex`, `doc_examples`,
+`audit`, the `receive_*` files; clippy `--all-targets --all-features`; cargo fmt; `nest format`.
+Nothing was measured: a closure-reducer fold over a vector or range now runs a Brood loop
+where it ran a Rust loop with a fast frame per call — `nqueens`, `pipeline`, `json`, `reduce`
+want `make ab` on the benchmark machine.
