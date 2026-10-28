@@ -53,7 +53,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::range(4, 5),
         Sig::with_optional(vec![string, kw, list_ty.union(vec_ty).union(map_ty), any], vec![any], vec_ty),
         &["source", "lang", "table", "keywords?", "&optional", "injections"],
-        "The fontify query: [start end reported] for the OUTERMOST nodes the face `table` colours, in source order, not descending into one that matched. `table` is a list/vector of kind keywords (each reported as itself), or a map from SELECTOR to what a span reports: a selector is a kind keyword, or a context map {:kind :parent :field :nth :text} — the node's kind, its parent (a kind, or a selector map the parent must satisfy in turn, at most 3 maps deep), the field it fills in the parent (tree-sitter's field name), its index among the parent's named children and its exact source text (a string or a set of strings) — whose given constraints must all hold. When several match, the most specific wins: the node's own constraints first (:text over :field over :parent over :nth over :kind), then each ancestor selector's, then the narrower :text set, so any context entry beats the plain kind (ADR-486, ADR-487). With keywords? true, an anonymous token beginning with a letter is also reported, as kind :__keyword__ — the cross-language keyword rule, which no grammar names. Which kinds get which face stays with the caller; what this avoids is projecting every node into a map to read its kind and discard the rest, which is what a windowed fontify did on every keystroke. INJECTIONS (ADR-489): an optional {:rules [rule …] :faces {lang table}} naming the nodes whose text is another language's document — a rule is {:content selector :lang :bash} or {:content selector :lang-from kind :aliases {word lang}} (the language read from the first word of the content's sibling, or child, of that kind) — whose spans, from that language's :faces table, replace the host's over the content; a parent's matching children are ONE document (included ranges), and a document whose language has no table or no grammar keeps the host's colours.",
+        "The fontify query: [start end reported] for the OUTERMOST nodes the face `table` colours, in source order, not descending into one that matched. `table` is a list/vector of kind keywords (each reported as itself), or a map from SELECTOR to what a span reports: a selector is a kind keyword, or a context map {:kind :parent :field :nth :text} — the node's kind, its parent (a kind, or a selector map the parent must satisfy in turn, at most 3 maps deep), the field it fills in the parent (tree-sitter's field name), its index among the parent's named children and its exact source text (a string or a set of strings) — whose given constraints must all hold. When several match, the most specific wins: the node's own constraints first (:text over :field over :parent over :nth over :kind), then each ancestor selector's, then the narrower :text set, so any context entry beats the plain kind (ADR-486, ADR-487). With keywords? true, an anonymous token beginning with a letter is also reported, as kind :__keyword__ — the cross-language keyword rule, which no grammar names. Which kinds get which face stays with the caller; what this avoids is projecting every node into a map to read its kind and discard the rest, which is what a windowed fontify did on every keystroke. INJECTIONS (ADR-489): an optional {:rules [rule …] :faces {lang table}} naming the nodes whose text is another language's document — a rule is {:content selector :lang :bash} or {:content selector :lang-from kind :aliases {word lang}} (the language read from the first word of the content's sibling, or child, of that kind) — whose spans, from that language's :faces table, replace the host's over the content; a parent's matching children are ONE document (included ranges, joined by the line breaks between them), a rule's optional :exclude selector cuts the content's descendants it selects out of the document so they keep the host's colours (ADR-496), and a document whose language has no table or no grammar keeps the host's colours.",
         tree_sitter_spans);
     // Tree HANDLES (ADR-443): a whole document's parse tree, held across edits and
     // reparsed incrementally, queried over a range — what an editor's view keeps per
@@ -667,28 +667,27 @@ fn ts_injections(
                         ));
                     };
                     let mut content: Option<Selector> = None;
+                    let mut exclude: Option<Selector> = None;
                     let mut fixed: Option<String> = None;
                     let mut from: Option<String> = None;
                     let mut aliases = std::collections::HashMap::new();
+                    let rule_selector = |heap: &Heap, what: &str, v: Value| match v {
+                        Value::Keyword(kind) => Ok(Selector::of_kind(value::symbol_name(kind))),
+                        Value::Map(selector_id) => ts_selector(heap, who, selector_id, 1),
+                        other => Err(LispError::wrong_type(
+                            heap,
+                            who,
+                            &format!("a node kind keyword or a selector map for {what}"),
+                            other,
+                        )),
+                    };
                     for (rule_key, rule_value) in heap.map_entries(rule_id) {
                         match keyword_name(heap, "an injection rule key", rule_key)?.as_str() {
                             "content" => {
-                                content = Some(match rule_value {
-                                    Value::Keyword(kind) => {
-                                        Selector::of_kind(value::symbol_name(kind))
-                                    }
-                                    Value::Map(selector_id) => {
-                                        ts_selector(heap, who, selector_id, 1)?
-                                    }
-                                    other => {
-                                        return Err(LispError::wrong_type(
-                                            heap,
-                                            who,
-                                            "a node kind keyword or a selector map for :content",
-                                            other,
-                                        ));
-                                    }
-                                })
+                                content = Some(rule_selector(heap, ":content", rule_value)?)
+                            }
+                            "exclude" => {
+                                exclude = Some(rule_selector(heap, ":exclude", rule_value)?)
                             }
                             "lang" => fixed = Some(keyword_name(heap, ":lang", rule_value)?),
                             "lang-from" => {
@@ -723,7 +722,7 @@ fn ts_injections(
                             }
                             other => {
                                 return Err(LispError::runtime(format!(
-                                    "{who}: an injection rule takes :content :lang :lang-from :aliases, not :{other}"
+                                    "{who}: an injection rule takes :content :exclude :lang :lang-from :aliases, not :{other}"
                                 )));
                             }
                         }
@@ -743,7 +742,11 @@ fn ts_injections(
                             )));
                         }
                     };
-                    injections.rules.push(InjectionRule { content, language });
+                    injections.rules.push(InjectionRule {
+                        content,
+                        exclude,
+                        language,
+                    });
                 }
             }
             "faces" => {

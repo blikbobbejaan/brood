@@ -1023,3 +1023,92 @@
         (assert (tree-alive? tree))
         (assert= (give-tree tree parent) true)
         (free-tree tree)))))
+
+;; ADR-496: a rule's `:exclude` cuts the content's descendants it selects out of the embedded
+;; document, and they keep the host's colours; and pieces with a line break between them parse
+;; as separate lines.
+(when tsm-grammars?
+  (describe "injections: :exclude and line breaks"
+    (test "an excluded descendant keeps the host's colour and is not part of the document"
+      (let (src "y = \"def m#{x}\nend\n\"\n"
+            host {:string :str}
+            ruby {:string :rb-str :identifier :rb-id})
+        ;; without :exclude Ruby takes the whole text, the interpolation inside its string
+        (assert= (%tree-sitter-spans src
+                   :elixir host
+                   false
+                   {:rules [{:content :string :lang :ruby}] :faces {:ruby ruby}})
+          [[4 20 :rb-str]])
+        ;; with it the `#{x}` is the host's string, and Ruby parses the text on either side
+        (assert= (%tree-sitter-spans src
+                   :elixir host
+                   false
+                   {:rules [{:content :string :exclude :interpolation :lang :ruby}]
+                    :faces {:ruby ruby}})
+          [[4 10 :rb-str] [10 14 :str] [14 20 :rb-str]])
+        (assert= (count (editor/treesit/injection-problems {:rules [{:content :string
+                                                                     :exclude {:kind :interpolation
+                                                                               :feild 1}
+                                                                     :lang :ruby}]
+                                                            :faces {:ruby ruby}}))
+          1)))))
+
+;; The Dockerfile and bash grammars are not built in: the test reads them from
+;; $BROOD_TEST_GRAMMARS, else bedit's grammar directory, and is skipped without them. Loaded
+;; HERE, at file load, never inside a test: a load moves the grammar epoch, and a held tree in
+;; a test running beside it would then reparse from scratch.
+(def tsm-grammar-dir
+  (or (os/env "BROOD_TEST_GRAMMARS") (str (os/env "HOME") "/.config/bedit/grammars")))
+(defn- tsm-load-grammar? (file-name lang)
+  (let (path (str tsm-grammar-dir "/libtree-sitter-" file-name ".so"))
+    (and (file/exists? path)
+      (check-allow :discarded-catch
+        (try (do (%tree-sitter-load-grammar path lang) true) (catch _ false))))))
+(def tsm-docker?
+  (and (tsm-load-grammar? "dockerfile" :dockerfile) (tsm-load-grammar? "bash" :bash)))
+
+(when tsm-docker?
+  (describe "injections: a Dockerfile heredoc as bash"
+    ;;  0         10      17      24   29                          53  56
+    ;;  RUN <<EOT\necho a\necho b\nEOT\nRUN cat <<EOF > /x && ls\nhi\nEOF\n
+    (def tsm-docker-src "RUN <<EOT\necho a\necho b\nEOT\nRUN cat <<EOF > /x && ls\nhi\nEOF\n")
+    (def tsm-docker-host {:heredoc_marker :marker :heredoc_end :end})
+    (def tsm-docker-bash {:command_name :cmd :word :w :ERROR :err :file_redirect :redirect})
+
+    (test "the <<EOT marker and the closing EOT stay the host's; bash parses the rest"
+      (assert= (%tree-sitter-spans tsm-docker-src
+                 :dockerfile tsm-docker-host
+                 false
+                 {:rules [{:content {:kind :shell_fragment :parent :shell_command}
+                           :exclude :heredoc_marker
+                           :lang :bash}
+                           {:content :heredoc_block :exclude :heredoc_end :lang :bash}]
+                  :faces {:bash tsm-docker-bash}})
+        [[4 9 :marker]
+          [10 14 :cmd]
+          [15 16 :w]
+          [17 21 :cmd]
+          [22 23 :w]
+          [24 27 :end]
+          [32 35 :cmd]
+          [36 41 :marker]
+          [42 46 :redirect]
+          [50 52 :cmd]
+          [53 55 :cmd]
+          [56 59 :end]]))
+
+    (test "heredoc lines handed over one by one still parse as lines"
+      ;; before ADR-496 the parser saw `echo a echo b`: the second `echo` was an argument
+      (assert= (%tree-sitter-spans tsm-docker-src
+                 :dockerfile tsm-docker-host
+                 false
+                 {:rules [{:content :heredoc_line :lang :bash}] :faces {:bash tsm-docker-bash}})
+        [[4 9 :marker]
+          [10 14 :cmd]
+          [15 16 :w]
+          [17 21 :cmd]
+          [22 23 :w]
+          [24 27 :end]
+          [36 41 :marker]
+          [53 55 :cmd]
+          [56 59 :end]]))))

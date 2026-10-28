@@ -130,20 +130,21 @@ misspelt selector fails at load rather than at the first frame drawn.
 ;; nodes hold another language's text. Checked here for the same reason as a face table —
 ;; the kernel refuses a malformed one, but at the first frame.
 
-(def- injection-rule-keys #{:content :lang :lang-from :aliases})
+(def- injection-rule-keys #{:content :exclude :lang :lang-from :aliases})
 
 (defn- injection-rule-problems (rule faces)
   ;; what is wrong with one injection rule, as a list of messages — the last, a language the
   ;; rule can only ever name that has no table, being a rule that colours nothing
   (let (shown (pr-str rule)
         content (get rule :content)
+        exclude (get rule :exclude)
         fixed (get rule :lang)
         from (get rule :lang-from)
         aliases (get rule :aliases))
     (cond
       (not (map? rule)) (list (str shown " is not an injection rule map"))
       (not (every? (keys rule) (fn (k) (contains? injection-rule-keys k))))
-        (list (str shown " names a key other than :content :lang :lang-from :aliases"))
+        (list (str shown " names a key other than :content :exclude :lang :lang-from :aliases"))
       (any? (keys rule) (fn (k) (nil? (get rule k))))
         (list (str shown ": a key with no value — leave the key out instead"))
       (nil? content) (list (str shown " names no :content selector"))
@@ -151,6 +152,10 @@ misspelt selector fails at load rather than at the first frame drawn.
         (list (str shown ": :content is a node kind or a selector map"))
       (and (map? content) (selector-shape-problem content 1))
         (list (selector-shape-problem content 1))
+      (not (or (nil? exclude) (keyword? exclude) (map? exclude)))
+        (list (str shown ": :exclude is a node kind or a selector map"))
+      (and (map? exclude) (selector-shape-problem exclude 1))
+        (list (selector-shape-problem exclude 1))
       (= (nil? fixed) (nil? from))
         (list (str shown " names its language with :lang or with :lang-from — exactly one"))
       (not (keyword? (or fixed from))) (list (str shown ": :lang and :lang-from are keywords"))
@@ -180,7 +185,10 @@ text, and how to colour it (ADR-489):
      :faces {:heex heex-table :bash bash-table}}                ; each language's face table
 
 `:content` is a face-table selector. A parent's matching children are ONE document (a
-heredoc's pieces between `${…}` interpolations parse together). `:lang-from` names a node
+heredoc's pieces between `${…}` interpolations parse together, a line break between two
+pieces kept). `:exclude`, also a selector, cuts the content's descendants it selects out of
+the document, and they keep the host's colours — a Dockerfile `RUN <<EOT` line is shell
+except its `<<EOT` marker (ADR-496). `:lang-from` names a node
 kind among the content's siblings, else its children — a fence's info string, a sigil's
 name — whose first word, through `:aliases` or lowercased as it is, is the language. A
 document whose language has no table in `:faces`, or no grammar, keeps the host's colours.
@@ -188,7 +196,8 @@ What a registration checks beside `face-table-problems`.
 
     (editor/treesit/injection-problems {:rules [{:content :heredoc :lang :bash}] :faces {:bash {:string :syntax/string}}})   → ()
     (count (editor/treesit/injection-problems {:rules [{:content :heredoc :lang :bash :lang-from :x}] :faces {}}))   → 1
-    (count (editor/treesit/injection-problems {:rules [{:content :x :lang :sql}] :faces {}}))   → 1"
+    (count (editor/treesit/injection-problems {:rules [{:content :x :lang :sql}] :faces {}}))   → 1
+    (editor/treesit/injection-problems {:rules [{:content :shell_fragment :exclude :heredoc_marker :lang :bash}] :faces {:bash {}}})   → ()"
   (cond
     (not (map? injections)) (list (str (pr-str injections) " is not an injection spec map"))
     (not (every? (keys injections) (fn (k) (contains? #{:rules :faces} k))))

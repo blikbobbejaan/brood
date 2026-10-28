@@ -4389,3 +4389,15 @@ given. Only the owner gives. Run here: `treesit_module` (81), `tree_sitter`, `do
 all targets, and no default features); cargo fmt. `process_wide_statics` fails on main
 already (`builtins/terminal/native.rs FORWARDER` undeclared), not from this change. Nothing
 was measured.
+
+2026-10-28 (ADR-496, injection `:exclude` and line breaks): an injection rule can now name
+an `:exclude` selector. The content's descendants it selects leave the embedded document and
+keep the host's colours, so a Dockerfile `RUN <<EOT`'s marker is no longer bash's `ERROR`.
+The last line break in a gap between two pieces is now parsed with them (not coloured), so
+heredoc lines given one by one no longer run together. Before this change the second
+`echo a` / `echo b` line's `echo` was an argument. Validated in `injection-problems`. Also
+fixed: `process_wide_statics`, red on main since ADR-491, now declares the terminal's
+`FORWARDER`. Run here: `treesit_module` (84, the Dockerfile tests with bedit's grammars),
+`tree_sitter`, `doc_examples`, `audit`; `cargo test -p brood --lib treesit` (11) and
+`process_wide_statics`; clippy (treesit-grammars, all targets); cargo fmt. Nothing was
+measured.

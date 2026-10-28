@@ -1066,6 +1066,10 @@ pub enum InjectedLanguage {
 #[cfg_attr(not(feature = "treesit"), allow(dead_code))]
 pub struct InjectionRule {
     pub content: Selector,
+    /// `:exclude` (ADR-496): the content's descendants this selects are cut out of the
+    /// embedded document and keep the host's colours — a Dockerfile heredoc's `<<EOT` marker
+    /// inside the shell it introduces, tree-sitter's `injection.include-children` false.
+    pub exclude: Option<Selector>,
     pub language: InjectedLanguage,
 }
 
@@ -1081,12 +1085,14 @@ pub struct Injections {
 }
 
 /// One embedded document as the walk finds it: the rule that matched, the parent whose
-/// matching children it is, and those children — its pieces, in source order.
+/// matching children it is, and those children — its pieces, in source order — less the byte
+/// ranges of their descendants the rule's `:exclude` selects.
 #[cfg(feature = "treesit")]
 struct InjectedDocument<'tree> {
     rule: usize,
     parent: tree_sitter::Node<'tree>,
     pieces: Vec<tree_sitter::Node<'tree>>,
+    excluded: Vec<(usize, usize)>,
 }
 
 #[cfg(feature = "treesit")]
@@ -1142,14 +1148,24 @@ fn injections_into<'tree, T: SpanText>(
             .iter()
             .position(|rule| rule.content.holds(child, &child_context, text))
         {
-            Some(rule) => match here.iter_mut().find(|document| document.rule == rule) {
-                Some(document) => document.pieces.push(child),
-                None => here.push(InjectedDocument {
-                    rule,
-                    parent: node,
-                    pieces: vec![child],
-                }),
-            },
+            Some(rule) => {
+                let mut excluded = Vec::new();
+                if let Some(selector) = &rules[rule].exclude {
+                    excluded_into(child, &child_context, text, selector, &mut excluded);
+                }
+                match here.iter_mut().find(|document| document.rule == rule) {
+                    Some(document) => {
+                        document.pieces.push(child);
+                        document.excluded.extend(excluded);
+                    }
+                    None => here.push(InjectedDocument {
+                        rule,
+                        parent: node,
+                        pieces: vec![child],
+                        excluded,
+                    }),
+                }
+            }
             None if !past && overlaps(child.start_byte(), child.end_byte(), window) => {
                 injections_into(child, &child_context, text, rules, window, out);
             }
@@ -1166,6 +1182,43 @@ fn injections_into<'tree, T: SpanText>(
             .any(|piece| overlaps(piece.start_byte(), piece.end_byte(), window))
     }));
     out.truncate(INJECTION_DOCUMENTS);
+}
+
+/// The byte ranges of `node`'s descendants that `selector` holds for — the outermost ones: a
+/// node it selects is not entered. What a rule's `:exclude` cuts out of its document.
+#[cfg(feature = "treesit")]
+fn excluded_into<T: SpanText>(
+    node: tree_sitter::Node,
+    context: &NodeContext,
+    text: &T,
+    selector: &Selector,
+    out: &mut Vec<(usize, usize)>,
+) {
+    let mut cursor = node.walk();
+    if !cursor.goto_first_child() {
+        return;
+    }
+    let mut named_index = 0;
+    loop {
+        let child = cursor.node();
+        let child_context = NodeContext {
+            parent: Some(node),
+            field: cursor.field_name(),
+            nth: child.is_named().then_some(named_index),
+            outer: Some(context),
+        };
+        if child.is_named() {
+            named_index += 1;
+        }
+        if selector.holds(child, &child_context, text) {
+            out.push((child.start_byte(), child.end_byte()));
+        } else {
+            excluded_into(child, &child_context, text, selector, out);
+        }
+        if !cursor.goto_next_sibling() {
+            break;
+        }
+    }
 }
 
 /// The word a `:lang-from` node names: its text's leading run of letters, digits and `_ - +
@@ -1260,9 +1313,61 @@ fn parse_pieces<T: SpanText>(
     tree
 }
 
-/// The injected document's spans: `pieces` of `text` parsed as one `lang` document and
-/// walked with `table`, each span clipped to the pieces (a string spanning an interpolation
-/// colours only the string's own text) and to `window`. None when there is no grammar.
+/// `pieces` (sorted, disjoint) with, between each two, the last line break of the text they
+/// skip — what the embedded parser reads. An included-ranges parse sees nothing of a gap, so
+/// two heredoc lines handed over as two pieces, or a line on each side of an excluded node,
+/// were one line to it: `echo a` then `echo b` parsed as `echo a echo b`. The break is parsed,
+/// never coloured: spans stay clipped to the pieces, so it keeps the host's colour (ADR-496).
+#[cfg(feature = "treesit")]
+fn with_line_breaks<T: SpanText>(text: &T, pieces: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut joined = Vec::with_capacity(pieces.len() * 2);
+    for (index, piece) in pieces.iter().enumerate() {
+        if index > 0 {
+            let gap_start = pieces[index - 1].1;
+            if gap_start < piece.0
+                && let Some(at) = text.text_in(gap_start, piece.0).rfind('\n')
+            {
+                joined.push((gap_start + at, gap_start + at + 1));
+            }
+        }
+        joined.push(*piece);
+    }
+    normalized_pieces(joined)
+}
+
+/// `pieces` (sorted, disjoint) with every byte of `cut` (sorted, disjoint) taken out — a
+/// document's pieces less what its rule's `:exclude` selected.
+#[cfg(feature = "treesit")]
+fn without_ranges(pieces: Vec<(usize, usize)>, cut: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    if cut.is_empty() {
+        return pieces;
+    }
+    let mut kept = Vec::with_capacity(pieces.len() + cut.len());
+    for (start, end) in pieces {
+        let mut cursor = start;
+        for (cut_start, cut_end) in cut {
+            if *cut_end <= cursor {
+                continue;
+            }
+            if *cut_start >= end {
+                break;
+            }
+            if *cut_start > cursor {
+                kept.push((cursor, *cut_start));
+            }
+            cursor = (*cut_end).min(end);
+        }
+        if cursor < end {
+            kept.push((cursor, end));
+        }
+    }
+    kept
+}
+
+/// The injected document's spans: `pieces` of `text` parsed as one `lang` document (joined by
+/// their gaps' line breaks, [`with_line_breaks`]) and walked with `table`, each span clipped to
+/// the pieces (a string spanning an interpolation colours only the string's own text) and to
+/// `window`. None when there is no grammar.
 #[cfg(feature = "treesit")]
 fn injected_spans<T: SpanText>(
     text: &T,
@@ -1272,7 +1377,7 @@ fn injected_spans<T: SpanText>(
     keywords: bool,
     window: Option<(usize, usize)>,
 ) -> Option<Vec<RawSpan>> {
-    let tree = parse_pieces(text, lang, pieces)?;
+    let tree = parse_pieces(text, lang, &with_line_breaks(text, pieces))?;
     let query = SpanQuery {
         table,
         keywords,
@@ -1375,12 +1480,15 @@ fn splice_injections<T: SpanText>(
         let Some(table) = injections.tables.get(&lang) else {
             continue;
         };
-        let pieces = normalized_pieces(
-            document
-                .pieces
-                .iter()
-                .map(|piece| (piece.start_byte(), piece.end_byte()))
-                .collect(),
+        let pieces = without_ranges(
+            normalized_pieces(
+                document
+                    .pieces
+                    .iter()
+                    .map(|piece| (piece.start_byte(), piece.end_byte()))
+                    .collect(),
+            ),
+            &normalized_pieces(document.excluded.clone()),
         );
         let Some(pieces) = bounded_pieces(pieces, query.window) else {
             continue;
@@ -2953,5 +3061,34 @@ mod declared_grammar_tests {
         assert!(heap.failure_message(reported).is_some());
         crate::core::sync::lock(&DECLARED).remove("ruby");
         assert!(is_keyword(status("ruby"), "built-in"));
+    }
+}
+
+#[cfg(all(test, feature = "treesit"))]
+mod injection_piece_tests {
+    use super::*;
+
+    /// ADR-496: an excluded range is cut out of every piece it reaches, wholly or in part.
+    #[test]
+    fn excluded_ranges_are_cut_out_of_the_pieces() {
+        let pieces = vec![(0, 10), (20, 30)];
+        assert_eq!(without_ranges(pieces.clone(), &[]), pieces);
+        assert_eq!(
+            without_ranges(pieces.clone(), &[(2, 4), (8, 22), (29, 40)]),
+            vec![(0, 2), (4, 8), (22, 29)]
+        );
+        assert_eq!(without_ranges(pieces, &[(0, 30)]), Vec::new());
+    }
+
+    /// ADR-496: the last line break of each gap joins the pieces it separates, so the
+    /// embedded parser still reads two lines as two lines (the break touches both pieces, so
+    /// the three merge); a gap without one adds nothing.
+    #[test]
+    fn a_gap_with_a_line_break_parses_with_it() {
+        let text = ropey::Rope::from_str("echo a\necho b <<X y\n");
+        assert_eq!(
+            with_line_breaks(&text, &[(0, 6), (7, 13), (17, 19)]),
+            vec![(0, 13), (17, 19)]
+        );
     }
 }
