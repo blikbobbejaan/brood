@@ -152,7 +152,7 @@ whose callee must exist, but that are not evaluated.
 
 (defn- qualify-hint (name-str bare)
   ;; An example runs at the top level, not inside the module of the name it documents —
-  ;; like Elixir's doctests, it is written with the full namespace, so it pastes into any
+  ;; so it is written with the full namespace, so it pastes into any
   ;; REPL as it stands. The slip that rule invites is the module's own bare name: when
   ;; `bare` is unbound here but bound in that module, say what to write instead.
   ;; A nil `name-str` is an example with no owning name — a markdown block — so no hint.
