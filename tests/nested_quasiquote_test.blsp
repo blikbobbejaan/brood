@@ -24,8 +24,10 @@
 (def-adder nq-add5 5)
 
 ;; A hole back to the outer level inside the inner template reads the OUTER template's
-;; binder — which the outer expansion renamed, so the hole must be renamed with it.
-(defmacro outer-binder (v) `(let (x ~v) `(list ~x)))
+;; binder — which the outer expansion renamed, so the hole must be renamed with it. A vector:
+;; a call head in a macro's inner template is written `/name` (ADR-423, at every level), so a
+;; `(list ~x)` here would come back as `(/list 7)`.
+(defmacro outer-binder (v) `(let (x ~v) `[:got ~x]))
 
 (describe "nested quasiquote: levels"
   (test "an inner hole is copied, not evaluated, by the outer template"
@@ -59,7 +61,7 @@
     (assert= 105 (let (t 100) (nq-add5 t)))
     (assert= 11 (nq-add5 (nq-add5 1))))
   (test "a hole back to the outer level reads the outer binder"
-    (assert= '(list 7) (outer-binder 7))))
+    (assert= [:got 7] (outer-binder 7))))
 
 ;; A name free in the inner template means the DEFINING module's binding, like any other
 ;; template name: the generated macro expands in the user's module, which defines its own.

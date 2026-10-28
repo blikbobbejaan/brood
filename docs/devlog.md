@@ -4657,7 +4657,7 @@ a quote inside a template now resolves its holes (`'~(helper x)` left `helper` u
 before this, nested or not). The hygiene pass leaves an inner template's binders for the
 macro that runs it, but renames a hole back to level 1, which reads the outer binders. An
 `x#` is replaced at level 1 only. A nested template takes the runtime expansion path. The
-prelude's root escapes (ADR-423) are written at every level. The checker already walked
+root escapes ADR-423 writes into a macro's templates are written at every level. The checker already walked
 templates by level. Guard: `tests/nested_quasiquote_test.blsp`; `syntax_finalization_test`'s
 ADR-152 rejection case now pins the level-2 copy instead. Not run here (no tests on the
 desktop): the suite; checked here, a script of the cases in the tests run once with
