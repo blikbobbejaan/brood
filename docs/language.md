@@ -315,7 +315,7 @@ which is why `count` is O(1) and structural key equality is O(log n).
 
 ### Records
 
-`defrecord` names a map shape and gives it a **nominal identity**. There is no new
+`defrecord` names a map shape and gives it an **identity for dispatch**. There is no new
 value kind — a record *is* a map underneath, so every map operation above still applies
 — but the constructor bakes in a reserved `:__id__` field holding a `:module/name`
 keyword, so `ability` dispatch tells a record apart from a bare map and from other
@@ -329,15 +329,20 @@ field:
 (assoc p :x 9)           ; => a fresh record {…:x 9 :y 4}, id and all
 (fields p)               ; => {:x 3 :y 4}   — the clean, id-free view
 (record? p) (record-id p); => true, :<ns>/point
-(= (point 1 2) {:x 1 :y 2})   ; => false    — a record is NOT = a bare map (nominal)
-(= (point 1 2) (point 1 2))   ; => true     — same shape + same id
+(= (point 1 2) {:x 1 :y 2})   ; => false    — the bare map has no :__id__ entry
+(= (point 1 2) (point 1 2))   ; => true     — same fields, same id
 ```
 
 The accessors are the reason to reach for it: `(point-x p)` names the field, and a
 typo `(point-witdh p)` is a call to an **undefined function** — caught by `nest check`
-and at runtime — whereas `(get p :witdh)` silently returns `nil`. Records are **nominal,
-not structural**: a record is never `=` to a bare map with the
-same fields, and `record?`/`record-id`/`fields` are the identity API. Functional update
+and at runtime — whereas `(get p :witdh)` silently returns `nil`.
+
+**Equality is structural; dispatch is nominal.** `=` has no record case: it compares two
+maps entry by entry, and the `:__id__` entry is one of them. So a record is never `=` to a
+bare map with the same fields, nor to a record of another type with the same fields — the
+ids differ — while two records of one type with equal fields are `=`. The identity is
+nominal only where ability dispatch reads it (below). `record?`/`record-id`/`fields` are
+the identity API. Functional update
 is plain `assoc`/`merge` (the id rides along).
 
 A field may carry a type — `(defrecord point ((x int) (y int)))` — and when every
@@ -433,18 +438,22 @@ mismatch.
 op's `:default` impl. An `impl` that supplies only the **required** ops (the bodyless
 specs) inherits every provided op; an id-keyed impl of a provided op **overrides** its
 default. Write the minimal contract and derive the rest (Rust/Haskell *provided methods*) —
-implement `compare-to`, get the rest free:
+implement `priority`, get the rest free:
 
 ```clojure
-(defability Ord
-  (compare-to [self other] :-> int)                           ; required
-  (lt  [self other] :-> bool (< (compare-to self other) 0))   ; provided
-  (gt  [self other] :-> bool (> (compare-to self other) 0)))  ; provided
+(defrecord task (title level))
 
-(impl Ord money/amount                       ; only the required op
-  (compare-to [a b] (- (cents a) (cents b))))
-(lt (amount 100) (amount 200))               ;=> true   — via the provided default
+(defability Priority
+  (priority      [self] :-> int)                                              ; required
+  (more-urgent?  [self other] :-> bool (> (priority self) (priority other)))   ; provided
+  (same-urgency? [self other] :-> bool (= (priority self) (priority other))))  ; provided
+
+(impl Priority task (priority [t] (task-level t)))   ; only the required op
+(more-urgent? (task "deploy" 3) (task "lunch" 1))    ;=> true   — via the provided default
 ```
+
+(Ordering itself is not an ability: `compare-to` is a `defmulti` over the operand pair —
+see [Multiple dispatch](#polymorphism-multiple-dispatch-defmulti).)
 
 To **override** a provided op for a type, add its method to that type's `impl` (the same
 form as the required ops), since each `impl` form is checked for completeness on its own.
@@ -570,9 +579,9 @@ time, not by a runtime `no-impl` later. Advisory and checker-only, like `:sealed
 means it can't gate); a required ability's *provided* op is satisfied by its default.
 
 ```clojure
-(defability Eq  (eqv [self other] :-> bool))
-(defability Ord :requires [Eq] (compare-to [self other] :-> int))
-(impl Ord money (compare-to [a b] …))   ; warns unless `money` also impls Eq
+(defability Named    (label [self] :-> string))
+(defability Priority :requires [Named] (priority [self] :-> int))
+(impl Priority task (priority [t] …))   ; warns unless `task` also impls Named
 ```
 
 **Introspection and helpers.** `(satisfies? 'Shape x)` is true when every declared

@@ -86,15 +86,17 @@ another Lisp has it.
   - The transducer examples used a bare `odd?` (it is `math/odd?`) and an undefined `sq`.
   - The `catch` note said the prelude defines `e` (it is `math/e` now).
   - A `%map-pairs` comment said "insertion order"; it is hash order.
-- ⬜ **ADR-170's freeze list contradicts later ADRs.**
-  - It lists "multiple dispatch" as refused, but ADR-179 shipped `defmulti`.
-  - It says record `=` "stays structural", but language.md §Records says a record is
-    never `=` to a bare map (nominal).
-  - language.md shows `Ord` as an ability example (§Provided ops) and, a page later, as a
-    `defmulti` multimethod.
-
-  Amend ADR-170 with dated notes (ADRs are not rewritten), and make §Provided ops use an
-  ability that really is one.
+- ✅ **ADR-170's freeze list contradicted later ADRs (2026-10-28).**
+  - It listed "multiple dispatch" as refused, but ADR-179 shipped `defmulti`. The row is
+    now struck through as superseded by ADR-179, as the ratios row is for ADR-196.
+  - On record `=`, ADR-170 was right and language.md was wrong. `=` has no record case:
+    the `:__id__` entry is compared like any other, so a record is never `=` to a bare map
+    or to another record type with the same fields. language.md §Records and
+    brood-for-claude.md now say "equality is structural; dispatch is nominal" instead of
+    calling equality nominal. Whether `merge`/`into {}`/`keys` should carry the id is B8.
+  - language.md taught provided ops and `:requires` with an `Ord` ability, while the real
+    `Ord` is a multimethod. The examples now use `Priority`/`Named` (not `Rank`: `std`
+    ships `Ranked`).
 - ⬜ **A drift gate for argument order in docs.** This drift survived ADR-308's sweep
   because prose examples are not executed; only `form → result` docstrings are
   (`tests/doc_examples_test.blsp`). Decide whether language.md's fenced examples should run

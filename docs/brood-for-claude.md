@@ -90,7 +90,7 @@ Common macros (expanded once at the compile pass — runtime-free): `defmacro`
 (point-x (point 3 4))                               ; => 3  (accessor per field; a typo is a
                                                     ;        checker-caught undefined-fn, not silent nil)
 ;; update with plain assoc/merge; `(record? r)`/`(record-id r)`/`(fields r)` are the id
-;; API; a record is NOT `=` to a bare map (nominal). Typed fields: (defrecord point ((x int) (y int)))
+;; API; a record is NOT `=` to a bare map (`=` is structural and the id is an entry). Typed fields: (defrecord point ((x int) (y int)))
 ```
 
 A `fn`/`defn` body of several forms is an **implicit `do`**: each is evaluated
