@@ -147,8 +147,8 @@ another Lisp has it.
   6. ✅ ADR-498, `docs/tooling.md` § "Checking examples", devlog.
 - ✅ **Docstring examples take the full namespace (2026-10-28).** An example is evaluated at
   the top level, not in the namespace of the name it documents, so in a project's
-  `(defmodule lies)` the example `(two) ;=> 2` fails as `unbound symbol: two`. Decided, like
-  Elixir's doctests: examples are written fully qualified (`(demo/lies/two) ;=> 2`) and paste
+  `(defmodule lies)` the example `(two) ;=> 2` fails as `unbound symbol: two`. Decided: examples are
+  written fully qualified (`(demo/lies/two) ;=> 2`) and paste
   into any REPL as they stand. Only public names are checked, so the qualified name is always
   callable. No "evaluate in module M" capability. The failure now names the spelling to write
   when the bare name is bound in the documented name's module. Markdown blocks (step 3) follow

@@ -56,7 +56,7 @@
     (assert= nil (doctest/check "p" "    ;; a comment line   ;=> 2"))))
 
 (describe "examples are written with the full namespace"
-  ;; An example runs at the top level, like an Elixir doctest — not inside the module of the
+  ;; An example runs at the top level — not inside the module of the
   ;; name it documents. The module's own bare name is the slip that invites, so the failure
   ;; names the qualified spelling.
   (test "a case calling its module's bare name fails, naming the qualified one"
