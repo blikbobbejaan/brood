@@ -210,6 +210,8 @@ pub fn register(heap: &mut Heap, root: EnvId) {
     treesit::register_grammar_declarations(&mut primitives);
     // And again: colouring ranges of a text as an embedded document (ADR-489).
     treesit::register_injections(&mut primitives);
+    // And again: handing a held tree to another process (ADR-495).
+    treesit::register_tree_ownership(&mut primitives);
 }
 
 #[cfg(test)]

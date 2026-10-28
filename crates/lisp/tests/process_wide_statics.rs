@@ -60,7 +60,8 @@ const PROCESS_WIDE: &[(&str, &str, Reason)] = &[
     ("process/links.rs", "REMOTE_LINKS", ProcessUniqueKeys),
     ("core/table.rs", "REGISTRY", ProcessUniqueKeys),
     // Tree-sitter parse-tree handles (ADR-443): a handle is a process-unique id, and a tree
-    // is sent between processes (a task parses it off the loop and hands it back).
+    // is sent between processes (a task parses it off the loop and gives it back); each is
+    // owned by a pid and freed when that process exits (ADR-495).
     ("host/treesit.rs", "TREE_HANDLES", ProcessUniqueKeys),
     // The table registry's reusable slots: a slot index plus its generation is a handle,
     // unique across the OS process like the registry it indexes (ADR-418).

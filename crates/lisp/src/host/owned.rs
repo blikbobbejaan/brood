@@ -1,9 +1,9 @@
 //! A handle table whose entries belong to a green process, indexed by owner.
 //!
-//! Sockets, child OS processes and wasm instances all die with the process that owns
-//! them, so every process exit asks each of their tables "what did this pid own?". A
-//! plain id → entry map answers that by scanning every entry in the runtime; this keeps
-//! an owner → ids index beside it, so the answer costs O(entries that pid owns).
+//! Sockets, child OS processes, wasm instances and tree-sitter trees all die with the
+//! process that owns them, so every process exit asks each of their tables "what did this
+//! pid own?". A plain id → entry map answers that by scanning every entry in the runtime;
+//! this keeps an owner → ids index beside it, so the answer costs O(entries that pid owns).
 
 use std::collections::{HashMap, HashSet};
 
@@ -60,6 +60,13 @@ impl<T> OwnedTable<T> {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn contains_key(&self, id: &u64) -> bool {
         self.entries.contains_key(id)
+    }
+
+    /// The process that owns entry `id`, or `None` for an unknown id.
+    // Used by the tree-sitter host (`treesit`), which a build without it does not carry.
+    #[cfg_attr(not(feature = "treesit"), allow(dead_code))]
+    pub(crate) fn owner_of(&self, id: &u64) -> Option<u64> {
+        self.entries.get(id).map(|slot| slot.owner)
     }
 
     /// Hand entry `id` to `owner`. A no-op for an unknown id.

@@ -4372,3 +4372,20 @@ treesit-grammars), `--lib` filters `interrupt`, `mailbox`, `quantum`, `preempt`,
 files, `mailbox_order`, `doc_examples`, `audit`; `cargo test -p cli --test serve_attach --test
 distribution` (46); clippy (gui, treesit-grammars, all targets); `nest check` over
 std/tests/examples and `--strict` over std+tests, zero warnings. Nothing was measured.
+
+2026-10-28 (ADR-495, tree handles are owned): the tree-sitter handle registry was a
+runtime-wide LRU of 32. A 33rd tree anywhere silently dropped the oldest: bedit with many
+tree-sitter buffers fell back to full reparses, and tests running in parallel evicted each
+other's trees, which is the read-the-code explanation of the one-off `treesit_module` failure
+("an edit inside an embedded document…" saw `true`, a fresh parse). Now a handle is owned by
+the process that opened or reparsed it (the `OwnedTable` behind sockets, children and wasm).
+It is freed by `free-tree` or by its owner's exit, before the `[:down]`, and never evicted.
+`%tree-sitter-tree-give` / `editor/treesit/give-tree` hand it to another local process, so
+an off-loop task gives its tree to the editor before replying (bedit's `treewarm` and the
+off-loop reparse must now do this). Deterministic tests: a held tree outlives 40 opened by
+another process, and its update is incremental. A task's tree dies with the task unless
+given. Only the owner gives. Run here: `treesit_module` (81), `tree_sitter`, `doc_examples`,
+`audit`; `cargo test -p brood --lib tree_handle_tests owned::tests`; clippy (treesit-grammars
+all targets, and no default features); cargo fmt. `process_wide_statics` fails on main
+already (`builtins/terminal/native.rs FORWARDER` undeclared), not from this change. Nothing
+was measured.

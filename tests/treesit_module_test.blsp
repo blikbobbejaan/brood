@@ -959,3 +959,67 @@
              [:block_start 17 18]
              [:body 21 26]
              [:block_end 27 28]))))))
+
+;; ADR-495: a tree handle is its owner's. Before it the handles lived in one runtime-wide LRU of
+;; 32, so a 33rd tree opened ANYWHERE — another test running beside this one — dropped the
+;; oldest, and "an edit inside an embedded document…" above saw `true` (a fresh parse) where
+;; it asked for `[[12 13]]`, once in a while. These say it deterministically.
+(when tsm-grammars?
+  (describe "tree handles are owned"
+    (test "a held tree outlives forty trees another process opens, and updates incrementally"
+      (let (tree (open-tree tsm-inject-src :elixir)
+            parent (self)
+            [child monitor] (spawn-monitor (let (others (into []
+                                                          (map (range 0 40)
+                                                            (fn (_)
+                                                              (open-tree tsm-inject-src :elixir)))))
+                                             (send parent [:opened others])
+                                             (receive (:done :ok) (after *test-wait-ms* :timeout))))
+            others (receive ([:opened others] others) (after *test-wait-ms* []))
+            edited (str (string/substring tsm-inject-src 0 12)
+                     "\""
+                     (string/substring tsm-inject-src 12 (string/length tsm-inject-src))))
+        (assert= (count others) 40)
+        (assert (tree-alive? tree))
+        (let (next (update-tree tree edited :elixir))
+          ;; reparsed from the held tree: what the edit changed, not `true`
+          (assert= (tree-changes next) [[12 13]])
+          (free-tree next))
+        ;; the child's trees go with it — and only its own
+        (send child :done)
+        (assert= (receive ([:down ^monitor _ _] :down) (after *test-wait-ms* :timeout)) :down)
+        (assert (every? others (fn (other) (not (tree-alive? other)))))
+        (assert (tree-alive? tree))
+        (free-tree tree)))
+
+    (test "a task's tree dies with it unless it gives the tree to the process it replies to"
+      (let (parent (self)
+            [_ kept-monitor] (spawn-monitor (let (tree (open-tree "x = 1\n" :elixir))
+                                              (send parent [:kept tree (give-tree tree parent)])))
+            [_ dropped-monitor] (spawn-monitor (send parent
+                                                 [:dropped (open-tree "y = 2\n" :elixir)]))
+            [kept given?] (receive
+                            ([:kept tree given?] [tree given?])
+                            (after *test-wait-ms* [nil :timeout]))
+            dropped (receive ([:dropped tree] tree) (after *test-wait-ms* nil)))
+        (receive ([:down ^kept-monitor _ _] :down) (after *test-wait-ms* :timeout))
+        (receive ([:down ^dropped-monitor _ _] :down) (after *test-wait-ms* :timeout))
+        (assert= given? true)
+        (assert (tree-alive? kept))
+        (assert= (tree-changes kept) true)
+        (assert (not (tree-alive? dropped)))
+        (assert= (tree-changes dropped) nil)
+        (assert= (free-tree kept) true)))
+
+    (test "only a tree's owner can give it away"
+      (let (tree (open-tree "x = 1\n" :elixir)
+            parent (self)
+            _ (spawn (send parent
+                       [:gave
+                         (check-allow :discarded-catch
+                           (try (give-tree tree (self)) (catch e (error-message e))))]))
+            answer (receive ([:gave answer] answer) (after *test-wait-ms* :timeout)))
+        (assert (includes? answer "does not own"))
+        (assert (tree-alive? tree))
+        (assert= (give-tree tree parent) true)
+        (free-tree tree)))))

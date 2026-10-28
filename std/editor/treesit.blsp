@@ -461,10 +461,12 @@ rest is left uncoloured.
 ;; lines on screen without parsing anything.
 ;;
 ;; A handle is an opaque ref, immutable like every value: `update-tree` returns a NEW one
-;; and leaves the old one answering as before. The registry behind them is bounded, so a
-;; handle can go away (freed, or evicted as least recently used); every query on a gone
-;; handle answers nil, and updating from one is a full parse — never an error, never a
-;; wrong tree. Free the handle you replace (`free-tree`) and the bound is never reached.
+;; and leaves the old one answering as before. A handle is OWNED (ADR-495) by the process
+;; that opened or updated it, like a socket: it goes away when that process frees it
+;; (`free-tree` — free the handle you replace) or exits, and nothing another process does
+;; can take it. A task that parses off the loop hands its tree on (`give-tree`) before it
+;; replies, or the tree dies with the task. Every query on a gone handle answers nil, and
+;; updating from one is a full parse — never an error, never a wrong tree.
 
 (defn open-tree (text lang)
   "A tree handle for the whole document `text` — a rope (read in place, never copied) or a
@@ -503,6 +505,18 @@ do not fit the two texts rather than build a wrong tree.
     (fn? editor/treesit/free-tree)   → true"
   (%tree-sitter-tree-free tree))
 
+(defn give-tree (tree pid)
+  "Hand `tree` to the local process `pid`: it becomes `pid`'s to free, and dies when `pid`
+exits instead of when the caller does. A tree belongs to the process that opened (or
+updated) it, so a task parsing off the loop gives the tree to the process it reports to
+BEFORE replying — the task exits right after, and a tree it still owned would go with it.
+True when `pid` holds it now; false when the handle was already gone or `pid` has died. Only
+the owner can give a tree away: anyone else's call is an error.
+
+    (editor/treesit/give-tree tree editor-pid)   ;=> true — then reply with the handle
+    (editor/treesit/give-tree (ref) (self))   → false"
+  (%tree-sitter-tree-give tree pid))
+
 (defn tree-changes (tree &optional (injections nil))
   "Where `tree`'s colouring may differ from the tree it was updated from: a sorted vector of
 disjoint char ranges `[start end]` — the edited text, plus every range whose syntax the edit
@@ -534,9 +548,9 @@ tree — each whole up to 32 KB and cut to the range past that (ADR-489).
     (when raw (into [] (table-spans->faces raw kind->face-name injections)))))
 
 (defn tree-alive? (tree)
-  "Whether `tree` is still held — not freed, not evicted. Marks it used, as a query does, so a
-holder that only checks keeps it from being the next one evicted. Builds nothing: the check
-to make per event, where asking `tree-changes` would build a vector only to test it for nil.
+  "Whether `tree` is still held — not freed, and its owner (`give-tree`) not exited. Builds
+nothing: the check to make per event, where asking `tree-changes` would build a vector only
+to test it for nil.
 
     (editor/treesit/tree-alive? (ref))   → false"
   (%tree-sitter-tree-alive? tree))
