@@ -603,16 +603,17 @@ fn catch_in_driver(
         let h = *heap.vm_handlers.last().expect("above the floor");
         match h.kind {
             HandlerKind::Try => break h,
-            HandlerKind::Region { owner: true, .. }
-                if e.kind == crate::error::ErrorKind::Interrupted =>
+            // A region catches an interrupt raised for its own window (ADR-493); one
+            // raised for an outer window passes through it, as every other error does.
+            HandlerKind::Region { window, .. }
+                if e.kind == crate::error::ErrorKind::Interrupted
+                    && crate::process::interrupt_raised_for(window) =>
             {
                 break h;
             }
-            HandlerKind::Region { owner, .. } => {
+            HandlerKind::Region { window, .. } => {
                 heap.vm_handlers.pop();
-                if owner {
-                    crate::process::set_interrupt_window(None);
-                }
+                crate::process::close_interrupt_window(window);
             }
         }
     };
@@ -658,8 +659,8 @@ fn catch_in_driver(
         None
     };
     let region_tail = match h.kind {
-        HandlerKind::Region { tail, .. } => {
-            crate::process::set_interrupt_window(None);
+        HandlerKind::Region { window, tail } => {
+            crate::process::close_interrupt_window(window);
             Some(tail)
         }
         HandlerKind::Try => None,
@@ -694,16 +695,19 @@ fn catch_in_driver(
 }
 
 /// Drop this process's open handlers above `floor` (ADR-400) as a driver is left by an
-/// error none of them caught, or a kill. A REGION among them that owns the interrupt window
-/// closes it (ADR-491): the window must not outlive the call that opened it.
+/// error none of them caught, or a kill. The REGIONS among them close their interrupt
+/// windows (ADR-491): a window must not outlive the call that opened it. Closing the
+/// outermost of them closes every window inside it (ADR-493).
 fn truncate_handlers(heap: &mut Heap, floor: usize) {
     use crate::core::heap::HandlerKind;
-    if heap.vm_handlers.len() > floor
-        && heap.vm_handlers[floor..]
-            .iter()
-            .any(|h| matches!(h.kind, HandlerKind::Region { owner: true, .. }))
-    {
-        crate::process::set_interrupt_window(None);
+    let outermost = heap.vm_handlers.get(floor..).and_then(|dropped| {
+        dropped.iter().find_map(|handler| match handler.kind {
+            HandlerKind::Region { window, .. } => Some(window),
+            HandlerKind::Try => None,
+        })
+    });
+    if let Some(window) = outermost {
+        crate::process::close_interrupt_window(window);
     }
     heap.vm_handlers.truncate(floor);
 }
@@ -1464,16 +1468,14 @@ pub(crate) fn vm_run_bc(
                         // frame at the index the region recorded.
                         let v = match heap.vm_handlers.last() {
                             Some(&crate::core::heap::VmHandler {
-                                kind: crate::core::heap::HandlerKind::Region { owner, tail },
+                                kind: crate::core::heap::HandlerKind::Region { window, tail },
                                 caller,
                                 ..
                             }) if caller == frames.len()
                                 && heap.vm_handlers.len() > handler_floor as usize =>
                             {
                                 heap.vm_handlers.pop();
-                                if owner {
-                                    crate::process::set_interrupt_window(None);
-                                }
+                                crate::process::close_interrupt_window(window);
                                 return_top = tail;
                                 heap.alloc_vector2(value::kw("ok"), v)
                             }
@@ -1539,10 +1541,10 @@ pub(crate) fn vm_run_bc(
                 if frames.len() + 1 > MAX_BC_FRAMES {
                     raise!('drive, crate::eval::bc_frame_depth_error(frames.len()));
                 }
-                // A window already open is the outer call's: this region owns nothing.
-                let owner = !crate::process::current_interrupt_window_open();
+                // A window of its own, inside any already open (ADR-493).
+                let window = crate::process::open_interrupt_window(ceiling);
                 heap.vm_handlers.push(crate::core::heap::VmHandler {
-                    kind: crate::core::heap::HandlerKind::Region { owner, tail },
+                    kind: crate::core::heap::HandlerKind::Region { window, tail },
                     base: cur_base,
                     sp: heap.roots_len(),
                     env_len: heap.env_roots_len(),
@@ -1552,9 +1554,6 @@ pub(crate) fn vm_run_bc(
                     dyn_len: heap.dynamics_len(),
                     caller: frames.len(),
                 });
-                if owner {
-                    crate::process::set_interrupt_window(Some(ceiling));
-                }
                 let caller_arm = std::mem::replace(&mut cur_arm, arm);
                 frames.push(current_frame!(caller_arm));
                 heap.set_ic_bases(bases);

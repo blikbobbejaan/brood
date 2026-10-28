@@ -4408,3 +4408,25 @@ sweep handles it lost track of. A turn that opened a tree and was then rolled ba
 cleaned up by the 32-entry LRU, and is now held until its owner exits unless swept. bedit's
 `syntaxtree` sweeps on its idle beat. Run here: `treesit_module` (85; the new test was red
 before), `doc_examples`, `audit`, `cargo test --lib owned::`; clippy and fmt.
+2026-10-28 (ADR-493, ADR-491's two limits): an UNBOUNDED regex pattern over a text past a
+window is now STEPPED — its lazy DFA driven a byte at a time by a loop of ours
+(`regex_native::find_stepped`, `hybrid`'s `find_fwd`/`find_rev` without the unrolling, the
+prefix prefilter kept and confined to the window), the DFA state carried across an interrupt
+poll every 64 KB; every search, the lexer's and the anchored longest-match walk's included,
+goes through one `find_polled`. Left as one search: an unbounded pattern with a Unicode `\b`
+over non-ASCII text (the lazy DFA quits; `meta` answers) and the groups of one match a window
+long. And interrupt windows NEST: each has a depth, a request is raised for the innermost
+window open, a ceiling for its own window, only that window's `proc/interruptible` answers,
+and closing it consumes the interrupt — Emacs's `with-local-quit`. A region carries its
+window depth instead of `owner`. Run here: `cargo test -p brood --test interrupt`,
+`cargo test -p brood --lib regex_native process::interrupt`, `doc_examples`, `audit`,
+`regex`, `ui_test`; clippy; cargo fmt. Nothing was measured.
+
+2026-10-28 (ADR-493 follow-up, the two regex corners): a Pike VM of ours
+(`regex_native::pike_search`, regex-automata's `pikevm::search_imp` over its public
+Thompson NFA, a poll per position) now takes the searches the lazy DFA quits on (a Unicode
+`\b` before non-ASCII text) and the groups of a match longer than a window; the capture
+engines have no step API and cannot be resumed across windows. Checked against `meta` for
+every slot over twenty-two patterns × ten texts at every start. Run here: `cargo test -p
+brood --lib regex_native`, `--test interrupt`, `doc_examples`, `audit`, `regex`; clippy;
+cargo fmt. Nothing was measured.
