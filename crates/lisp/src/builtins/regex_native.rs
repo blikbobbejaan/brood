@@ -424,12 +424,7 @@ fn find_polled(
     }
 }
 
-/// [`find_polled`] with its groups, into `caps`. The groups are the ones a search anchored
-/// at the match and confined to it finds: the match is the highest-priority one starting
-/// there, so confining the search to where it ends changes neither it nor its groups. A
-/// pattern with no groups of its own needs no second pass; one with groups pays a pass over
-/// the match itself, which for a match longer than a window is our polling Pike VM
-/// ([`pike_search`]) rather than `meta`'s, so it can be stopped too (ADR-493).
+/// [`find_polled`] with its groups, into `caps` ([`groups_polled`]).
 fn search_captures_polled(
     rx: &Pattern,
     s: &str,
@@ -441,6 +436,22 @@ fn search_captures_polled(
         caps.set_pattern(None);
         return Ok(());
     };
+    groups_polled(rx, s, found, caps, poll)
+}
+
+/// The groups of `found`, a match of `rx` in `s`, into `caps`: the ones a search anchored at
+/// the match and confined to it finds. The match is the highest-priority one starting there,
+/// so confining the search to where it ends changes neither it nor its groups. A pattern with
+/// no groups of its own needs no second pass; one with groups pays a pass over the match
+/// itself, which for a match longer than a window is our polling Pike VM ([`pike_search`])
+/// rather than `meta`'s, so it can be stopped too (ADR-493).
+fn groups_polled(
+    rx: &Pattern,
+    s: &str,
+    found: Match,
+    caps: &mut Captures,
+    poll: &mut InterruptPoll,
+) -> Result<(), LispError> {
     if rx.group_info().group_len(found.pattern()) == 1 {
         caps.set_pattern(Some(found.pattern()));
         let slots = caps.slots_mut();
@@ -1360,5 +1371,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_group_pass_over_a_match_longer_than_a_window_stops_inside() {
+        // The search finds the match without probing a pending interrupt; the group pass is
+        // then handed one. End to end, a pending interrupt stops the SEARCH first, so this
+        // is the only way to show that the second pass — the Pike VM over the match itself —
+        // stops too, and stops at its first probe, a few thousand positions into a match of
+        // a hundred thousand, rather than running to the match's end.
+        let text = format!("{}b", "a".repeat(100_000));
+        let rx = compiled("%regex-find", "(a+)(b)", Kind::LeftmostFirst).unwrap();
+        let found = find_polled(&rx, &text, 0, &mut InterruptPoll::new())
+            .unwrap()
+            .expect("the search finds the match");
+        assert!(found.len() > SEARCH_WINDOW, "the match spans windows");
+
+        let mut caps = rx.create_captures();
+        groups_polled(&rx, &text, found, &mut caps, &mut InterruptPoll::new()).unwrap();
+        assert_eq!(caps.get_group(1).map(|g| g.range()), Some(0..100_000));
+        assert_eq!(caps.get_group(2).map(|g| g.range()), Some(100_000..100_001));
+
+        let mut poll = InterruptPoll::raising();
+        let mut caps = rx.create_captures();
+        let stopped = groups_polled(&rx, &text, found, &mut caps, &mut poll);
+        let error = stopped.expect_err("a pending interrupt stops the group pass");
+        assert_eq!(error.kind, crate::error::ErrorKind::Interrupted);
+        assert_eq!(poll.probes(), 1, "it stopped at its first probe");
     }
 }

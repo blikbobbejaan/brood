@@ -866,6 +866,11 @@ pub(super) fn seqview_pred(args: &[Value], _: EnvId, _heap: &mut Heap) -> LispRe
 // run could not pay (`stop_between_elements`): so a fold yields within one reducer call of
 // its quantum ending. A primitive reducer (`+`, `*`), inlined here, runs the whole span and charges the
 // quantum for it (one reduction per `ELEMENTS_PER_REDUCTION`).
+//
+// A span folds ONLY such a reducer (ADR-502). Any other answers `:%fold-walk` before an
+// element is folded, and the prelude walks the collection in Brood, calling the reducer from
+// the process's own engine: a call from here would run it under this native frame, which no
+// engine can capture, so a `receive` in it blocked the worker instead of parking.
 
 const ELEMENTS_PER_REDUCTION: usize = 8;
 
@@ -877,6 +882,10 @@ fn charge_folded(elements: usize) {
 /// The tag of a span that stopped short — see the section comment.
 static FOLD_MORE: LazyLock<Symbol> = LazyLock::new(|| value::intern("%fold-more"));
 
+/// What a span answers for a reducer it does not inline, before folding anything: the
+/// prelude's walk calls that reducer itself (ADR-502, see [`Reducer`]).
+static FOLD_WALK: LazyLock<Symbol> = LazyLock::new(|| value::intern("%fold-walk"));
+
 /// A span's result: `acc` when the collection is done, else `(:%fold-more acc . next)`.
 /// Allocation never collects, so `acc` needs no root across the two cells.
 fn span_result(heap: &mut Heap, acc: Value, next: Option<i64>) -> LispResult {
@@ -887,29 +896,25 @@ fn span_result(heap: &mut Heap, acc: Value, next: Option<i64>) -> LispResult {
     Ok(heap.alloc_pair(Value::keyword(*FOLD_MORE), rest))
 }
 
-/// How a span calls its reducer, resolved once per span: the inlined primitive, or — for a
-/// closure on the VM — its arm, so the per-element call skips re-resolution and arity
-/// matching (`hof_resolve`).
+/// A span's reducer: a primitive it inlines (`+`, `*`), resolved once per span. A span folds
+/// nothing else (ADR-502): any other reducer is Brood to call, and a call from this native
+/// loop would run under its Rust frame, where a `receive` in the reducer — or an interrupt
+/// window it opens — blocks the worker instead of parking the process. So the span declines
+/// it ([`FOLD_WALK`]) and the prelude's walk calls it from the process's own engine.
 struct Reducer {
-    prim: Option<crate::eval::compile::PrimOp>,
-    hof: Option<crate::eval::compile::HofArm>,
+    prim: crate::eval::compile::PrimOp,
     use_vm: bool,
 }
 
 impl Reducer {
-    fn resolve(heap: &Heap, f: Value) -> Reducer {
-        let prim = crate::eval::compile::reduce_prim_op(heap, f);
+    fn resolve(heap: &Heap, f: Value) -> Option<Reducer> {
+        let prim = crate::eval::compile::reduce_prim_op(heap, f)?;
         let use_vm = crate::eval::compile::tier_ceiling() >= crate::eval::compile::Tier::Bytecode;
-        let hof = if prim.is_none() && use_vm {
-            crate::eval::compile::hof_resolve(heap, f, 2)
-        } else {
-            None
-        };
-        Reducer { prim, hof, use_vm }
+        Some(Reducer { prim, use_vm })
     }
 
-    /// One step: the inlined primitive when it covers these operands (`true`), else a call —
-    /// through the resolved arm, the VM, or the tree-walker, whichever applies.
+    /// One step: the inlined primitive when it covers these operands (`true`), else a call of
+    /// `f` — a bignum, a ratio, a record's `Num` method — through the active engine.
     fn step(
         &self,
         heap: &mut Heap,
@@ -918,15 +923,8 @@ impl Reducer {
         x: Value,
         env: EnvId,
     ) -> Result<(Value, bool), LispError> {
-        if let Some(op) = self.prim
-            && let Some(v) = crate::eval::compile::prim_apply(op, acc, x)?
-        {
+        if let Some(v) = crate::eval::compile::prim_apply(self.prim, acc, x)? {
             return Ok((v, true));
-        }
-        if let Some(h) = &self.hof
-            && let Some(r) = crate::eval::compile::hof_apply_step(heap, h, f, &[acc, x])
-        {
-            return Ok((r?, false));
         }
         let v = if self.use_vm {
             crate::eval::compile::apply_value(heap, f, &[acc, x], env)?
@@ -961,13 +959,16 @@ pub(super) fn vector_fold_span(args: &[Value], env: EnvId, heap: &mut Heap) -> L
         .map_or(0, |i| (i.max(0) as usize).min(len));
     let n = arg(args, 4).as_int().map_or(len, |k| k.max(1) as usize);
     let end = start.saturating_add(n).min(len);
-    let reducer = Reducer::resolve(heap, f);
+    let Some(reducer) = Reducer::resolve(heap, f) else {
+        return Ok(Value::keyword(*FOLD_WALK));
+    };
     let mut i = start;
     let mut acc = init;
     // Tight i64 loop: no Value boxing, no root slot per element (integers are inline). It
     // stops at a non-int element or an overflow, and the boxed loop goes on from there, so a
     // BigInt promotion stays bit-identical to the Brood fold.
-    if let (Some(op), Some(mut int_acc)) = (reducer.prim, init.as_int()) {
+    if let Some(mut int_acc) = init.as_int() {
+        let op = reducer.prim;
         while i < end {
             let Some(x) = heap.vector(vid)[i].as_int() else {
                 break;
@@ -1062,10 +1063,13 @@ pub(super) fn range_fold_span(args: &[Value], env: EnvId, heap: &mut Heap) -> Li
         span_end.max(hi)
     };
     let before_end = |i: i64| if step > 0 { i < span_end } else { i > span_end };
-    let reducer = Reducer::resolve(heap, f);
+    let Some(reducer) = Reducer::resolve(heap, f) else {
+        return Ok(Value::keyword(*FOLD_WALK));
+    };
     let mut i = from;
     let mut acc = init;
-    if let (Some(op), Some(mut int_acc)) = (reducer.prim, init.as_int()) {
+    if let Some(mut int_acc) = init.as_int() {
+        let op = reducer.prim;
         // One loop per direction, so the per-element bound is a plain compare.
         let folded = if step > 0 {
             fold_ints(op, &mut int_acc, &mut i, step, span_end, |i, end| i < end)

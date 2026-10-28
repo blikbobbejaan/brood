@@ -269,6 +269,19 @@ this by implementing the `Display` ability, which takes over this name below.
 (defn- %range-fold (f more rng)
   (let (r (rest more) s (%range-fold-span f (first r) rng (rest r) %fold-span))
     (if (pair? s) (if (%eq (first s) :%fold-more) (%range-fold f s rng) s) s)))
+;; ADR-502: a span folds natively only a reducer it inlines (`+`, `*`), whose step runs no
+;; Brood. Any other reducer is Brood to call, so the span declines it before folding anything
+;; — it answers `:%fold-walk` — and these walks call it instead: a call from the process's
+;; own engine, which a `receive` in the reducer (or an interrupt window it opens) parks,
+;; where a call from the span's native loop blocked the worker. Each is a self-tail loop, so
+;; the process yields at its back edge as it does in any loop, and the JIT runs it natively.
+;; No reducer returns that private keyword by accident, as none returns `:%fold-more`.
+(defn- %vector-fold-walk (f acc v i n)
+  (if (%lt i n) (%vector-fold-walk f (f acc (%vector-ref v i)) v (%add i 1) n) acc))
+(defn- %range-fold-walk (f acc i hi step)
+  (if (if (%lt 0 step) (%lt i hi) (%lt hi i))
+    (%range-fold-walk f (f acc i) (%add i step) hi step)
+    acc))
 ;; The public entry coerces once via `seq`; the inner `%fold-loop` then stays in
 ;; list form for the recursion, so a map costs one extra `%map-pairs` pass total
 ;; rather than O(n) per step.
@@ -287,10 +300,17 @@ this by implementing the `Display` ability, which takes over this name below.
   ;; call per fold showed on `nqueens`.
   (if (vector? coll)
     (let (s (%vector-fold-span f acc coll nil %fold-span))
-      (if (pair? s) (if (%eq (first s) :%fold-more) (%vector-fold f s coll) s) s))
+      (if (pair? s)
+        (if (%eq (first s) :%fold-more) (%vector-fold f s coll) s)
+        (if (%eq s :%fold-walk) (%vector-fold-walk f acc coll 0 (%vector-length coll)) s)))
     (if (range? coll)
       (let (s (%range-fold-span f acc coll nil %fold-span))
-        (if (pair? s) (if (%eq (first s) :%fold-more) (%range-fold f s coll) s) s))
+        (if (pair? s)
+          (if (%eq (first s) :%fold-more) (%range-fold f s coll) s)
+          (if (%eq s :%fold-walk)
+            (let (b (%range-bounds coll))
+              (%range-fold-walk f acc (%vector-ref b 0) (%vector-ref b 1) (%vector-ref b 2)))
+            s)))
       (if (seqview? coll)
         ;; Fuse: `(xform f)` is the wrapped reducer; fold it over the source (a
         ;; range → counted loop, a list → %fold-loop, a nested view → fuses again).
