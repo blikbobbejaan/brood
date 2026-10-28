@@ -3,7 +3,11 @@
 //! the probe claims nothing, so those roots were silently dropped from the image. Dispatched
 //! from `std/tool/nest.blsp` — whose load pulls the toolchain in — `nest stdimage` wrote an
 //! image with none of `project`'s 31 root globals, and every later `nest check` died on an
-//! unbound `project/*ns-package*`.
+//! unbound `*ns-package*`.
+//!
+//! Since ADR-506 the tooling modules define no unprefixed roots (their dynamics are qualified,
+//! `project/*ns-package*`), so loading them leaves nothing to drop; the case defines a stray root of
+//! its own, which is exactly what the audit exists to catch.
 //!
 //! The build now audits: a root global with no owning section, no definition site (the
 //! prelude's have one) and not a native builtin is a std module's that the probe missed, and
@@ -62,11 +66,12 @@ fn a_build_in_a_process_that_already_loaded_a_tooling_module_is_refused_not_writ
         &cache,
         "(require-one 'project)\n\
          (require-one 'stdimage)\n\
+         (def ki112-stray 1)\n\
          (io/puts (try (do (stdimage/build) \"WROTE\") (catch e (str \"refused: \" (error-message e)))))\n",
     );
     assert_eq!(code, 0, "{out}");
     assert!(
-        out.contains("refused: stdimage/build:") && out.contains("project/*ns-package*"),
+        out.contains("refused: stdimage/build:") && out.contains("ki112-stray"),
         "the refusal must name the orphaned root:\n{out}"
     );
     assert!(

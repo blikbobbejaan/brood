@@ -279,7 +279,7 @@ since the prelude is always present.
         ;; (`require-one` is a no-op then, and the diff sees no introductions). That is
         ;; how `nest stdimage`, dispatched from `std/tool/nest.blsp` — whose load pulls the
         ;; toolchain in — wrote an image with none of `project`'s 31 root globals, and
-        ;; every later `nest check` died on an unbound `project/*ns-package*`. A root the PRELUDE
+        ;; every later `nest check` died on an unbound `*ns-package*`. A root the PRELUDE
         ;; binds (its own definitions, the kernel's natives, the registries it seeds) is
         ;; always present and needs no section; any other unowned root is a std module's
         ;; that the probe missed. Refuse — a missing image costs one source boot, a wrong

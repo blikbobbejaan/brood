@@ -554,7 +554,7 @@ fn defn_defines_functions() {
     assert_eq!(run("(defn add3 (a b c) (+ a b c)) (add3 1 2 3)"), "6");
     // defn is itself written in Brood; it expands to (def name (fn ...)).
     assert_eq!(
-        run("(macroexpand-1 '(defn f (x) (+ x 1)))"),
+        run("(reflect/macroexpand-1 '(defn f (x) (+ x 1)))"),
         "(def f (fn (x) (+ x 1)))"
     );
 }

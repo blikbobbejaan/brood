@@ -269,7 +269,8 @@ fn a_definitions_fact_is_its_content_not_its_files_mtime() {
     // The callee's macro mints a gensym, which a reload numbers differently — the digest
     // must not see that.
     let mut interp = crate::Interp::new();
-    let callee = "(defmacro digest-test-hold (e) (let (t (gensym \"t\")) `(let (~t ~e) ~t)))
+    let callee =
+        "(defmacro digest-test-hold (e) (let (t (reflect/gensym \"t\")) `(let (~t ~e) ~t)))
                   (defn digest-test-callee (x) (digest-test-hold (+ x 1)))";
     let site = |interp: &mut crate::Interp| {
         for name in ["digest-test-callee", "digest-test-hold"] {

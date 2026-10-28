@@ -546,16 +546,19 @@ fn assoc_with_keyword_keys_on_an_unknown_receiver_is_a_map() {
 #[test]
 fn update_and_assoc_in_keep_a_record_shape() {
     assert_eq!(ty_str("(fn (x) (update x :k inc))"), "(any) -> map");
-    assert_eq!(ty_str("(fn (x) (assoc-in x [:a :b] 1))"), "(any) -> map");
+    assert_eq!(
+        ty_str("(fn (x) (map/assoc-in x [:a :b] 1))"),
+        "(any) -> map"
+    );
     let src = "\
          (defmodule t)\n\
          (deftype st (record &open :n int :name string))\n\
          (sig bump (st -> st))\n\
          (defn bump (s) (update s :n inc))\n\
          (sig nest (st -> st))\n\
-         (defn nest (s) (assoc-in s [:meta :seen] true))\n\
+         (defn nest (s) (map/assoc-in s [:meta :seen] true))\n\
          (sig deep (st -> st))\n\
-         (defn deep (s) (update-in s [:meta :count] inc))\n\
+         (defn deep (s) (map/update-in s [:meta :count] inc))\n\
          (sig name-of (st -> string))\n\
          (defn name-of (s) (:name (update s :n inc)))";
     let strict = file_warnings_mode(src, true);
@@ -620,16 +623,16 @@ fn a_dynamic_key_on_a_known_map_keeps_it_a_map() {
 #[test]
 fn assoc_in_answers_by_whether_the_receiver_can_be_a_vector() {
     assert_eq!(
-        ty_str("(fn (m k) (assoc-in m [k :a] 1))"),
+        ty_str("(fn (m k) (map/assoc-in m [k :a] 1))"),
         "(any, any) -> any"
     );
     assert_eq!(
-        ty_str("(fn (m k) (update-in m [k] inc))"),
+        ty_str("(fn (m k) (map/update-in m [k] inc))"),
         "(any, any) -> any"
     );
-    assert_eq!(ty_str("(fn (k) (assoc-in nil [k] 1))"), "(any) -> map");
+    assert_eq!(ty_str("(fn (k) (map/assoc-in nil [k] 1))"), "(any) -> map");
     assert!(
-        ty_str("(fn (k) (assoc-in [[1 2]] [k 0] 9))").contains("vector"),
+        ty_str("(fn (k) (map/assoc-in [[1 2]] [k 0] 9))").contains("vector"),
         "a vector receiver keeps the vector in the answer"
     );
     let ws = file_warnings_mode(
@@ -637,7 +640,7 @@ fn assoc_in_answers_by_whether_the_receiver_can_be_a_vector() {
          (defdyn *key* :state)\n\
          (sig bump (map -> map))\n\
          (defn bump (m) (assoc m :n 1))\n\
-         (defn step (m) (bump (assoc-in m [*key* :pending] nil)))",
+         (defn step (m) (bump (map/assoc-in m [*key* :pending] nil)))",
         true,
     );
     assert!(ws.is_empty(), "{ws:?}");
@@ -1098,7 +1101,7 @@ fn get_in_with_a_literal_path_reads_the_declared_shape() {
              (deftype model (record &open :hosted (optional (map int (record &open :cursors (optional (map any {leaf})))))))\n\
              (sig f (model int any -> list))\n\
              (defn f (m i who)\n\
-               (let (pos (get-in m [:hosted i :cursors who]))\n\
+               (let (pos (map/get-in m [:hosted i :cursors who]))\n\
                  (if (nil? pos) '() (range (dec pos) (+ pos 1)))))"
         )
     };
@@ -1118,12 +1121,12 @@ fn get_in_with_a_literal_path_reads_the_declared_shape() {
 // present key holding nil at the last step is still nil.
 #[test]
 fn get_in_with_a_default_reads_the_default_for_absence_only() {
-    assert_eq!(ty_str("(get-in {} [:sandbox :next-id] 1)"), "1");
-    assert_eq!(ty_str("(get-in {:a {:b 2}} [:a :b] 1)"), "2");
-    assert_eq!(ty_str("(get-in {:a {:b nil}} [:a :b] 1)"), "nil");
-    assert_eq!(ty_str("(get-in {:a {:b 2}} [:a :c] 1)"), "1");
-    assert_eq!(ty_str("(get-in {:a {:b 2}} [:a :b])"), "2");
-    assert_eq!(ty_str("(get-in {:a {:b 2}} [:a :c])"), "nil");
+    assert_eq!(ty_str("(map/get-in {} [:sandbox :next-id] 1)"), "1");
+    assert_eq!(ty_str("(map/get-in {:a {:b 2}} [:a :b] 1)"), "2");
+    assert_eq!(ty_str("(map/get-in {:a {:b nil}} [:a :b] 1)"), "nil");
+    assert_eq!(ty_str("(map/get-in {:a {:b 2}} [:a :c] 1)"), "1");
+    assert_eq!(ty_str("(map/get-in {:a {:b 2}} [:a :b])"), "2");
+    assert_eq!(ty_str("(map/get-in {:a {:b 2}} [:a :c])"), "nil");
 }
 
 // A self-call's arguments are typed under the function's own parameter DEMANDS when its

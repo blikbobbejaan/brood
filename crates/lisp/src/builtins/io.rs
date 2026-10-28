@@ -273,7 +273,7 @@ pub(super) fn read_line_start(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult
     let token = STDIN_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let (sink, _cell) = crate::process::sink_pair(crate::process::self_pid());
     stdin_reader_send(StdinReq { token, sink }).map_err(|e| {
-        LispError::runtime(format!("read-line: cannot start the stdin reader: {e}"))
+        LispError::runtime(format!("io/read-line: cannot start the stdin reader: {e}"))
             .with_code(crate::error::error_codes::FILE_IO)
     })?;
     Ok(Value::Int(token))
@@ -337,7 +337,7 @@ fn stdin_reader_loop(rx: std::sync::mpsc::Receiver<StdinReq>) {
                 stdin_msg("stdin", token, Message::Str(line))
             }
             Err(e) => {
-                let err = LispError::runtime(format!("read-line: {}", e))
+                let err = LispError::runtime(format!("io/read-line: {}", e))
                     .with_code(crate::error::error_codes::FILE_IO);
                 stdin_msg("stdin-error", token, crate::process::error_reason(&err))
             }

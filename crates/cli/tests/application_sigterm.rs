@@ -155,7 +155,7 @@ fn lifting_a_trap_gives_back_an_ignored_sighup() {
 (os/trap :hup)
 (os/trap :hup nil)
 (io/puts "ready")
-(read-line)
+(io/read-line)
 (io/puts "survived")
 "#;
     let (mut child, lines, path) = start_with("ignored-hangup", source, |command| {

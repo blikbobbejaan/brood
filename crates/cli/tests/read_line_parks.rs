@@ -35,7 +35,7 @@ use support::script;
 /// ordinary spawns must still run and be collected. `me` is bound OUTSIDE the spawn: `(self)`
 /// inside the spawned form would evaluate in the child.
 const WAVE: &str = r#"
-(defn reader () (read-line))
+(defn reader () (io/read-line))
 (dotimes (i 256) (spawn (reader)))
 
 (defn worker (parent i) (send parent [:done i]))
@@ -104,13 +104,13 @@ fn processes_blocked_in_read_line_do_not_pin_the_worker_pool() {
 /// and EOF is `nil` for every later call. Pins the plumbing so the wave test cannot pass
 /// by `read-line` having stopped reading anything.
 const DELIVERY: &str = r#"
-(io/puts (str "root=" (read-line)))
+(io/puts (str "root=" (io/read-line)))
 (let (me (self))
-  (spawn (send me [:got (read-line) (read-line)]))
+  (spawn (send me [:got (io/read-line) (io/read-line)]))
   (receive
     ([:got a b] (io/puts (str "child=" a "," b)))
     (after 10000 (io/puts "child TIMEOUT"))))
-(io/puts (str "eof=" (pr-str (read-line)) "," (pr-str (read-line))))
+(io/puts (str "eof=" (pr-str (io/read-line)) "," (pr-str (io/read-line))))
 "#;
 
 #[test]

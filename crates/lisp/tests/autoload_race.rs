@@ -204,7 +204,7 @@ fn run_fan(interp: &mut Interp, module: &str, call: &str, expected: &str) {
 fn racing_the_first_call_into_seq_is_sound() {
     race_first_call(
         "seq",
-        "(reserved-package-name? 'zzz-not-a-baked-in-module)",
+        "(reflect/reserved-package-name? 'zzz-not-a-baked-in-module)",
         "false",
     );
 }
@@ -215,7 +215,7 @@ fn racing_the_first_call_into_seq_is_sound() {
 fn racing_the_first_call_into_string_is_sound() {
     race_first_call(
         "string",
-        "(empty? (doc-search \"zzzz-no-such-doc\"))",
+        "(empty? (reflect/doc-search \"zzzz-no-such-doc\"))",
         "true",
     );
 }
@@ -234,7 +234,7 @@ fn racing_the_first_call_into_string_is_sound() {
 fn racing_the_first_call_into_seq_is_sound_from_the_stdlib_image() {
     race_first_call_from_the_stdlib_image(
         "seq",
-        "(reserved-package-name? 'zzz-not-a-baked-in-module)",
+        "(reflect/reserved-package-name? 'zzz-not-a-baked-in-module)",
         "false",
     );
 }
@@ -246,7 +246,7 @@ fn racing_the_first_call_into_seq_is_sound_from_the_stdlib_image() {
 fn racing_the_first_call_into_string_is_sound_from_the_stdlib_image() {
     race_first_call_from_the_stdlib_image(
         "string",
-        "(empty? (doc-search \"zzzz-no-such-doc\"))",
+        "(empty? (reflect/doc-search \"zzzz-no-such-doc\"))",
         "true",
     );
 }

@@ -353,7 +353,7 @@ fn apply_keyword(heap: &mut Heap, kw: Value, argv: &[Value]) -> LispResult {
                 "{shown}: expected a map, set or nil to look up in, got {tag} ({got})"
             ))
             .with_hint(format!(
-                "a keyword reads a KEY, so the argument has to be keyed. If that is a                  collection OF maps, you want one element of it (or `(map {shown} coll)`                  for all of them); for a nested key use `(get-in coll [{shown} …])`."
+                "a keyword reads a KEY, so the argument has to be keyed. If that is a                  collection OF maps, you want one element of it (or `(map {shown} coll)`                  for all of them); for a nested key use `(map/get-in coll [{shown} …])`."
             )))
         }
     }
@@ -373,7 +373,7 @@ pub(crate) fn not_a_function_error(heap: &Heap, v: Value) -> LispError {
         // `({:a 1} :a)` — Clojure's map-as-function.
         ValueRef::Map(_) => err.with_hint(
             "a map isn't a function in Brood: look a key up with `(get m k)` \
-             (or `(get-in m path)` for a nested one).",
+             (or `(map/get-in m path)` for a nested one).",
         ),
         ValueRef::Set(_) => err
             .with_hint("a set isn't a function in Brood: test membership with `(contains? s x)`."),

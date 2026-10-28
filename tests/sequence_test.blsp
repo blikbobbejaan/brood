@@ -128,11 +128,11 @@
   ;; A size <= 0 never consumes the input, so these used to run until memory ran out.
   (test "a chunk size of zero or less is an error, not an endless loop"
     (assert= (try (seq/partition [1 2 3] 0) (catch e (error-message e)))
-      "partition: chunk size must be positive, got 0")
+      "seq/partition: chunk size must be positive, got 0")
     (assert= (try (seq/partition nil 0) (catch e (error-message e)))
-      "partition: chunk size must be positive, got 0")
+      "seq/partition: chunk size must be positive, got 0")
     (assert= (try (seq/partition [1 2 3] -2) (catch e (error-message e)))
-      "partition: chunk size must be positive, got -2")))
+      "seq/partition: chunk size must be positive, got -2")))
 
 (describe "sort / sort-by"
   (test "sort orders ascending by default"

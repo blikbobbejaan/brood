@@ -165,7 +165,7 @@ fn run_offload_job(job: OffloadJob) {
             .or_else(|| payload.downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "non-string panic payload".to_string());
         let e = LispError::runtime(format!(
-            "offload: the native panicked (interpreter bug): {detail}"
+            "proc/offload: the native panicked (interpreter bug): {detail}"
         ));
         offload_msg("offload-error", token, crate::process::error_reason(&e))
     });
@@ -194,7 +194,7 @@ pub(super) fn offload_start(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
     )?;
     if !OFFLOAD_ALLOWED.contains(&name.as_str()) {
         return Err(LispError::runtime(format!(
-            "%offload: `{name}` is not offload-safe — only long/blocking data-in/data-out natives run on the pool (see (doc '%offload))"
+            "%offload: `{name}` is not offload-safe — only long/blocking data-in/data-out natives run on the pool (see (reflect/doc '%offload))"
         )));
     }
     let call_args: Vec<Value> = expect!(heap, "%offload", arg(args, 1), "vector of arguments",

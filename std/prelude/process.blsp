@@ -486,7 +486,7 @@ A zero-arg lambda `(fn () …)` body is passed through (not re-wrapped), like `s
   ;; form the caller actually wrote.
   (if (or (nil? ms) (and (int? ms) (>= ms 0) (<= ms 9223372036854775807)))
     (let (never (ref)) (receive (^never nil) (after ms nil)))
-    (error "sleep: expected a non-negative whole number of milliseconds (or nil to park for good), got "
+    (error "proc/sleep: expected a non-negative whole number of milliseconds (or nil to park for good), got "
       ms)))
 
 ;; ---- dirty-native offload (ADR-144) -----------------------------------------

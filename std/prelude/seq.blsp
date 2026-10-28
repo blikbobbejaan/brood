@@ -571,7 +571,7 @@ prelude declares one, so `:derives` always names an ability from your own code."
   ;; the list is a single call eating the machine, and the allocation failure it ends
   ;; in is an abort, not an error anything can catch.
   (if (> n 67108864)
-    (error "repeat: " n " elements is too many to build (limit 67108864)")
+    (error "seq/repeat: " n " elements is too many to build (limit 67108864)")
     (%repeat-acc n x nil)))
 
 ;; ---- lazy / fusing seq-views (compute-frontier lever 3) ---------------------
@@ -987,7 +987,7 @@ empty chunks.
   ;; always "fits"), so the accumulator would grow until memory ran out.
   (if (> n 0)
     (%partition-acc n coll nil)
-    (error "partition: chunk size must be positive, got " n)))
+    (error "seq/partition: chunk size must be positive, got " n)))
 
 (defn seq/sort-by (coll key-fn)
   "Sort `coll` (stable, ascending) by comparing `(key-fn x)` of each item with the

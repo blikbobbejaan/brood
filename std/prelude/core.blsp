@@ -841,7 +841,7 @@ no-op; the marker is read only by the type checker (`nest check`).
 
 (defn- %macroexpand-loop (form n)
   (if (= n 0)
-    (error "macroexpand: no fixpoint after "
+    (error "reflect/macroexpand: no fixpoint after "
       %macroexpand-max-rounds " rounds (a macro that expands to itself?)")
     (let (stepped (reflect/macroexpand-1 form))
       (if (= stepped form) form (%macroexpand-loop stepped (- n 1))))))

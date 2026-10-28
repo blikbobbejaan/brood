@@ -161,7 +161,9 @@ pub fn signature(interp: &mut Interp, name: &str) -> (Option<String>, Option<Str
     // As in `global_names`: reclaim the LOCAL allocations this eval leaves behind
     // once the signature/doc have been copied into owned `String`s.
     let cp = interp.heap.checkpoint();
-    let out = match interp.eval_str(&format!("(list (arglist {name}) (doc {name}))")) {
+    let out = match interp.eval_str(&format!(
+        "(list (reflect/arglist {name}) (reflect/doc {name}))"
+    )) {
         Ok(v) => match interp.heap.list_to_vec(v) {
             Ok(parts) => {
                 let sig = parts.first().and_then(|&a| render_arglist(interp, name, a));
@@ -203,8 +205,12 @@ pub fn arglist_tokens(interp: &mut Interp, name: &str) -> Option<Vec<String>> {
     // global, so it has no arglist — return `None` without evaluating. (See
     // `resolve_in_source` for the full rationale.)
     value::intern_existing(name)?;
-    eval_owned_list(interp, &format!("(arglist {name})"), symbol_spelling)
-        .filter(|tokens| !tokens.is_empty())
+    eval_owned_list(
+        interp,
+        &format!("(reflect/arglist {name})"),
+        symbol_spelling,
+    )
+    .filter(|tokens| !tokens.is_empty())
 }
 
 /// Render an `(arglist f)` result (a list of parameter symbols, or `nil`) as a
