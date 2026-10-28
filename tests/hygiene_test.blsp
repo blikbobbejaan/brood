@@ -136,20 +136,22 @@
       (assert= (fold-for-binder a) 11)
       (assert= (with-binder a) 11)
       (assert= (as-binder a) 11)
-      (assert= (catch-binder a) 11)))
-  ;; A named definition's params are its signature — arglist, docs, arity and contract
-  ;; messages — so they stay as written: `map`'s doc read `(map coll__60 f)` when they were
-  ;; renamed (bedit's spy pane caught it).
-  (test "a template defn keeps its params as written"
+      (assert= (catch-binder a) 11)
+      (assert= (defn-param a) 11)))
+  ;; A renamed param is still shown as written — an arglist, a doc, an arity error read the
+  ;; source's name, not `a__60`: `map`'s doc read `(map coll__60 f)` until they did
+  ;; (bedit's doc pane caught it).
+  (test "a template defn's renamed params still read as written"
     (defn-param 1)
     ;; the macro call above defines it at run time, where the checker cannot see it
-    (assert= '(a) (check-allow :unbound (arglist hygiene-helper))))
+    (assert= '(a) (check-allow :unbound (arglist hygiene-helper)))
+    (is (includes? (error-message (try (check-allow :unbound (hygiene-helper)) (catch e e))) "(a)")))
   (test "if-let's else branch is outside its binding"
     ;; The template's `a` is not in scope in `else`, so the caller's `a` arrives there.
     (let (a 10) (assert= (if-let-else a) 11)))
   (test "a typed binder keeps its annotation and its references"
     (let (a 10) (assert= (typed-param a) 11))
-    (let (((_ (param) (_ reference _)) _) (macroexpand '(typed-param 5)))
+    (let (((_ (param) (_ reference _)) _) (macroexpand `(typed-param 5)))
       (let (name (->string param))
         (is (string/ends-with? name ":int"))
         (assert= (->string reference) (string/drop-suffix name ":int")))))

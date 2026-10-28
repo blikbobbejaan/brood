@@ -1254,6 +1254,31 @@ pub struct Passthrough {
 }
 
 impl ClosureArm {
+    /// This arm's parameter list as its source spells it — `(coll f)`, `(n &optional m)`,
+    /// `(x & more)` — each name through [`source_symbol`], so a macro-written function
+    /// whose params hygiene renamed reads as written. Every place a person sees a
+    /// parameter list (an arglist, an arity error, the checker's arity warning) reads it here.
+    pub fn source_params(&self) -> Vec<Symbol> {
+        let mut out: Vec<Symbol> = self.params.iter().map(|&p| source_symbol(p)).collect();
+        if !self.optionals.is_empty() {
+            out.push(intern("&optional"));
+            out.extend(self.optionals.iter().map(|&(p, _)| source_symbol(p)));
+        }
+        if let Some(rest) = self.rest {
+            out.push(intern("&"));
+            out.push(source_symbol(rest));
+        }
+        out
+    }
+    /// [`source_params`](Self::source_params) as one line: `coll f`, `x & more`.
+    pub fn source_param_text(&self) -> String {
+        let names: Vec<&str> = self
+            .source_params()
+            .into_iter()
+            .map(symbol_name_ref)
+            .collect();
+        names.join(" ")
+    }
     /// Smallest argument count this arm accepts.
     pub fn min_arity(&self) -> usize {
         self.params.len()
@@ -1557,6 +1582,23 @@ pub fn is_gensym(sym: Symbol) -> bool {
             !prefix.is_empty() && !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
         }
         None => false,
+    }
+}
+
+/// The name a person wrote for `sym`: a gensym's prefix (`coll__60` → `coll`), else `sym`.
+///
+/// A macro template's binders are renamed to gensyms so they cannot capture the caller's
+/// code (ADR-500), and an `x#` or `(gensym "x")` is one too — but nobody wrote the `__60`, and
+/// a parameter list that shows it (`(map coll__60 f)` in a doc pane) shows something no
+/// source contains. Display only: the binding itself keeps the fresh name.
+pub fn source_symbol(sym: Symbol) -> Symbol {
+    if !is_gensym(sym) {
+        return sym;
+    }
+    let name = symbol_name_ref(sym);
+    match name.rsplit_once("__") {
+        Some((prefix, _)) => intern(prefix),
+        None => sym,
     }
 }
 

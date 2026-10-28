@@ -16,6 +16,27 @@ type Domain = Vec<Ty>;
 pub(super) struct DomainScope {
     pub(super) shadowed: HashSet<Symbol>,
     pub(super) aliases: HashMap<Symbol, usize>,
+    /// `let`-bound NULLARY closures — `(let (k (fn () rest…)) …)` — with the scope they were
+    /// defined in. A `match` binds the code for its later clauses this way when that code is
+    /// too big to splice at every failure point (`%match-build-clause`), so a `(k)` call is
+    /// where the rest of the match runs. Its domain is the body's: reading it as an opaque
+    /// call made a match's clause guards vanish the moment its expansion grew past the splice
+    /// budget. The definition scope is kept so a `k` its own body names is the OUTER one, as
+    /// `let` binds it — the walk cannot loop.
+    pub(super) thunks: HashMap<Symbol, std::rc::Rc<(Vec<Value>, DomainScope)>>,
+}
+
+/// The body forms of `(fn () body…)` — a closure taking no arguments — else `None`.
+fn nullary_fn_body(heap: &Heap, form: Value) -> Option<Vec<Value>> {
+    let items = list_items(heap, form)?;
+    match items.as_slice() {
+        [Value::Sym(head), params, ..] if value::symbol_is(*head, kw::FN) => {
+            let empty = matches!(params, Value::Nil)
+                || list_items(heap, *params).is_some_and(|p| p.is_empty());
+            empty.then(|| items[2..].to_vec())
+        }
+        _ => None,
+    }
 }
 
 /// Each parameter's **domain** (ADR-261): the set of values for which this body can run to
@@ -54,6 +75,7 @@ pub(super) fn param_domains(heap: &Heap, body: &[Value], params: &[Symbol], ctx:
     let scope = DomainScope {
         shadowed: HashSet::new(),
         aliases: HashMap::new(),
+        thunks: HashMap::new(),
     };
     // The body's forms are sequenced: all of them run.
     let mut acc = any_domain(params.len());
@@ -286,6 +308,17 @@ fn domain_of_inner(
                 Some(idx) => inner.aliases.insert(name, idx),
                 None => inner.aliases.remove(&name),
             };
+            match nullary_fn_body(heap, binds[i + 1]) {
+                Some(body) => {
+                    let defined_in = inner.clone();
+                    inner
+                        .thunks
+                        .insert(name, std::rc::Rc::new((body, defined_in)));
+                }
+                None => {
+                    inner.thunks.remove(&name);
+                }
+            }
             inner.shadowed.insert(name);
             i += 2;
         }
@@ -298,6 +331,16 @@ fn domain_of_inner(
     if value::symbol_is(h, kw::DO) {
         return items[1..].iter().fold(any_domain(n), |acc, &f| {
             meet(acc, domain_of(heap, f, params, scope, ctx))
+        });
+    }
+    // A call of a `let`-bound nullary closure — a `match`'s failure thunk — runs its body:
+    // its domain is the body's, in the scope the closure was defined in.
+    if items.len() == 1
+        && let Some(thunk) = scope.thunks.get(&h).cloned()
+    {
+        let (body, defined_in) = &*thunk;
+        return body.iter().fold(any_domain(n), |acc, &form| {
+            meet(acc, domain_of(heap, form, params, defined_in, ctx))
         });
     }
     // An unexpanded **macro** call: its operands are syntax, not necessarily code —

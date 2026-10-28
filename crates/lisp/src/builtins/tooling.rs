@@ -587,29 +587,16 @@ pub(super) fn arglists(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResu
         }
         _ => return Ok(Value::nil()),
     };
-    let arms: Vec<_> = heap
+    // As the source spells each arm (`ClosureArm::source_params`).
+    let arms: Vec<Vec<value::Symbol>> = heap
         .closure(id)
         .arms
         .iter()
-        .map(|arm| {
-            (
-                arm.params.clone(),
-                arm.optionals.iter().map(|&(s, _)| s).collect::<Vec<_>>(),
-                arm.rest,
-            )
-        })
+        .map(|arm| arm.source_params())
         .collect();
     let mut lists = Vec::with_capacity(arms.len());
-    for (params, optionals, rest) in arms {
-        let mut items: Vec<Value> = params.into_iter().map(Value::Sym).collect();
-        if !optionals.is_empty() {
-            items.push(value::sym("&optional"));
-            items.extend(optionals.into_iter().map(Value::Sym));
-        }
-        if let Some(r) = rest {
-            items.push(value::sym("&"));
-            items.push(Value::symbol(r));
-        }
+    for params in arms {
+        let items: Vec<Value> = params.into_iter().map(Value::Sym).collect();
         lists.push(heap.list(items));
     }
     Ok(heap.list(lists))
@@ -633,24 +620,14 @@ pub(super) fn arglist(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResul
     // Copy the parts out before re-borrowing the heap mutably to build the list.
     // For a multi-arity closure there's no single arglist; show the last clause
     // (conventionally the most general — e.g. the variadic `(a b & more)`).
-    let (params, optionals, rest) = {
-        let cl = heap.closure(id);
-        let arm = cl.arms.last().expect("closure has at least one arm");
-        (
-            arm.params.clone(),
-            arm.optionals.iter().map(|&(s, _)| s).collect::<Vec<_>>(),
-            arm.rest,
-        )
-    };
-    let mut items: Vec<Value> = params.into_iter().map(Value::Sym).collect();
-    if !optionals.is_empty() {
-        items.push(value::sym("&optional"));
-        items.extend(optionals.into_iter().map(Value::Sym));
-    }
-    if let Some(r) = rest {
-        items.push(value::sym("&"));
-        items.push(Value::symbol(r));
-    }
+    // As the source spells it (`ClosureArm::source_params`).
+    let params = heap
+        .closure(id)
+        .arms
+        .last()
+        .expect("closure has at least one arm")
+        .source_params();
+    let items: Vec<Value> = params.into_iter().map(Value::Sym).collect();
     Ok(heap.list(items))
 }
 

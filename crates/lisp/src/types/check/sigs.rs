@@ -698,6 +698,7 @@ pub(super) fn infer_overload_from_clauses(
             let scope = DomainScope {
                 shadowed: HashSet::new(),
                 aliases: HashMap::new(),
+                thunks: HashMap::new(),
             };
             let (then_slice, _) = guard_slices(heap, g, &names, &scope, ctx);
             param_tys = meet(param_tys, then_slice);
@@ -1483,25 +1484,8 @@ pub(super) fn param_names_of(heap: &Heap, sym: Symbol) -> Option<String> {
             // of the definition. A multi-arm callee's real contract is its arity list,
             // which the message already carries.
             let c = heap.closure(cid);
-            let arm = c.arms.first()?;
-            let mut parts: Vec<String> = arm
-                .params
-                .iter()
-                .map(|&x| crate::core::value::symbol_name(x))
-                .collect();
-            if !arm.optionals.is_empty() {
-                parts.push("&optional".to_string());
-                parts.extend(
-                    arm.optionals
-                        .iter()
-                        .map(|(n, _)| crate::core::value::symbol_name(*n)),
-                );
-            }
-            if let Some(r) = arm.rest {
-                parts.push("&".to_string());
-                parts.push(crate::core::value::symbol_name(r));
-            }
-            (!parts.is_empty()).then(|| parts.join(" "))
+            let text = c.arms.first()?.source_param_text();
+            (!text.is_empty()).then_some(text)
         }
         _ => None,
     }

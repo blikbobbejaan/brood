@@ -4594,3 +4594,20 @@ written (its signature) and only shadow. (4) Tests: the crash report says `kind 
 `error`, and a test macro that exposed `a`/`b` to its body by destructuring now says so with
 `~'a`. Run here: probes of each, `nest check`, `--strict`, clippy `--all-targets
 --all-features`, the std doctest engine, a full `nest doctest`. Not run: the suites.
+
+2026-10-28 (ADR-500/501 follow-up: the underlying fixes): three corrections to the entry above,
+each replacing a workaround with the cause. (1) A template `defn`'s params are renamed again;
+what was wrong was the DISPLAY. `ClosureArm::source_params` renders a parameter list as its
+source spells it, showing a gensym by its prefix (`value::source_symbol`), and every reader
+goes through it — `arglist`, `reflect/arglists`, the runtime arity error, the checker's arity
+warning — so `map` reads `(coll f)` and a renamed param `(a)`, not `(a__60)`. (2) The match
+splice budget counts a `(quote …)` as one node wherever it appears, not a `%raise` special
+case: splicing a quoted datum copies a reference to one constant. (3) A match past that budget
+binds its later clauses in a failure thunk, and the domain walk read the thunk's call as an
+opaque call — so a large enough match lost every clause guard after the first, before
+ADR-501 too; ADR-501 only moved where the budget fell. `DomainScope` now carries `let`-bound
+nullary closures with their definition scope, and a call to one has its body's domain.
+Guard: `a_match_too_big_to_splice_still_has_its_clauses_domain` (a 4-clause match; red with
+the thunk rule disabled). The typed-binder hygiene test expanded a module's macro through a
+QUOTED bare head, which has no namespace at run time (the same rule as doctest examples); it
+uses a syntax-quote, which qualifies it.

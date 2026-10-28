@@ -1189,16 +1189,7 @@ pub(crate) fn arity_message(
 /// The parameter list of a closure arm, as the source spells it: `acc x`, `x & more`,
 /// `n &optional m`. Used by the arity error so it can name what is missing.
 fn arm_param_names(arm: &crate::core::value::ClosureArm) -> String {
-    let mut parts: Vec<String> = arm.params.iter().map(|&p| value::symbol_name(p)).collect();
-    if !arm.optionals.is_empty() {
-        parts.push("&optional".to_string());
-        parts.extend(arm.optionals.iter().map(|(n, _)| value::symbol_name(*n)));
-    }
-    if let Some(r) = arm.rest {
-        parts.push("&".to_string());
-        parts.push(value::symbol_name(r));
-    }
-    parts.join(" ")
+    arm.source_param_text()
 }
 
 /// Build a closure from a `(fn …)` form's cdr. `module` is the module whose source the

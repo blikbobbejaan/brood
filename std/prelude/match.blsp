@@ -684,18 +684,25 @@ refutable `let` and pattern `fn` lowers its no-match branch to.
   (second (%match-splice-fail-in form k code)))
 
 ;; Remaining budget after counting `form`'s pair nodes, or -1 once exhausted —
-;; an early-exit size probe (big trees aren't walked past the budget). The no-match raise,
-;; `(%raise (%match-error …))`, costs two whatever patterns it quotes: it is one call, as the
-;; `(throw [vector])` it replaced was, and counting its quoted pattern list pushed a 2-clause
-;; match over the budget into a failure thunk — which also hid its guards from the checker.
+;; an early-exit size probe (big trees aren't walked past the budget). The budget bounds
+;; how much CODE splicing duplicates, so a `(quote …)` costs one node however big its datum:
+;; splicing it twice copies a reference to one constant, not the datum. Counting the datum
+;; made the no-match raise, `(%raise (%match-error (quote ctx) v (quote patterns)))`, grow with
+;; the patterns it names, tipping a 2-clause match into a failure thunk — a closure per run,
+;; and a guard chain the checker could no longer read.
 ;; check-allow: deliberately non-tail — expansion-time recursion over pattern syntax — depth is source nesting, not runtime data.
 (check-allow :non-tail-recursion
   (defn- %match-size-budget (form budget)
     (cond
       (< budget 0) -1
-      (and (pair? form) (= (first form) '%raise)) (- budget 2)
-      (pair? form) (%match-size-budget (rest form) (%match-size-budget (first form) (- budget 1)))
+      (pair? form) (%match-size-budget (rest form) (%match-node-budget (first form) (- budget 1)))
       else budget)))
+
+;; One element of a list: a quoted datum is a constant, so it costs nothing past its own cell.
+(defn- %match-node-budget (node budget)
+  (if (and (pair? node) (= (first node) 'quote))
+    budget
+    (%match-size-budget node budget)))
 
 (defn- %match-small? (form) (>= (%match-size-budget form 64) 0))
 

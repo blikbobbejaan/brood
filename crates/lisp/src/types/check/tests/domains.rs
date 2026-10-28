@@ -306,6 +306,22 @@ fn a_match_domain_comes_from_its_clause_patterns() {
 }
 
 #[test]
+fn a_match_too_big_to_splice_still_has_its_clauses_domain() {
+    // Past the splice budget a `match` binds the code for its later clauses in a nullary
+    // closure — `(let (mfail (fn () rest…)) …)` — and calls it where a clause fails. The
+    // domain walk follows that call into the body; read as an opaque call, every clause
+    // after the first stopped constraining the argument, and the warning vanished.
+    let ws = file_warnings(
+        "(defn big (x)\n  (match x\n    ((:ok [a b c] {:k k}) [a b c k])\n    ((:error e) e)\n    \
+         ((:other [p q] r) [p q r])\n    ((:last s) s)))\n(defn c () (big 5))",
+    );
+    assert!(
+        ws.iter().any(|w| w.contains("big: argument 1 expects")),
+        "{ws:?}"
+    );
+}
+
+#[test]
 fn a_destructuring_head_constrains_the_argument() {
     let ws = file_warnings("(defn f ([a b]) (+ a b))\n(defn c () (f 5))");
     assert!(
