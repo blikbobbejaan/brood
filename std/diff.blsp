@@ -117,15 +117,15 @@ where a reader sees it added.
     (diff/line-hunks \"a\\nc\" \"a\\nb\\nc\\n\")   ;=> [[1 0 1 1]]"
   (%diff-line-hunks old new))
 
-(defn line-status (old new)
-  "What happened to each line of `new` against `old`, as a change gutter shows it: a
-`{0-based-line -> :added | :modified | :deleted}` map of the lines that changed. In a hunk
-the first lines that replace removed ones are `:modified` and the rest `:added`; a pure
-deletion marks the line that follows it `:deleted`. Diff-hl's reading of a hunk.
+(defn hunks-status (hunks)
+  "The change-gutter reading of zero-context `hunks` (`line-hunks`' shape,
+`[old-start old-count new-start new-count]`, 0-based): a `{new-line -> :added | :modified |
+:deleted}` map. In a hunk the first lines that replace removed ones are `:modified` and the
+rest `:added`; a pure deletion marks the line that follows it `:deleted`. Diff-hl's reading
+of a hunk, shared by a diff of two texts (`line-status`) and a parsed one (`hunk-changes`).
 
-    (diff/line-status \"a\\nb\\nc\\n\" \"a\\nx\\ny\\nc\\n\")   ;=> {1 :modified 2 :added}
-    (diff/line-status \"a\\nb\\nc\\n\" \"a\\nc\\n\")   ;=> {1 :deleted}"
-  (fold (line-hunks old new)
+    (diff/hunks-status [[1 1 1 2] [4 1 5 0]])   ;=> {1 :modified 2 :added 5 :deleted}"
+  (fold hunks
     {}
     (fn (status hunk)
       (let ([_ old-count new-start new-count] hunk
@@ -135,6 +135,62 @@ deletion marks the line that follows it `:deleted`. Diff-hl's reading of a hunk.
           (fold (range new-count)
             status
             (fn (acc j) (assoc acc (+ new-start j) (if (< j modified) :modified :added)))))))))
+
+(defn line-status (old new)
+  "What happened to each line of `new` against `old`, as a change gutter shows it: the
+`hunks-status` of their `line-hunks`.
+
+    (diff/line-status \"a\\nb\\nc\\n\" \"a\\nx\\ny\\nc\\n\")   ;=> {1 :modified 2 :added}
+    (diff/line-status \"a\\nb\\nc\\n\" \"a\\nc\\n\")   ;=> {1 :deleted}"
+  (hunks-status (line-hunks old new)))
+
+;; ---- following a line through an edit (ADR-499) -----------------------------
+;; A mark kept across a reload — point after a file changed on disk, a note anchored to a
+;; form, the line a time machine shows in the next revision — is a line of the OLD text
+;; that must be found in the NEW one. Counting lines is wrong as soon as anything above it
+;; was added or removed; the line diff says exactly where each surviving line went.
+
+(defn- hunks-map-line (hunks line)
+  "0-based `line` of the old side followed through zero-context `hunks`: shifted by what
+the hunks above it added and removed; inside a hunk, the replacing line at the same offset
+(the last one when fewer replaced it), or for a pure deletion the line that followed it."
+  (letrec (walk (fn (remaining delta)
+                  (if (empty? remaining)
+                    (+ line delta)
+                    (let ([old-start old-count new-start new-count] (first remaining))
+                      (cond
+                        (< line old-start) (+ line delta)
+                        (< line (+ old-start old-count))
+                          (+ new-start (math/min (- line old-start) (math/max 0 (dec new-count))))
+                        :else (walk (rest remaining) (+ delta (- new-count old-count))))))))
+    (walk hunks 0)))
+
+(defn- last-line (text)
+  "The 0-based index of the last line of `text` (a string or rope) a cursor can be on: the
+empty one after a final newline counts, so the end of a text maps to the end of the next."
+  (dec (if (string? text) (count (string/split text "\n")) (text/line-count text))))
+
+(defn map-lines (old new lines)
+  "Each 0-based line of `lines` in `old` (a string or rope), followed into `new`: one line
+diff serves every position. An unchanged line lands exactly where it went, however much
+was added or removed above it. A changed line lands on the line that replaced it at the
+same offset in its block (the block's last line when fewer replaced it); a deleted line on
+the line that followed the deletion. Always a line of `new` a cursor can be on — clamped to
+its last, the empty line after a final newline included — so a caller can put point there
+without checking, and the end of `old` maps to the end of `new`.
+
+    (diff/map-lines \"a\\nb\\nc\\n\" \"x\\na\\nb\\nc\\n\" [0 2])   ;=> [1 3]"
+  (let (hunks (line-hunks old new)
+        top (last-line new))
+    (into [] (map lines (fn (line) (math/max 0 (math/min top (hunks-map-line hunks line))))))))
+
+(defn map-line (old new line)
+  "The 0-based line of `new` that line `line` of `old` became — `map-lines` for one line.
+
+    (diff/map-line \"a\\nb\\nc\\n\" \"x\\na\\nb\\nc\\n\" 2)   ;=> 3
+    (diff/map-line \"a\\nb\\nc\\n\" \"a\\nB\\nc\\n\" 1)   ;=> 1
+    (diff/map-line \"a\\nb\\nc\\n\" \"a\\nc\\n\" 1)   ;=> 1"
+  (first (map-lines old new [line])))
 
 ;; ---- utilities --------------------------------------------------------------
 
@@ -415,3 +471,42 @@ line, the line after which it was removed. What a jump from a diff to its file l
 
     (diff/hunk-old-line {:old-start 10 :lines [\" a\" \"-b\" \"+c\"]} 1)   ;=> 11"
   (side-line hunk i :old-start "+"))
+
+(defn hunk-changes (hunk:map)
+  "The changes inside a parsed unified-diff `hunk` (`parse-unified`'s) as zero-context
+hunks, `line-hunks`' shape — `[old-start old-count new-start new-count]`, 0-based, one per
+run of `-`/`+` lines between context. What lets a diff git printed be read by everything
+written for `line-hunks`: a change gutter is `(hunks-status (mapcat hunks hunk-changes))`.
+
+    (diff/hunk-changes {:old-start 1 :old-count 2 :new-start 1 :new-count 3 :lines [\" a\" \"-b\" \"+B\" \"+C\"]})   ;=> [[1 1 1 2]]
+    (diff/hunks-status (diff/hunk-changes {:old-start 3 :old-count 2 :new-start 3 :new-count 1 :lines [\" c\" \"-d\"]}))   ;=> {3 :deleted}"
+  (let (start (fn (start-key count-key)
+                ;; a side with no lines names the line BEFORE the change, 1-based — which is
+                ;; the 0-based line it sits before; otherwise its first line, 1-based
+                (let (s (header-int (get hunk start-key) 1))
+                  (if (= (header-int (get hunk count-key) 1) 0) s (dec s))))
+        flush (fn (state)
+                (let ({:keys [out old new removed added]} state)
+                  (if (= (+ removed added) 0)
+                    state
+                    (assoc state
+                      :out (conj out [(- old removed) removed (- new added) added])
+                      :removed 0
+                      :added 0))))
+        final (fold (:lines hunk)
+                {:out []
+                 :old (start :old-start :old-count)
+                 :new (start :new-start :new-count)
+                 :removed 0
+                 :added 0}
+                (fn (state line)
+                  (cond
+                    (string/starts-with? line "\\") state
+                    (string/starts-with? line "-")
+                      (assoc state :old (inc (:old state)) :removed (inc (:removed state)))
+                    (string/starts-with? line "+")
+                      (assoc state :new (inc (:new state)) :added (inc (:added state)))
+                    :else
+                      (let (flushed (flush state))
+                        (assoc flushed :old (inc (:old flushed)) :new (inc (:new flushed))))))))
+    (:out (flush final))))

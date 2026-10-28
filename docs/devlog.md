@@ -4539,3 +4539,13 @@ now scans outside strings and skips a block line inside an open string. ADR-498 
 doctest design; `docs/tooling.md` gains "Checking examples: `nest doctest`". Run here: the
 full `nest doctest` (0 failures), the std doctest engine (0 over 2,036 names), `nest check`,
 `--strict`, `nest format --check`, `cargo fmt --check`. Not run: the test suites.
+
+2026-10-28 (`diff/map-line`; ADR-499): `std/diff` answers where a line of an old text went in
+a new one — `map-line`, and `map-lines` for many positions over one diff — exact for an
+unchanged line, the same offset in the replacing block for a changed one, the following line
+for a deleted one, clamped to a line a cursor can be on. `hunk-changes` turns a parsed
+unified-diff hunk into zero-context hunks, so `hunks-status` (split out of `line-status`)
+reads a diff git printed the way it reads two texts. bedit's time machine dropped its two
+private copies; its auto-revert and format-on-save now keep point on its line. Run here:
+`tests/diff_test.blsp`, `tests/doc_examples_test.blsp`, `tests/audit_test.blsp`, `nest check
+--strict std/diff.blsp`. Not run: the full suites.
