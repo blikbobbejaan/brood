@@ -49,8 +49,8 @@ absolute paths). Best-effort on disk: a read-only tree costs a parse, never a wr
 (defn index-path (root: (or string nil) -> (or string nil))
   "Where the module index of the project at `root` lives; nil for a nil root (no persistence).
 
-    (module-index/index-path \"/proj\")   → \"/proj/.brood/module-index\"
-    (module-index/index-path nil)   → nil"
+    (module-index/index-path \"/proj\")   ;=> \"/proj/.brood/module-index\"
+    (module-index/index-path nil)   ;=> nil"
   (when root (path/join root *index-file*)))
 
 ;; One parse of a file, as the entry's tail `[modules own requires refs mentions]`: every
@@ -160,7 +160,7 @@ parsed, recorded, and the index rewritten. `root` nil keeps the memo in this pro
 writes nothing. A file that no longer exists maps to nil and is neither counted nor recorded.
 `(module-index/last-scan)` says how many took each path.
 
-    (module-index/index-entries nil (list \"/no/such/file.blsp\"))   → {\"/no/such/file.blsp\" nil}"
+    (module-index/index-entries nil (list \"/no/such/file.blsp\"))   ;=> {\"/no/such/file.blsp\" nil}"
   (let (r (fold files
             [{} (entries-of root) 0 0]
             (fn (acc file)
@@ -209,7 +209,7 @@ writes nothing. A file that no longer exists maps to nil and is neither counted 
   "The modules each of `files` declares — a map `file -> (list of module symbols)`, every key
 present (a file with no `defmodule` maps to nil) — through `index-entries`.
 
-    (module-index/index-files nil (list \"/no/such/file.blsp\"))   → {\"/no/such/file.blsp\" nil}"
+    (module-index/index-files nil (list \"/no/such/file.blsp\"))   ;=> {\"/no/such/file.blsp\" nil}"
   (fold (%map-pairs (index-entries root files))
     {}
     (fn (m entry) (let ([f e] entry) (assoc m f (if e (get e 0) nil))))))
@@ -222,7 +222,7 @@ index), every key present; a file that cannot be read reads `{:module nil :requi
 []}`. What `project-check` closes into each file's reachability set (KI-17) and preloads, with
 no source file opened for an unchanged one.
 
-    (module-index/infos-of nil (list \"/no/such/file.blsp\"))   → {\"/no/such/file.blsp\" {:module nil :requires [] :refs []}}"
+    (module-index/infos-of nil (list \"/no/such/file.blsp\"))   ;=> {\"/no/such/file.blsp\" {:module nil :requires [] :refs []}}"
   (fold (%map-pairs (index-entries root files))
     {}
     (fn (m entry)
@@ -243,7 +243,7 @@ comments and the insides of strings count: the project image's dependency eviden
 partial rebuild (ADR-419), where an extra prefix costs a reload and a missing one a stale
 module.
 
-    (module-index/mentions-of nil (list \"/no/such/file.blsp\"))   → {\"/no/such/file.blsp\" nil}"
+    (module-index/mentions-of nil (list \"/no/such/file.blsp\"))   ;=> {\"/no/such/file.blsp\" nil}"
   (fold (%map-pairs (index-entries root files))
     {}
     (fn (m entry) (let ([f e] entry) (assoc m f (if e (get e 4) nil))))))
@@ -253,7 +253,7 @@ module.
 `root`'s module index when current, parsed and recorded otherwise. nil for a file that
 declares none or cannot be read.
 
-    (module-index/modules-of nil \"/no/such/file.blsp\")   → nil"
+    (module-index/modules-of nil \"/no/such/file.blsp\")   ;=> nil"
   (get (index-files root (list file)) file))
 
 (defn last-scan ()
@@ -261,5 +261,5 @@ declares none or cannot be read.
 from the index, `:parsed` read from source. A warm run of an unchanged project reads
 `:parsed 0`; that is the gate `crates/nest/tests/module_index.rs` holds.
 
-    (sort (keys (module-index/last-scan)))   → (:files :hits :parsed)"
+    (sort (keys (module-index/last-scan)))   ;=> (:files :hits :parsed)"
   *last-scan*)

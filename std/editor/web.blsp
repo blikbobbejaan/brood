@@ -51,14 +51,14 @@ evaluated). Listens on 127.0.0.1 only.
   "A frame as JSON for the painter, or nil for one the encoder cannot carry (a bitboard
 op holds raw bytes) — the tab keeps its last frame rather than the stream dying.
 
-    (editor/web/frame-json [[:clear] [:text 0 0 \"hi\"]])   → \"[[\\\"clear\\\"],[\\\"text\\\",0,0,\\\"hi\\\"]]\""
+    (editor/web/frame-json [[:clear] [:text 0 0 \"hi\"]])   ;=> \"[[\\\"clear\\\"],[\\\"text\\\",0,0,\\\"hi\\\"]]\""
   ;; The error IS the answer: a frame the encoder refuses is skipped, not fatal.
   (check-allow :discarded-catch (try (json/encode frame) (catch _e nil))))
 
 (defn texture-json (tex rgba w h)
   "A texture upload as JSON: the handle, the size, and the pixels as base64.
 
-    (get (json/decode (editor/web/texture-json 3 (bytes 1 2 3 4) 1 1)) :rgba)   → \"AQIDBA==\""
+    (get (json/decode (editor/web/texture-json 3 (bytes 1 2 3 4) 1 1)) :rgba)   ;=> \"AQIDBA==\""
   (let (pixels (if (bytes? rgba) rgba (fold rgba #b"" (fn (acc b) (bytes/concat acc (bytes b))))))
     (json/encode {:tex tex :w w :h h :rgba (encoding/base64-encode-bytes pixels)})))
 
@@ -66,7 +66,7 @@ op holds raw bytes) — the tab keeps its last frame rather than the stream dyin
   "A sound upload as JSON: the handle, the rate and channel count, the PCM16 bytes as
 base64 — the tab decodes them into an AudioBuffer.
 
-    (get (json/decode (editor/web/sound-json 2 (bytes 0 0 255 127) 8000 1)) :rate)   → 8000"
+    (get (json/decode (editor/web/sound-json 2 (bytes 0 0 255 127) 8000 1)) :rate)   ;=> 8000"
   (let (samples (if (bytes? pcm) pcm (fold pcm #b"" (fn (acc b) (bytes/concat acc (bytes b))))))
     (json/encode {:snd snd
                   :rate rate
@@ -78,8 +78,8 @@ base64 — the tab decodes them into an AudioBuffer.
 evaluated), accepted only in the shapes a window sends — a string or keyword key, or
 a vector — anything else is nil and dropped.
 
-    (editor/web/parse-input \"[:mouse :press :left 20 10 [] 1]\")   → [:mouse :press :left 20 10 [] 1]
-    (editor/web/parse-input \"(system/halt 1)\")   → nil"
+    (editor/web/parse-input \"[:mouse :press :left 20 10 [] 1]\")   ;=> [:mouse :press :left 20 10 [] 1]
+    (editor/web/parse-input \"(system/halt 1)\")   ;=> nil"
   ;; Unreadable text from a tab is not an input message; nothing more to learn from it.
   (let (m (check-allow :discarded-catch (try (reflect/read-string text) (catch _e nil))))
     (if (or (string? m) (keyword? m) (vector? m)) m nil)))
@@ -87,8 +87,8 @@ a vector — anything else is nil and dropped.
 (defn input-tab (path)
   "The tab id a `POST /input/<id>` names, or nil for any other path.
 
-    (editor/web/input-tab \"/input/7\")   → 7
-    (editor/web/input-tab \"/other\")     → nil"
+    (editor/web/input-tab \"/input/7\")   ;=> 7
+    (editor/web/input-tab \"/other\")     ;=> nil"
   (if (string/starts-with? path "/input/")
     (let (n (string/->number (string/substring path 7)))
       (if (int? n) n nil))
@@ -101,8 +101,8 @@ a vector — anything else is nil and dropped.
 `\"tab.js\"`), compiled into the runtime from `std/editor/web/` — or nil for another name.
 A build of an app that runs in the tab copies these beside its bundle.
 
-    (string/starts-with? (editor/web/page \"index.html\") \"<!doctype html>\")   → true
-    (editor/web/page \"nope.js\")   → nil"
+    (string/starts-with? (editor/web/page \"index.html\") \"<!doctype html>\")   ;=> true
+    (editor/web/page \"nope.js\")   ;=> nil"
   (%builtin-doc (str "editor/web/" name)))
 
 (defn- static (name mime)
@@ -169,7 +169,7 @@ message would arrive (`[:key m]`)."
 (defn handler ()
   "The request handler: the static page, the event stream, and input by tab id.
 
-    (editor/web/handler)   ;=> a (fn (req) …) routing /, /app.js, /events and tab input"
+    (editor/web/handler)   ;~> a (fn (req) …) routing /, /app.js, /events and tab input"
   (let (routes {"/" (static "index.html" "text/html; charset=utf-8")
                 "/app.js" (static "app.js" "text/javascript; charset=utf-8")
                 "/events" events})
@@ -183,7 +183,7 @@ message would arrive (`[:key m]`)."
   "Serve the browser frontend on 127.0.0.1:`port` in a process of its own; returns
 its pid. A session manager must be registered (`editor/serve`) for a tab to get an app.
 
-    (editor/web/listen 8080)   ;=> #<pid …> serving the frontend on 127.0.0.1:8080"
+    (editor/web/listen 8080)   ;~> #<pid …> serving the frontend on 127.0.0.1:8080"
   (spawn (serve port (handler))))
 
 ;; --- a built page, served as files --------------------------------------------------------
@@ -199,9 +199,9 @@ its pid. A session manager must be registered (`editor/serve`) for a tab to get 
   "The file under `dir` a request `path` names — `tab.html` for `/` — or nil for a path
 that would leave `dir` (a `..` segment, or a backslash).
 
-    (editor/web/file-path \"web/tab\" \"/tab.js\")   → \"web/tab/tab.js\"
-    (editor/web/file-path \"web/tab\" \"/\")   → \"web/tab/tab.html\"
-    (editor/web/file-path \"web/tab\" \"/../project.blsp\")   → nil"
+    (editor/web/file-path \"web/tab\" \"/tab.js\")   ;=> \"web/tab/tab.js\"
+    (editor/web/file-path \"web/tab\" \"/\")   ;=> \"web/tab/tab.html\"
+    (editor/web/file-path \"web/tab\" \"/../project.blsp\")   ;=> nil"
   (let (relative (if (= path "/") "tab.html" (string/substring path 1)))
     (if (or (includes? relative "..") (includes? relative "\\"))
       nil
@@ -226,5 +226,5 @@ that would leave `dir` (a `..` segment, or a backslash).
 tab (`tab.html` and `tab.js` from `page`, the wasm runtime, the bundle), which needs nothing
 but files, a `.wasm` typed `application/wasm`. Returns the server's pid.
 
-    (editor/web/listen-files 8080 \"web/tab\")   ;=> #<pid …> serving web/tab's files"
+    (editor/web/listen-files 8080 \"web/tab\")   ;~> #<pid …> serving web/tab's files"
   (spawn (serve port (router {} (serve-file dir)))))

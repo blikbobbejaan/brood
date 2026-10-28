@@ -81,8 +81,8 @@ host owns the pty and the scrollback."
   "A fresh terminal of `cols` × `rows` cells: blank, cursor home, default attributes,
 the scroll region the whole screen, every mode at its reset value.
 
-    (:cols (vt/make 80 24))   → 80
-    (vt/cursor (vt/make 80 24))   → [0 0]"
+    (:cols (vt/make 80 24))   ;=> 80
+    (vt/cursor (vt/make 80 24))   ;=> [0 0]"
   {:cols cols
    :rows rows
    :grid (blank-grid cols rows)
@@ -104,7 +104,7 @@ the scroll region the whole screen, every mode at its reset value.
 (defn cursor (vt:terminal -> (tuple int int))
   "The cursor as `[row col]`, 0-based cells.
 
-    (vt/cursor (vt/feed (vt/make 10 2) \"ab\"))   → [0 2]"
+    (vt/cursor (vt/feed (vt/make 10 2) \"ab\"))   ;=> [0 2]"
   [(:row vt) (:col vt)])
 
 (defn mode (vt:terminal k:keyword -> any)
@@ -113,8 +113,8 @@ the scroll region the whole screen, every mode at its reset value.
 asked for — 1000 clicks, 1002 drags too, 1003 all motion — or nil), `:mouse-sgr`,
 `:focus-events`.
 
-    (vt/mode (vt/feed (vt/make 10 2) \"\\e[?2004h\") :bracketed-paste)   → true
-    (vt/mode (vt/make 10 2) :autowrap)   → true"
+    (vt/mode (vt/feed (vt/make 10 2) \"\\e[?2004h\") :bracketed-paste)   ;=> true
+    (vt/mode (vt/make 10 2) :autowrap)   ;=> true"
   (get (:modes vt) k))
 
 (defn- set-mode (vt:terminal k:keyword v:any -> terminal)
@@ -691,9 +691,9 @@ holds the rows that scrolled off the top of the main screen during this chunk, o
 first, as rows of cells — `(vt/line row palette)` reads one; the host keeps the scrollback.
 A chunk ending mid-sequence carries its tail into the next.
 
-    (vt/lines (vt/feed (vt/make 6 2) \"hi\\r\\nthere\"))   → [\"hi\" \"there\"]
-    (vt/lines (vt/feed (vt/make 10 2) \"1 + 41\\e[2Dx\"))   → [\"1 + x1\" \"\"]
-    (:replies (vt/feed (vt/make 6 2) \"\\e[6n\"))   → [\"\\e[1;1R\"]"
+    (vt/lines (vt/feed (vt/make 6 2) \"hi\\r\\nthere\"))   ;=> [\"hi\" \"there\"]
+    (vt/lines (vt/feed (vt/make 10 2) \"1 + 41\\e[2Dx\"))   ;=> [\"1 + x1\" \"\"]
+    (:replies (vt/feed (vt/make 6 2) \"\\e[6n\"))   ;=> [\"\\e[1;1R\"]"
   (let (v (string/->graphemes (str (:carry vt) chunk)))
     (run v 0 (count v) (assoc vt :carry "" :replies [] :evicted []))))
 
@@ -720,7 +720,7 @@ near the bottom), blanks enter at the bottom when it grows."
   "`vt` at `cols` × `rows`: rows that leave at the top of the main screen go to
 `:evicted`, the cursor is clamped, the scroll region is reset to the whole screen.
 
-    (vt/lines (vt/resize (vt/feed (vt/make 6 2) \"abcdef\") 3 2))   → [\"abc\" \"\"]"
+    (vt/lines (vt/resize (vt/feed (vt/make 6 2) \"abcdef\") 3 2))   ;=> [\"abc\" \"\"]"
   (let (lost (max 0 (- (count (:grid vt)) rows))
         history? (and (> lost 0) (not (mode vt :alt-screen)))
         main (:main vt))
@@ -767,9 +767,9 @@ near the bottom), blanks enter at the bottom when it grows."
   "Colour `c` — a palette index or `[r g b]` — as a colour: 0–15 from `palette` (16
 entries, each `[r g b]` or a hex string), 16–231 the 6×6×6 cube, 232–255 the grey ramp.
 
-    (vt/colour 1 vt/xterm-palette)   → [205 0 0]
-    (vt/colour 196 vt/xterm-palette)   → [255 0 0]
-    (vt/colour [1 2 3] vt/xterm-palette)   → [1 2 3]"
+    (vt/colour 1 vt/xterm-palette)   ;=> [205 0 0]
+    (vt/colour 196 vt/xterm-palette)   ;=> [255 0 0]
+    (vt/colour [1 2 3] vt/xterm-palette)   ;=> [1 2 3]"
   (cond
     (not (int? c)) c
     (< c 16) (nth palette c)
@@ -783,8 +783,8 @@ entries, each `[r g b]` or a hex string), 16–231 the 6×6×6 cube, 232–255 t
 through `palette` — `{:colors <16 entries> :fg <default fg> :bg <default bg>}`, the
 defaults used when inverse video needs a colour the cell never set. Nil for a default cell.
 
-    (vt/face {:fg 1 :bold true} nil)   → {:bold true, :fg [205 0 0]}
-    (vt/face nil nil)   → nil"
+    (vt/face {:fg 1 :bold true} nil)   ;=> {:bold true, :fg [205 0 0]}
+    (vt/face nil nil)   ;=> nil"
   (if (nil? attr)
     nil
     (let (colors (or (:colors palette) xterm-palette)
@@ -839,14 +839,14 @@ concatenated, `spans` the `[start end face]` runs of one attribute (reversed, co
 its text with trailing blanks trimmed and the `[start end face]` spans over it from
 offset 0, faces through `palette` (see [[face]]). What a host appends to its scrollback.
 
-    (vt/line (nth (:grid (vt/feed (vt/make 6 1) \"\\e[32mok\")) 0) nil)   → [\"ok\" [[0 2 {:fg [0 205 0]}]]]"
+    (vt/line (nth (:grid (vt/feed (vt/make 6 1) \"\\e[32mok\")) 0) nil)   ;=> [\"ok\" [[0 2 {:fg [0 205 0]}]]]"
   (let ([text spans _] (cells-line (seq/subvec row 0 (shown-cells row 0)) 0 palette))
     [text (into [] (reverse spans))]))
 
 (defn lines (vt:terminal -> (vector string))
   "The screen as a vector of strings, one per row, trailing blanks trimmed.
 
-    (vt/lines (vt/feed (vt/make 4 2) \"a\\e[31mb\"))   → [\"ab\" \"\"]"
+    (vt/lines (vt/feed (vt/make 4 2) \"a\\e[31mb\"))   ;=> [\"ab\" \"\"]"
   (into [] (map (:grid vt) (fn (row) (first (line row nil))))))
 
 (defn screen (vt:terminal palette:any -> map)
@@ -856,8 +856,8 @@ the `[start end face]` faces over that text (the `highlight-spans` shape, ascend
 non-overlapping) through `palette` (see [[face]]), and `:cursor` the char offset of the
 cursor in it (its row is padded out to the cursor, so the offset always exists).
 
-    (:text (vt/screen (vt/feed (vt/make 4 2) \"ab\\r\\ncd\") nil))   → \"ab\\ncd\"
-    (:cursor (vt/screen (vt/feed (vt/make 4 2) \"ab\\r\\ncd\") nil))   → 5"
+    (:text (vt/screen (vt/feed (vt/make 4 2) \"ab\\r\\ncd\") nil))   ;=> \"ab\\ncd\"
+    (:cursor (vt/screen (vt/feed (vt/make 4 2) \"ab\\r\\ncd\") nil))   ;=> 5"
   (letrec (go (fn (r pos texts spans cursor)
                 (if (>= r (:rows vt))
                   {:text (string/join (reverse texts) "\n")
@@ -953,9 +953,9 @@ C0 byte, alt prefixes ESC, a modified named key takes the xterm `CSI 1;m X` form
 modified enter / tab / backspace the `CSI code;m u` form a program reads to tell
 shift-enter from enter. Nil for a key with no terminal spelling.
 
-    (vt/key->bytes :up (vt/make 10 2))   → \"\\e[A\"
-    (vt/key->bytes :ctrl-c (vt/make 10 2))   → \"\\x03\"
-    (vt/key->bytes :shift-right (vt/make 10 2))   → \"\\e[1;2C\""
+    (vt/key->bytes :up (vt/make 10 2))   ;=> \"\\e[A\"
+    (vt/key->bytes :ctrl-c (vt/make 10 2))   ;=> \"\\x03\"
+    (vt/key->bytes :shift-right (vt/make 10 2))   ;=> \"\\e[1;2C\""
   (cond
     (string? key) key
     (not (keyword? key)) nil
@@ -985,8 +985,8 @@ shift-enter from enter. Nil for a key with no terminal spelling.
   "`text` as the program should receive a paste: wrapped in the bracketed-paste markers
 when the program asked for them, so it can tell a paste from typing.
 
-    (vt/paste->bytes \"hi\" (vt/make 10 2))   → \"hi\"
-    (vt/paste->bytes \"hi\" (vt/feed (vt/make 10 2) \"\\e[?2004h\"))   → \"\\e[200~hi\\e[201~\""
+    (vt/paste->bytes \"hi\" (vt/make 10 2))   ;=> \"hi\"
+    (vt/paste->bytes \"hi\" (vt/feed (vt/make 10 2) \"\\e[?2004h\"))   ;=> \"\\e[200~hi\\e[201~\""
   (if (mode vt :bracketed-paste)
     (str "\e[200~" text "\e[201~")
     text))
@@ -1007,8 +1007,8 @@ switched it on — the only form that reaches past column 223 — else X10's thr
 drag is reported only under 1002 / 1003, and never a motion with no button (1003 asks for
 it; this host has no such events).
 
-    (vt/mouse->bytes :press :left 2 4 [] (vt/feed (vt/make 10 5) \"\\e[?1000h\\e[?1006h\"))   → \"\\e[<0;5;3M\"
-    (vt/mouse->bytes :press :left 2 4 [] (vt/make 10 5))   → nil"
+    (vt/mouse->bytes :press :left 2 4 [] (vt/feed (vt/make 10 5) \"\\e[?1000h\\e[?1006h\"))   ;=> \"\\e[<0;5;3M\"
+    (vt/mouse->bytes :press :left 2 4 [] (vt/make 10 5))   ;=> nil"
   (let (reporting (mode vt :mouse)
         code (cond
                (= action :scroll-up) 64

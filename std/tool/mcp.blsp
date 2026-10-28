@@ -58,7 +58,7 @@ project the way `write`/`edit` are, and the `write`/`edit` sandbox does not
 constrain it. Anyone who can call this tool can do anything the `nest mcp`
 process's OS user can; that process is the trust boundary.
 
-    (mcp/eval-tool {:source \"(+ 1 2)\"})   → {:value \"3\"}"
+    (mcp/eval-tool {:source \"(+ 1 2)\"})   ;=> {:value \"3\"}"
   (let (src (get args :source))
     (when (not (string? src))
       (throw "eval: :source must be a string"))
@@ -106,7 +106,7 @@ defines (the silent flat-namespace collision). On a load error:
 process can read, it will load (and loading executes the file's top-level forms).
 Like `reflect/eval`, this tool is bounded by the `nest mcp` process, not by the project.
 
-    (mcp/load-tool {:file \"src/app.blsp\"})   ;=> {:ok true :diagnostics [] :shadows []}"
+    (mcp/load-tool {:file \"src/app.blsp\"})   ;~> {:ok true :diagnostics [] :shadows []}"
   (let (file (get args :file))
     (when (not (string? file))
       (throw "load: :file must be a string"))
@@ -222,7 +222,7 @@ itself as the trust boundary."
 unique. The editor's exact-replace Edit, routed through nest mcp so the session
 image stays in sync with disk.
 
-    (mcp/edit-tool {:path \"src/app.blsp\" :old \"(defn parse (s)\" :new \"(defn parse (s opts)\"})   ;=> {:ok true :path \"src/app.blsp\" :diagnostics […] …}"
+    (mcp/edit-tool {:path \"src/app.blsp\" :old \"(defn parse (s)\" :new \"(defn parse (s opts)\"})   ;~> {:ok true :path \"src/app.blsp\" :diagnostics […] …}"
   (let (rel (get args :path)
         old (get args :old)
         new (get args :new))
@@ -257,7 +257,7 @@ source-location `[file line col]` or nil).
 Unbound names come back as `{:name :error}` rather than a thrown error, so
 the agent can branch on `(get r :error)` cleanly.
 
-    (mcp/lookup-tool {:name \"string/join\"})   ;=> {:name \"string/join\" :arglist (…) :doc \"…\" :type \"…\" :source-location [\"…\" 12 1]}"
+    (mcp/lookup-tool {:name \"string/join\"})   ;~> {:name \"string/join\" :arglist (…) :doc \"…\" :type \"…\" :source-location [\"…\" 12 1]}"
   (let (name (get args :name))
     (when (not (string? name))
       (throw "lookup: :name must be a string"))
@@ -279,7 +279,7 @@ default) or recursively (`:mode \"all\"`). Returns `{:expanded pr-str}`.
 Reads the form ourselves rather than letting it interpolate into surrounding
 text — unbalanced parens in `:form` can't break the host expression.
 
-    (mcp/macroexpand-tool {:form \"(when a b)\"})   → {:expanded \"(if a (do b) nil)\"}"
+    (mcp/macroexpand-tool {:form \"(when a b)\"})   ;=> {:expanded \"(if a (do b) nil)\"}"
   (let (src (get args :form)
         mode (get args :mode))
     (when (not (string? src))
@@ -297,7 +297,7 @@ text — unbalanced parens in `:form` can't break the host expression.
 Idempotent. The require is lazy and cached, so the per-call cost is a hash
 check after the first invocation.
 
-    (mcp/format-tool {:source \"(+ 1   2)\"})   → {:formatted \"(+ 1 2)\\n\"}"
+    (mcp/format-tool {:source \"(+ 1   2)\"})   ;=> {:formatted \"(+ 1 2)\\n\"}"
   (let (src (get args :source))
     (when (not (string? src))
       (throw "format: :source must be a string"))
@@ -312,7 +312,7 @@ so a clean project renders as `{:diagnostics []}` rather than `{:diagnostics
 null}` — agents shouldn't have to disambiguate \"no warnings\" from
 \"missing field\".
 
-    (mcp/check-tool {})   ;=> {:diagnostics [{:file \"src/app.blsp\" :line 12 :col 5 :message \"…\"} …]} — [] when clean"
+    (mcp/check-tool {})   ;~> {:diagnostics [{:file \"src/app.blsp\" :line 12 :col 5 :message \"…\"} …]} — [] when clean"
   ;; `*project-root*`, not `(file/cwd)`: the server serves ONE project, and the write
   ;; sandbox and every other project-scoped tool read that root (KI-46). A nil root
   ;; makes `check-structured` fall back to the cwd and report "not in a Brood project".
@@ -325,7 +325,7 @@ result from `(project-run/run-tests-structured)` — `{:total :passed :failed
 :failed-assertions :ms :results [{:group :name :passed :ms :failures ...}]}`.
 Outside a Brood project, returns `{:error msg}`.
 
-    (mcp/run-tests-tool {})   ;=> {:total 42 :passed 42 :failed 0 :failed-assertions 0 :ms 830 :results […]}"
+    (mcp/run-tests-tool {})   ;~> {:total 42 :passed 42 :failed 0 :failed-assertions 0 :ms 830 :results […]}"
   (attempt project-run/run-tests-structured (fn (shape) {:error shape})))
 
 (defn- process-infos ()
@@ -344,7 +344,7 @@ heap bytes, GC count and monitors per process, not just the id. Order
 is unspecified — sort by `:id` (or `:reductions` to find the busiest)
 if you need stability.
 
-    (mcp/processes-tool {})   ;=> {:processes [{:id 1 :pid … :name … :status … :mailbox 0 …} …]}"
+    (mcp/processes-tool {})   ;~> {:processes [{:id 1 :pid … :name … :status … :mailbox 0 …} …]}"
   {:processes (process-infos)})
 
 (defn process-info-tool (args)
@@ -354,7 +354,7 @@ map (`{:id :pid :node :name :status :mailbox :memory :collections
 :reductions :monitored-by :parent}`), or `{:error msg}` if no live
 process carries that id.
 
-    (mcp/process-info-tool {:id 42})   ;=> {:id 42 :pid … :status :waiting :mailbox 0 :memory … :reductions … …}"
+    (mcp/process-info-tool {:id 42})   ;~> {:id 42 :pid … :status :waiting :mailbox 0 :memory … :reductions … …}"
   (let (id (get args :id))
     (when (not (int? id))
       (throw "proc/info: :id must be an integer"))
@@ -370,7 +370,7 @@ peers. Returns `{:node :workers :peak-threads :spawned :process-count
 :mem-bytes :mem-peak :peers}`. The \"is the runtime healthy / busy?\"
 overview, complementing per-process `processes`.
 
-    (mcp/node-tool {})   ;=> {:node … :workers 8 :peak-threads … :spawned 120 :process-count 9 :mem-bytes … :mem-peak … :peers []}"
+    (mcp/node-tool {})   ;~> {:node … :workers 8 :peak-threads … :spawned 120 :process-count 9 :mem-bytes … :mem-peak … :peers []}"
   {:node (node/name)
    :workers (dev/worker-threads)
    :peak-threads (dev/peak-threads)
@@ -387,7 +387,7 @@ call instead of scraping the individual stat builtins. Returns `{:gc :sched :vm 
 :metrics}`. The point-in-time companion to `watch-runtime` (which streams events); folds
 what `node`/`processes` expose behind one telemetry-fed view.
 
-    (mcp/vitals-tool {})   ;=> {:gc {…} :sched {…} :vm {…} :processes … :metrics …}"
+    (mcp/vitals-tool {})   ;~> {:gc {…} :sched {…} :vm {…} :processes … :metrics …}"
   (telemetry/runtime-snapshot))
 
 (defn- collect-runtime (acc)
@@ -408,7 +408,7 @@ reason), `:deopt` (detail = the JIT arm's fn name or nil). This is how an agent
 WATCHES the runtime (GC pauses, spawn/exit churn, JIT deopts) over an interval,
 complementing the point-in-time `processes`/`node` snapshots.
 
-    (mcp/watch-runtime-tool {:ms 1000 :filter {:gc true}})   ;=> {:events [{:kind :gc :pid … :detail {:pause-us 140 …}} …] :count 3 :ms 1000}"
+    (mcp/watch-runtime-tool {:ms 1000 :filter {:gc true}})   ;~> {:events [{:kind :gc :pid … :detail {:pause-us 140 …}} …] :count 3 :ms 1000}"
   (let (
         ; self-cap the window at 5 s
         ms (math/min (or (get args :ms) 500) 5000)
@@ -435,7 +435,7 @@ share the spelling are excluded. Source-occurrence based (ADR-031) — reference
 synthesised by macros aren't included. Complements `lookup` (which gives the
 *definition* site): this gives the *use* sites.
 
-    (mcp/callers-tool {:name \"app/parse\"})   ;=> {:references [{:file \"src/app.blsp\" :line 40 :col 7} …]}"
+    (mcp/callers-tool {:name \"app/parse\"})   ;~> {:references [{:file \"src/app.blsp\" :line 40 :col 7} …]}"
   (let (name (get args :name))
     (when (not (string? name))
       (throw "callers: :name must be a string"))
@@ -451,7 +451,7 @@ synthesised by macros aren't included. Complements `lookup` (which gives the
 `{:matches [name ...]}` (names as strings, sorted). The way to answer \"does X
 exist?\" without guessing names one at a time.
 
-    (mcp/apropos-tool {:pattern \"starts-with\"})   ;=> {:matches (\"string/starts-with?\" …)}"
+    (mcp/apropos-tool {:pattern \"starts-with\"})   ;~> {:matches (\"string/starts-with?\" …)}"
   (let (pattern (get args :pattern))
     (when (not (string? pattern))
       (throw "apropos: :pattern must be a string"))
@@ -461,14 +461,14 @@ exist?\" without guessing names one at a time.
   "`all-globals` — every globally bound name in the image. Returns
 `{:globals [name ...]}` (sorted strings).
 
-    (mcp/all-globals-tool {})   ;=> {:globals […every bound name, as sorted strings…]}"
+    (mcp/all-globals-tool {})   ;~> {:globals […every bound name, as sorted strings…]}"
   {:globals (map (reflect/global-names) ->string)})
 
 (defn doc-search-tool (args)
   "`doc-search` — find globals whose docstring contains a query string. Returns
 `{:results [{:name :doc} ...]}` — searches behaviour, not just names.
 
-    (mcp/doc-search-tool {:query \"grapheme\"})   ;=> {:results [{:name \"string/graphemes\" :doc \"…\"} …]}"
+    (mcp/doc-search-tool {:query \"grapheme\"})   ;~> {:results [{:name \"string/graphemes\" :doc \"…\"} …]}"
   (let (query (get args :query))
     (when (not (string? query))
       (throw "doc-search: :query must be a string"))
@@ -481,7 +481,7 @@ Returns `{:code :summary :causes :fix :example}` from the curated catalogue
 (`std/tool/explain.blsp`). The teach-the-error tool: an agent that hits `E0044`
 gets the tail-recursion fix, not just the message.
 
-    (mcp/explain-error-tool {:code \"E0044\"})   ;=> {:code \"E0044\" :summary \"…\" :causes … :fix \"…\" :example \"…\"}"
+    (mcp/explain-error-tool {:code \"E0044\"})   ;~> {:code \"E0044\" :summary \"…\" :causes … :fix \"…\" :example \"…\"}"
   (let (code (get args :code))
     (when (not (string? code))
       (throw "error: :code must be a string (e.g. \"E0030\")"))
@@ -512,7 +512,7 @@ millisecond `now` clock, so time a sub-millisecond expression with a larger
 `:iterations` to amortise it. Side effects persist — it really runs the code,
 like `reflect/eval`. Returns `{:error msg}` on failure.
 
-    (mcp/bench-tool {:source \"(sort (range 1000))\" :iterations 100})   ;=> {:ms 12 :iterations 100 :per-iter-ms 0.12 :value \"(0 1 2 …)\"}"
+    (mcp/bench-tool {:source \"(sort (range 1000))\" :iterations 100})   ;~> {:ms 12 :iterations 100 :per-iter-ms 0.12 :value \"(0 1 2 …)\"}"
   (let (src (get args :source)
         iters (or (get args :iterations) 1))
     (when (not (string? src))
@@ -556,7 +556,7 @@ across its ops via the `*impls*` registry."
   "`abilities` — list every ability defined in the image, sorted. Returns
 `{:abilities [name …]}`. The discovery entry point for `ability`.
 
-    (mcp/abilities-tool {})   ;=> {:abilities (…every ability name, sorted…)}"
+    (mcp/abilities-tool {})   ;~> {:abilities (…every ability name, sorted…)}"
   {:abilities (sort (map (keys *abilities*) str))})
 
 (defn ability-tool (args)
@@ -566,7 +566,7 @@ its owner namespace, whether it's derivable, and which types implement it. Retur
 `{:name :ops :sealed :members :requires :owner :derivable :impls}`, or
 `{:name :error}` when `:name` isn't a known ability.
 
-    (mcp/ability-tool {:name \"Display\"})   ;=> {:name … :ops […] :sealed false :members … :requires … :owner … :derivable … :impls […]}"
+    (mcp/ability-tool {:name \"Display\"})   ;~> {:name … :ops […] :sealed false :members … :requires … :owner … :derivable … :impls […]}"
   (let (name-str (get args :name))
     (when (not (string? name-str))
       (throw "ability: :name must be a string"))
@@ -596,7 +596,7 @@ for iterating on a snippet before committing it to a file. Returns
 `{:diagnostics [{:line :col :message} …]}` — empty when clean or when `:source`
 doesn't parse (incomplete input). Backed by `check-string-structured`.
 
-    (mcp/check-source-tool {:source \"(defn f (x) (+ x \\\"a\\\"))\"})   ;=> {:diagnostics [{:line 1 :col 17 :message \"…\"}]}"
+    (mcp/check-source-tool {:source \"(defn f (x) (+ x \\\"a\\\"))\"})   ;~> {:diagnostics [{:line 1 :col 17 :message \"…\"}]}"
   (let (src (get args :source))
     (when (not (string? src))
       (throw "check-source: :source must be a string"))
@@ -840,7 +840,7 @@ optional `total` (the denominator) and `message` (a label). Streams a
 `_meta.progressToken`; a no-op otherwise, so it is safe to call from any handler.
 Returns true if a report was sent.
 
-    (mcp/progress 1 3 \"step one\")   → false"
+    (mcp/progress 1 3 \"step one\")   ;=> false"
   (let (sink *mcp-progress-sink*)
     (if (nil? sink)
       false
@@ -1240,7 +1240,7 @@ the tooling frameworks first (`project/setup-tooling-image`, shared with the LSP
 project's own `mcp.blsp` if it has one, which may define `mcp-tools` to extend or replace
 the catalogue; anything that prints is discarded, since stdout is the JSON-RPC channel.
 
-    (mcp/main)   ;=> 0 — the exit code once the client hangs up"
+    (mcp/main)   ;~> 0 — the exit code once the client hangs up"
   (project/load-config)
   (let (root (project/require-root "nest mcp"))
     (project/setup-tooling-image root)

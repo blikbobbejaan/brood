@@ -41,13 +41,13 @@ always — useful for content-based IDs and idempotent generation.")
 (defn v4 ()
   "Generate a random RFC 4122 version 4 UUID string.
 
-    (count (uuid/v4))   → 36"
+    (count (uuid/v4))   ;=> 36"
   (layout (rand/token 16) "4"))
 
 (defn zero ()
   "The nil UUID: all zeros.
 
-    (uuid/zero)   → \"00000000-0000-0000-0000-000000000000\""
+    (uuid/zero)   ;=> \"00000000-0000-0000-0000-000000000000\""
   "00000000-0000-0000-0000-000000000000")
 
 (defn v7 ()
@@ -55,7 +55,7 @@ always — useful for content-based IDs and idempotent generation.")
 Unix timestamp in milliseconds, giving chronological sort order. The rest is
 random. Use v7 for database keys and time-ordered IDs; use v4 for privacy.
 
-    (count (uuid/v7))   → 36"
+    (count (uuid/v7))   ;=> 36"
   (layout (str (string/pad-left (string/number-> (os/now) 16) 12 "0") (rand/token 10)) "7"))
 
 ;; ---- validation -------------------------------------------------------------
@@ -63,8 +63,8 @@ random. Use v7 for database keys and time-ordered IDs; use v4 for privacy.
 (defn valid? (s)
   "True if `s` is a well-formed UUID string (8-4-4-4-12 hex, any case, with dashes).
 
-    (uuid/valid? (uuid/v4))   → true
-    (uuid/valid? \"nope\")      → false"
+    (uuid/valid? (uuid/v4))   ;=> true
+    (uuid/valid? \"nope\")      ;=> false"
   (and (= (string/length s) 36)
     (every? (range 36)
       (fn (i)
@@ -95,7 +95,7 @@ random. Use v7 for database keys and time-ordered IDs; use v4 for privacy.
 always returns the same UUID. Use `uuid/ns-dns`, `uuid/ns-url`, `uuid/ns-oid`,
 or `uuid/ns-x500` as the namespace, or supply your own UUID string.
 
-    (uuid/v3 uuid/ns-dns \"example.com\")   → \"9073926b-929f-31c2-abc9-fad77ae3e8eb\""
+    (uuid/v3 uuid/ns-dns \"example.com\")   ;=> \"9073926b-929f-31c2-abc9-fad77ae3e8eb\""
   (name-based ns-uuid name hash/md5-bytes 3))
 
 (defn v5 (ns-uuid name)
@@ -104,5 +104,5 @@ always returns the same UUID. Prefer v5 over v3 (SHA-1 > MD5). Use
 `uuid/ns-dns`, `uuid/ns-url`, `uuid/ns-oid`, or `uuid/ns-x500` as the
 namespace, or supply your own UUID string.
 
-    (uuid/v5 uuid/ns-dns \"example.com\")   → \"cfbff0d1-9375-5685-968c-48ce8b15ae17\""
+    (uuid/v5 uuid/ns-dns \"example.com\")   ;=> \"cfbff0d1-9375-5685-968c-48ce8b15ae17\""
   (name-based ns-uuid name hash/sha1-bytes 5))

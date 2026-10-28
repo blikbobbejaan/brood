@@ -7,59 +7,75 @@
 (defmodule doctest-test (:use test))
 
 (describe "example-lines"
-  (test "only an indented line carrying the arrow is a case"
+  (test "only an indented line with a form before ` ;=> ` is a case"
     ;; The indent is the whole discriminator between an example and a sentence — much prose
     ;; names values that do not exist outside the sentence.
-    (assert= 1 (count (doctest/example-lines "prose\n    (+ 1 1)   → 2")))
-    (assert= [] (apply vector (doctest/example-lines "see (+ 1 1) → 2 for why")))
+    (assert= 1 (count (doctest/example-lines "prose\n    (+ 1 1)   ;=> 2")))
+    (assert= [] (apply vector (doctest/example-lines "see (+ 1 1) ;=> 2 for why")))
     (assert= [] (apply vector (doctest/example-lines "    (+ 1 1) is two")))
     (assert= [] (apply vector (doctest/example-lines "")))))
 
 (describe "check"
   (test "a holding example returns nil"
-    (assert= nil (doctest/check "p" "    (+ 1 1)   → 2"))
-    (assert= nil (doctest/check "p" "    (->string :a)  → \"a\"")))
+    (assert= nil (doctest/check "p" "    (+ 1 1)   ;=> 2"))
+    (assert= nil (doctest/check "p" "    (->string :a)  ;=> \"a\"")))
   (test "a broken one describes the gap, naming both sides"
-    (let (m (doctest/check "p" "    (+ 1 1)   → 3"))
+    (let (m (doctest/check "p" "    (+ 1 1)   ;=> 3"))
       (is (not (nil? m)))
       (is (includes? m "got 2"))
       (is (includes? m "documented 3"))))
-  (test "a trailing comment is ignored"
-    (assert= nil (doctest/check "p" "    (+ 1 1)   → 2  ; two")))
+  (test "a comment after the result is ignored"
+    (assert= nil (doctest/check "p" "    (+ 1 1)   ;=> 2  ; two")))
+  ;; Both markers are comments, so the scan that finds them must skip string literals —
+  ;; in the form and in the result.
+  (test "a semicolon inside a string is not a marker"
+    (assert= nil (doctest/check "p" "    (str \"a;=> b\")   ;=> \"a;=> b\""))
+    (assert= nil (doctest/check "p" "    (str \"a; b\")   ;=> \"a; b\"")))
   ;; A documented list is written `(:a :b)`, which as a FORM would call `:a`. It is READ,
   ;; so it is the list value it depicts.
   (test "the expected side is read as a value, not evaluated as a form"
-    (assert= nil (doctest/check "p" "    (list :a :b)   → (:a :b)")))
+    (assert= nil (doctest/check "p" "    (list :a :b)   ;=> (:a :b)")))
   ;; A printed map is in the trie's order, which moves when anything else in the image
   ;; changes — including an unrelated kernel primitive. Comparing as a VALUE is what makes
   ;; the example stable; comparing the printed text is what made one fire spuriously.
   (test "a map is compared as a value, so key order cannot break it"
-    (assert= nil (doctest/check "p" "    (assoc {:a 1} :b 2)   → {:b 2, :a 1}"))
-    (assert= nil (doctest/check "p" "    (assoc {:a 1} :b 2)   → {:a 1, :b 2}")))
+    (assert= nil (doctest/check "p" "    (assoc {:a 1} :b 2)   ;=> {:b 2, :a 1}"))
+    (assert= nil (doctest/check "p" "    (assoc {:a 1} :b 2)   ;=> {:a 1, :b 2}")))
   (test "a raising example is matched on its RAISED text, never silently accepted"
-    (is (not (nil? (doctest/check "p" "    (/ 1 0)   → 0")))))
+    (is (not (nil? (doctest/check "p" "    (/ 1 0)   ;=> 0")))))
   ;; A line the selector CALLS an example must not then be dropped in silence — that is an
-  ;; unchecked promise wearing the shape of a checked one. A second arrow is the typo that
-  ;; used to buy it.
+  ;; unchecked promise wearing the shape of a checked one. A second marker is the typo that
+  ;; would buy it, since it reads as a comment after the result.
   (test "a line that looks like an example but does not parse is reported, not dropped"
-    (let (m (doctest/check "p" "    (+ 1 1)   → 2 → 3"))
-      (is (not (nil? m)))
-      (is (includes? m "malformed example"))))
+    (is (includes? (doctest/check "p" "    (+ 1 1)   ;=> 2 ;=> 3") "malformed example"))
+    (is (includes? (doctest/check "p" "    (+ 1 1)   ;=> 2 ;~> 3") "malformed example"))
+    (is (includes? (doctest/check "p" "    (+ 1 1)   ;=>") "malformed example")))
   (test "but a line that is not an example at all stays nil"
     (assert= nil (doctest/check "p" "    (+ 1 1)"))
-    (assert= nil (doctest/check "p" "not indented   → 2"))))
+    (assert= nil (doctest/check "p" "not indented   ;=> 2"))
+    (assert= nil (doctest/check "p" "    ;; a comment line   ;=> 2"))))
+
+(describe "the retired ` → ` marker"
+  ;; The sweep that moved every docstring to ` ;=> ` is only complete if a line it missed is
+  ;; loud. Skipping it would drop that example from the gate without a word.
+  (test "an indented line still written with the arrow is reported"
+    (is (includes? (doctest/check "p" "    (+ 1 1)   → 2") "old marker")))
+  (test "an arrow in prose, a comment or a string is not"
+    (assert= nil (doctest/check "p" "see (+ 1 1) → 2 for why"))
+    (assert= nil (doctest/check "p" "    (+ 1 1)   ;=> 2  ; one → two"))
+    (assert= nil (doctest/check "p" "    (str \"a → b\")   ;=> \"a → b\""))))
 
 (describe "the selector and the parser agree"
-  ;; They disagreed: `example-lines` tested the RAW line for the arrow while `case-of`
-  ;; stripped the trailing comment first, so a line whose only arrow sat inside a comment was
-  ;; selected as an example and then silently dropped. One line in std/ hit it.
-  (test "an arrow that only appears inside a comment is not an example"
+  ;; They disagreed once: the selector tested the raw line while the parser stripped the
+  ;; trailing comment first, so a line whose only marker sat inside a comment was selected
+  ;; and then silently dropped. One line in std/ hit it.
+  (test "a marker that only appears inside a later comment is not an example"
     (assert= []
       (apply vector
-        (doctest/example-lines "    (defrecord c (r))   ; (c 2) → {:r 2}"))))
-  (test "an arrow outside the comment still is, comment and all"
-    (assert= 1 (count (doctest/example-lines "    (+ 1 1)   → 2  ; two")))
-    (assert= nil (doctest/check "p" "    (+ 1 1)   → 2  ; two"))))
+        (doctest/example-lines "    (defrecord c (r))   ; (c 2) ;=> {:r 2}"))))
+  (test "a marker that opens the comment still is, comment and all"
+    (assert= 1 (count (doctest/example-lines "    (+ 1 1)   ;=> 2  ; two")))
+    (assert= nil (doctest/check "p" "    (+ 1 1)   ;=> 2  ; two"))))
 
 (describe "failures-under"
   (test "scopes to a prefix, so one package's gate ignores every other"
@@ -71,32 +87,32 @@
   (test "the standard library's own examples hold"
     (assert= [] (doctest/failures-under "string/"))))
 
-(describe "illustrations — ` ;=> ` examples for results that depend on the world"
+(describe "illustrations — ` ;~> ` examples for results that depend on the world"
   (test "an illustration is read and its callee checked, never evaluated"
     ;; `file/slurp` of a file that does not exist would RAISE if evaluated: a nil here is
     ;; the proof it was not.
-    (is (nil? (doctest/check "x" "    (file/slurp \"/no/such/file\")   ;=> \"…the text…\""))))
+    (is (nil? (doctest/check "x" "    (file/slurp \"/no/such/file\")   ;~> \"…the text…\""))))
   (test "a callee that does not exist fails"
-    (is (includes? (doctest/check "x" "    (file/slurpp \"a\")   ;=> \"…\"") "not defined")))
+    (is (includes? (doctest/check "x" "    (file/slurpp \"a\")   ;~> \"…\"") "not defined")))
   (test "a form that does not read fails"
-    (is (includes? (doctest/check "x" "    (file/slurp \"a\"   ;=> \"…\"") "does not read")))
+    (is (includes? (doctest/check "x" "    (file/slurp \"a\"   ;~> \"…\"") "does not read")))
   (test "a special form is a fine head"
-    (is (nil? (doctest/check "x" "    (let (p \"a\") (file/slurp p))   ;=> \"…\""))))
+    (is (nil? (doctest/check "x" "    (let (p \"a\") (file/slurp p))   ;~> \"…\""))))
   ;; Never run, so after a rename or an argument reorder the argument COUNT is the one thing
   ;; that notices an illustration went stale.
   (test "an argument count no arm of the callee takes fails, naming the arities"
-    (let (fault (doctest/check "x" "    (file/slurp \"a\" \"b\" \"c\")   ;=> \"…\""))
+    (let (fault (doctest/check "x" "    (file/slurp \"a\" \"b\" \"c\")   ;~> \"…\""))
       (is (includes? fault "passes 3 arguments"))
       (is (includes? fault "(path)"))))
   (test "every arm of a multi-arity callee counts, and so do optional and rest parameters"
     ;; `table/get` has a 2- and a 3-arity arm; `str` takes any number
-    (is (nil? (doctest/check "x" "    (table/get t :k :default)   ;=> …")))
-    (is (nil? (doctest/check "x" "    (table/get t :k)   ;=> …")))
-    (is (includes? (doctest/check "x" "    (table/get t)   ;=> …") "passes 1 argument"))
-    (is (nil? (doctest/check "x" "    (str 1 2 3 4 5)   ;=> …"))))
+    (is (nil? (doctest/check "x" "    (table/get t :k :default)   ;~> …")))
+    (is (nil? (doctest/check "x" "    (table/get t :k)   ;~> …")))
+    (is (includes? (doctest/check "x" "    (table/get t)   ;~> …") "passes 1 argument"))
+    (is (nil? (doctest/check "x" "    (str 1 2 3 4 5)   ;~> …"))))
   (test "a `…` argument stands for any number"
-    (is (nil? (doctest/check "x" "    (file/slurp …)   ;=> …"))))
+    (is (nil? (doctest/check "x" "    (file/slurp …)   ;~> …"))))
   (test "a result continuing the line above is prose, not an illustration"
-    (assert= 0 (count (doctest/illustration-lines "x\n    (f 1)\n    ;=> {:a 1}"))))
+    (assert= 0 (count (doctest/illustration-lines "x\n    (f 1)\n    ;~> {:a 1}"))))
   (test "the audit counts an illustration as an example"
     (is (audit/exemplified? 'doctest/illustration-lines))))

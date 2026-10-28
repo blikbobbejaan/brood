@@ -21,8 +21,8 @@ the running `nest` lives in. The pure parts (`target-triple`, `version-newer?`,
   "The release target for `uname -s` and `uname -m` output, as the release assets name it,
 or a failure for a platform no release is built for.
 
-    (update-brood/target-triple \"Linux\" \"x86_64\")   → \"x86_64-unknown-linux-gnu\"
-    (update-brood/target-triple \"Darwin\" \"arm64\")   → \"aarch64-apple-darwin\""
+    (update-brood/target-triple \"Linux\" \"x86_64\")   ;=> \"x86_64-unknown-linux-gnu\"
+    (update-brood/target-triple \"Darwin\" \"arm64\")   ;=> \"aarch64-apple-darwin\""
   (let (os-part (case os-name "Linux" "unknown-linux-gnu" "Darwin" "apple-darwin" nil)
         arch-part (case machine
                     "x86_64" "x86_64"
@@ -46,8 +46,8 @@ or a failure for a platform no release is built for.
 (defn version-newer? (candidate current)
   "True when release `candidate` is a later version than `current`; a leading `v` is ignored.
 
-    (update-brood/version-newer? \"v0.34.0\" \"0.33.0\")   → true
-    (update-brood/version-newer? \"v0.9.0\" \"0.10.0\")   → false"
+    (update-brood/version-newer? \"v0.34.0\" \"0.33.0\")   ;=> true
+    (update-brood/version-newer? \"v0.9.0\" \"0.10.0\")   ;=> false"
   (letrec (compare (fn (left right)
                      (cond
                        (and (empty? left) (empty? right)) false
@@ -62,7 +62,7 @@ or a failure for a platform no release is built for.
 (defn asset-url (tag target)
   "The download URL of release `tag`'s tarball for `target` (add `.sha256` for its checksum).
 
-    (update-brood/asset-url \"v0.34.0\" \"x86_64-unknown-linux-gnu\")   → \"https://github.com/broodlang/brood/releases/download/v0.34.0/brood-v0.34.0-x86_64-unknown-linux-gnu.tar.gz\""
+    (update-brood/asset-url \"v0.34.0\" \"x86_64-unknown-linux-gnu\")   ;=> \"https://github.com/broodlang/brood/releases/download/v0.34.0/brood-v0.34.0-x86_64-unknown-linux-gnu.tar.gz\""
   (str "https://github.com/"
     *repository* "/releases/download/" tag "/brood-" tag "-" target ".tar.gz"))
 
@@ -171,7 +171,7 @@ or a failure for a platform no release is built for.
 true, only says whether a newer release exists. Returns 0 when done or already current, and
 1 with a message on stderr on any failure. Backs `nest update-brood`.
 
-    (update-brood/update {:check true})   ;=> 0 — says whether a newer release exists, installs nothing"
+    (update-brood/update {:check true})   ;~> 0 — says whether a newer release exists, installs nothing"
   (let ({:keys [version dir check]} options
         current (system/brood-version)
         outcome (with (tag (if (string? version) version (latest-tag)) target (this-target))

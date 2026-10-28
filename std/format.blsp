@@ -30,7 +30,7 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
 (defn width ()
   "The effective column budget: the project's `:width` when set, else the built-in default.
 
-    (format/width)   → 100   ; the column the formatter wraps at"
+    (format/width)   ;=> 100   ; the column the formatter wraps at"
   (or *project-width* *width*))
 
 ;; ---- CST node accessors -----------------------------------------------------
@@ -43,12 +43,12 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
 (defn node-kind (n)
   "The kind keyword of CST node `n` (`:list`, `:symbol`, `:whitespace`, …).
 
-    (format/node-kind [:symbol \"foo\"])   → :symbol"
+    (format/node-kind [:symbol \"foo\"])   ;=> :symbol"
   (nth n 0))
 (defn node-text (n)
   "The raw source text of leaf node `n` (so it re-emits byte-for-byte).
 
-    (format/node-text [:symbol \"foo\"])   → \"foo\""
+    (format/node-text [:symbol \"foo\"])   ;=> \"foo\""
   (nth n 1))
 ; leaf
 (defn- node-form (n) (nth n 1))
@@ -56,7 +56,7 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
 (defn node-children (n)
   "The child-node vector of container node `n` (includes trivia).
 
-    (count (format/node-children (reflect/parse-source \"(a) (b)\")))   → 3"
+    (count (format/node-children (reflect/parse-source \"(a) (b)\")))   ;=> 3"
   (nth n 1))
 ; container (a vector)
 
@@ -65,8 +65,8 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
 (defn trivia? (n)
   "True if node `n` is trivia — whitespace or a comment.
 
-    (format/trivia? [:whitespace \" \"])   → true
-    (format/trivia? [:symbol \"a\"])       → false"
+    (format/trivia? [:whitespace \" \"])   ;=> true
+    (format/trivia? [:symbol \"a\"])       ;=> false"
   (or (whitespace? n) (comment? n)))
 
 (defn- container? (n)
@@ -80,7 +80,7 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
 (defn vec->list (v:vector -> any)
   "The vector `v` as a list, preserving order.
 
-    (format/vec->list [1 2 3])   → (1 2 3)"
+    (format/vec->list [1 2 3])   ;=> (1 2 3)"
   (vec->list-acc v (dec (count v)) nil))
 (defn- vec->list-acc (v i acc)
   (if (< i 0) acc (vec->list-acc v (dec i) (cons (nth v i) acc))))
@@ -88,7 +88,7 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
 (defn count-newlines (s:string -> int)
   "How many `\\n` characters appear in string `s`.
 
-    (format/count-newlines \"a\nb\")   → 1"
+    (format/count-newlines \"a\nb\")   ;=> 1"
   ;; Native O(n) split. A per-char `(string/substring s i (inc i))` loop is O(n^2) —
   ;; `substring` walks to char boundary `i` each call.
   (dec (count (string/split s "\n"))))
@@ -190,8 +190,8 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
 not a known body form (defaults to call-style — every arg breaks). Consults the
 project/plugin table (`*format-headers-extra*`) first, then the built-ins.
 
-    (format/head-header-count [:symbol \"defn\"])   → 2
-    (format/head-header-count [:int \"1\"])         → -1"
+    (format/head-header-count [:symbol \"defn\"])   ;=> 2
+    (format/head-header-count [:int \"1\"])         ;=> -1"
   (if (= (node-kind head-node) :symbol)
     (let (sym (symbol (node-text head-node)))
       (get *format-headers-extra* sym (get *format-headers* sym -1)))
@@ -214,15 +214,15 @@ project/plugin table (`*format-headers-extra*`) first, then the built-ins.
 (defn pair-bindings? (head-node)
   "True if `head-node` names a form whose first header arg is a pair-list.
 
-    (format/pair-bindings? [:symbol \"let\"])   → true
-    (format/pair-bindings? [:symbol \"do\"])    → false"
+    (format/pair-bindings? [:symbol \"let\"])   ;=> true
+    (format/pair-bindings? [:symbol \"do\"])    ;=> false"
   (and (= (node-kind head-node) :symbol)
     (get *format-pair-bindings* (symbol (node-text head-node)) false)))
 
 (defn pair-body? (head-node:vector -> bool)
   "True if `head-node` names a form whose body emits in pairs.
 
-    (format/pair-body? [:symbol \"cond\"])   → true"
+    (format/pair-body? [:symbol \"cond\"])   ;=> true"
   (and (= (node-kind head-node) :symbol)
     (get *format-pair-body* (symbol (node-text head-node)) false)))
 
@@ -244,8 +244,8 @@ show a multi-arity/multi-pattern body: the slot after the name holds an ARM — 
 whose first element is a list or vector — not a params list. Such a form keeps only
 the name on the head line so every arm lands on its own line.
 
-    (format/multi-arity-defn? [:symbol \"defn\"] [[:symbol \"f\"] [:list [[:list []]]]])     → true
-    (format/multi-arity-defn? [:symbol \"defn\"] [[:symbol \"f\"] [:list [[:symbol \"x\"]]]])   → false"
+    (format/multi-arity-defn? [:symbol \"defn\"] [[:symbol \"f\"] [:list [[:list []]]]])     ;=> true
+    (format/multi-arity-defn? [:symbol \"defn\"] [[:symbol \"f\"] [:list [[:symbol \"x\"]]]])   ;=> false"
   (and (defn-family? head-node)
     (>= (count args) 2)
     (let (slot (second args))
@@ -268,8 +268,8 @@ the name on the head line so every arm lands on its own line.
 (defn verbatim-kind? (k)
   "True if node kind `k` re-emits as exactly its own source text (a leaf literal).
 
-    (format/verbatim-kind? :int)    → true
-    (format/verbatim-kind? :list)   → false"
+    (format/verbatim-kind? :int)    ;=> true
+    (format/verbatim-kind? :list)   ;=> false"
   (contains? *verbatim-kinds* k))
 
 ;; ---- labelled bodies --------------------------------------------------------
@@ -293,15 +293,15 @@ the name on the head line so every arm lands on its own line.
   "True for a bare symbol ending in `:` — a label in a labelled body (`next:`). A
 keyword (`:next`) is not one.
 
-    (format/label-node? [:symbol \"next:\"])    → true
-    (format/label-node? [:keyword \":next\"])   → false"
+    (format/label-node? [:symbol \"next:\"])    ;=> true
+    (format/label-node? [:keyword \":next\"])   ;=> false"
   (and (= (node-kind c) :symbol)
     (let (t (node-text c)) (and (> (string/length t) 1) (string/ends-with? t ":")))))
 
 (defn labelled-body? (forms)
   "True when any of the body `forms` (the args after a head) is a label.
 
-    (format/labelled-body? [[:symbol \"a\"] [:symbol \"next:\"]])   → true"
+    (format/labelled-body? [[:symbol \"a\"] [:symbol \"next:\"]])   ;=> true"
   (any? forms label-node?))
 
 ;; Single-line emit: returns the string, or nil if the node cannot legally
@@ -310,8 +310,8 @@ keyword (`:next`) is not one.
 (defn single-line (n)
   "Render node `n` on one line, or nil if it can't legally be single-line (it contains a comment, or a string with a literal newline). Recursive — a list inlines only if every child does.
 
-    (format/single-line (first (format/node-children (reflect/parse-source \"(a\\n  b)\"))))     → \"(a b)\"
-    (format/single-line (first (format/node-children (reflect/parse-source \"(a ; c\\n  b)\"))))   → nil"
+    (format/single-line (first (format/node-children (reflect/parse-source \"(a\\n  b)\"))))     ;=> \"(a b)\"
+    (format/single-line (first (format/node-children (reflect/parse-source \"(a ; c\\n  b)\"))))   ;=> nil"
   (let (k (node-kind n))
     (cond
       (= k :whitespace) " "
@@ -367,7 +367,7 @@ keyword (`:next`) is not one.
 (defn render (n indent)
   "Render node `n` at column `indent` as canonical text, breaking across lines when it exceeds the width budget. The result never ends with a newline (callers own the gluing).
 
-    (format/render (first (format/node-children (reflect/parse-source \"(a   b)\"))) 0)   → \"(a b)\""
+    (format/render (first (format/node-children (reflect/parse-source \"(a   b)\"))) 0)   ;=> \"(a b)\""
   (let (k (node-kind n))
     (cond
       (or (verbatim-kind? k) (= k :str)) (node-text n)
@@ -562,8 +562,8 @@ same-line trailing comment is left in place rather than hoisted above its form
 That retired the `comment-on-own-line?` pair this used to need, and they are gone —
 if you are reintroducing hoisting, they are what you have to write back.
 
-    (format/last-nonws-comment? [[:symbol \"a\"] [:comment \";; x\"] [:whitespace \" \"]])   → true
-    (format/last-nonws-comment? [[:comment \";; x\"] [:symbol \"a\"]])                      → false"
+    (format/last-nonws-comment? [[:symbol \"a\"] [:comment \";; x\"] [:whitespace \" \"]])   ;=> true
+    (format/last-nonws-comment? [[:comment \";; x\"] [:symbol \"a\"]])                      ;=> false"
   (last-nonws-comment?-at kids (dec (count kids))))
 (defn- last-nonws-comment?-at (kids i)
   (cond
@@ -1022,13 +1022,13 @@ if you are reintroducing hoisting, they are what you have to write back.
 (defn source (src)
   "Format `src` as a Brood source string. Idempotent.
 
-    (string/trim (format/source \"(a  b)\"))   → \"(a b)\""
+    (string/trim (format/source \"(a  b)\"))   ;=> \"(a b)\""
   (let (root (reflect/parse-source src)) (cst-root (node-children root))))
 
 (defn cst-root (kids)
   "Render the root's child nodes `kids` — the top-level forms — into the formatted source string, with exactly one trailing newline.
 
-    (format/cst-root (format/node-children (reflect/parse-source \"(a  b)\")))   → \"(a b)\\n\""
+    (format/cst-root (format/node-children (reflect/parse-source \"(a  b)\")))   ;=> \"(a b)\\n\""
   ;; The walk accumulates the top-level blocks as a REVERSED chunk list, joined once here.
   ;; Accumulating the output string itself — `(str acc "\n" block)` per form — would recopy
   ;; everything emitted so far, O(forms × file); it reads as linear at small sizes and only
@@ -1168,7 +1168,7 @@ if you are reintroducing hoisting, they are what you have to write back.
 (defn file (path)
   "Format the file at `path` in place. Returns `:unchanged`, `:rewrote`, or `:unparseable` — a file that does not parse is left untouched, since there is no program to re-lay-out and the tolerant CST would restructure it.
 
-    (format/file \"src/app.blsp\")   ;=> :rewrote — or :unchanged / :unparseable, depending on the file"
+    (format/file \"src/app.blsp\")   ;~> :rewrote — or :unchanged / :unparseable, depending on the file"
   (let (src (file/slurp path))
     (if (not (format-parses? src))
       :unparseable (let (out (source src))
@@ -1179,7 +1179,7 @@ if you are reintroducing hoisting, they are what you have to write back.
 per rewritten file and a summary; returns the number of files rewritten. A file
 that does not parse is reported and skipped, never rewritten.
 
-    (format/project)   ;=> 2 — after printing each rewritten file and a summary line"
+    (format/project)   ;~> 2 — after printing each rewritten file and a summary line"
   (let (root (format-require-root) files (format-every-blsp root))
     (let ([rewrote skipped] (format-apply files 0 0))
       (io/puts (str "format: "
@@ -1234,7 +1234,7 @@ git's uncommitted and unpushed edits, or another VCS's change (`vcs/changed`): t
 narrower scope of `nest format` (`--changed`). Falls back to the whole project outside a
 checkout. Returns the number of files rewritten.
 
-    (format/project-changed)   ;=> 0 — the changed files that needed rewriting, after a summary line"
+    (format/project-changed)   ;~> 0 — the changed files that needed rewriting, after a summary line"
   (let (root (format-require-root) changed (format-changed-blsp root))
     (if (keyword? changed)
       (do
@@ -1258,7 +1258,7 @@ checkout. Returns the number of files rewritten.
   "Check (don't write): print each file whose contents differ from
 `(source …)` and raise if any do. Used by `nest format --check`.
 
-    (format/project-check)   ;=> 0 — after printing \"format: N files checked, all clean.\""
+    (format/project-check)   ;~> 0 — after printing \"format: N files checked, all clean.\""
   (let (root (format-require-root) files (format-every-blsp root))
     (let (changed (format-check files nil))
       (cond

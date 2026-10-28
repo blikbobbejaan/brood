@@ -18,7 +18,7 @@
 sorted list of symbols. `%`-prefixed plumbing and module-private names are excluded — they
 are not callable vocabulary.
 
-    (apropos \"gensy\")   → (gensym)"
+    (apropos \"gensy\")   ;=> (gensym)"
   ;; `name` (not `str`) so a keyword pattern drops its leading colon, matching
   ;; the bare global names; a string passes through unchanged.
   (let (needle (if (string? pattern) pattern (->string pattern)))
@@ -40,7 +40,7 @@ even when no single docstring holds that exact phrase. A single-word query
 degrades to a plain case-insensitive name/docstring search, e.g.
 `(doc-search \"random\")`.
 
-    (doc-search \"node up down\")   ;=> ([monitor-node \"…\"] …whatever the loaded image documents…)"
+    (doc-search \"node up down\")   ;~> ([monitor-node \"…\"] …whatever the loaded image documents…)"
   (let (terms (%doc-search-terms query))
     (when (not (empty? terms))
       (map

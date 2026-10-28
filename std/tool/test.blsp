@@ -104,7 +104,7 @@ docs/testing.md for the full guide."
 (defn reset-units ()
   "Clear the test registry (drop every registered unit). The project test runner calls this before (re)loading test files so a long-lived image — e.g. a `nest mcp` hot-reload session — doesn't accumulate duplicate registrations across runs.
 
-    (test/reset-units)   ;=> the registry emptied"
+    (test/reset-units)   ;~> the registry emptied"
   (def *units* nil))
 
 ;; --- temp fixtures -----------------------------------------------------------
@@ -120,7 +120,7 @@ docs/testing.md for the full guide."
 (defn temp-dir (prefix)
   "A fresh, unique /tmp path `<prefix><random>` (NOT created — `file/mkdir` it). Unique across processes and runs, so concurrent tests never collide. Prelude's `temp-path` under a test-shaped name.
 
-    (test/temp-dir \"brood-myapp-\")   ;=> \"/tmp/brood-myapp-7f3a9c…\" — not created"
+    (test/temp-dir \"brood-myapp-\")   ;~> \"/tmp/brood-myapp-7f3a9c…\" — not created"
   (path/temp prefix))
 
 (defdyn *stale-temp-age-ms* 3600000)
@@ -128,7 +128,7 @@ docs/testing.md for the full guide."
 (defn purge-stale-temp (prefix)
   "Best-effort remove every `/tmp/<prefix>*` left by an earlier run — a directory tree *or* a plain file (a fixture may be either) — that was last modified more than `*stale-temp-age-ms*` (an hour) ago. Call once at FILE LOAD (a top-level form), before any test creates fixtures. The age is what keeps it off a LIVE fixture: /tmp is shared by every run on the machine, and a run of the same file beside this one (another checkout, another terminal) had its fixtures deleted under it. Bounds /tmp growth and recovers from crashed runs.
 
-    (test/purge-stale-temp \"brood-myapp-\")   ;=> /tmp/brood-myapp-* older than an hour removed"
+    (test/purge-stale-temp \"brood-myapp-\")   ;~> /tmp/brood-myapp-* older than an hour removed"
   (let (cutoff (- (os/now) *stale-temp-age-ms*))
     (doseq (e (file/ls "/tmp"))
       (when (string/starts-with? e prefix)
@@ -233,7 +233,7 @@ docs/testing.md for the full guide."
 (defn register-test (name thunk isolated? meta)
   "Register one test. Inside a `describe` it is collected into that group's `*collected*` (carrying its `:isolated` flag in the meta); otherwise it is emitted immediately as its own standalone unit — `:isolated` if flagged, else `:parallel`.
 
-    (test/register-test \"parses\" (fn () nil) false {})   ;=> the test collected into the enclosing describe, or emitted as its own unit"
+    (test/register-test \"parses\" (fn () nil) false {})   ;~> the test collected into the enclosing describe, or emitted as its own unit"
   (if *collecting*
     ;; A test-level `:isolated` inside a `describe` rides in the meta; `emit-describe`
     ;; gives such a test its own isolated unit, whatever the group's mode.
@@ -438,7 +438,7 @@ this repo's own stress harnesses.
 Each result is collected with the suite's per-test timeout in force, so a wedged worker fails
 the test rather than hanging the run.
 
-    (sort (test/concurrently 4 (fn (i) (* i i))))   → (0 1 4 9)"
+    (sort (test/concurrently 4 (fn (i) (* i i))))   ;=> (0 1 4 9)"
   (let (parent (self)
         tag (ref))
     (concurrently-spawn 0 n f parent tag)
@@ -515,15 +515,15 @@ the test rather than hanging the run.
 (defn opt? (flag opts)
   "True if the boolean flag `flag` is present anywhere in the `run-tests` option list `opts` (e.g. `:trace`).
 
-    (test/opt? :trace '(:slow :trace))   → true
-    (test/opt? :trace '(:timeout 5000))   → false"
+    (test/opt? :trace '(:slow :trace))   ;=> true
+    (test/opt? :trace '(:timeout 5000))   ;=> false"
   (includes? opts flag))
 
 (defn opt-val (key opts default)
   "The value following `key` in the `run-tests` option list `opts` (e.g. `5000` for `:timeout 5000`), or `default` when `key` is absent.
 
-    (test/opt-val :timeout '(:trace :timeout 5000) 1000)   → 5000
-    (test/opt-val :timeout '(:trace) 1000)   → 1000"
+    (test/opt-val :timeout '(:trace :timeout 5000) 1000)   ;=> 5000
+    (test/opt-val :timeout '(:trace) 1000)   ;=> 1000"
   ; the value following `key` in the run-tests args (e.g. `:timeout 5000`), or default.
   (cond
     (empty? opts) default
@@ -538,14 +538,14 @@ the test rather than hanging the run.
   "Raise the verdict of a red run — `{:kind :suite-failed :message message}` — after its
 failures have been reported. `brood --test` prints `message` and exits non-zero.
 
-    (get (try (test/suite-failed \"2 test(s) failed\") (catch e e)) :kind)   → :suite-failed"
+    (get (try (test/suite-failed \"2 test(s) failed\") (catch e e)) :kind)   ;=> :suite-failed"
   (throw {:kind :suite-failed :message message}))
 
 (defn suite-failed? (caught)
   "Whether `caught` is the verdict [[suite-failed]] raises.
 
-    (test/suite-failed? (try (test/suite-failed \"1 test(s) failed\") (catch e e)))   → true
-    (test/suite-failed? \"1 test(s) failed\")   → false"
+    (test/suite-failed? (try (test/suite-failed \"1 test(s) failed\") (catch e e)))   ;=> true
+    (test/suite-failed? \"1 test(s) failed\")   ;=> false"
   (and (map? caught) (= (get caught :kind) :suite-failed)))
 
 ;; [name ms] pairs, slowest first.
@@ -558,46 +558,46 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 (defn r-group (r)
   "The group (describe) name of a result tuple `(group name fails ms …)`, or \"\" when ungrouped.
 
-    (test/r-group '(\"math\" \"adds\" () 3))   → \"math\""
+    (test/r-group '(\"math\" \"adds\" () 3))   ;=> \"math\""
   (first r))
 (defn r-name (r)
   "The test name of a result tuple `(group name fails ms …)`.
 
-    (test/r-name '(\"math\" \"adds\" () 3))   → \"adds\""
+    (test/r-name '(\"math\" \"adds\" () 3))   ;=> \"adds\""
   (second r))
 (defn r-fails (r)
   "The list of failure records for a result — empty means the test passed. Each record is `(loc detail-lines)`.
 
-    (test/r-fails '(\"math\" \"adds\" ((nil (\"boom\"))) 3))   → ((nil (\"boom\")))"
+    (test/r-fails '(\"math\" \"adds\" ((nil (\"boom\"))) 3))   ;=> ((nil (\"boom\")))"
   (third r))
 (defn- r-ms (r) (nth r 3))
 (defn r-failed? (r)
   "True if the result has at least one failed assertion (a non-empty `r-fails`).
 
-    (test/r-failed? '(\"math\" \"adds\" ((nil (\"boom\"))) 3))   → true
-    (test/r-failed? '(\"math\" \"adds\" () 3))   → false"
+    (test/r-failed? '(\"math\" \"adds\" ((nil (\"boom\"))) 3))   ;=> true
+    (test/r-failed? '(\"math\" \"adds\" () 3))   ;=> false"
   (not (empty? (r-fails r))))
 ;; Read defensively: results synthesised elsewhere (a dead or timed-out worker) are
 ;; 4-element tuples, and those are never skips.
 (defn r-skipped? (r)
   "True if the result is a skipped test — its 5th field is `true`. Read defensively: a 4-element result (a dead or timed-out worker) is never a skip.
 
-    (test/r-skipped? '(\"math\" \"adds\" () 0 true))   → true
-    (test/r-skipped? '(\"math\" \"adds\" () 3))   → false"
+    (test/r-skipped? '(\"math\" \"adds\" () 0 true))   ;=> true
+    (test/r-skipped? '(\"math\" \"adds\" () 3))   ;=> false"
   (and (> (count r) 4) (= (nth r 4) true)))
 ;; Where the test was declared, as `file:line`, or "" when the position wasn't
 ;; recorded (a body whose first form is a bare literal carries no position).
 (defn r-where (r)
   "Where the test was declared, as `file:line` (the result's 6th field), or \"\" when no position was recorded.
 
-    (test/r-where '(\"math\" \"adds\" () 3 false \"tests/m_test.blsp:4\"))   → \"tests/m_test.blsp:4\"
-    (test/r-where '(\"math\" \"adds\" () 3))   → \"\""
+    (test/r-where '(\"math\" \"adds\" () 3 false \"tests/m_test.blsp:4\"))   ;=> \"tests/m_test.blsp:4\"
+    (test/r-where '(\"math\" \"adds\" () 3))   ;=> \"\""
   (if (> (count r) 5) (or (nth r 5) "") ""))
 (defn label (group name)
   "Join a group and test name into one display label — `\"group › name\"`, or just `name` when `group` is \"\" (ungrouped).
 
-    (test/label \"math\" \"adds\")   → \"math › adds\"
-    (test/label \"\" \"adds\")   → \"adds\""
+    (test/label \"math\" \"adds\")   ;=> \"math › adds\"
+    (test/label \"\" \"adds\")   ;=> \"adds\""
   ; "group › name", or just name if ungrouped
   (if (= group "") (str name) (str group " › " name)))
 (defn- full-name (r) (label (r-group r) (r-name r)))
@@ -631,7 +631,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 (defn test-make-filter (only exclude include lines names seed shards shard)
   "Assemble a `nest test` filter spec from raw CLI values: `only`/`exclude`/`include` are selector strings (`tag`, `test:substr`, `describe:substr`), `lines` a list of `[file line]`, `names` exact full labels, `seed` a shuffle seed, and `shards`/`shard` a CI split.
 
-    (test/test-make-filter [\"slow\"] nil nil nil nil 42 nil nil)   → {:only ([\"slow\" \"\"]) :exclude nil :include nil :lines nil :names nil :seed 42 :shards nil :shard 0}"
+    (test/test-make-filter [\"slow\"] nil nil nil nil 42 nil nil)   ;=> {:only ([\"slow\" \"\"]) :exclude nil :include nil :lines nil :names nil :seed 42 :shards nil :shard 0}"
   {:only (map (or only (list)) test-parse-selector)
    :exclude (map (or exclude (list)) test-parse-selector)
    :include (map (or include (list)) test-parse-selector)
@@ -868,7 +868,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 (defn trace-result (r)
   "Report one finished result `r` through the per-test seams, then return `r` unchanged. Feeds it to any installed `*test-report-sink*` (the machine-readable seam) and, under `*test-trace*`, prints the coloured `--trace` line (glyph, label, timing, location, failure count). Runs in the worker process.
 
-    (test/trace-result r)   ;=> r, unchanged — after the report sink and --trace line saw it"
+    (test/trace-result r)   ;~> r, unchanged — after the report sink and --trace line saw it"
   (when *test-report-sink* (*test-report-sink* r))
   (when *test-trace*
     (io/puts (str (trace-glyph r)
@@ -940,7 +940,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 (defn progress-mark (results)
   "Print one live-progress character per result in `results` — a green `.` for a pass, red `F` for a failure, orange `○` for a skip — flushed as they arrive. Suppressed under `*test-trace*` (which already prints a line per test) and under a machine `*test-formatter*` (whose output must stay parseable).
 
-    (test/progress-mark results)   ;=> one . F or ○ per result printed, flushed"
+    (test/progress-mark results)   ;~> one . F or ○ per result printed, flushed"
   ;; Suppressed under `:trace` (which prints a line per test) and under a machine
   ;; `--formatter` (whose output must stay parseable — no stray dots).
   (unless (or *test-trace* *test-formatter*)
@@ -958,7 +958,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 (defn run (group t)
   "Run one `(name thunk meta)` test `t` in group `group` and return its result tuple `(group name fails ms false where)`. A `:skip`-marked test is not run — it yields a skipped result instead. The thunk carries its own failures, so this is safe to run concurrently. Reports the result via `trace-result`.
 
-    (test/run \"parse\" (list \"rejects empty\" thunk {}))   ;=> the result tuple (\"parse\" \"rejects empty\" fails ms false where)"
+    (test/run \"parse\" (list \"rejects empty\" thunk {}))   ;~> the result tuple (\"parse\" \"rejects empty\" fails ms false where)"
   (if (test-skip? t)
     (trace-result (test-skipped-result group t))
     (let (start (os/now)
@@ -983,7 +983,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 (defn run-unit (unit)
   "Run every test in `unit` (a `(mode group tests)` tuple) in order via `run`, returning the list of their results. What a worker evaluates for a `:parallel`/`:serial` unit, and what the runner does directly for an `:isolated` one.
 
-    (test/run-unit (list :parallel \"parse\" tests))   ;=> (…one result tuple per test, in order…)"
+    (test/run-unit (list :parallel \"parse\" tests))   ;~> (…one result tuple per test, in order…)"
   (let (group (second unit)) (map (third unit) (fn (t) (run group t)))))
 
 ;; --- the two phases ----------------------------------------------------------
@@ -994,7 +994,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 (defn spawn-units (units me)
   "Spawn one monitored worker process per unit in `units` — each runs its unit and sends `(:unit-result pid results)` back to `me` — and return an assoc list of `(pid unit)` so the collector can correlate results. `monitor` lets a worker that dies before reporting become a failure rather than a hang.
 
-    (test/spawn-units units (self))   ;=> ((pid unit) …) — one monitored worker per unit"
+    (test/spawn-units units (self))   ;~> ((pid unit) …) — one monitored worker per unit"
   ;; Spawn one MONITORED worker per unit and return an assoc list of
   ;; `(pid unit)`. Each worker tags its message with its own pid (`(self)`),
   ;; which equals the pid `spawn` returns — so the collector can correlate a
@@ -1092,13 +1092,13 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 (defn eventually (what probe)
   "Poll `probe`, a zero-argument function, until it returns a truthy value, and return that value; raise naming `what` if it has not within `*test-wait-ms*`. The handshake for a condition no message announces — a process parking, a count settling — in place of a `sleep` that guesses how long the other side takes, which a loaded machine outsleeps.
 
-    (test/eventually \"three hits\" (fn () (>= (hits) 3)))   ;=> true — or raises naming \"three hits\" after *test-wait-ms*"
+    (test/eventually \"three hits\" (fn () (>= (hits) 3)))   ;~> true — or raises naming \"three hits\" after *test-wait-ms*"
   (eventually-loop what probe (+ (os/now) *test-wait-ms*)))
 
 (defn await-parked (pid)
   "Wait until `pid` is parked (waiting in a `receive` or a `sleep`), then return `:ok`; raise if it is not within `*test-wait-ms*`. For a test whose point is a message reaching a process that is already blocked.
 
-    (test/await-parked pid)   ;=> :ok — once pid is blocked in a receive or sleep; raises after *test-wait-ms*"
+    (test/await-parked pid)   ;~> :ok — once pid is blocked in a receive or sleep; raises after *test-wait-ms*"
   (eventually (str (pr-str pid) " parking")
     (fn () (when (= :waiting (get (proc/info pid) :status)) :ok))))
 
@@ -1253,7 +1253,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 (defn collect-units (workers acc)
   "Collect the results of one batch of spawned `workers` (a list of `(pid unit)`), accumulating onto `acc`. Waits for each worker's `:unit-result` AND its monitor `:down` (a batch is done when every worker has EXITED, not merely reported) under a fresh per-batch deadline, hard-killing and failing any straggler that overruns. A `:slow`/`:conformance`-tagged batch runs under the raised `*test-slow-timeout-ms*` budget.
 
-    (test/collect-units (test/spawn-units units (self)) [])   ;=> the results of every unit in the batch, appended to []"
+    (test/collect-units (test/spawn-units units (self)) [])   ;~> the results of every unit in the batch, appended to []"
   ;; Fixed wall deadline for this batch — recomputed per collect, so each isolated
   ;; unit / parallel chunk gets its own full budget. A `:slow`-tagged unit raises the
   ;; budget for its batch (see `*test-slow-timeout-ms*`); rebinding the var rather
@@ -1542,7 +1542,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 (defn run-tests-scoped (loaders & opts)
   "Run a suite file-by-file, each file in its own rolled-back global scope so its top-level defs + promoted code are reclaimed after its tests finish — bounding a large suite's memory. `loaders` is a list of 0-arg thunks that each `reflect/load` one test file. Aggregates results, prints the summary, and raises if any failed — like `run-tests`. Backs `nest test`.
 
-    (test/run-tests-scoped (map files (fn (f) (fn () (reflect/load f)))))   ;=> the summary printed; raises when any test failed"
+    (test/run-tests-scoped (map files (fn (f) (fn () (reflect/load f)))))   ;~> the summary printed; raises when any test failed"
   (test-apply-opts opts)
   (test-repeat (opt-val :repeat opts 1) (fn () (run-tests-scoped-pass loaders opts))))
 
@@ -1562,7 +1562,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 (defn run-tests-scoped-structured (loaders & opts)
   "Like `run-tests-scoped`, but returns the structured result `{:total :passed :failed :failed-assertions :ms :results [...]}` instead of printing and raising — the memory-bounded counterpart of `run-tests-structured`. Backs the `nest mcp` run-tests tool.
 
-    (test/run-tests-scoped-structured (map files (fn (f) (fn () (reflect/load f)))))   ;=> {:total 42 :passed 41 :failed 1 :failed-assertions 1 :ms 830 :results […]}"
+    (test/run-tests-scoped-structured (map files (fn (f) (fn () (reflect/load f)))))   ;~> {:total 42 :passed 41 :failed 1 :failed-assertions 1 :ms 830 :results […]}"
   (test-apply-opts opts)
   (let (start (os/now) results (drain-files-scoped loaders))
     (results->structured results (- (os/now) start))))
@@ -1579,7 +1579,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 (defn fail-anchor (r failure-record)
   "The anchor line for one failure record `rec` of result `r`: the bold `file:line:col` location (from `fail-where`), then `test failed: ` and the test's full `group › name`. The clickable header a reporter prints above the failure's indented fields.
 
-    (test/fail-anchor r (first (nth r 2)))   ;=> \"tests/app_test.blsp:12:5: test failed: parse › rejects empty input\" — bold and red"
+    (test/fail-anchor r (first (nth r 2)))   ;~> \"tests/app_test.blsp:12:5: test failed: parse › rejects empty input\" — bold and red"
   (let (where (fail-where r failure-record))
     (str (if (= where "") "" (str (test-bold where) ": "))
       (test-red "test failed: ")
@@ -1598,7 +1598,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 (defn fail-where (r failure-record)
   "Where a failure occurred, as `file:line:col` relative to the working directory. Uses the failure record `rec`'s own captured position when it has one; otherwise falls back to result `r`'s declaration site (`r-where`), and \"\" only when neither is known.
 
-    (test/fail-where '(\"g\" \"a\" () 1 false \"tests/m_test.blsp:4\") '(nil (\"x\")))   → \"tests/m_test.blsp:4\""
+    (test/fail-where '(\"g\" \"a\" () 1 false \"tests/m_test.blsp:4\") '(nil (\"x\")))   ;=> \"tests/m_test.blsp:4\""
   (let (loc (fail-loc-of failure-record))
     (cond
       loc (str (test-relative-path (first loc)) ":" (second loc) ":" (third loc))
@@ -1670,13 +1670,13 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 (defn count-failed (results:seqable -> int)
   "Count the results in `results` that have at least one failed assertion (a failing test, not the total number of failed assertions).
 
-    (test/count-failed '((\"g\" \"a\" () 1) (\"g\" \"b\" ((nil (\"x\"))) 1)))   → 1"
+    (test/count-failed '((\"g\" \"a\" () 1) (\"g\" \"b\" ((nil (\"x\"))) 1)))   ;=> 1"
   ; tests with at least one failed assertion
   (fold results 0 (fn (acc r) (if (r-failed? r) (+ acc 1) acc))))
 (defn count-skipped (results:seqable -> int)
   "Count the results in `results` that were skipped — registered with `:skip` but never run.
 
-    (test/count-skipped '((\"g\" \"a\" () 0 true) (\"g\" \"b\" () 1)))   → 1"
+    (test/count-skipped '((\"g\" \"a\" () 0 true) (\"g\" \"b\" () 1)))   ;=> 1"
   ; tests that registered but were never run (`:skip`)
   (fold results 0 (fn (acc r) (if (r-skipped? r) (+ acc 1) acc))))
 (defn- count-failures (results)
@@ -1919,7 +1919,7 @@ read the un-imaged path as evidence about the imaged one."
 (defn run-tests (& opts)
   "Run every registered test once (the isolated tests first, then the parallel/serial pool), print a summary, and raise if any failed. Each test has a 120s hard timeout (killed + failed if exceeded — `:timeout MS` to change). Any test over 1s is listed automatically (`:slow-over MS` to change that threshold); `:slow` also reports the slowest 5 regardless of duration.
 
-    (test/run-tests :slow :timeout 30000)   ;=> the summary printed; raises when any test failed"
+    (test/run-tests :slow :timeout 30000)   ;~> the summary printed; raises when any test failed"
   ;; Option overrides are global rebinds — the spawned driver reads them from the
   ;; shared table.
   (test-apply-opts opts)
@@ -1944,7 +1944,7 @@ read the un-imaged path as evidence about the imaged one."
 (defn run-tests-structured (& opts)
   "Like `run-tests`, but returns the result as data — `{:total :passed :failed :failed-assertions :ms :results [...]}` — instead of printing and raising. Backs the `nest mcp` `run-tests` tool.
 
-    (test/run-tests-structured)   ;=> {:total 42 :passed 42 :failed 0 :failed-assertions 0 :ms 830 :results […]}"
+    (test/run-tests-structured)   ;~> {:total 42 :passed 42 :failed 0 :failed-assertions 0 :ms 830 :results […]}"
   (test-apply-opts opts)
   (let (units (test-select-units (reverse *units*) *test-filter*)
         parallel (seq/filter units (fn (unit) (not (= (first unit) :isolated))))

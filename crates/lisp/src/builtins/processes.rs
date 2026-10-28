@@ -52,7 +52,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![pid_ty.union(map_ty).union(kw), any], nil_ty),
         &["target", "msg"],
-        "Copy msg into target's mailbox; target is a pid, a registered name (a keyword — the local node's `{:name :node}`), or a {:name :node} address. Routes locally or over a node link. Returns nil.\n\n    (do (send (self) :doc-hello) (receive (:doc-hello :got-it)))   → :got-it",
+        "Copy msg into target's mailbox; target is a pid, a registered name (a keyword — the local node's `{:name :node}`), or a {:name :node} address. Routes locally or over a node link. Returns nil.\n\n    (do (send (self) :doc-hello) (receive (:doc-hello :got-it)))   ;=> :got-it",
         send);
     // Mailbox lanes (ADR-490): a message a receiver takes AHEAD of its backlog, and one a
     // newer message with the same key replaces while it is still queued. Both are `send`
@@ -62,49 +62,49 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![pid_ty.union(map_ty).union(kw), any], nil_ty),
         &["target", "msg"],
-        "Send msg to target on its mailbox's PRIORITY lane: `proc/take-priority` in the receiver takes it ahead of every ordinary message queued before it, oldest priority message first. What a window delivers as the user's keys and mouse is on this lane, so a UI loop serves input before a flood of background replies (ADR-490). An ordinary `receive` ignores the lane and sees it in arrival order. The lane holds for any target: a local registered name (`:editor`), a `{:name :node}` address, and a pid or name on another node, whose runtime queues the message in the same lane (ADR-492). A dead target drops it, as `send` does. Returns nil.\n\n    (do (send (self) :background) (proc/send-priority (self) :key) [(proc/take-priority) (receive (m m))])   → [[:key] :background]",
+        "Send msg to target on its mailbox's PRIORITY lane: `proc/take-priority` in the receiver takes it ahead of every ordinary message queued before it, oldest priority message first. What a window delivers as the user's keys and mouse is on this lane, so a UI loop serves input before a flood of background replies (ADR-490). An ordinary `receive` ignores the lane and sees it in arrival order. The lane holds for any target: a local registered name (`:editor`), a `{:name :node}` address, and a pid or name on another node, whose runtime queues the message in the same lane (ADR-492). A dead target drops it, as `send` does. Returns nil.\n\n    (do (send (self) :background) (proc/send-priority (self) :key) [(proc/take-priority) (receive (m m))])   ;=> [[:key] :background]",
         send_priority);
     primitives.def(
         "proc/take-priority",
         Arity::exact(0),
         Sig::nullary(vec_ty.union(nil_ty)),
         &[],
-        "Take the calling process's oldest PRIORITY-lane message (`proc/send-priority`, a window's input) out of its mailbox, as `[msg]` — or nil at once when none is queued. Never waits and never looks at an ordinary message, so it costs nothing in a mailbox thousands of background messages deep: the input-first half of a UI loop's poll (ADR-490).\n\n    (do (send (self) :background) (proc/take-priority))   → nil",
+        "Take the calling process's oldest PRIORITY-lane message (`proc/send-priority`, a window's input) out of its mailbox, as `[msg]` — or nil at once when none is queued. Never waits and never looks at an ordinary message, so it costs nothing in a mailbox thousands of background messages deep: the input-first half of a UI loop's poll (ADR-490).\n\n    (do (send (self) :background) (proc/take-priority))   ;=> nil",
         take_priority);
     primitives.def(
         "proc/receive-lane",
         Arity::exact(1),
         Sig::new(vec![int.union(nil_ty.clone())], vec_ty.union(nil_ty)),
         &["ms"],
-        "Take the oldest message of any kind, waiting up to ms (nil: forever), and say which lane it came on: `[msg :priority]` for one sent with `proc/send-priority` (a window's input), `[msg :normal]` otherwise; nil on timeout. `(receive (m m) (after ms nil))` with the lane — what lets a UI loop that parked tell the key that woke it from a background reply (ADR-490).\n\n    (do (send (self) :reply) (proc/send-priority (self) :key) [(proc/receive-lane 0) (proc/receive-lane 0) (proc/receive-lane 0)])   → [[:reply :normal] [:key :priority] nil]",
+        "Take the oldest message of any kind, waiting up to ms (nil: forever), and say which lane it came on: `[msg :priority]` for one sent with `proc/send-priority` (a window's input), `[msg :normal]` otherwise; nil on timeout. `(receive (m m) (after ms nil))` with the lane — what lets a UI loop that parked tell the key that woke it from a background reply (ADR-490).\n\n    (do (send (self) :reply) (proc/send-priority (self) :key) [(proc/receive-lane 0) (proc/receive-lane 0) (proc/receive-lane 0)])   ;=> [[:reply :normal] [:key :priority] nil]",
         receive_lane);
     primitives.def(
         "proc/send-latest",
         Arity::exact(3),
         Sig::new(vec![pid_ty.union(map_ty).union(kw), any, any], nil_ty),
         &["target", "key", "msg"],
-        "Send msg to target, REPLACING any message sent with the same key that target has not received yet — for state that only matters at its newest value (a file's diagnostics, a progress figure, a status chip), so a fast producer cannot bury a slow receiver in stale copies (ADR-490). The replacement queues at the back, in its own arrival order; a message already received is never touched. key is compared by its printed form: a keyword, string, number or a vector of them. Messages without a key are never replaced. The lane holds for any target: a local registered name (`:editor`), a `{:name :node}` address, and a pid or name on another node, whose runtime queues the message in the same lane (ADR-492). A dead target drops it, as `send` does. Returns nil.\n\n    (do (proc/send-latest (self) :progress 1) (send (self) :other) (proc/send-latest (self) :progress 2) [(receive (m m)) (receive (m m)) (receive (m m) (after 0 :empty))])   → [:other 2 :empty]",
+        "Send msg to target, REPLACING any message sent with the same key that target has not received yet — for state that only matters at its newest value (a file's diagnostics, a progress figure, a status chip), so a fast producer cannot bury a slow receiver in stale copies (ADR-490). The replacement queues at the back, in its own arrival order; a message already received is never touched. key is compared by its printed form: a keyword, string, number or a vector of them. Messages without a key are never replaced. The lane holds for any target: a local registered name (`:editor`), a `{:name :node}` address, and a pid or name on another node, whose runtime queues the message in the same lane (ADR-492). A dead target drops it, as `send` does. Returns nil.\n\n    (do (proc/send-latest (self) :progress 1) (send (self) :other) (proc/send-latest (self) :progress 2) [(receive (m m)) (receive (m m)) (receive (m m) (after 0 :empty))])   ;=> [:other 2 :empty]",
         send_latest);
     primitives.def(
         "proc/interruptible",
         Arity::exact(2),
         Sig::new(vec![int.union(nil_ty.clone()), callable], vec_ty.clone()),
         &["ceiling-ms", "thunk"],
-        "Run `(thunk)` in an INTERRUPT WINDOW (ADR-491): `[:ok value]`, or `[:interrupted e]` when it was stopped mid-computation — by `proc/interrupt`, by the process's quit key (`proc/set-quit-key`), or, when ceiling-ms is a number, by itself once that many ms have passed. `e` is the map a `catch` binds (`{:kind :interrupted :code \"E0047\" …}`). The interrupt is raised at the next safepoint — within about a millisecond of work, at every tier, inside long builtins — and it is STICKY: a `catch` inside thunk that swallows it is interrupted again at its next safepoint, so only this call ends it. Any other error propagates as it would. A window opened inside an open one adds nothing: the outer one owns the interrupt (and its ceiling). A process blocked in `receive` is not interrupted until it runs again (a ceiling) or at all (a request).\n\n    (proc/interruptible nil (fn () 42))   → [:ok 42]\n    (first (proc/interruptible 0 (fn () (letrec (spin (fn (n) (spin (inc n)))) (spin 0)))))   → :interrupted\n    (first (proc/interruptible 0 (fn () (letrec (stubborn (fn (n) (do (try (stubborn-spin n) (catch e nil)) (stubborn (inc n)))) stubborn-spin (fn (n) (stubborn-spin (inc n)))) (stubborn 0)))))   → :interrupted",
+        "Run `(thunk)` in an INTERRUPT WINDOW (ADR-491): `[:ok value]`, or `[:interrupted e]` when it was stopped mid-computation — by `proc/interrupt`, by the process's quit key (`proc/set-quit-key`), or, when ceiling-ms is a number, by itself once that many ms have passed. `e` is the map a `catch` binds (`{:kind :interrupted :code \"E0047\" …}`). The interrupt is raised at the next safepoint — within about a millisecond of work, at every tier, inside long builtins — and it is STICKY: a `catch` inside thunk that swallows it is interrupted again at its next safepoint, so only this call ends it. Any other error propagates as it would. A window opened inside an open one adds nothing: the outer one owns the interrupt (and its ceiling). A process blocked in `receive` is not interrupted until it runs again (a ceiling) or at all (a request).\n\n    (proc/interruptible nil (fn () 42))   ;=> [:ok 42]\n    (first (proc/interruptible 0 (fn () (letrec (spin (fn (n) (spin (inc n)))) (spin 0)))))   ;=> :interrupted\n    (first (proc/interruptible 0 (fn () (letrec (stubborn (fn (n) (do (try (stubborn-spin n) (catch e nil)) (stubborn (inc n)))) stubborn-spin (fn (n) (stubborn-spin (inc n)))) (stubborn 0)))))   ;=> :interrupted",
         interruptible);
     primitives.def(
         "proc/interrupt",
         Arity::exact(1),
         Sig::new(vec![pid_ty], bool_ty),
         &["pid"],
-        "Interrupt pid at its next safepoint (ADR-491) — Emacs's quit, from outside: its running computation raises a catchable `{:kind :interrupted …}` there. Only a local process RUNNING inside an open interrupt window (`proc/interruptible`) is interrupted; a process blocked in `receive`, one with its window closed, a dead or a remote pid is left alone, and nothing is remembered for later. True when the interrupt landed.\n\n    (first (proc/interruptible nil (fn () (proc/interrupt (self)) (letrec (spin (fn (n) (spin (inc n)))) (spin 0)))))   → :interrupted\n    (proc/interrupt (self))   → false",
+        "Interrupt pid at its next safepoint (ADR-491) — Emacs's quit, from outside: its running computation raises a catchable `{:kind :interrupted …}` there. Only a local process RUNNING inside an open interrupt window (`proc/interruptible`) is interrupted; a process blocked in `receive`, one with its window closed, a dead or a remote pid is left alone, and nothing is remembered for later. True when the interrupt landed.\n\n    (first (proc/interruptible nil (fn () (proc/interrupt (self)) (letrec (spin (fn (n) (spin (inc n)))) (spin 0)))))   ;=> :interrupted\n    (proc/interrupt (self))   ;=> false",
         interrupt_proc);
     primitives.def(
         "proc/busy?",
         Arity::exact(1),
         Sig::new(vec![pid_ty], bool_ty.union(nil_ty.clone())),
         &["pid"],
-        "Whether pid is BUSY (ADR-491): true while it has been running in one open interrupt window (`proc/interruptible`) for at least its quit key's busy-ms (300 without one), false while its window is open but younger, nil when none is open — it is idle, gone, or remote. What a frontend's busy cursor asks of the loop it feeds: nil says stop asking until the next input.\n\n    (proc/busy? (self))   → nil\n    (proc/interruptible nil (fn () (proc/busy? (self))))   → [:ok false]",
+        "Whether pid is BUSY (ADR-491): true while it has been running in one open interrupt window (`proc/interruptible`) for at least its quit key's busy-ms (300 without one), false while its window is open but younger, nil when none is open — it is idle, gone, or remote. What a frontend's busy cursor asks of the loop it feeds: nil says stop asking until the next input.\n\n    (proc/busy? (self))   ;=> nil\n    (proc/interruptible nil (fn () (proc/busy? (self))))   ;=> [:ok false]",
         busy_proc);
     primitives.def(
         "proc/set-quit-key",
@@ -115,7 +115,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
             nil_ty.clone(),
         ),
         &["key", "busy-ms", "from"],
-        "Declare the calling process's QUIT KEY (ADR-491), Emacs's `quit-char`: when key — a keyword, string or integer, the shape a frontend delivers a keystroke in (a window's C-g is `:ctrl-g`) — arrives on its PRIORITY lane (`proc/send-priority`) while it has been running in an open interrupt window for at least busy-ms, the kernel interrupts it as `proc/interrupt` does. key may instead be a VECTOR of such atoms, the shape a wire frontend ships a key in (`[:key :ctrl-g]` from a thin client): it then matches a vector message that BEGINS with them, on any lane — lanes do not cross a node link, and such a message's tag already says it is input. The message is queued as well, so the app still sees its key. A key from ANOTHER node (a thin client's, over the link) interrupts only when it comes from the node of `from` — the pid of the client this loop serves — or, with no `from`, from a full peer: never from a GUEST link (ADR-415) that merely reaches this pid. nil clears it; with none set a delivery pays nothing. Returns nil.\n\n    (do (proc/set-quit-key :ctrl-g 0) (let (r (proc/interruptible nil (fn () (proc/send-priority (self) :ctrl-g) (letrec (spin (fn (n) (spin (inc n)))) (spin 0))))) (proc/set-quit-key nil 0) [(first r) (receive (m m))]))   → [:interrupted :ctrl-g]",
+        "Declare the calling process's QUIT KEY (ADR-491), Emacs's `quit-char`: when key — a keyword, string or integer, the shape a frontend delivers a keystroke in (a window's C-g is `:ctrl-g`) — arrives on its PRIORITY lane (`proc/send-priority`) while it has been running in an open interrupt window for at least busy-ms, the kernel interrupts it as `proc/interrupt` does. key may instead be a VECTOR of such atoms, the shape a wire frontend ships a key in (`[:key :ctrl-g]` from a thin client): it then matches a vector message that BEGINS with them, on any lane — lanes do not cross a node link, and such a message's tag already says it is input. The message is queued as well, so the app still sees its key. A key from ANOTHER node (a thin client's, over the link) interrupts only when it comes from the node of `from` — the pid of the client this loop serves — or, with no `from`, from a full peer: never from a GUEST link (ADR-415) that merely reaches this pid. nil clears it; with none set a delivery pays nothing. Returns nil.\n\n    (do (proc/set-quit-key :ctrl-g 0) (let (r (proc/interruptible nil (fn () (proc/send-priority (self) :ctrl-g) (letrec (spin (fn (n) (spin (inc n)))) (spin 0))))) (proc/set-quit-key nil 0) [(first r) (receive (m m))]))   ;=> [:interrupted :ctrl-g]",
         set_quit_key);
     // Arg shape: (matcher: callable|spec vector, timeout: int|nil, tags: vector|nil). The
     // `receive` macro in `std/prelude.blsp` expands to exactly this. The matcher
@@ -149,7 +149,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(0),
         Sig::nullary(pid_ty),
         &[],
-        "This process's own pid (carries this node's identity).\n\n    (pid? (self))        → true\n    (= (self) (self))    → true",
+        "This process's own pid (carries this node's identity).\n\n    (pid? (self))        ;=> true\n    (= (self) (self))    ;=> true",
         self_pid,
     );
     primitives.def(
@@ -157,7 +157,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(0),
         Sig::nullary(ref_ty),
         &[],
-        "A fresh, globally-unique reference token (tags a request to its reply).\n\n    (= (ref) (ref))           → false\n    (let (r (ref)) (= r r))   → true",
+        "A fresh, globally-unique reference token (tags a request to its reply).\n\n    (= (ref) (ref))           ;=> false\n    (let (r (ref)) (= r r))   ;=> true",
         make_ref,
     );
     // `(exit pid reason)` — send an exit signal. `:kill` is the
@@ -167,7 +167,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![pid_ty, any], nil_ty),
         &["pid", "reason"],
-        "Send an exit signal to process pid, local or remote. reason :kill is the untrappable hard kill — pid dies at its next reduction tick, or immediately if parked. Any other reason is the soft signal — pid dies at its next receive. Monitors fire [:down ref pid reason]. A remote pid is routed to its node over the link. No-op for a dead/unknown pid. Returns nil.\n\n    (let (p (spawn (receive (_ nil))) r (monitor p)) (exit p :kill) (receive ([:down ^r ^p why] why)))   → :killed",
+        "Send an exit signal to process pid, local or remote. reason :kill is the untrappable hard kill — pid dies at its next reduction tick, or immediately if parked. Any other reason is the soft signal — pid dies at its next receive. Monitors fire [:down ref pid reason]. A remote pid is routed to its node over the link. No-op for a dead/unknown pid. Returns nil.\n\n    (let (p (spawn (receive (_ nil))) r (monitor p)) (exit p :kill) (receive ([:down ^r ^p why] why)))   ;=> :killed",
         exit_proc);
     // `monitor` also accepts a name map (forwarded to the remote node).
     primitives.def(
@@ -175,7 +175,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![pid_ty.union(map_ty)], ref_ty),
         &["pid"],
-        "Watch pid; returns a monitor ref. Delivers [:down ref pid reason] when pid dies.\n\n    (let (p (spawn (receive (:go :done))) r (monitor p)) (send p :go) (receive ([:down ^r ^p why] why)))   → :normal",
+        "Watch pid; returns a monitor ref. Delivers [:down ref pid reason] when pid dies.\n\n    (let (p (spawn (receive (:go :done))) r (monitor p)) (send p :go) (receive ([:down ^r ^p why] why)))   ;=> :normal",
         monitor,
     );
     primitives.def(
@@ -183,7 +183,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![ref_ty], nil_ty),
         &["mref"],
-        "Drop the monitor identified by mref (best-effort).\n\n    (let (p (spawn (receive (_ nil))) r (monitor p)) (demonitor r) (exit p :kill) (receive ([:down ^r _ _] :fired) (after 50 :quiet)))   → :quiet",
+        "Drop the monitor identified by mref (best-effort).\n\n    (let (p (spawn (receive (_ nil))) r (monitor p)) (demonitor r) (exit p :kill) (receive ([:down ^r _ _] :fired) (after 50 :quiet)))   ;=> :quiet",
         demonitor,
     );
     // One-shot reply aliases: the kernel drops a
@@ -205,21 +205,21 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![pid_ty], nil_ty),
         &["pid"],
-        "Symmetrically link the current process and pid, local or remote. When either dies, the other gets a [:EXIT pid reason] message if it set (proc/trap-exit true), else dies too on an abnormal reason (propagation cascades through links; :normal does not propagate). A remote link fires :noconnection on net-split; linking an already-dead/unreachable pid notifies the caller (:noproc / :noconnection). Returns nil.\n\n    (link pid)   ;=> nil, and a crash of either now reaches the other",
+        "Symmetrically link the current process and pid, local or remote. When either dies, the other gets a [:EXIT pid reason] message if it set (proc/trap-exit true), else dies too on an abnormal reason (propagation cascades through links; :normal does not propagate). A remote link fires :noconnection on net-split; linking an already-dead/unreachable pid notifies the caller (:noproc / :noconnection). Returns nil.\n\n    (link pid)   ;~> nil, and a crash of either now reaches the other",
         link_proc);
     primitives.def(
         "unlink",
         Arity::exact(1),
         Sig::new(vec![pid_ty], nil_ty),
         &["pid"],
-        "Drop the symmetric link between the current process and pid (local or remote; best-effort). Returns nil.\n\n    (unlink pid)   ;=> nil",
+        "Drop the symmetric link between the current process and pid (local or remote; best-effort). Returns nil.\n\n    (unlink pid)   ;~> nil",
         unlink_proc);
     primitives.def(
         "proc/trap-exit",
         Arity::exact(1),
         Sig::new(vec![any], bool_ty),
         &["on"],
-        "Set the current process's trap_exit flag; returns the previous value. When on, a linked peer's death arrives as a trappable [:EXIT pid reason] message instead of killing this process.\n\n    (proc/trap-exit true)   ;=> false, the previous setting",
+        "Set the current process's trap_exit flag; returns the previous value. When on, a linked peer's death arrives as a trappable [:EXIT pid reason] message instead of killing this process.\n\n    (proc/trap-exit true)   ;~> false, the previous setting",
         trap_exit_proc);
     primitives.def(
         "%process-flag",
@@ -247,7 +247,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::range(0, 2),
         Sig::new(vec![any, any], any),
         &["&optional", "pid", "opts"],
-        "Read, arm, or clear a subscription to the kernel system monitor — runtime events pushed to subscriber processes as [:system kind subject-pid detail] mailbox messages (the observability event stream's kernel sources). Kinds: :gc {:pause-us :collections :live} (a collection of subject's heap finished), :spawn (detail = parent pid), :exit (detail = the structured exit reason monitors see; :exit-abnormal selects only CRASHES — a reason other than :normal, :kill/:killed, :shutdown or [:shutdown x], the deliberate exits a supervisor produces — filtered before any message is built), :deopt (detail = the JIT arm's fn name, or nil). ONE SUBSCRIPTION PER SUBSCRIBER PID (ADR-305): no args reads the CALLER's config map (nil if none); (proc/system-monitor :all) lists every subscription; (proc/system-monitor nil) clears the caller's and (proc/system-monitor nil pid) clears pid's; (proc/system-monitor pid) arms every event at pid (raising if pid is not a live process);(proc/system-monitor pid {:gc true :gc-min-pause-us 1000 :exit-abnormal true}) selects exactly the truthy keys (:gc-min-pause-us = report only pauses that long). Arming/clearing returns that pid's PREVIOUS config. Events about a subscriber itself are never sent to it (no feedback loops), and a subscriber's death drops its subscription. Policy lives in telemetry/watch-runtime (re-emits as telemetry events) and crash-report (the default crash reporter).\n\n    (proc/system-monitor (self) {:exit-abnormal true})   ;=> nil, the previous config",
+        "Read, arm, or clear a subscription to the kernel system monitor — runtime events pushed to subscriber processes as [:system kind subject-pid detail] mailbox messages (the observability event stream's kernel sources). Kinds: :gc {:pause-us :collections :live} (a collection of subject's heap finished), :spawn (detail = parent pid), :exit (detail = the structured exit reason monitors see; :exit-abnormal selects only CRASHES — a reason other than :normal, :kill/:killed, :shutdown or [:shutdown x], the deliberate exits a supervisor produces — filtered before any message is built), :deopt (detail = the JIT arm's fn name, or nil). ONE SUBSCRIPTION PER SUBSCRIBER PID (ADR-305): no args reads the CALLER's config map (nil if none); (proc/system-monitor :all) lists every subscription; (proc/system-monitor nil) clears the caller's and (proc/system-monitor nil pid) clears pid's; (proc/system-monitor pid) arms every event at pid (raising if pid is not a live process);(proc/system-monitor pid {:gc true :gc-min-pause-us 1000 :exit-abnormal true}) selects exactly the truthy keys (:gc-min-pause-us = report only pauses that long). Arming/clearing returns that pid's PREVIOUS config. Events about a subscriber itself are never sent to it (no feedback loops), and a subscriber's death drops its subscription. Policy lives in telemetry/watch-runtime (re-emits as telemetry events) and crash-report (the default crash reporter).\n\n    (proc/system-monitor (self) {:exit-abnormal true})   ;~> nil, the previous config",
         system_monitor);
     primitives.def(
         "%spawn-count",
@@ -294,28 +294,28 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         // `:name` lookups in `send`/`node-name` use keywords, so the sig must too.
         Sig::new(vec![sym.union(kw), pid_ty], pid_ty),
         &["name", "pid"],
-        "Bind a local name so peers can address this process via {:name name :node this-node}. Returns the pid. Replaces any previous holder of the name. A pid that has already exited binds nothing — the same outcome as registering it and the process exiting, which releases its names.\n\n    (proc/register :logger pid)   ;=> pid",
+        "Bind a local name so peers can address this process via {:name name :node this-node}. Returns the pid. Replaces any previous holder of the name. A pid that has already exited binds nothing — the same outcome as registering it and the process exiting, which releases its names.\n\n    (proc/register :logger pid)   ;~> pid",
         register_name);
     primitives.def(
         "proc/whereis",
         Arity::exact(1),
         Sig::new(vec![sym.union(kw)], pid_ty.union(nil_ty)),
         &["name"],
-        "The local pid registered under `name`, or nil. Strictly local — does not query other nodes.\n\n    (proc/whereis 'no-such-registered-name)   → nil",
+        "The local pid registered under `name`, or nil. Strictly local — does not query other nodes.\n\n    (proc/whereis 'no-such-registered-name)   ;=> nil",
         whereis_name);
     primitives.def(
         "proc/unregister",
         Arity::exact(1),
         Sig::new(vec![sym.union(kw)], bool_ty),
         &["name"],
-        "Release the name `name`, so nothing is registered under it; true if a process was bound to it, false if it was already free. The inverse of `proc/register`, which had none — a name could only be released by its process dying, so a service could not hand its name to a replacement or step down without exiting. Strictly local.\n\n    (proc/unregister :brood-doc-nobody)   → false",
+        "Release the name `name`, so nothing is registered under it; true if a process was bound to it, false if it was already free. The inverse of `proc/register`, which had none — a name could only be released by its process dying, so a service could not hand its name to a replacement or step down without exiting. Strictly local.\n\n    (proc/unregister :brood-doc-nobody)   ;=> false",
         unregister_name);
     primitives.def(
         "proc/alive?",
         Arity::exact(1),
         Sig::new(vec![pid_ty], bool_ty),
         &["pid"],
-        "Is `pid` a live process on this node? False for a dead pid, and false for a remote one (liveness is not knowable locally). Cheaper than the `(proc/info pid)` snapshot, which answered the same question by allocating a whole map.\n\n    (proc/alive? (self))   → true",
+        "Is `pid` a live process on this node? False for a dead pid, and false for a remote one (liveness is not knowable locally). Cheaper than the `(proc/info pid)` snapshot, which answered the same question by allocating a whole map.\n\n    (proc/alive? (self))   ;=> true",
         process_alive);
     // The one process-introspection accessor the language can't reach from Brood
     // (the mailbox queue lives behind the scheduler registry). Everything else an

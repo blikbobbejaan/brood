@@ -26,21 +26,21 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::range(2, 3),
         Sig::with_rest(vec![string, int], int, string),
         &["s", "start", "end"],
-        "The characters of s in the range [start, end), char-indexed. end is optional and defaults to (string/length s), so (string/substring s start) is \"from start to the end\".\n\n    (string/substring \"Hi there\" 0 2)   → \"Hi\"",
+        "The characters of s in the range [start, end), char-indexed. end is optional and defaults to (string/length s), so (string/substring s start) is \"from start to the end\".\n\n    (string/substring \"Hi there\" 0 2)   ;=> \"Hi\"",
         substring);
     primitives.def(
         "string/span",
         Arity::exact(3),
         Sig::new(vec![string, int, string], int),
         &["s", "start", "chars"],
-        "The char index just past the maximal run of chars (a set, given as a string) starting at char `start` in s — `start` itself if the char there isn't in the set. The forward char-class scan a tokenizer skips a whitespace/digit run with; O(run) native. See also string/span-until.\n\n    (string/span \"  abc\" 0 \" \")   → 2\n    (string/span \"abc\" 0 \" \")   → 0",
+        "The char index just past the maximal run of chars (a set, given as a string) starting at char `start` in s — `start` itself if the char there isn't in the set. The forward char-class scan a tokenizer skips a whitespace/digit run with; O(run) native. See also string/span-until.\n\n    (string/span \"  abc\" 0 \" \")   ;=> 2\n    (string/span \"abc\" 0 \" \")   ;=> 0",
         string_span);
     primitives.def(
         "string/span-until",
         Arity::exact(3),
         Sig::new(vec![string, int, string], int),
         &["s", "start", "chars"],
-        "The char index of the first char of s in the set `chars` (a string) at or after char `start`, or (string/length s) if none — the maximal run of chars NOT in the set. For scanning up to a delimiter (comment-to-newline, atom-to-delimiter). The complement of string/span.\n\n    (string/span-until \"abc def\" 0 \" \")   → 3\n    (string/span-until \"abc\" 0 \" \")   → 3",
+        "The char index of the first char of s in the set `chars` (a string) at or after char `start`, or (string/length s) if none — the maximal run of chars NOT in the set. For scanning up to a delimiter (comment-to-newline, atom-to-delimiter). The complement of string/span.\n\n    (string/span-until \"abc def\" 0 \" \")   ;=> 3\n    (string/span-until \"abc\" 0 \" \")   ;=> 3",
         string_span_until);
     // Linear substring search — like `substring`/`lower`, it genuinely needs Rust:
     // Brood has no O(1) char access (char indexing into UTF-8 is O(index)), so a
@@ -79,7 +79,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         // the pieces are strings, and there is always at least one (`""` splits to `("")`)
         Sig::with_optional(vec![string], vec![string], Ty::list_of(string)),
         &["s", "&optional", "sep"],
-        "Split s into a list of substrings on each occurrence of sep, in one O(n) pass. sep defaults to a single space, so (string/split \"1 1 +\") is the word split. An empty separator splits s into its individual characters.\n\n    (string/split \"a,b\" \",\")   → (\"a\" \"b\")",
+        "Split s into a list of substrings on each occurrence of sep, in one O(n) pass. sep defaults to a single space, so (string/split \"1 1 +\") is the word split. An empty separator splits s into its individual characters.\n\n    (string/split \"a,b\" \",\")   ;=> (\"a\" \"b\")",
         string_split);
     // Codepoint access needs Rust for the same reason as split/search: char
     // indexing into UTF-8 is O(index), and the pure-Brood construction
@@ -90,7 +90,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], Ty::vector_of(int)),
         &["s"],
-        "The characters of s as a vector of integer Unicode codepoints, in one O(n) pass — the random-access form text parsers index with nth and compare as ints. The inverse is (%codepoints->string codes), i.e. string/codepoints->.\n\n    (string/->codepoints \"Hi there\")   → [72 105 32 116 104 101 114 101]",
+        "The characters of s as a vector of integer Unicode codepoints, in one O(n) pass — the random-access form text parsers index with nth and compare as ints. The inverse is (%codepoints->string codes), i.e. string/codepoints->.\n\n    (string/->codepoints \"Hi there\")   ;=> [72 105 32 116 104 101 114 101]",
         string_to_codepoints);
     // The inverse, so a text parser need not rebuild its result with
     // `(apply str (map int->char cs))` — a closure and a one-character string per code
@@ -112,7 +112,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], Ty::vector_of(string)),
         &["s"],
-        "The extended grapheme clusters of s as a vector of strings — the unit a human means by \"character\". \"é\" spelled e + U+0301 is two codepoints but one grapheme; a flag emoji is four codepoints and one grapheme. Step a cursor by this, not by codepoint (which splits clusters and corrupts text). The sibling of string/->codepoints; (apply str (string/->graphemes s)) is s.\n\n    (string/->graphemes \"Hi there\")   → [\"H\" \"i\" \" \" \"t\" \"h\" \"e\" \"r\" \"e\"]",
+        "The extended grapheme clusters of s as a vector of strings — the unit a human means by \"character\". \"é\" spelled e + U+0301 is two codepoints but one grapheme; a flag emoji is four codepoints and one grapheme. Step a cursor by this, not by codepoint (which splits clusters and corrupts text). The sibling of string/->codepoints; (apply str (string/->graphemes s)) is s.\n\n    (string/->graphemes \"Hi there\")   ;=> [\"H\" \"i\" \" \" \"t\" \"h\" \"e\" \"r\" \"e\"]",
         string_to_graphemes);
     // The indexed grapheme accessors (ADR-159). `string->graphemes` alone made the
     // *documented-correct* cursor step — read the cluster at an index — cost a vector
@@ -122,21 +122,21 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], int),
         &["s"],
-        "How many extended grapheme clusters s has — the length a human means, and the exclusive upper bound for grapheme-at. One O(n) pass, no allocation.\n\n    (string/grapheme-count \"Hi there\")   → 8",
+        "How many extended grapheme clusters s has — the length a human means, and the exclusive upper bound for grapheme-at. One O(n) pass, no allocation.\n\n    (string/grapheme-count \"Hi there\")   ;=> 8",
         grapheme_count);
     primitives.def(
         "string/next-grapheme",
         Arity::exact(2),
         Sig::new(vec![string, int], int),
         &["s", "i"],
-        "The character index one user-perceived character after character index i in s — the next grapheme-cluster boundary, clamped to the ends. A cursor steps by this, never by 1: `e` + a combining accent is one character of two code points (ADR-422).\n\n    (string/next-grapheme \"ab\" 0)   → 1",
+        "The character index one user-perceived character after character index i in s — the next grapheme-cluster boundary, clamped to the ends. A cursor steps by this, never by 1: `e` + a combining accent is one character of two code points (ADR-422).\n\n    (string/next-grapheme \"ab\" 0)   ;=> 1",
         string_next_grapheme);
     primitives.def(
         "string/prev-grapheme",
         Arity::exact(2),
         Sig::new(vec![string, int], int),
         &["s", "i"],
-        "The character index one user-perceived character before character index i in s — the previous grapheme-cluster boundary, clamped to the ends (ADR-422).\n\n    (string/prev-grapheme \"ab\" 2)   → 1",
+        "The character index one user-perceived character before character index i in s — the previous grapheme-cluster boundary, clamped to the ends (ADR-422).\n\n    (string/prev-grapheme \"ab\" 2)   ;=> 1",
         string_prev_grapheme);
     primitives.def(
         "string/grapheme-at",
@@ -145,7 +145,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         // the checker can type it. `Sig::new` left it undeclarable (audit/sig-arity).
         Sig::with_optional(vec![string, int], vec![any], any),
         &["s", "i", "default"],
-        "The i-th grapheme cluster of s as a string, or default (else nil) when i is out of range. The grapheme-indexed char-at: walks to i instead of materialising every cluster, so a cursor step is not O(line length).\n\n    (string/grapheme-at \"héllo\" 1)   → \"é\"",
+        "The i-th grapheme cluster of s as a string, or default (else nil) when i is out of range. The grapheme-indexed char-at: walks to i instead of materialising every cluster, so a cursor step is not O(line length).\n\n    (string/grapheme-at \"héllo\" 1)   ;=> \"é\"",
         grapheme_at);
     primitives.def(
         "string/substring-graphemes",
@@ -153,14 +153,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         // `end` is the OPTIONAL third argument the arity allows (audit/sig-arity).
         Sig::with_optional(vec![string, int], vec![int], string),
         &["s", "start", "end"],
-        "The half-open grapheme-cluster range [start, end) of s (end optional = to the end), clamped to the ends. The grapheme-indexed substring — plain substring is codepoint-indexed and can slice a cluster in half.\n\n    (string/substring-graphemes \"héllo\" 1 3)   → \"él\"\n    (string/substring-graphemes \"héllo\" 3)   → \"lo\"",
+        "The half-open grapheme-cluster range [start, end) of s (end optional = to the end), clamped to the ends. The grapheme-indexed substring — plain substring is codepoint-indexed and can slice a cluster in half.\n\n    (string/substring-graphemes \"héllo\" 1 3)   ;=> \"él\"\n    (string/substring-graphemes \"héllo\" 3)   ;=> \"lo\"",
         substring_graphemes);
     primitives.def(
         "string/normalize",
         Arity::exact(2),
         Sig::new(vec![string, kw], string),
         &["s", "form"],
-        "s in Unicode normalization form, one of :nfc :nfd :nfkc :nfkd. Brood's = is byte-structural, so text that reads identically ('é' as U+00E9 vs U+0065 U+0301) compares unequal until normalized. Canonical (:nfc/:nfd) preserves meaning; compatibility (:nfkc/:nfkd) also folds presentation ('ﬁ' -> 'fi', '²' -> '2') — right for search and identifier matching, wrong for round-tripping text.\n\n    (string/length (string/normalize \"é\" :nfd))   → 2\n    (string/normalize \"ﬁ\" :nfkc)   → \"fi\"",
+        "s in Unicode normalization form, one of :nfc :nfd :nfkc :nfkd. Brood's = is byte-structural, so text that reads identically ('é' as U+00E9 vs U+0065 U+0301) compares unequal until normalized. Canonical (:nfc/:nfd) preserves meaning; compatibility (:nfkc/:nfkd) also folds presentation ('ﬁ' -> 'fi', '²' -> '2') — right for search and identifier matching, wrong for round-tripping text.\n\n    (string/length (string/normalize \"é\" :nfd))   ;=> 2\n    (string/normalize \"ﬁ\" :nfkc)   ;=> \"fi\"",
         string_normalize);
     // The minimal-splice diff of two strings — one O(n) byte pass, char-indexed
     // result. Needs Rust like the search/split above (no O(1) char access), and it
@@ -182,7 +182,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], string),
         &["s"],
-        "s upper-cased (Unicode-aware).\n\n    (string/upper \"Hi there\")   → \"HI THERE\"",
+        "s upper-cased (Unicode-aware).\n\n    (string/upper \"Hi there\")   ;=> \"HI THERE\"",
         upper,
     );
     primitives.def(
@@ -190,7 +190,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], string),
         &["s"],
-        "s lower-cased (Unicode-aware).\n\n    (string/lower \"Hi there\")   → \"hi there\"",
+        "s lower-cased (Unicode-aware).\n\n    (string/lower \"Hi there\")   ;=> \"hi there\"",
         lower,
     );
     // Codepoint ↔ char and byte-level UTF-8 access — the primitives encoding
@@ -200,14 +200,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], int),
         &["s"],
-        "Unicode codepoint of the first character of string s (identical to the byte value for ASCII).\n\n    (string/char->int \"A\")   → 65",
+        "Unicode codepoint of the first character of string s (identical to the byte value for ASCII).\n\n    (string/char->int \"A\")   ;=> 65",
         char_to_int);
     primitives.def(
         "string/int->char",
         Arity::exact(1),
         Sig::new(vec![int], string),
         &["n"],
-        "A 1-char string for Unicode codepoint n. Errors on an invalid codepoint.\n\n    (string/int->char 955)   → \"λ\"",
+        "A 1-char string for Unicode codepoint n. Errors on an invalid codepoint.\n\n    (string/int->char 955)   ;=> \"λ\"",
         int_to_char,
     );
     primitives.def(
@@ -246,7 +246,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::any(),
         Sig::variadic(any, string),
         &["&", "xs"],
-        "Concatenate the display forms of the arguments into one string.\n\n    (str \"a\" 1 :b)   → \"a1:b\"",
+        "Concatenate the display forms of the arguments into one string.\n\n    (str \"a\" 1 :b)   ;=> \"a1:b\"",
         str_concat,
     );
     primitives.def(
@@ -262,7 +262,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], string),
         &["x"],
-        "The readable (re-readable) text form of x — quoted and escaped, so it reads back. Unlike str, which renders for display: (str \"hi\") is 2 chars, (pr-str \"hi\") is 4.\n\n    (string/length (pr-str \"hi\"))   → 4",
+        "The readable (re-readable) text form of x — quoted and escaped, so it reads back. Unlike str, which renders for display: (str \"hi\") is 2 chars, (pr-str \"hi\") is 4.\n\n    (string/length (pr-str \"hi\"))   ;=> 4",
         pr_str,
     );
     // symbols
@@ -277,7 +277,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string.union(sym).union(kw)], sym),
         &["x"],
-        "Coerce a string, symbol, or keyword to the matching symbol (interning if needed).\n\n    (symbol \"ab\")   → ab",
+        "Coerce a string, symbol, or keyword to the matching symbol (interning if needed).\n\n    (symbol \"ab\")   ;=> ab",
         to_symbol,
     );
     primitives.def(
@@ -285,7 +285,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string.union(sym).union(kw)], kw),
         &["x"],
-        "Coerce a string, symbol, or keyword to the matching keyword (interning if needed).\n\n    (keyword \"ab\")   → :ab",
+        "Coerce a string, symbol, or keyword to the matching keyword (interning if needed).\n\n    (keyword \"ab\")   ;=> :ab",
         to_keyword,
     );
 }

@@ -48,7 +48,7 @@ escape sequences and carriage returns."
 Fast path: a chunk with no ESC byte only needs its CRs dropped (a single
 `replace` pass, no char-by-char scan).
 
-    (ansi/strip (str (string/int->char 27) \"[1mx\" (string/int->char 27) \"[0m\"))   → \"x\""
+    (ansi/strip (str (string/int->char 27) \"[1mx\" (string/int->char 27) \"[0m\"))   ;=> \"x\""
   (if (includes? s "\e")
     (let (v (into [] (string/->list s)))
       (ansi-strip v 0 (count v) ()))
@@ -161,7 +161,7 @@ pass the region the child may still redraw (the last handful of lines) rather th
 whole scrollback — the cost is linear in what you pass, and nothing above the cursor
 can be reached by the sequences modelled here.
 
-    (ansi/render \"1 + 41\" (str (string/int->char 27) \"[2Dx\"))   → \"1 + x1\"
+    (ansi/render \"1 + 41\" (str (string/int->char 27) \"[2Dx\"))   ;=> \"1 + x1\"
 
 Models: `\\r`, `\\n`, cursor up/down/forward/back (`A`–`D`), next/previous line (`E`/`F`),
 column (`G`), erase-to-end-of-line (`K`) and erase-to-end-of-display (`J`). Everything

@@ -319,5 +319,5 @@ type; `i` is the position of the first rest argument."
 `orig`. The prelude's `%contract-wrap` — the kernel's policy hook — calls this once per
 contracted binding, having already decided the binding is to be enforced.
 
-    ((contract/shim 'f (fn (x) x) '(int -> int)) 3)   → 3"
+    ((contract/shim 'f (fn (x) x) '(int -> int)) 3)   ;=> 3"
   (%contract-shim name orig (%contract-spec type)))

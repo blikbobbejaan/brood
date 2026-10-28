@@ -67,8 +67,8 @@ plumbing for the `spawn` special forms."
   any monitors see `[:down ref pid [:error {:kind :message … :trace}]]` immediately
   (the reason carries the structured error map, call trace included).
 
-    (pid? (spawn :done))   → true
-    (let (me (self)) (spawn (send me [:doc-from-child 42])) (receive ([:doc-from-child n] n)))   → 42"
+    (pid? (spawn :done))   ;=> true
+    (let (me (self)) (spawn (send me [:doc-from-child 42])) (receive ([:doc-from-child n] n)))   ;=> 42"
   ;; Param name is `more` (not `rest`) so the body can still call the
   ;; prelude's `rest` function without param-shadowing itself.
   (if (empty? more)
@@ -97,7 +97,7 @@ and reports `:noproc` (losing `:normal`). Supervised children should use this so
 `:normal` exit isn't misread as a crash. A zero-arg lambda `(fn () …)` body is
 passed through (not re-wrapped), like `spawn`.
 
-    (pid? (spawn-link :done))   → true   ; a :normal exit does not reach the caller"
+    (pid? (spawn-link :done))   ;=> true   ; a :normal exit does not reach the caller"
   `(%spawn-link ~(%spawn-body-thunk expr)))
 
 (defmacro spawn-monitor (expr)
@@ -114,7 +114,7 @@ its already-dead branch, and the DOWN arrives carrying **`:noproc` instead of th
 exit reason**. Nothing raises — the receive fires with a reason that says
 only \"already gone\" — so prefer this form whenever the reason matters.
 
-    (let ([p r] (spawn-monitor :ok)) (receive ([:down ^r _ reason] reason) (after 500 :lost)))   → :normal
+    (let ([p r] (spawn-monitor :ok)) (receive ([:down ^r _ reason] reason) (after 500 :lost)))   ;=> :normal
 
 A zero-arg lambda `(fn () …)` body is passed through (not re-wrapped), like `spawn`."
   `(%spawn-monitor ~(%spawn-body-thunk expr)))
@@ -426,8 +426,8 @@ A zero-arg lambda `(fn () …)` body is passed through (not re-wrapped), like `s
 (defmacro receive (& clauses)
   "Selectively receive a message from the mailbox: run the first `(pattern [:when guard] body...)` clause that matches, leaving others queued. An optional final `(after ms body...)` clause fires on timeout; `(receive)` blocks for the next message.
 
-    (do (send (self) [:doc-ping 1]) (receive ([:doc-ping n] n)))   → 1
-    (receive ([:doc-never-sent] :got) (after 0 :timed-out))       → :timed-out"
+    (do (send (self) [:doc-ping 1]) (receive ([:doc-ping n] n)))   ;=> 1
+    (receive ([:doc-never-sent] :got) (after 0 :timed-out))       ;=> :timed-out"
   (do
     (%receive-check-after clauses)
     ;; Before the pin/tag/prep scans below, none of which bounds its walk.
@@ -481,7 +481,7 @@ A zero-arg lambda `(fn () …)` body is passed through (not re-wrapped), like `s
 (defn sleep (ms)
   "Park the current process for `ms` milliseconds without touching its mailbox — every queued message stays queued. Parks on the scheduler timer; it does not block a worker thread.
 
-    (sleep 0) → nil"
+    (sleep 0) ;=> nil"
   ;; Checked here, not left to `receive`'s timeout check, so the error names `sleep` — a
   ;; form the caller actually wrote.
   (if (or (nil? ms) (and (int? ms) (>= ms 0) (<= ms 9223372036854775807)))
@@ -507,7 +507,7 @@ the native rethrows here, catchable as usual. Only long/blocking
 data-in/data-out natives are allowed (`%offload` refuses the rest); other
 mailbox messages stay queued while waiting (selective receive).
 
-    (offload file/slurp-bytes \"big.bin\")   ;=> …the file's bytes, read off the scheduler…"
+    (offload file/slurp-bytes \"big.bin\")   ;~> …the file's bytes, read off the scheduler…"
   (let (tok (%offload f (into [] args)))
     (receive
       ([:offload ^tok result] result)

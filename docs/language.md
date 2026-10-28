@@ -656,16 +656,20 @@ provable mismatch; anything whose type isn't pinned down defers — sound, no fa
 > `{__id__: :int | :float}`, which no int is. Only passing a real member exposed it; the
 > exhaustiveness gate and non-member rejection both looked right.)
 
-**Doctests.** An indented ` → ` line in a docstring is a runnable example, and `nest test`
-runs the ones in the project's own modules after the suite passes — a wrong example is worse
-than none, since it reads as authoritative and no other gate sees it (the checker does not
-evaluate docstrings). The engine is `std/tool/doctest.blsp`; `doctest/failures-under` scopes
-a run to one package's surface, and `tests/doc_examples_test.blsp` is what points it at the
-standard library.
+**Doctests.** An indented line in a docstring holding a form followed by ` ;=> ` and its
+result — `    (count [1 2 3])   ;=> 3` — is a runnable example: the form is evaluated and must
+equal the result, which is *read* as a value (so `;=> (:a :b)` is a list, not a call). The
+result is a comment, so the line stays Brood you can paste. `nest test` runs the examples in
+the project's own modules after the suite passes, and `nest doctest` runs them on their own —
+a wrong example is worse than none, since it reads as authoritative and no other gate sees it
+(the checker does not evaluate docstrings). The engine is `std/tool/doctest.blsp`;
+`doctest/failures-under` scopes a run to one package's surface, and
+`tests/doc_examples_test.blsp` is what points it at the standard library. A line still
+written with the retired ` → ` marker is reported, never skipped.
 
 A function whose result depends on the world — a file, the clock, a socket, a pid, the loaded
-image — cannot be pinned by a ` → ` example. Write an **illustration** instead, ` ;=> ` in place
-of the arrow: `    (file/slurp "notes.txt")   ;=> "…the file's text…"`. It is not evaluated,
+image — cannot be pinned by a ` ;=> ` example. Write an **illustration** instead, with ` ;~> `:
+`    (file/slurp "notes.txt")   ;~> "…the file's text…"`. It is not evaluated,
 but doctest still reads its left side and fails it when the form does not read, calls a
 function that does not exist, or passes an argument count no arm of that function takes — so a
 rename, a typo or an argument reorder is caught (a `…` argument stands for any number); the

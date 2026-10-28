@@ -36,7 +36,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::range(2, 3),
         Sig::with_optional(vec![string, seqable], vec![any], list_ty),
         &["query", "cands", "limit"],
-        "The best `limit` of `cands` for `query` under std/fuzzy's built-in rules (a space separates terms that must each match, in any order), best score first (ties: shorter candidate, then lexicographic) — a nil or non-positive limit means all of them. The ranking pass behind fuzzy/top and fuzzy/filter, native because a completion UI runs it over a whole project on every keystroke; fuzzy/top calls it only while *fuzzy-scorer* is the default, so redefining the rules still moves every ranking (ADR-375 amending ADR-357). Every candidate must be a string.\n\n    (%fuzzy-top \"ab\" [\"axb\" \"ab\" \"zz\"] 1)   → (\"ab\")",
+        "The best `limit` of `cands` for `query` under std/fuzzy's built-in rules (a space separates terms that must each match, in any order), best score first (ties: shorter candidate, then lexicographic) — a nil or non-positive limit means all of them. The ranking pass behind fuzzy/top and fuzzy/filter, native because a completion UI runs it over a whole project on every keystroke; fuzzy/top calls it only while *fuzzy-scorer* is the default, so redefining the rules still moves every ranking (ADR-375 amending ADR-357). Every candidate must be a string.\n\n    (%fuzzy-top \"ab\" [\"axb\" \"ab\" \"zz\"] 1)   ;=> (\"ab\")",
         fuzzy_top,
     );
 }

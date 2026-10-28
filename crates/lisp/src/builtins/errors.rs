@@ -18,7 +18,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], Ty::NEVER),
         &["x"],
-        "Raise x as an error - a non-local exit caught by try/catch.\n\n    (try (throw :boom) (catch e e))                 → :boom\n    (try (throw {:code 7}) (catch e (:code e)))     → 7",
+        "Raise x as an error - a non-local exit caught by try/catch.\n\n    (try (throw :boom) (catch e e))                 ;=> :boom\n    (try (throw {:code 7}) (catch e (:code e)))     ;=> 7",
         throw,
     );
     // A *returned* failure — the other channel. `throw` unwinds (bugs, the

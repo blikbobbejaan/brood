@@ -4383,3 +4383,19 @@ named a bare `odd?` and an undefined `sq`; a `%map-pairs` comment said insertion
 gains "Language design pass (2026-10-28)", the backlog for the next month: hygiene holes, one
 caught-error shape, nested quasiquote, the bare/module rule, ADR-170's stale rows, and the rest.
 Docs and comments only; nothing was run.
+
+2026-10-28 (one doctest engine, `;=>` asserts everywhere): `nest test` and `nest doctest` ran
+two engines with opposite conventions — `std/tool/doctest` executed `form → result` and only
+read `form ;=> result` as an illustration, while `nest doctest`'s collector in `docs.blsp`
+evaluated `;=>` and its expected side too. `std/tool/doctest` is now the only engine:
+`form ;=> result` is an executed case (the result read as a value), `form ;~> result` an
+illustration (read, callee and arity checked, never run), and an indented `→` is reported as
+an old marker rather than skipped; a second marker or a missing result is malformed. The
+`docs.blsp` collector and its tests are deleted; `nest doctest` is a front end over the engine.
+A one-shot Brood converter swept 1,786 cases and 551 illustrations in std docstrings and 121
+and 31 in Rust builtin docstrings; the generated `defrecord` docs were fixed by hand. The
+`nest doctest` integration test passed while every example failed as an unbound symbol (it
+asserted only the exit code); it now asserts the compared values. Run here: the engine over
+the std image, 0 failures across 2,029 documented names; `nest check` and `--strict` over
+std/tests(/examples); `cargo fmt --check`; `nest format --check`. Not run: `doctest_test`,
+`doc_examples_test`, `docs_test`, `blsp_dispatch`.

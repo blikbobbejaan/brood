@@ -31,19 +31,19 @@ key agreement and Argon2id password hashing.
 (defn random-bytes (n)
   "Return `n` cryptographically secure random bytes as a bytes value.
 
-    (count (crypto/random-bytes 8))   → 8"
+    (count (crypto/random-bytes 8))   ;=> 8"
   (%random-bytes n))
 
 (defn random-key ()
   "Generate a random 32-byte key suitable for ChaCha20-Poly1305.
 
-    (count (crypto/random-key))   → 32"
+    (count (crypto/random-key))   ;=> 32"
   (%random-bytes 32))
 
 (defn random-nonce ()
   "Generate a random 12-byte nonce suitable for ChaCha20-Poly1305.
 
-    (count (crypto/random-nonce))   → 12"
+    (count (crypto/random-nonce))   ;=> 12"
   (%random-bytes 12))
 
 ;; ---- byte/string conversion -------------------------------------------------
@@ -67,7 +67,7 @@ key agreement and Argon2id password hashing.
 16-byte auth tag). Inputs may be bytes values or vectors/lists of ints.
 Never reuse a (key, nonce) pair.
 
-    (count (crypto/encrypt (crypto/random-key) (crypto/random-nonce) [1 2 3]))   → 19"
+    (count (crypto/encrypt (crypto/random-key) (crypto/random-nonce) [1 2 3]))   ;=> 19"
   (%chacha20-encrypt key nonce plaintext-bytes))
 
 (defn decrypt (key nonce ciphertext-bytes)
@@ -75,20 +75,20 @@ Never reuse a (key, nonce) pair.
 byte vector on success, or `:error` if authentication fails (wrong key/nonce
 or tampered ciphertext). Inputs may be bytes values or vectors/lists of ints.
 
-    (let (k (crypto/random-key) n (crypto/random-nonce)) (vec (crypto/decrypt k n (crypto/encrypt k n [1 2 3]))))           → [1 2 3]
-    (let (n (crypto/random-nonce)) (crypto/decrypt (crypto/random-key) n (crypto/encrypt (crypto/random-key) n [1 2 3])))   → :error"
+    (let (k (crypto/random-key) n (crypto/random-nonce)) (vec (crypto/decrypt k n (crypto/encrypt k n [1 2 3]))))           ;=> [1 2 3]
+    (let (n (crypto/random-nonce)) (crypto/decrypt (crypto/random-key) n (crypto/encrypt (crypto/random-key) n [1 2 3])))   ;=> :error"
   (%chacha20-decrypt key nonce ciphertext-bytes))
 
 (defn encrypt-string (key nonce s)
   "Encrypt the UTF-8 bytes of string `s`. Returns a ciphertext bytes value.
 
-    (count (crypto/encrypt-string (crypto/random-key) (crypto/random-nonce) \"hi\"))   → 18"
+    (count (crypto/encrypt-string (crypto/random-key) (crypto/random-nonce) \"hi\"))   ;=> 18"
   (encrypt key nonce (string/->bytes s)))
 
 (defn decrypt-string (key nonce ciphertext-bytes)
   "Decrypt to a string. Returns the decoded string, or `:error` on failure.
 
-    (let (k (crypto/random-key) n (crypto/random-nonce)) (crypto/decrypt-string k n (crypto/encrypt-string k n \"hi\")))   → \"hi\""
+    (let (k (crypto/random-key) n (crypto/random-nonce)) (crypto/decrypt-string k n (crypto/encrypt-string k n \"hi\")))   ;=> \"hi\""
   (let (pt (decrypt key nonce ciphertext-bytes))
     (if (= pt :error) :error (string/bytes-> pt))))
 
@@ -110,7 +110,7 @@ is used as raw bytes — so a base64-decoded binary salt (e.g. Postgres SCRAM)
 round-trips faithfully rather than being UTF-8-decoded. Higher `iterations` =
 slower brute force; use ≥ 600,000 for password storage.
 
-    (encoding/hex-encode-bytes (crypto/pbkdf2 \"password\" \"salt\" 1 32))   → \"120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b\""
+    (encoding/hex-encode-bytes (crypto/pbkdf2 \"password\" \"salt\" 1 32))   ;=> \"120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b\""
   (%pbkdf2-sha256-bytes (crypto-as-bytes password)
     (crypto-as-bytes salt)
     iterations
@@ -130,8 +130,8 @@ Constant time either way: the loop visits every byte with no early exit, accumul
 `bit/or`; the `bytes?` test is on the TYPE and the length check on the length, neither of
 which is secret.
 
-    (crypto/constant-time-equal? [1 2 3] [1 2 3])   → true
-    (crypto/constant-time-equal? [1 2 3] [1 2 4])   → false"
+    (crypto/constant-time-equal? [1 2 3] [1 2 3])   ;=> true
+    (crypto/constant-time-equal? [1 2 3] [1 2 4])   ;=> false"
   (let (n (count a))
     (and (= n (count b))
       (if (and (bytes? a) (bytes? b))
@@ -157,13 +157,13 @@ which is secret.
   "A fresh ed25519 keypair as `{:public <bytes> :private <bytes>}` — `:public` the 32-byte
 verifying key (safe to publish), `:private` the 32-byte signing seed (keep secret).
 
-    (count (get (crypto/keypair) :public))   → 32"
+    (count (get (crypto/keypair) :public))   ;=> 32"
   (let ([public private] (%ed25519-keygen)) {:public public :private private}))
 
 (defn sign (private message)
   "The 64-byte ed25519 signature of `message` (bytes) under the 32-byte `private` seed.
 
-    (count (crypto/sign (get (crypto/keypair) :private) (string/->bytes \"m\")))   → 64"
+    (count (crypto/sign (get (crypto/keypair) :private) (string/->bytes \"m\")))   ;=> 64"
   (%ed25519-sign private message))
 
 (defn verify (public message signature)
@@ -171,8 +171,8 @@ verifying key (safe to publish), `:private` the 32-byte signing seed (keep secre
 32-byte `public` key. Never errors — a malformed or wrong signature is simply false, so it
 reads as a plain predicate.
 
-    (let (kp (crypto/keypair) m (string/->bytes \"m\")) (crypto/verify (get kp :public) m (crypto/sign (get kp :private) m)))                  → true
-    (let (kp (crypto/keypair)) (crypto/verify (get kp :public) (string/->bytes \"m\") (crypto/sign (get kp :private) (string/->bytes \"n\"))))   → false"
+    (let (kp (crypto/keypair) m (string/->bytes \"m\")) (crypto/verify (get kp :public) m (crypto/sign (get kp :private) m)))                  ;=> true
+    (let (kp (crypto/keypair)) (crypto/verify (get kp :public) (string/->bytes \"m\") (crypto/sign (get kp :private) (string/->bytes \"n\"))))   ;=> false"
   (%ed25519-verify public message signature))
 
 ;; --- ECDSA, RSA, X25519, Argon2id (ADR-448) --------------------------------
@@ -186,7 +186,7 @@ reads as a plain predicate.
 `{:curve :public :private}` — `:public` the uncompressed point (65 / 97 bytes, safe to
 publish), `:private` a PKCS#8 document (keep secret).
 
-    (count (get (crypto/ecdsa-keypair) :public))   → 65"
+    (count (get (crypto/ecdsa-keypair) :public))   ;=> 65"
   (let ([public private] (%ecdsa-keygen curve)) {:curve curve :public public :private private}))
 
 (defn ecdsa-sign (key message)
@@ -194,7 +194,7 @@ publish), `:private` a PKCS#8 document (keep secret).
 SHA-256 on P-256 and SHA-384 on P-384, in the fixed r‖s form JWT's ES256 / ES384 use
 (64 / 96 bytes).
 
-    (count (crypto/ecdsa-sign (crypto/ecdsa-keypair) (string/->bytes \"m\")))   → 64"
+    (count (crypto/ecdsa-sign (crypto/ecdsa-keypair) (string/->bytes \"m\")))   ;=> 64"
   (%ecdsa-sign (get key :curve :p256) (get key :private) message))
 
 (defn ecdsa-verify (key message signature)
@@ -202,7 +202,7 @@ SHA-256 on P-256 and SHA-384 on P-384, in the fixed r‖s form JWT's ES256 / ES3
 a map with `:curve` and `:public`, which a keypair is. Never errors: a malformed key or a
 wrong signature is false.
 
-    (let (kp (crypto/ecdsa-keypair :p384) m (string/->bytes \"m\")) (crypto/ecdsa-verify kp m (crypto/ecdsa-sign kp m)))   → true"
+    (let (kp (crypto/ecdsa-keypair :p384) m (string/->bytes \"m\")) (crypto/ecdsa-verify kp m (crypto/ecdsa-sign kp m)))   ;=> true"
   (%ecdsa-verify (get key :curve :p256) (get key :public) message signature))
 
 (defn rsa-keypair (&optional (bits 2048))
@@ -210,7 +210,7 @@ wrong signature is false.
 the public key as its big-endian modulus and exponent (a JWK's `n` and `e`), the private key
 a PKCS#8 document.
 
-    (count (get (crypto/rsa-keypair) :n))   → 256"
+    (count (get (crypto/rsa-keypair) :n))   ;=> 256"
   (let ([n e private] (%rsa-keygen bits)) {:n n :e e :private private}))
 
 (defn rsa-sign (key message &optional (scheme :pkcs1-sha256))
@@ -218,20 +218,20 @@ a PKCS#8 document.
 `:pkcs1-sha256` (JWT RS256, the default), `:pkcs1-sha384`, `:pkcs1-sha512`, or the PSS
 schemes `:pss-sha256` (PS256), `:pss-sha384`, `:pss-sha512`.
 
-    (count (crypto/rsa-sign (crypto/rsa-keypair) (string/->bytes \"m\")))   → 256"
+    (count (crypto/rsa-sign (crypto/rsa-keypair) (string/->bytes \"m\")))   ;=> 256"
   (%rsa-sign scheme (get key :private) message))
 
 (defn rsa-verify (key message signature &optional (scheme :pkcs1-sha256))
   "True when `signature` is a valid RSA signature of `message` by `scheme` under `key` — a
 map with `:n` and `:e`, as an `rsa-keypair` or a decoded JWK gives them. Never errors.
 
-    (let (kp (crypto/rsa-keypair) m (string/->bytes \"m\")) (crypto/rsa-verify kp m (crypto/rsa-sign kp m :pss-sha256) :pss-sha256))   → true"
+    (let (kp (crypto/rsa-keypair) m (string/->bytes \"m\")) (crypto/rsa-verify kp m (crypto/rsa-sign kp m :pss-sha256) :pss-sha256))   ;=> true"
   (%rsa-verify scheme (get key :n) (get key :e) message signature))
 
 (defn x25519-keypair ()
   "A fresh X25519 keypair as `{:public :private}`, 32 bytes each.
 
-    (count (get (crypto/x25519-keypair) :public))   → 32"
+    (count (get (crypto/x25519-keypair) :public))   ;=> 32"
   (let ([public private] (%x25519-keygen)) {:public public :private private}))
 
 (defn x25519-shared (private their-public)
@@ -239,20 +239,20 @@ map with `:n` and `:e`, as an `rsa-keypair` or a decoded JWK gives them. Never e
 computes the same one from its own private key and the other's public key. Derive a key from
 it (HKDF); never use it as one.
 
-    (let (a (crypto/x25519-keypair) b (crypto/x25519-keypair)) (= (crypto/x25519-shared (get a :private) (get b :public)) (crypto/x25519-shared (get b :private) (get a :public))))   → true"
+    (let (a (crypto/x25519-keypair) b (crypto/x25519-keypair)) (= (crypto/x25519-shared (get a :private) (get b :public)) (crypto/x25519-shared (get b :private) (get a :public))))   ;=> true"
   (%x25519-shared private their-public))
 
 (defn password-hash (password)
   "An Argon2id hash of `password` (a string or bytes) to store: a PHC string that carries its
 own random salt and cost (`$argon2id$v=19$m=…`). Check a login with `password-verify`.
 
-    (string/starts-with? (crypto/password-hash \"hunter2\") \"$argon2id$\")   → true"
+    (string/starts-with? (crypto/password-hash \"hunter2\") \"$argon2id$\")   ;=> true"
   (%argon2id-hash (if (string? password) (string/->bytes password) password)))
 
 (defn password-verify (phc password)
   "True when `password` (a string or bytes) is the one the stored `phc` string was hashed
 from. Never errors — a string that is no Argon2 hash is false.
 
-    (crypto/password-verify (crypto/password-hash \"hunter2\") \"hunter2\")   → true
-    (crypto/password-verify \"not a hash\" \"hunter2\")   → false"
+    (crypto/password-verify (crypto/password-hash \"hunter2\") \"hunter2\")   ;=> true
+    (crypto/password-verify \"not a hash\" \"hunter2\")   ;=> false"
   (%argon2id-verify phc (if (string? password) (string/->bytes password) password)))

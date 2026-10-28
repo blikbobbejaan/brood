@@ -69,7 +69,7 @@ instead. Every reply is tagged with `handle`, so a reply from a finished or
 cancelled task is easy to ignore — match on the handle you last started. Cancel
 early with `cancel`.
 
-    (task/task (fn () (slow-compute)) {:timeout 5000})   ;=> a handle; later `[:task-done handle value]`"
+    (task/task (fn () (slow-compute)) {:timeout 5000})   ;~> a handle; later `[:task-done handle value]`"
   (let (o (if (empty? opts) {} (first opts))
         reply-to (or (get o :reply-to) (self))
         timeout (get o :timeout))
@@ -80,7 +80,7 @@ early with `cancel`.
 reply is delivered. A no-op if the task already finished (its handle is a dead
 pid). Returns nil.
 
-    (task/cancel h)   ;=> nil — no reply for `h` will arrive"
+    (task/cancel h)   ;~> nil — no reply for `h` will arrive"
   (send handle :task--cancel)
   nil)
 
@@ -92,7 +92,7 @@ pattern — a debounced search, an interactive eval re-run, a live recheck — w
 trigger should abandon the previous job rather than queue behind it. Store the returned
 handle and pass it back as `prev` on the next trigger.
 
-    (task/latest prev (fn () (search query)))   ;=> the new handle; `prev`'s reply never arrives"
+    (task/latest prev (fn () (search query)))   ;~> the new handle; `prev`'s reply never arrives"
   (when prev (cancel prev))
   (apply task thunk opts))
 
@@ -111,8 +111,8 @@ which defaults to whoever called `task`) — the reply is a message, and only it
 addressee can receive it. Use it in a script or test; use `task` plus a `receive`
 to keep an interactive loop live.
 
-    (task/await (fn () (+ 1 2)) 5000)   → 3
-    (task/await (task/task (fn () (* 6 7))) 5000)   → 42"
+    (task/await (fn () (+ 1 2)) 5000)   ;=> 3
+    (task/await (task/task (fn () (* 6 7))) 5000)   ;=> 42"
   (if (pid? thunk-or-handle)
     (await-handle thunk-or-handle timeout-ms)
     (let (me (self)

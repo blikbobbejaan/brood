@@ -25,7 +25,7 @@ the same by hand.")
 (defn app? (x)
   "True if `x` is an application made by [[defapp]] or [[new]].
 
-    (application/app? (application/new 'store {:start (fn () nil)}))   ;=> true"
+    (application/app? (application/new 'store {:start (fn () nil)}))   ;~> true"
   (and (record? x) (= (record-id x) :application/app)))
 
 (defn new (name opts)
@@ -34,7 +34,7 @@ returning its root — usually a supervisor's pid), an optional `:stop` (a funct
 what `:start` returned) and an optional `:requires` (applications that start before it).
 An unknown option raises. [[defapp]] is the usual way to make one.
 
-    (application/app-name (application/new 'store {:start (fn () nil)}))   ;=> store"
+    (application/app-name (application/new 'store {:start (fn () nil)}))   ;~> store"
   (let (unknown (seq/reject (keys opts) (fn (k) (contains? *options* k)))
         requires (get opts :requires []))
     (cond
@@ -70,7 +70,7 @@ An unknown option raises. [[defapp]] is the usual way to make one.
 and return the started `[[application root] …]` to hand to [[stop]]. When a start
 raises, the applications already started are stopped in reverse and the error re-raised.
 
-    (application/start web)   ;=> [[store <pid>] [web <pid>]]"
+    (application/start web)   ;~> [[store <pid>] [web <pid>]]"
   (fold (start-order-into [] application)
     []
     (fn (started to-start)
@@ -112,7 +112,7 @@ first: its `:stop` gets the root, and with no `:stop` a pid root gets `gen/stop`
 killed if it is still running after 5 s. A stop that raises is reported and the rest
 still stop. Returns nil.
 
-    (application/stop (application/start web))   ;=> nil; web stopped, then store"
+    (application/stop (application/start web))   ;~> nil; web stopped, then store"
   (doseq (entry (reverse started)) (stop-one entry)))
 
 ;; ---- running ------------------------------------------------------------------
@@ -130,7 +130,7 @@ rest, returning `:ok` for a `:normal` exit and raising with the reason otherwise
 `nest run` and a released binary do when `:main` names an application; the command-line
 arguments are ignored.
 
-    (application/run web)   ;=> :ok, once SIGTERM arrives and everything has stopped"
+    (application/run web)   ;~> :ok, once SIGTERM arrives and everything has stopped"
   (let (started (start application)
         roots (into {}
                 (seq/keep started
@@ -157,7 +157,7 @@ arguments are ignored.
 (defn shutdown ()
   "Ask the running application ([[run]]) to stop, as SIGTERM would. Returns nil.
 
-    (application/shutdown)   ;=> nil; run stops everything and returns"
+    (application/shutdown)   ;~> nil; run stops everything and returns"
   (send :application [:application-stop])
   nil)
 
@@ -165,7 +165,7 @@ arguments are ignored.
   "Start `application` and everything it requires, then stop them all: the boot check for
 an application (`nest run --check-boot`). Returns the names started, in order.
 
-    (application/check web)   ;=> (store web)"
+    (application/check web)   ;~> (store web)"
   (let (started (start application))
     (stop started)
     (map started (fn (entry) (app-name (first entry))))))

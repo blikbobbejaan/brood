@@ -7,68 +7,68 @@
 (defn int? (x)
   "True if `x` is an integer.
 
-    (int? 1)     → true
-    (int? 1.0)   → false   ; a float is not an int"
+    (int? 1)     ;=> true
+    (int? 1.0)   ;=> false   ; a float is not an int"
   (%eq (type-of x) :int))
 (defn float? (x)
   "True if `x` is a float.
 
-    (float? 1.5) → true
-    (float? 1)   → false"
+    (float? 1.5) ;=> true
+    (float? 1)   ;=> false"
   (%eq (type-of x) :float))
 (defn bool? (x)
   "True if `x` is a boolean.
 
-    (bool? true)   → true"
+    (bool? true)   ;=> true"
   (%eq (type-of x) :bool))
 (defn string? (x)
   "True if `x` is a string.
 
-    (string? \"a\")   → true
-    (string? :a)    → false"
+    (string? \"a\")   ;=> true
+    (string? :a)    ;=> false"
   (%eq (type-of x) :string))
 (defn bytes? (x)
   "True if `x` is a bytes value.
 
-    (bytes? (bytes [1 2]))   → true
-    (bytes? \"ab\")             → false   ; a string is not bytes"
+    (bytes? (bytes [1 2]))   ;=> true
+    (bytes? \"ab\")             ;=> false   ; a string is not bytes"
   (%eq (type-of x) :bytes))
 (defn decimal? (x)
   "True if `x` is an exact base-10 decimal (e.g. `1.50M`).
 
-    (decimal? 1.50M)   → true
-    (decimal? 1.5)     → false   ; a float is inexact"
+    (decimal? 1.50M)   ;=> true
+    (decimal? 1.5)     ;=> false   ; a float is inexact"
   (%eq (type-of x) :decimal))
 (defn ratio? (x)
   "True if `x` is an exact rational (e.g. `1/2`).
 
-    (ratio? 1/2)   → true"
+    (ratio? 1/2)   ;=> true"
   (%eq (type-of x) :ratio))
 (defn symbol? (x)
   "True if `x` is a symbol.
 
-    (symbol? 'a)   → true"
+    (symbol? 'a)   ;=> true"
   (%eq (type-of x) :symbol))
 (defn keyword? (x)
   "True if `x` is a keyword.
 
-    (keyword? :a)  → true"
+    (keyword? :a)  ;=> true"
   (%eq (type-of x) :keyword))
 (defn vector? (x)
   "True if `x` is a vector.
 
-    (vector? [1])   → true"
+    (vector? [1])   ;=> true"
   (%eq (type-of x) :vector))
 (defn map? (x)
   "True if `x` is a map.
 
-    (map? {:a 1})   → true
-    (map? #{1})     → false   ; that is a SET"
+    (map? {:a 1})   ;=> true
+    (map? #{1})     ;=> false   ; that is a SET"
   (%eq (type-of x) :map))
 (defn set? (x)
   "True if `x` is a set (a `#{…}` value).
 
-    (set? #{1})    → true"
+    (set? #{1})    ;=> true"
   (%eq (type-of x) :set))
 (defn failure? (x)
   "True if `x` is a **failure** — the value a function returns when it cannot
@@ -78,85 +78,85 @@ A failure is **truthy**, so it never vanishes into an `(or … default)` — rea
 `failure?` to ask whether something failed, and `error-message` to read why. That is
 also how you default deliberately: `(let (n (parse s)) (if (failure? n) 0 n))`.
 
-    (failure? (string/->number \"abc\"))   → true
-    (failure? (string/->number \"42\"))    → false
-    (failure? nil)                        → false   ; absence is not failure"
+    (failure? (string/->number \"abc\"))   ;=> true
+    (failure? (string/->number \"42\"))    ;=> false
+    (failure? nil)                        ;=> false   ; absence is not failure"
   (%eq (type-of x) :failure))
 (defn ref? (x)
   "True if `x` is a `(ref)` token (a unique reference).
 
-    (ref? (ref))   → true
-    (ref? :r)      → false"
+    (ref? (ref))   ;=> true
+    (ref? :r)      ;=> false"
   (%eq (type-of x) :ref))
 (defn pid? (x)
   "True if `x` is a process id (from `self`/`spawn`).
 
-    (pid? (self))   → true
-    (pid? 5)        → false"
+    (pid? (self))   ;=> true
+    (pid? 5)        ;=> false"
   (%eq (type-of x) :pid))
 (defn rope? (x)
   "True if `x` is a rope (editor buffer text from `text/from-string`).
 
-    (rope? (text/from-string \"hi\"))   → true
-    (rope? \"hi\")                      → false   ; a plain string is not a rope"
+    (rope? (text/from-string \"hi\"))   ;=> true
+    (rope? \"hi\")                      ;=> false   ; a plain string is not a rope"
   (%eq (type-of x) :rope))
 (defn table? (x)
   "True if `x` is an in-memory table (from `(table/new)`) — Brood's shared mutable key→value store.
 
-    (table? (table/new))   → true
-    (table? {})            → false   ; a map is immutable, and a different kind"
+    (table? (table/new))   ;=> true
+    (table? {})            ;=> false   ; a map is immutable, and a different kind"
   (%eq (type-of x) :table))
 ;; `fn?` holds for both Brood closures (:fn) and Rust builtins (:native).
 (defn fn? (x)
   "True if `x` is callable (a closure or a primitive).
 
-    (fn? inc)   → true   ; true for a closure AND a primitive
-    (fn? 1)     → false"
+    (fn? inc)   ;=> true   ; true for a closure AND a primitive
+    (fn? 1)     ;=> false"
   (or (%eq (type-of x) :fn) (%eq (type-of x) :native)))
 
 ;; ---- derived predicates ----
 (defn number? (x)
   "True if `x` is an int, a float, a decimal, or a ratio.
 
-    (number? 1/2)  → true   ; the whole tower: int, float, ratio, decimal, bignum
-    (number? \"1\")  → false"
+    (number? 1/2)  ;=> true   ; the whole tower: int, float, ratio, decimal, bignum
+    (number? \"1\")  ;=> false"
   (or (int? x) (float? x) (decimal? x) (ratio? x)))
 (defn ->float (x)
   "The number `x` as an (inexact) float — the escape hatch from an exact ratio or
 decimal to fast float math.
 
-    (->float 1/2)   → 0.5
-    (->float 3)     → 3.0"
+    (->float 1/2)   ;=> 0.5
+    (->float 3)     ;=> 3.0"
   (* 1.0 x))
 (defn list? (x)
   "True if `x` is a list — `nil` or a pair. An O(1) tag test, which is the type `list`
 itself (a type is a set of runtime tags): it does not walk the tail, so an improper list
 `(cons 1 2)` is a list too. There is no proper-list predicate.
 
-    (list? (list 1))  → true
-    (list? [1])       → false   ; a vector is not a list
-    (list? nil)       → true    ; the empty list IS nil
-    (list? (cons 1 2)) → true   ; a pair, whatever its tail"
+    (list? (list 1))  ;=> true
+    (list? [1])       ;=> false   ; a vector is not a list
+    (list? nil)       ;=> true    ; the empty list IS nil
+    (list? (cons 1 2)) ;=> true   ; a pair, whatever its tail"
   (or (nil? x) (pair? x)))
 
 ;; ---- list accessors ----
 (defn list (& xs)
   "A list of the given arguments.
 
-    (list 1 2 3)   → (1 2 3)
-    (list)         → nil   ; the empty list is nil"
+    (list 1 2 3)   ;=> (1 2 3)
+    (list)         ;=> nil   ; the empty list is nil"
   xs)
 (defn second (coll)
   "The second item of `coll`.
 
-    (second [1 2 3])     → 2
-    (second (list 1))    → nil"
+    (second [1 2 3])     ;=> 2
+    (second (list 1))    ;=> nil"
   (first (rest coll)))
 (defn third (coll)
   "The third item of `coll`.
 
-    (third [1 2 3])      → 3
-    (third (list 1 2))   → nil"
+    (third [1 2 3])      ;=> 3
+    (third (list 1 2))   ;=> nil"
   ;; Here, not in `std/seq.blsp`, because `first`/`second`/`third` is one trio and it
   ;; had three homes: `first` a kernel builtin, `second` here, `third` a module function
   ;; you had to know to qualify. Any of the three should read the same way.
@@ -171,62 +171,62 @@ itself (a type is a set of runtime tags): it does not walk the tail, so an impro
 (defn caar (coll)
   "The first of the first: `(first (first coll))`.
 
-    (caar '((1 2) 3))    → 1"
+    (caar '((1 2) 3))    ;=> 1"
   (first (first coll)))
 (defn cadr (coll)
   "The first of the rest, the second item: `(first (rest coll))`.
 
-    (cadr '(1 2 3))      → 2"
+    (cadr '(1 2 3))      ;=> 2"
   (first (rest coll)))
 (defn cdar (coll)
   "The rest of the first: `(rest (first coll))`.
 
-    (cdar '((1 2) 3))    → (2)"
+    (cdar '((1 2) 3))    ;=> (2)"
   (rest (first coll)))
 (defn cddr (coll)
   "The rest of the rest: everything from the third item on.
 
-    (cddr '(1 2 3))      → (3)"
+    (cddr '(1 2 3))      ;=> (3)"
   (rest (rest coll)))
 (defn caaar (coll)
   "`(first (first (first coll)))`.
 
-    (caaar '(((1)) 2))   → 1"
+    (caaar '(((1)) 2))   ;=> 1"
   (first (first (first coll))))
 (defn caadr (coll)
   "`(first (first (rest coll)))`: the first of the second item.
 
-    (caadr '(1 (2 3)))   → 2"
+    (caadr '(1 (2 3)))   ;=> 2"
   (first (first (rest coll))))
 (defn cadar (coll)
   "`(first (rest (first coll)))`: the second of the first item.
 
-    (cadar '((1 2) 3))   → 2"
+    (cadar '((1 2) 3))   ;=> 2"
   (first (rest (first coll))))
 (defn caddr (coll)
   "`(first (rest (rest coll)))`, the third item.
 
-    (caddr '(1 2 3))     → 3"
+    (caddr '(1 2 3))     ;=> 3"
   (first (rest (rest coll))))
 (defn cdaar (coll)
   "`(rest (first (first coll)))`.
 
-    (cdaar '(((1 2)) 3)) → (2)"
+    (cdaar '(((1 2)) 3)) ;=> (2)"
   (rest (first (first coll))))
 (defn cdadr (coll)
   "`(rest (first (rest coll)))`: the rest of the second item.
 
-    (cdadr '(1 (2 3)))   → (3)"
+    (cdadr '(1 (2 3)))   ;=> (3)"
   (rest (first (rest coll))))
 (defn cddar (coll)
   "`(rest (rest (first coll)))`: the first item from its third on.
 
-    (cddar '((1 2 3) 4)) → (3)"
+    (cddar '((1 2 3) 4)) ;=> (3)"
   (rest (rest (first coll))))
 (defn cdddr (coll)
   "`(rest (rest (rest coll)))`: everything from the fourth item on.
 
-    (cdddr '(1 2 3 4))   → (4)"
+    (cdddr '(1 2 3 4))   ;=> (4)"
   (rest (rest (rest coll))))
 
 ;; ---- sequence operations ----
@@ -264,8 +264,8 @@ current element and `acc` is the current accumulator."
   (f)
   "A list of `(f x)` for each `x` in `coll`.
 
-    (map [1 2 3] inc)          → (2 3 4)
-    (map [] inc)               → nil"
+    (map [1 2 3] inc)          ;=> (2 3 4)
+    (map [] inc)               ;=> nil"
   (cons (f item) acc))
 
 ;; `filter` itself is NOT bare — it is `seq/filter`, beside its complement `seq/reject`
@@ -298,9 +298,9 @@ internal behind `seq/filter`. Prelude-private; call `seq/filter`."
   "`coll` as a VECTOR (`(into [] coll)`, named). A map becomes its `[k v]` pairs
 and a set its elements, as everywhere else `seq` applies.
 
-    (vec '(1 2 3))   → [1 2 3]
-    (vec {:a 1})     → [[:a 1]]
-    (vec nil)        → []"
+    (vec '(1 2 3))   ;=> [1 2 3]
+    (vec {:a 1})     ;=> [[:a 1]]
+    (vec nil)        ;=> []"
   (into [] coll))
 
 ;; Prepend every element of `lst` onto `acc` (so `acc` collects all elements in
@@ -311,8 +311,8 @@ and a set its elements, as everywhere else `seq` applies.
 (defn append (& lists:seqable -> any)
   "Concatenate any number of lists into one, left to right.
 
-    (append '(1 2) '(3) '(4 5))   → (1 2 3 4 5)
-    (append)                      → nil
+    (append '(1 2) '(3) '(4 5))   ;=> (1 2 3 4 5)
+    (append)                      ;=> nil
 
 The LAST list is shared, not copied — the result's tail IS that list (every value is
 immutable, so nothing can tell) — and only the lists before it are walked. So
@@ -350,10 +350,10 @@ front of an accumulated remainder wants; a vector last is converted."
 (defn count (coll)
   "The number of items in `coll` (a list, vector, string, or map).
 
-    (count [1 2 3])      → 3
-    (count \"hello\")      → 5
-    (count {:a 1 :b 2})  → 2
-    (count nil)          → 0"
+    (count [1 2 3])      ;=> 3
+    (count \"hello\")      ;=> 5
+    (count {:a 1 :b 2})  ;=> 2
+    (count nil)          ;=> 0"
   ;; `vector?`/`map?` short-circuit to the O(1) `vector-length`/`%map-count`
   ;; kernels (rather than O(n) — a fold walk / a `%map-pairs` allocation); lists
   ;; and nil go through a dedicated tail loop, not a per-element counting closure.
@@ -417,9 +417,9 @@ front of an accumulated remainder wants; a vector last is converted."
 
 (defn nth "The item at index `i` of `coll` (0-based), or `default` (else `nil`) if out of range.
 
-    (nth [10 20 30] 1)        → 20
-    (nth [10 20] 9)           → nil
-    (nth [10 20] 9 :missing)  → :missing"
+    (nth [10 20 30] 1)        ;=> 20
+    (nth [10 20] 9)           ;=> nil
+    (nth [10 20] 9 :missing)  ;=> :missing"
   ;; The fixed 2-arity arm is the hot path (`(nth v i)`): it is VM-eligible
   ;; (exact arity), so its body compiles to bytecode and the inner `vector-ref`
   ;; inlines to a slab read — a variadic-only definition would defer the whole thing

@@ -19,7 +19,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(0),
         Sig::nullary(string),
         &[],
-        "The current working directory.\n\n    (file/cwd)   ;=> \"/home/me/project\"",
+        "The current working directory.\n\n    (file/cwd)   ;~> \"/home/me/project\"",
         cwd,
     );
     // Where this binary lives — for finding what was installed beside it (a shipped app
@@ -36,7 +36,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], bool_ty),
         &["path"],
-        "Whether path exists.\n\n    (file/exists? \"/nonexistent-brood-xyz\")   → false",
+        "Whether path exists.\n\n    (file/exists? \"/nonexistent-brood-xyz\")   ;=> false",
         file_exists,
     );
     primitives.def(
@@ -51,7 +51,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], bool_ty),
         &["path"],
-        "Whether path is a directory.\n\n    (file/dir? \"/tmp\")   → true",
+        "Whether path is a directory.\n\n    (file/dir? \"/tmp\")   ;=> true",
         is_dir,
     );
     primitives.def(
@@ -59,7 +59,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], Ty::list_of(string)),
         &["path"],
-        "The entry names directly under directory path, sorted.\n\n    (file/ls \"src\")   ;=> (\"main.blsp\" \"util.blsp\")",
+        "The entry names directly under directory path, sorted.\n\n    (file/ls \"src\")   ;~> (\"main.blsp\" \"util.blsp\")",
         list_dir,
     );
     primitives.def(
@@ -67,7 +67,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], nil_ty),
         &["path"],
-        "Create a directory and any missing parents (like mkdir -p).\n\n    (file/mkdir \"build/out\")   ;=> nil, with build/ and build/out/ created",
+        "Create a directory and any missing parents (like mkdir -p).\n\n    (file/mkdir \"build/out\")   ;~> nil, with build/ and build/out/ created",
         make_dir,
     );
     primitives.def(
@@ -75,14 +75,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![string, iolist], nil_ty),
         &["path", "s"],
-        "Write s (any iolist — a string, a bytes value, a byte int 0–255, or an arbitrarily nested list/vector of those, flattened once at the write (ADR-139)) to the file at path, replacing any existing file.\n\n    (file/spit \"notes.txt\" \"hello\")   ;=> nil",
+        "Write s (any iolist — a string, a bytes value, a byte int 0–255, or an arbitrarily nested list/vector of those, flattened once at the write (ADR-139)) to the file at path, replacing any existing file.\n\n    (file/spit \"notes.txt\" \"hello\")   ;~> nil",
         spit);
     primitives.def(
         "file/spit-append",
         Arity::exact(2),
         Sig::new(vec![string, iolist], nil_ty),
         &["path", "s"],
-        "Append s (any iolist — a string, a bytes value, a byte int 0–255, or an arbitrarily nested list/vector of those, flattened once at the write (ADR-139)) to the file at path, creating it if absent (unlike file/spit, which truncates). Returns nil. Opens in append mode so each write lands at end-of-file — the OS-atomic append that makes a log safe to write from several processes at once. The string sibling of append-bytes.\n\n    (file/spit-append \"app.log\" [\"started\" 10])   ;=> nil, the line appended",
+        "Append s (any iolist — a string, a bytes value, a byte int 0–255, or an arbitrarily nested list/vector of those, flattened once at the write (ADR-139)) to the file at path, creating it if absent (unlike file/spit, which truncates). Returns nil. Opens in append mode so each write lands at end-of-file — the OS-atomic append that makes a log safe to write from several processes at once. The string sibling of append-bytes.\n\n    (file/spit-append \"app.log\" [\"started\" 10])   ;~> nil, the line appended",
         spit_append);
     // Atomic compare-and-swap of a file's whole contents, serialised across
     // processes. The mechanism a safe read-modify-write needs when the "modify" is
@@ -99,42 +99,42 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], string),
         &["path"],
-        "Read the whole file at path into a string (does not evaluate it). UTF-8; throws on a non-text file — use file/slurp-bytes for binary.\n\n    (file/slurp \"notes.txt\")   ;=> \"hello\"",
+        "Read the whole file at path into a string (does not evaluate it). UTF-8; throws on a non-text file — use file/slurp-bytes for binary.\n\n    (file/slurp \"notes.txt\")   ;~> \"hello\"",
         slurp);
     primitives.def(
         "file/slurp-bytes",
         Arity::exact(1),
         Sig::new(vec![string], bytes_ty),
         &["path"],
-        "Read the whole file at path as a bytes value. The byte-faithful read file/slurp can't be (file/slurp is UTF-8 and throws on a non-text file). Pairs with hash/sha256-bytes / hash/sha256-raw and the encoding byte variants — e.g. hashing a binary asset.\n\n    (file/slurp-bytes \"logo.png\")   ;=> the file's bytes",
+        "Read the whole file at path as a bytes value. The byte-faithful read file/slurp can't be (file/slurp is UTF-8 and throws on a non-text file). Pairs with hash/sha256-bytes / hash/sha256-raw and the encoding byte variants — e.g. hashing a binary asset.\n\n    (file/slurp-bytes \"logo.png\")   ;~> the file's bytes",
         slurp_bytes);
     primitives.def(
         "file/spit-bytes",
         Arity::exact(2),
         Sig::new(vec![string, any], nil_ty),
         &["path", "bytes"],
-        "Write any iolist — a string, a bytes value, a byte int 0–255, or an arbitrarily nested list/vector of those, flattened once at the write (ADR-139) to path byte-faithfully, replacing any existing file. Returns nil. The binary write-side counterpart to file/slurp-bytes (file/spit is UTF-8 string-only) — materialises a received image / archive / any binary asset to disk.\n\n    (file/spit-bytes \"copy.png\" (file/slurp-bytes \"logo.png\"))   ;=> nil",
+        "Write any iolist — a string, a bytes value, a byte int 0–255, or an arbitrarily nested list/vector of those, flattened once at the write (ADR-139) to path byte-faithfully, replacing any existing file. Returns nil. The binary write-side counterpart to file/slurp-bytes (file/spit is UTF-8 string-only) — materialises a received image / archive / any binary asset to disk.\n\n    (file/spit-bytes \"copy.png\" (file/slurp-bytes \"logo.png\"))   ;~> nil",
         spit_bytes);
     primitives.def(
         "file/spit-bytes-append",
         Arity::exact(2),
         Sig::new(vec![string, any], nil_ty),
         &["path", "bytes"],
-        "Append any iolist — a string, a bytes value, a byte int 0–255, or an arbitrarily nested list/vector of those, flattened once at the write (ADR-139) — to the file at path, byte-faithfully, creating it if absent. Returns nil. The append counterpart of file/spit-bytes (which truncates), as file/spit-append is to file/spit: lets a large payload be streamed to disk chunk-by-chunk (e.g. spooling a file upload) without ever holding it whole in memory.\n\n    (file/spit-bytes-append \"upload.bin\" chunk)   ;=> nil, chunk appended",
+        "Append any iolist — a string, a bytes value, a byte int 0–255, or an arbitrarily nested list/vector of those, flattened once at the write (ADR-139) — to the file at path, byte-faithfully, creating it if absent. Returns nil. The append counterpart of file/spit-bytes (which truncates), as file/spit-append is to file/spit: lets a large payload be streamed to disk chunk-by-chunk (e.g. spooling a file upload) without ever holding it whole in memory.\n\n    (file/spit-bytes-append \"upload.bin\" chunk)   ;~> nil, chunk appended",
         append_bytes);
     primitives.def(
         "file/mtime",
         Arity::exact(1),
         Sig::new(vec![string], int.union(nil_ty)),
         &["path"],
-        "Last-modified time of path as epoch-milliseconds, or nil if the file is missing. Cheap (stat) — pair with `load` to drive a hot-reloader.\n\n    (file/mtime \"project.blsp\")   ;=> 1761213600000, or nil when missing",
+        "Last-modified time of path as epoch-milliseconds, or nil if the file is missing. Cheap (stat) — pair with `load` to drive a hot-reloader.\n\n    (file/mtime \"project.blsp\")   ;~> 1761213600000, or nil when missing",
         file_mtime);
     primitives.def(
         "file/size",
         Arity::exact(1),
         Sig::new(vec![string], int.union(nil_ty)),
         &["path"],
-        "Size of the file at path in bytes, or nil if it is missing.\n\n    (file/size \"notes.txt\")   ;=> 5, or nil when missing",
+        "Size of the file at path in bytes, or nil if it is missing.\n\n    (file/size \"notes.txt\")   ;~> 5, or nil when missing",
         file_size,
     );
     primitives.def(
@@ -142,7 +142,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], map_ty.union(nil_ty)),
         &["path"],
-        "Metadata for path in ONE stat as a map {:dir? :size :mtime :atime :symlink? :exec? :mode :nlink :uid :gid :owner :group}, or nil if missing. :symlink? reads the link itself (lstat); the rest follow it. :mtime/:atime are epoch-ms last-modified/last-access (nil if unreadable; :atime may be coarse under relatime/noatime mounts); :exec? is the owner-execute bit; :mode is the unix permission bits (0 off-unix); :nlink the hard-link count; :uid/:gid the numeric ids; :owner/:group their resolved names (the numeric id as a string if unresolved). Everything an `ls -l` row + a recency sort needs in one syscall.\n\n    (file/stat \"notes.txt\")   ;=> {:dir? false, :size 5, :mtime 1761213600000, …}",
+        "Metadata for path in ONE stat as a map {:dir? :size :mtime :atime :symlink? :exec? :mode :nlink :uid :gid :owner :group}, or nil if missing. :symlink? reads the link itself (lstat); the rest follow it. :mtime/:atime are epoch-ms last-modified/last-access (nil if unreadable; :atime may be coarse under relatime/noatime mounts); :exec? is the owner-execute bit; :mode is the unix permission bits (0 off-unix); :nlink the hard-link count; :uid/:gid the numeric ids; :owner/:group their resolved names (the numeric id as a string if unresolved). Everything an `ls -l` row + a recency sort needs in one syscall.\n\n    (file/stat \"notes.txt\")   ;~> {:dir? false, :size 5, :mtime 1761213600000, …}",
         file_stat);
     primitives.def(
         "%image-thumb",
@@ -156,21 +156,21 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], nil_ty),
         &["path"],
-        "Remove the file at path. Idempotent (nil if already absent); errors on a real I/O failure.\n\n    (file/rm \"notes.txt\")   ;=> nil",
+        "Remove the file at path. Idempotent (nil if already absent); errors on a real I/O failure.\n\n    (file/rm \"notes.txt\")   ;~> nil",
         delete_file);
     primitives.def(
         "file/rmdir",
         Arity::exact(1),
         Sig::new(vec![string], nil_ty),
         &["path"],
-        "Remove a directory and everything under it (recursive). Idempotent (nil if already absent); errors on a real I/O failure.\n\n    (file/rmdir \"build\")   ;=> nil",
+        "Remove a directory and everything under it (recursive). Idempotent (nil if already absent); errors on a real I/O failure.\n\n    (file/rmdir \"build\")   ;~> nil",
         delete_dir);
     primitives.def(
         "file/rename",
         Arity::exact(2),
         Sig::new(vec![string, string], nil_ty),
         &["from", "to"],
-        "Rename/move file `from` to `to`. Returns nil; errors on failure.\n\n    (file/rename \"draft.txt\" \"final.txt\")   ;=> nil",
+        "Rename/move file `from` to `to`. Returns nil; errors on failure.\n\n    (file/rename \"draft.txt\" \"final.txt\")   ;~> nil",
         rename_file,
     );
     primitives.def(
@@ -178,7 +178,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![string, string], nil_ty),
         &["from", "to"],
-        "Copy file `from` to `to` (replacing `to`), preserving contents and permissions. Binary-safe (unlike slurp+spit). Returns nil; errors on failure.\n\n    (file/cp \"logo.png\" \"logo-copy.png\")   ;=> nil",
+        "Copy file `from` to `to` (replacing `to`), preserving contents and permissions. Binary-safe (unlike slurp+spit). Returns nil; errors on failure.\n\n    (file/cp \"logo.png\" \"logo-copy.png\")   ;~> nil",
         copy_file);
 }
 

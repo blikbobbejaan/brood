@@ -37,7 +37,7 @@ them at that core (npm/Cargo rule). `+build` metadata never affects order or mat
 compare what a human typed in a manifest, not to validate it (that is
 `valid?`).
 
-    (version/core \"1.2.3-rc1\")   → (1 2 3)"
+    (version/core \"1.2.3-rc1\")   ;=> (1 2 3)"
   (let (core (first (string/split (first (string/split v "+")) "-")))
     ;; Deliberately lenient: this reads what a human typed in a manifest, so a
     ;; non-numeric segment is 0 rather than an error. `failure?` states that — a
@@ -56,7 +56,7 @@ ASCII digits — ignoring any `-prerelease` / `+build` suffix. The check a regis
 applies on publish; `satisfies?` is deliberately more forgiving, since a
 CONSTRAINT is usually written short (`\">= 0.3\"`).
 
-    (version/valid? \"1.2.3\")   → true"
+    (version/valid? \"1.2.3\")   ;=> true"
   (and (string? v)
     (let (core (first (string/split (first (string/split v "+")) "-"))
           parts (string/split core "."))
@@ -72,7 +72,7 @@ decides (semver §11): a pre-release is LESS than its release (`1.0.0-rc.1 < 1.0
 pre-releases compare identifier-by-identifier (numeric numerically and below alphanumeric;
 more identifiers outrank a prefix). `+build` metadata never affects order.
 
-    (version/compare \"1.2.0\" \"1.10.0\")   → -1"
+    (version/compare \"1.2.0\" \"1.10.0\")   ;=> -1"
   (let (c (compare-parts (core a) (core b)))
     (if (= c 0)
       (compare-prerelease (prerelease a) (prerelease b))
@@ -83,7 +83,7 @@ more identifiers outrank a prefix). `+build` metadata never affects order.
 nil when there is none. Everything after the first `-` (and before any `+build`), split on
 `.`. A `+build` suffix is dropped first — build metadata is not part of precedence.
 
-    (version/prerelease \"1.0.0-rc1\")   → (\"rc1\")"
+    (version/prerelease \"1.0.0-rc1\")   ;=> (\"rc1\")"
   (let (no-build (first (string/split v "+"))
         dash (index-of-str no-build "-"))
     (if (nil? dash)
@@ -147,14 +147,14 @@ nil when there is none. Everything after the first `-` (and before any `+build`)
 resolver sorts and filters thousands of candidates this way. It takes PARSED cores, not
 version strings, and compares numerically, so 1.2 sorts below 1.10.
 
-    (version/compare-cores (version/core \"1.2.3\") (version/core \"1.10.0\"))   → -1"
+    (version/compare-cores (version/core \"1.2.3\") (version/core \"1.10.0\"))   ;=> -1"
   (compare-parts a b))
 
 (defn newer? (a b)
   "Whether version `a` is strictly newer than `b`. The empty string is older than
 everything (the \"no release yet\" placeholder a registry starts from).
 
-    (version/newer? \"1.1.0\" \"1.0.9\")   → true"
+    (version/newer? \"1.1.0\" \"1.0.9\")   ;=> true"
   (cond
     (= b "") (not (= a ""))
     (= a "") false
@@ -244,8 +244,8 @@ everything (the \"no release yet\" placeholder a registry starts from).
 module's overview). nil / \"\" compile to nil (no constraint). Raises on a malformed term,
 the same as `satisfies?` — compiling is where a bad constraint is caught.
 
-    (version/compile \"\")                                         → nil
-    (version/match? (version/compile \">=1.0, <2.0\") \"1.5.0\")   → true"
+    (version/compile \"\")                                         ;=> nil
+    (version/match? (version/compile \">=1.0, <2.0\") \"1.5.0\")   ;=> true"
   (if (or (nil? constraint) (= (string/trim constraint) ""))
     nil
     (let (terms (map (seq/keep (string/split constraint ",")
@@ -301,7 +301,7 @@ the same as `satisfies?` — compiling is where a bad constraint is caught.
 `compiled` constraint, treating it as a RELEASE (no pre-release). The integer-only hot path;
 for pre-release-aware matching use `match?`, which has the version string.
 
-    (version/match-parts? (version/compile \"^1.0\") (version/core \"1.2.3\"))   → true"
+    (version/match-parts? (version/compile \"^1.0\") (version/core \"1.2.3\"))   ;=> true"
   (if (nil? compiled)
     true
     (every? (get compiled :terms) (fn (term) (match-term? term parsed nil)))))
@@ -332,9 +332,9 @@ for pre-release-aware matching use `match?`, which has the version string.
 aware — see the compile overview). Note the order: the COMPILED constraint comes first, the
 version string second, and a nil constraint matches everything.
 
-    (version/match? (version/compile \"^1.0\") \"1.2.3\")   → true
-    (version/match? (version/compile \"^1.0\") \"2.0.0\")   → false
-    (version/match? nil \"9.9.9\")                      → true"
+    (version/match? (version/compile \"^1.0\") \"1.2.3\")   ;=> true
+    (version/match? (version/compile \"^1.0\") \"2.0.0\")   ;=> false
+    (version/match? nil \"9.9.9\")                      ;=> true"
   (if (nil? compiled)
     true
     (let (core (core v)
@@ -362,7 +362,7 @@ An operator this module does not implement, or a term with no version after it,
 reason nobody wrote down is worse than a loud one. (For repeated checks against one
 constraint, `compile` it once and use `match?`.)
 
-    (version/satisfies? \"1.2.3\" \"^1.0\")   → true"
+    (version/satisfies? \"1.2.3\" \"^1.0\")   ;=> true"
   (match? (compile constraint) v))
 
 (defn satisfies-all? (versions constraints)
@@ -384,8 +384,8 @@ The shape a plugin manifest's `:enhances` map is checked with:
 `[name constraint have]` (`have` is nil when absent) — what an application shows
 the user when it declines a plugin, instead of a bare false.
 
-    (version/unsatisfied {:a \"1.2.0\" :b \"2.0.0\"} {:a \"^1.0\" :b \"^1.0\"})   → ([:b \"^1.0\" \"2.0.0\"])
-    (version/unsatisfied {} {:c \"^1.0\"})                                    → ([:c \"^1.0\" nil])"
+    (version/unsatisfied {:a \"1.2.0\" :b \"2.0.0\"} {:a \"^1.0\" :b \"^1.0\"})   ;=> ([:b \"^1.0\" \"2.0.0\"])
+    (version/unsatisfied {} {:c \"^1.0\"})                                    ;=> ([:c \"^1.0\" nil])"
   (seq/keep (%map-pairs constraints)
     (fn (kv)
       (let ([nm constraint] kv

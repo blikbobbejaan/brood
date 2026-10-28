@@ -59,8 +59,8 @@ lands correctly at the process no matter where other participants' points are.
 Native (`%str-splice-diff`, one O(n) pass) — this runs per keystroke on every
 hosted buffer, where a per-char Brood scan cost ~40 ms on a 300-line file.
 
-    (editor/buffer-client/text-splice \"hello\" \"help\")   → [3 5 \"p\"]
-    (editor/buffer-client/text-splice \"abc\" \"abc\")     → [3 3 \"\"]"
+    (editor/buffer-client/text-splice \"hello\" \"help\")   ;=> [3 5 \"p\"]
+    (editor/buffer-client/text-splice \"abc\" \"abc\")     ;=> [3 3 \"\"]"
   (%str-splice-diff old new))
 
 (defn splice-noop? (splice)
@@ -68,8 +68,8 @@ hosted buffer, where a per-char Brood scan cost ~40 ms on a 300-line file.
 replacement. A pure-movement command (point moved, text unchanged) yields this, so
 no edit is sent.
 
-    (editor/buffer-client/splice-noop? [3 3 \"\"])    → true
-    (editor/buffer-client/splice-noop? [0 1 \"J\"])   → false"
+    (editor/buffer-client/splice-noop? [3 3 \"\"])    ;=> true
+    (editor/buffer-client/splice-noop? [0 1 \"J\"])   ;=> false"
   (let ([lo hi repl] splice)
     (and (= lo hi) (= repl ""))))
 
@@ -79,7 +79,7 @@ no edit is sent.
 (a registry's crash-recovery mirror, a log tailer, a test): apply `link-fold`'s
 `[:splice …]` action with this and its `[:text s]` action by replacement.
 
-    (editor/buffer-client/text-apply-splice \"hello\" [3 5 \"p\"])   → \"help\""
+    (editor/buffer-client/text-apply-splice \"hello\" [3 5 \"p\"])   ;=> \"help\""
   (let ([lo hi repl] splice)
     (str (string/substring text 0 lo) repl (string/substring text hi (string/length text)))))
 
@@ -89,8 +89,8 @@ no edit is sent.
 `:resync`) leaving it as it is. The whole of what a plain-string holder does with a push;
 a `:resync` is the caller's to act on (it needs the process).
 
-    (editor/buffer-client/text-apply-action \"hello\" [:splice [0 1 \"J\"]])   → \"Jello\"
-    (editor/buffer-client/text-apply-action \"hello\" :noop)   → \"hello\""
+    (editor/buffer-client/text-apply-action \"hello\" [:splice [0 1 \"J\"]])   ;=> \"Jello\"
+    (editor/buffer-client/text-apply-action \"hello\" :noop)   ;=> \"hello\""
   (match action
     ([:splice splice] (text-apply-splice text splice))
     ([:text replacement] (if (string? replacement) replacement text))
@@ -105,8 +105,8 @@ the presence triple `[text markers names]` (closure edits and the seed), a DELTA
 `buffer-marker-move` / `[:write]` ops — O(change), the document never ships), or a
 bare text string (plain projections, tests).
 
-    (get (editor/buffer-client/view-parts [\"abc\" {} {}]) :text)           → \"abc\"
-    (get (editor/buffer-client/view-parts {:splice [0 1 \"x\"]}) :splice)   → [0 1 \"x\"]"
+    (get (editor/buffer-client/view-parts [\"abc\" {} {}]) :text)           ;=> \"abc\"
+    (get (editor/buffer-client/view-parts {:splice [0 1 \"x\"]}) :splice)   ;=> [0 1 \"x\"]"
   (cond
     (map? view)
       {:text nil
@@ -123,7 +123,7 @@ bare text string (plain projections, tests).
 value — conventionally the subscribing process's pid, matching the `origin` we tag
 outbound edits with). Version -1, so the subscription's seed push always applies.
 
-    (get (editor/buffer-client/link-init :proc :me) :version)   → -1"
+    (get (editor/buffer-client/link-init :proc :me) :version)   ;=> -1"
   {:proc proc :me me :version -1 :pending ()})
 
 (defn- link-send-splice (link splice)

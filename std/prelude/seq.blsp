@@ -8,10 +8,10 @@
 ;; (range hi) -> 0..hi-1 ; (range lo hi) -> lo..hi-1 ; (range lo hi step).
 (defn range "A range of integers: `(range hi)` is 0..hi-1, `(range lo hi)` is lo..hi-1, `(range lo hi step)` strides by `step`. The result is a *lazy* range — `fold`/`reduce`/`sum`/`count` walk it without building a list (O(1) memory); every other op treats it as the list of those integers. Empty ranges are `nil`.
 
-    (range 4)        → (0 1 2 3)
-    (range 2 5)      → (2 3 4)
-    (range 0 10 3)   → (0 3 6 9)
-    (range 0)        → nil"
+    (range 4)        ;=> (0 1 2 3)
+    (range 2 5)      ;=> (2 3 4)
+    (range 0 10 3)   ;=> (0 3 6 9)
+    (range 0)        ;=> nil"
   ((hi) (%range 0 hi 1))
   ((lo hi) (%range lo hi 1))
   ((lo hi step) (%range lo hi step)))
@@ -24,9 +24,9 @@
 (defn take (coll n)
   "The first `n` items of `coll` (fewer if it is shorter), as a list.
 
-    (take [1 2 3 4] 2)  → (1 2)
-    (take [1 2] 9)      → (1 2)
-    (take [1 2] 0)      → nil"
+    (take [1 2 3 4] 2)  ;=> (1 2)
+    (take [1 2] 9)      ;=> (1 2)
+    (take [1 2] 0)      ;=> nil"
   (%take-acc n coll nil))
 (defn- %take-acc (n coll acc)
   (if (or (<= n 0) (empty? coll))
@@ -37,8 +37,8 @@
 (defn drop (coll n)
   "`coll` without its first `n` items.
 
-    (drop [1 2 3 4] 2)  → (3 4)
-    (drop [1 2] 9)      → nil"
+    (drop [1 2 3 4] 2)  ;=> (3 4)
+    (drop [1 2] 9)      ;=> nil"
   (if (or (<= n 0) (empty? coll)) coll (drop (rest coll) (- n 1))))
 
 ;; (take-while pred coll) / (drop-while pred coll) split on the first failure.
@@ -46,8 +46,8 @@
   "The leading items of `coll` for which `(pred x)` holds, as a list — like `take`, which
 also returns a list whatever it was given.
 
-    (take-while [1 2 3 1] (fn (x) (< x 3)))   → (1 2)
-    (take-while [5 1] (fn (x) (< x 3)))       → nil
+    (take-while [1 2 3 1] (fn (x) (< x 3)))   ;=> (1 2)
+    (take-while [5 1] (fn (x) (< x 3)))       ;=> nil
 
 Works on any collection `take` does — vectors and strings included."
   (%take-while-acc pred coll nil))
@@ -68,13 +68,13 @@ Works on any collection `take` does — vectors and strings included."
 (defn any? (coll pred)
   "True if `(pred x)` holds for at least one item of `coll`.
 
-    (any? [1 3 4] math/even?)   → true
-    (any? [1 3] math/even?)     → false"
+    (any? [1 3 4] math/even?)   ;=> true
+    (any? [1 3] math/even?)     ;=> false"
   (cond (empty? coll) false (pred (first coll)) true else (any? (rest coll) pred)))
 (defn every? (coll pred)
   "True if `(pred x)` holds for every item of `coll` (vacuously true if empty).
 
-    (every? [2 4] math/even?)   → true"
+    (every? [2 4] math/even?)   ;=> true"
   (cond (empty? coll) true (pred (first coll)) (every? (rest coll) pred) else false))
 
 ;; (index-of coll x [from]) -> the 0-based index of `x`, or -1. The index-returning
@@ -97,10 +97,10 @@ For a string, `x` is a substring (multi-char ok; the empty string matches at `fr
 for a list or vector, `x` is an element compared structurally. The `from` offset is
 what incremental search rides on (formerly the separate `index-of`).
 
-    (index-of \"hello\" \"ll\")     → 2
-    (index-of \"hello\" \"zz\")     → -1
-    (index-of [:a :b :c] :b)     → 1
-    (index-of \"abab\" \"ab\" 1)    → 2   ; search resumes at `from`
+    (index-of \"hello\" \"ll\")     ;=> 2
+    (index-of \"hello\" \"zz\")     ;=> -1
+    (index-of [:a :b :c] :b)     ;=> 1
+    (index-of \"abab\" \"ab\" 1)    ;=> 2   ; search resumes at `from`
 
 **-1 is TRUTHY.** Only `nil` and `false` are falsy in Brood, so `(when (index-of hay x) …)`
 runs its body every time, including when `x` is absent — test the sentinel, as
@@ -129,11 +129,11 @@ and the reader is not."
 (defn includes? (coll x)
   "True if `coll` contains `x`. Works on lists, vectors, strings (string/substring), sets, and maps (membership among values — use `contains?` for keys).
 
-    (includes? [1 2 3] 2)         → true
-    (includes? \"hello\" \"ell\")     → true
-    (includes? #{1 2 3} 2)        → true    ; O(log n), the trie — same as contains?
-    (includes? {:a 1} 1)          → true    ; VALUES, not keys
-    (includes? {:a 1} :a)         → false   ; use contains? for that"
+    (includes? [1 2 3] 2)         ;=> true
+    (includes? \"hello\" \"ell\")     ;=> true
+    (includes? #{1 2 3} 2)        ;=> true    ; O(log n), the trie — same as contains?
+    (includes? {:a 1} 1)          ;=> true    ; VALUES, not keys
+    (includes? {:a 1} :a)         ;=> false   ; use contains? for that"
   (cond
     ;; A set answers from its trie, never by scanning itself: falling through to
     ;; `index-of` gives the right answer the slow way, which no test catches. `includes?`
@@ -162,8 +162,8 @@ Internal — the published name is `seq/zip`."
 `partition` and friends check a chunk without counting the whole (possibly long) sequence.
 Always true for `n` <= 0.
 
-    (%has-at-least? 2 (list 1 2 3))   → true
-    (%has-at-least? 4 (list 1 2 3))   → false"
+    (%has-at-least? 2 (list 1 2 3))   ;=> true
+    (%has-at-least? 4 (list 1 2 3))   ;=> false"
   (cond (<= n 0) true (empty? coll) false else (%has-at-least? (- n 1) (rest coll))))
 (defn- %partition-acc (n coll acc)
   (if (%has-at-least? n coll)
@@ -186,9 +186,9 @@ Always true for `n` <= 0.
 (defn sort (coll & more)
   "Sort a collection (stable). `(sort coll)` is ascending by `<` for numbers, or by structural order (lexicographic on vectors/lists, text order on strings/symbols/keywords) for anything else. `(sort coll less?)` uses a strict less-than predicate.
 
-    (sort [3 1 2])              → (1 2 3)
-    (sort [\"b\" \"a\"])            → (\"a\" \"b\")
-    (sort [3 1 2] >)            → (3 2 1)"
+    (sort [3 1 2])              ;=> (1 2 3)
+    (sort [\"b\" \"a\"])            ;=> (\"a\" \"b\")
+    (sort [3 1 2] >)            ;=> (3 2 1)"
   (cond
     (not (empty? more)) (%merge-sort (first more) coll)
     (empty? coll) nil
@@ -257,11 +257,11 @@ Always true for `n` <= 0.
 (defn into (to:seqable from:seqable -> any)
   "Pour each item of `from` into `to`. For a map, items are `[k v]` pairs (assoc'd, map result); for a **set**, items are added and duplicates collapse (set result); for a vector, items are appended (vector result); otherwise items are appended (list result). Maps in `from` are read as their entries, so `(into [] some-map)` and `(into {} other-map)` both work.
 
-    (into [] '(1 2 3))        → [1 2 3]
-    (into [1] [2 3])          → [1 2 3]
-    (into #{} [1 1 2])        → #{1 2}
-    (into {} [[:a 1]])        → {:a 1}
-    (into [] {:a 1})          → [[:a 1]]"
+    (into [] '(1 2 3))        ;=> [1 2 3]
+    (into [1] [2 3])          ;=> [1 2 3]
+    (into #{} [1 1 2])        ;=> #{1 2}
+    (into {} [[:a 1]])        ;=> {:a 1}
+    (into [] {:a 1})          ;=> [[:a 1]]"
   (cond
     ;; Map target: build via the kernel's GC-quiet CHAMP builder (`%map-into`) —
     ;; an implementation detail of *constructing* a fresh immutable map (it writes
@@ -333,11 +333,11 @@ APPEND to a vector, PREPEND to a list (`nil` counts as an empty list), ADD to a
 set (a duplicate is a no-op), and `assoc` a `[k v]` pair — or merge a map — into
 a map. Returns a fresh collection; `coll` is untouched.
 
-    (conj [1 2] 3)      → [1 2 3]   ; a vector appends
-    (conj '(2 3) 1)     → (1 2 3)   ; a list prepends
-    (conj nil 1)        → (1)       ; nil is the empty list
-    (conj #{1} 2)       → #{1 2}
-    (conj {} [:b 2])    → {:b 2}
+    (conj [1 2] 3)      ;=> [1 2 3]   ; a vector appends
+    (conj '(2 3) 1)     ;=> (1 2 3)   ; a list prepends
+    (conj nil 1)        ;=> (1)       ; nil is the empty list
+    (conj #{1} 2)       ;=> #{1 2}
+    (conj {} [:b 2])    ;=> {:b 2}
 
 `disj` is the inverse and lives beside it — both stay core rather than in `std/set`
 so a set works with the collection protocol without an import."
@@ -349,8 +349,8 @@ no-op). The set counterpart of `dissoc`, and `conj`'s inverse — both live here
 rather than in `std/set` so a set works with the collection protocol without an
 import (and so `(:use set)` can't shadow them).
 
-    (disj #{1 2 3} 2)   → #{1 3}
-    (disj #{1} 9)       → #{1}   ; removing what isn't there is a no-op"
+    (disj #{1 2 3} 2)   ;=> #{1 3}
+    (disj #{1} 9)       ;=> #{1}   ; removing what isn't there is a no-op"
   (fold xs s %set-remove))
 
 ;; ---- more sequence operations -----------------------------------------------
@@ -482,7 +482,7 @@ prelude declares one, so `:derives` always names an ability from your own code."
                    ".\n\n    ("
                    (->string id)
                    (string/join (map fnames (fn (n) (str " " (->string n)))) "")
-                   ")   ;=> a "
+                   ")   ;~> a "
                    (->string rec)
                    " record"
                    (if rec-doc (str "\n\n" rec-doc) ""))
@@ -499,7 +499,7 @@ prelude declares one, so `:derives` always names an ability from your own code."
                          (->string id)
                          "-"
                          (->string fnm)
-                         " r)   ;=> the "
+                         " r)   ;~> the "
                          (->string fnm)
                          " field of a "
                          (->string rec)
@@ -565,8 +565,8 @@ prelude declares one, so `:derives` always names an ability from your own code."
 (defn repeat (n x)
   "A list of `x` repeated `n` times (empty if `n` <= 0).
 
-    (repeat 3 :a)   → (:a :a :a)
-    (repeat 0 :a)   → nil"
+    (repeat 3 :a)   ;=> (:a :a :a)
+    (repeat 0 :a)   ;=> nil"
   ;; The same ceiling a range is realised under (`MAX_REALISED_RANGE`, 2^26): past it
   ;; the list is a single call eating the machine, and the allocation failure it ends
   ;; in is an abort, not an error anything can catch.
@@ -600,7 +600,7 @@ prelude declares one, so `:derives` always names an ability from your own code."
   "Right-to-left function composition. `((comp f g) x)` is `(f (g x))`; with no
 arguments, `identity`.
 
-    ((comp inc inc) 1)   → 3"
+    ((comp inc inc) 1)   ;=> 3"
   (cond
     (empty? fns) identity
     (empty? (rest fns)) (first fns)
@@ -612,21 +612,21 @@ arguments, `identity`.
   "`f` with its leading arguments fixed: `((partial f a b) c)` is `(f a b c)`.
 The workhorse for handing a configured function to a higher-order op.
 
-    ((partial + 10) 5)   → 15"
+    ((partial + 10) 5)   ;=> 15"
   (fn (& later) (apply f (append bound later))))
 
 (defn complement (pred)
   "A predicate that returns the logical negation of `pred`: `((complement odd?) 2)`
 is `true`. The named form of `(fn (& args) (not (apply pred args)))`.
 
-    ((complement math/even?) 3)   → true"
+    ((complement math/even?) 3)   ;=> true"
   (fn (& args) (not (apply pred args))))
 
 (defn constantly (x)
   "A function of any arguments that always returns `x` — the placeholder callback
 for a higher-order op that wants a fixed answer.
 
-    ((constantly 7) 1 2)   → 7"
+    ((constantly 7) 1 2)   ;=> 7"
   (fn (& _ignored) x))
 
 ;; The rest of the combinator family (ADR-379): `juxt`, `fnil`, `memoize`.
@@ -635,8 +635,8 @@ for a higher-order op that wants a fixed answer.
 vector, in order: `((juxt f g) x)` is `[(f x) (g x)]`. The named form of \"the same
 arguments, several views\" — a sort key of two fields, a split of a value into parts.
 
-    ((juxt first count) [7 8 9])                 → [7 3]
-    (sort-by [\"bb\" \"a\" \"ab\"] (juxt count identity))   → (\"a\" \"ab\" \"bb\")"
+    ((juxt first count) [7 8 9])                 ;=> [7 3]
+    (sort-by [\"bb\" \"a\" \"ab\"] (juxt count identity))   ;=> (\"a\" \"ab\" \"bb\")"
   (fn (& args) (mapv fns (fn (f) (apply f args)))))
 
 (defn fnil (f default)
@@ -644,9 +644,9 @@ arguments, several views\" — a sort key of two fields, a split of a value into
 through. Reads a map's missing entry as a starting value without spelling the `or` at every
 call: `(update m :n (fnil inc 0))`.
 
-    ((fnil inc 0) nil)              → 1
-    ((fnil inc 0) 5)                → 6
-    ((fnil conj []) nil :a)         → [:a]"
+    ((fnil inc 0) nil)              ;=> 1
+    ((fnil inc 0) 5)                ;=> 6
+    ((fnil conj []) nil :a)         ;=> [:a]"
   (fn (x & more) (apply f (if (nil? x) default x) more)))
 
 (defn memoize (f)
@@ -663,7 +663,7 @@ inside a loop in a long-lived process still keeps a table per call until then. A
 memoized function is an anonymous closure: a `(sig …)` beside the `def` is what gives its
 callers a type.
 
-    (let (m (memoize (fn (n) (* n n)))) [(m 4) (m 4)])   → [16 16]"
+    (let (m (memoize (fn (n) (* n n)))) [(m 4) (m 4)])   ;=> [16 16]"
   ;; The kernel prims, not `table/new` & co.: the prelude cannot require `std/table`, and
   ;; these are what those wrappers forward to.
   (let (cache (%table))
@@ -737,25 +737,25 @@ no intermediate lists. Realise with `seq`/`into`, or just consume it
 (`fold`/`reduce`/`count`/…). Use eager `map` when you want a concrete list or are
 iterating for side effects.
 
-    (-> [1 2 3] (seq/lmap inc) (into [] $))   → [2 3 4]"
+    (-> [1 2 3] (seq/lmap inc) (into [] $))   ;=> [2 3 4]"
   (%seqview-wrap coll (%xmap f)))
 
 (defn seq/lfilter (coll pred)
   "Lazy, fusing `seq/filter` — see `seq/lmap`. The complement is `seq/lreject`.
 
-    (seq (seq/lfilter [1 2 3 4] math/even?))   → (2 4)   ; `seq` realises the view"
+    (seq (seq/lfilter [1 2 3 4] math/even?))   ;=> (2 4)   ; `seq` realises the view"
   (%seqview-wrap coll (%xfilter pred)))
 
 (defn seq/lkeep (coll f)
   "Lazy, fusing `seq/keep` (map + filter of non-nil `(f x)`) — see `seq/lmap`.
 
-    (seq (seq/lkeep [1 2 3 4] (fn (x) (when (math/even? x) (* x 10)))))   → (20 40)"
+    (seq (seq/lkeep [1 2 3 4] (fn (x) (when (math/even? x) (* x 10)))))   ;=> (20 40)"
   (%seqview-wrap coll (%xkeep f)))
 
 (defn seq/lreject (coll pred)
   "Lazy, fusing `seq/reject` — see `seq/lmap`. The complement is `seq/lfilter`.
 
-    (seq (seq/lreject [1 2 3 4] math/even?))   → (1 3)"
+    (seq (seq/lreject [1 2 3 4] math/even?))   ;=> (1 3)"
   (%seqview-wrap coll (%xreject pred)))
 
 ;; ---- iteration combinators --------------------------------------------------
@@ -844,11 +844,11 @@ iterating for side effects.
 
 A trailing `:into coll` collects with `conj` onto `coll` instead of building a list, so the target's kind decides the result — a vector appends, a map takes `[k v]` pairs, a set drops duplicates (ADR-377).
 
-    (for (x [1 2 3]) (* x x))                  → (1 4 9)
-    (for (x (range 5) :when (math/even? x)) x)   → (0 2 4)
-    (for (x '(1 2) y '(:a :b)) [x y])          → ([1 :a] [1 :b] [2 :a] [2 :b])
-    (for (x [1 2 3] :into []) (* x x))         → [1 4 9]
-    (for (x [1 2] :into {}) [x (* x x)])       → {1 1, 2 4}"
+    (for (x [1 2 3]) (* x x))                  ;=> (1 4 9)
+    (for (x (range 5) :when (math/even? x)) x)   ;=> (0 2 4)
+    (for (x '(1 2) y '(:a :b)) [x y])          ;=> ([1 :a] [1 :b] [2 :a] [2 :b])
+    (for (x [1 2 3] :into []) (* x x))         ;=> [1 4 9]
+    (for (x [1 2] :into {}) [x (* x x)])       ;=> {1 1, 2 4}"
   (do
     (when (vector? binds)
       (error "for: bindings must be a list, not a vector: write (for (x xs) expr)."
@@ -878,9 +878,9 @@ A trailing `:into coll` collects with `conj` onto `coll` instead of building a l
 (defmacro fold-for (binds & body)
   "Accumulate over one or more bindings: the FIRST pair of `binds` names the accumulator and its initial value, the rest are [[for]] bindings (with `:when` guards); `body` is evaluated with both in scope and its value is the next accumulator. The last accumulator is the result (ADR-377).
 
-    (fold-for (sum 0 x [1 2 3]) (+ sum x))                          → 6
-    (fold-for (m {} x [:a :b] :when (not (= x :b))) (assoc m x 1))   → {:a 1}
-    (fold-for (best nil x [3 9 4]) (if (or (nil? best) (> x best)) x best))   → 9"
+    (fold-for (sum 0 x [1 2 3]) (+ sum x))                          ;=> 6
+    (fold-for (m {} x [:a :b] :when (not (= x :b))) (assoc m x 1))   ;=> {:a 1}
+    (fold-for (best nil x [3 9 4]) (if (or (nil? best) (> x best)) x best))   ;=> 9"
   (do
     (when (vector? binds)
       (error "fold-for: bindings must be a list, not a vector: write (fold-for (acc init x xs) body)."))
@@ -903,8 +903,8 @@ A trailing `:into coll` collects with `conj` onto `coll` instead of building a l
 (defmacro doseq (bind & body)
   "Run `body` for its side effects over each item of the binding (like `for`, but discards the result and returns `nil`).
 
-    (with-out-str (doseq (x [1 2 3]) (io/write x)))   → \"123\"
-    (doseq (x [1 2]) x)                               → nil"
+    (with-out-str (doseq (x [1 2 3]) (io/write x)))   ;=> \"123\"
+    (doseq (x [1 2]) x)                               ;=> nil"
   `(do (for ~bind (do ~@body)) nil))
 
 ;; (dotimes (i n) body...) — run `body` for `i` = 0, 1, …, n-1; returns nil. The
@@ -914,8 +914,8 @@ A trailing `:into coll` collects with `conj` onto `coll` instead of building a l
 (defmacro dotimes (bind & body)
   "Run `body` with the bound name set to 0, 1, …, n-1 for side effect; returns `nil`. `bind` is `(var n)`.
 
-    (with-out-str (dotimes (i 3) (io/write i)))   → \"012\"
-    (dotimes (i 3) i)                             → nil"
+    (with-out-str (dotimes (i 3) (io/write i)))   ;=> \"012\"
+    (dotimes (i 3) i)                             ;=> nil"
   (if (not (and (pair? bind) (pair? (rest bind))))
     (error "dotimes: bind must be (var n), got "
       (pr-str bind)
@@ -931,8 +931,8 @@ A trailing `:into coll` collects with `conj` onto `coll` instead of building a l
 (defmacro dolist (bind & body)
   "Run `body` with the bound name set to each element of the collection for side effect; returns `nil`. `bind` is `(var coll)`.
 
-    (with-out-str (dolist (x '(1 2 3)) (io/write x)))   → \"123\"
-    (dolist (x '(1 2)) x)                               → nil   ; the value is discarded"
+    (with-out-str (dolist (x '(1 2 3)) (io/write x)))   ;=> \"123\"
+    (dolist (x '(1 2)) x)                               ;=> nil   ; the value is discarded"
   (if (not (and (pair? bind) (pair? (rest bind))))
     (error "dolist: bind must be (var coll), got "
       (pr-str bind)
@@ -952,8 +952,8 @@ A trailing `:into coll` collects with `conj` onto `coll` instead of building a l
   "`coll` with its leading items for which `(pred x)` holds removed. Returns `coll` itself
 when nothing is dropped, exactly as `(drop [1 2 3] 0)` does.
 
-    (drop-while [1 2 3 1] (fn (x) (< x 3)))   → (3 1)
-    (drop-while [5 1] (fn (x) (< x 3)))       → [5 1]   ; nothing dropped, so `coll` itself
+    (drop-while [1 2 3 1] (fn (x) (< x 3)))   ;=> (3 1)
+    (drop-while [5 1] (fn (x) (< x 3)))       ;=> [5 1]   ; nothing dropped, so `coll` itself
 
 Works on any collection `drop` does — vectors and strings included."
   (if (empty? coll)
@@ -964,15 +964,15 @@ Works on any collection `drop` does — vectors and strings included."
   (f)
   "Map `f` over `coll` and concatenate the resulting lists into one.
 
-    (mapcat [1 2] (fn (n) (list n n)))   → (1 1 2 2)"
+    (mapcat [1 2] (fn (n) (list n n)))   ;=> (1 1 2 2)"
   (%append-onto acc (f item)))
 
 (defn mapv (coll f)
   "A VECTOR of `(f x)` for each `x` in `coll` — `map` when the caller needs
 indexed access or a vector literal shape (`(into [] (map coll f))`, named).
 
-    (mapv [1 2 3] inc)   → [2 3 4]
-    (map [1 2 3] inc)    → (2 3 4)   ; the list-returning sibling"
+    (mapv [1 2 3] inc)   ;=> [2 3 4]
+    (map [1 2 3] inc)    ;=> (2 3 4)   ; the list-returning sibling"
   (into [] (map coll f)))
 
 (defn partition (coll:seqable n:number -> any)
@@ -980,9 +980,9 @@ indexed access or a vector literal shape (`(into [] (map coll f))`, named).
 `n` must be positive — a size of zero or less is an error, never an endless run of
 empty chunks.
 
-    (partition [1 2 3 4] 2)    → ((1 2) (3 4))
-    (partition [1 2 3] 2)      → ((1 2))          ; the odd 3 is dropped
-    (partition [1 2] 5)        → nil"
+    (partition [1 2 3 4] 2)    ;=> ((1 2) (3 4))
+    (partition [1 2 3] 2)      ;=> ((1 2))          ; the odd 3 is dropped
+    (partition [1 2] 5)        ;=> nil"
   ;; A size <= 0 never shrinks `coll` (`(drop coll 0)` is `coll`, and a zero-sized chunk
   ;; always "fits"), so the accumulator would grow until memory ran out.
   (if (> n 0)
@@ -994,7 +994,7 @@ empty chunks.
 structural order (`compare`) — or a key's own `compare-to` if the key is a record. Numeric,
 string, keyword, vector, and record keys all work.
 
-    (sort-by [\"aaa\" \"b\"] count)   → (\"b\" \"aaa\")"
+    (sort-by [\"aaa\" \"b\"] count)   ;=> (\"b\" \"aaa\")"
   ;; Each key is computed ONCE, paired with its item, and the pairs sorted — rather than
   ;; `key-fn` running on both sides of every comparison, ~2·n·log n calls, which is what
   ;; a completion menu sorting by a computed score paid.

@@ -194,7 +194,7 @@ argument text. Re-registering any of `:names` replaces the earlier command (kept
 registration order, the new one last). The extension seam tools use to add commands
 — e.g. the debugger registers `,resume`/`,step` under `pry`. Returns the primary name.
 
-    (repl/register-repl-command {:names (list \"hi\") :usage \",hi\" :summary \"greet\" :handler (fn (rest) (io/puts \"hi\"))})   ;=> \"hi\""
+    (repl/register-repl-command {:names (list \"hi\") :usage \",hi\" :summary \"greet\" :handler (fn (rest) (io/puts \"hi\"))})   ;~> \"hi\""
   (let (names (get spec :names))
     ;; Filter-then-append as ONE transform: as two steps, two concurrent registrations
     ;; of the same name would each filter the old list and each append, leaving the
@@ -824,7 +824,7 @@ the loop spawns so its `def`s are in place for the first prompt."
 context) instead of the root namespace — what `nest repl` does with the project's `:main`
 module so its bare names resolve at the prompt. `nil` restores the default.
 
-    (repl/start-in! 'myapp)   ;=> myapp"
+    (repl/start-in! 'myapp)   ;~> myapp"
   (def *repl-start-ns* ns)
   ns)
 
@@ -842,7 +842,7 @@ fatal. Nestable: `pry` calls this from inside a session — prompts rebound with
 `binding` around the call are honoured, and the SIGINT handler is installed/restored
 by the outermost invocation only.
 
-    (repl/run)   ;=> nil, at end of input"
+    (repl/run)   ;~> nil, at end of input"
   (let (interactive (and (os/stdin-tty?) (os/stdout-tty?))
         _rc (repl-load-rc)
         ;; Resolve `*repl-interruptible*` to the real armed state: the user's knob (the

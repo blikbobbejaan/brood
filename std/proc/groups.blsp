@@ -143,7 +143,7 @@ a member on a node whose link drops is removed when the drop is noticed.
   "This node's group server: owns the members table, monitors this node's members, and
 keeps its peers told. State is `{:interval :members :held :peers}`.
 
-    (gen/start groups/server {:interval 1000} {:name :groups})   ;=> its pid (use groups/start)"
+    (gen/start groups/server {:interval 1000} {:name :groups})   ;~> its pid (use groups/start)"
   (init (let (members (table/new))
           (table/put published :groups [(self) members])
           (timer/send-after (get state :interval) (self) :groups-tick)
@@ -166,8 +166,8 @@ an optional map; `:interval` is how often, in ms, it looks for new and lost peer
 1000). Run it on every node whose processes join groups or read them: a node without one
 neither tells nor hears.
 
-    (groups/start)                   ;=> the server's pid
-    (groups/start {:interval 200})   ;=> a server that notices peers within 200 ms"
+    (groups/start)                   ;~> the server's pid
+    (groups/start {:interval 200})   ;~> a server that notices peers within 200 ms"
   (let (options (or (first opts) {})
         unknown (seq/reject (keys options) (fn (k) (contains? *start-options* k))))
     (when (not (empty? unknown))
@@ -180,14 +180,14 @@ neither tells nor hears.
   "Add a process on THIS node — `pid`, or the caller — to `group`; `:ok`. Joining twice is
 one membership. The process leaves every group when it exits.
 
-    (groups/join :workers)          ;=> :ok
-    (groups/join :workers worker)   ;=> :ok"
+    (groups/join :workers)          ;~> :ok
+    (groups/join :workers worker)   ;~> :ok"
   (gen/call :groups [:join group (or (first pid) (self))]))
 
 (defn leave (group:any & pid)
   "Take `pid`, or the caller, out of `group`; `:ok`, whether or not it was a member.
 
-    (groups/leave :workers)   ;=> :ok"
+    (groups/leave :workers)   ;~> :ok"
   (gen/call :groups [:leave group (or (first pid) (self))]))
 
 ;; The group's `{pid origin}` map as this node's server holds it, or nil. The catch covers a
@@ -202,12 +202,12 @@ one membership. The process leaves every group when it exits.
   "Every member of `group` this node knows of, on any node, as a list of pids; empty for a
 group nobody is in. Read from this node's copy, without a message.
 
-    (groups/members :workers)   ;=> (pid …)"
+    (groups/members :workers)   ;~> (pid …)"
   (map (seq (or (groups-read group) {})) first))
 
 (defn local-members (group:any -> list)
   "The members of `group` on this node.
 
-    (groups/local-members :workers)   ;=> (pid …)"
+    (groups/local-members :workers)   ;~> (pid …)"
   (map (seq/filter (seq (or (groups-read group) {})) (fn (pair) (= (second pair) :local)))
     first))

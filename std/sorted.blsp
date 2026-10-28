@@ -150,25 +150,25 @@ contents are `=`, whatever order they were built in.")
 (defn empty-map ()
   "An empty sorted map. Build one with `into` or `assoc`.
 
-    (seq (into (sorted/empty-map) {:b 2 :a 1}))   → ([:a 1] [:b 2])"
+    (seq (into (sorted/empty-map) {:b 2 :a 1}))   ;=> ([:a 1] [:b 2])"
   (sorted-map nil 0))
 
 (defn empty-set ()
   "An empty sorted set. Build one with `into` or `conj`.
 
-    (seq (into (sorted/empty-set) [3 1 2 1]))   → (1 2 3)"
+    (seq (into (sorted/empty-set) [3 1 2 1]))   ;=> (1 2 3)"
   (sorted-set nil 0))
 
 (defn assoc (m k v)
   "Sorted map `m` with key `k` set to `v`.
 
-    (seq (sorted/assoc (sorted/empty-map) 2 :two))   → ([2 :two])"
+    (seq (sorted/assoc (sorted/empty-map) 2 :two))   ;=> ([2 :two])"
   (put m k v))
 
 (defn dissoc (coll k)
   "Sorted map or set `coll` without key (or element) `k`; `coll` itself when `k` is absent.
 
-    (seq (sorted/dissoc (into (sorted/empty-set) [1 2 3]) 2))   → (1 3)"
+    (seq (sorted/dissoc (into (sorted/empty-set) [1 2 3]) 2))   ;=> (1 3)"
   (if (nil? (find-node (tree coll) k))
     coll
     (rebuild coll (delete (tree coll) k) (- (size coll) 1))))
@@ -178,8 +178,8 @@ contents are `=`, whatever order they were built in.")
 member), else `default` (nil when not given). Bare `get` gives the same answer with two
 arguments.
 
-    (sorted/get (into (sorted/empty-map) {:a 1}) :a)       → 1
-    (sorted/get (into (sorted/empty-map) {:a 1}) :zz 0)    → 0"
+    (sorted/get (into (sorted/empty-map) {:a 1}) :a)       ;=> 1
+    (sorted/get (into (sorted/empty-map) {:a 1}) :zz 0)    ;=> 0"
   (let (node (find-node (tree coll) k))
     (cond
       (nil? node) (first default)
@@ -189,41 +189,41 @@ arguments.
 (defn contains? (coll k)
   "True when sorted map or set `coll` has key (or element) `k`.
 
-    (sorted/contains? (into (sorted/empty-set) [1 2]) 2)   → true"
+    (sorted/contains? (into (sorted/empty-set) [1 2]) 2)   ;=> true"
   (not (nil? (find-node (tree coll) k))))
 
 (defn min (coll)
   "The entry with the smallest key — `[key value]` for a map, the element for a set — or nil
 when `coll` is empty.
 
-    (sorted/min (into (sorted/empty-set) [5 3 9]))   → 3"
+    (sorted/min (into (sorted/empty-set) [5 3 9]))   ;=> 3"
   (entry-or-nil coll (edge-node (tree coll) 0)))
 
 (defn max (coll)
   "The entry with the largest key — `[key value]` for a map, the element for a set — or nil
 when `coll` is empty.
 
-    (sorted/max (into (sorted/empty-map) {1 :a 7 :b}))   → [7 :b]"
+    (sorted/max (into (sorted/empty-map) {1 :a 7 :b}))   ;=> [7 :b]"
   (entry-or-nil coll (edge-node (tree coll) 3)))
 
 (defn floor (coll k)
   "The entry with the largest key at or below `k`, or nil when there is none.
 
-    (sorted/floor (into (sorted/empty-set) [10 20 30]) 25)   → 20"
+    (sorted/floor (into (sorted/empty-set) [10 20 30]) 25)   ;=> 20"
   (entry-or-nil coll (floor-node (tree coll) k nil)))
 
 (defn ceiling (coll k)
   "The entry with the smallest key at or above `k`, or nil when there is none.
 
-    (sorted/ceiling (into (sorted/empty-set) [10 20 30]) 25)   → 30"
+    (sorted/ceiling (into (sorted/empty-set) [10 20 30]) 25)   ;=> 30"
   (entry-or-nil coll (ceiling-node (tree coll) k nil)))
 
 (defn range (coll from to)
   "The entries keyed from `from` (inclusive) up to `to` (exclusive), in key order, as a list.
 A nil bound is open on that side. Only the part of the tree in range is visited.
 
-    (sorted/range (into (sorted/empty-set) [1 2 3 4 5]) 2 4)     → (2 3)
-    (sorted/range (into (sorted/empty-set) [1 2 3 4 5]) 4 nil)   → (4 5)"
+    (sorted/range (into (sorted/empty-set) [1 2 3 4 5]) 2 4)     ;=> (2 3)
+    (sorted/range (into (sorted/empty-set) [1 2 3 4 5]) 4 nil)   ;=> (4 5)"
   (range-onto (tree coll) from to (entry-of coll) nil))
 
 ;; ---- the collection protocol --------------------------------------------------------

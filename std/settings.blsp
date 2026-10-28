@@ -41,7 +41,7 @@ already there, and return the stored spec. `spec` keys:
   instead of the default when given).
 - `:rank` — order in the default file; declaration order when absent.
 
-    (:default (settings/define :doc/settings :tabs {:default 4 :type '(int 1 16) :doc \"Tab width.\"}))   → 4"
+    (:default (settings/define :doc/settings :tabs {:default 4 :type '(int 1 16) :doc \"Tab width.\"}))   ;=> 4"
   (let (existing (registry/lookup id name)
         rank (cond
                (number? (:rank spec)) (:rank spec)
@@ -52,14 +52,14 @@ already there, and return the stored spec. `spec` keys:
 (defn specs (id:any -> list)
   "The settings declared under `id`, as spec maps in rank order.
 
-    (do (settings/define :doc/ordered :b {:default 2}) (settings/define :doc/ordered :a {:default 1}) (map (settings/specs :doc/ordered) :name))   → (:b :a)"
+    (do (settings/define :doc/ordered :b {:default 2}) (settings/define :doc/ordered :a {:default 1}) (map (settings/specs :doc/ordered) :name))   ;=> (:b :a)"
   (map (registry/ranked id) second))
 
 (defn spec-of (id:any name:any -> any)
   "The spec declared for `name` under `id`, or nil when there is none.
 
-    (do (settings/define :doc/one :k {:default 1}) (:default (settings/spec-of :doc/one :k)))   → 1
-    (settings/spec-of :doc/one :nope)   → nil"
+    (do (settings/define :doc/one :k {:default 1}) (:default (settings/spec-of :doc/one :k)))   ;=> 1
+    (settings/spec-of :doc/one :nope)   ;=> nil"
   (registry/lookup id name))
 
 ;; ---- reading the file -----------------------------------------------------
@@ -69,9 +69,9 @@ already there, and return the stored spec. `spec` keys:
 map — `{}` when it is some other form, or when `text` does not read. Never evaluates and
 never throws: a broken config file must not stop the program it configures.
 
-    (settings/read-form \"(config :hl-line false :cursor :bar)\" 'config)   → {:hl-line false :cursor :bar}
-    (settings/read-form \"(config :x\" 'config)   → {}
-    (settings/read-form \"(other :x 1)\" 'config)   → {}"
+    (settings/read-form \"(config :hl-line false :cursor :bar)\" 'config)   ;=> {:hl-line false :cursor :bar}
+    (settings/read-form \"(config :x\" 'config)   ;=> {}
+    (settings/read-form \"(other :x 1)\" 'config)   ;=> {}"
   (check-allow :discarded-catch
     (try
       (let (form (reflect/read-first text))
@@ -85,7 +85,7 @@ never throws: a broken config file must not stop the program it configures.
 (defn read-file (file:string head:symbol -> map)
   "`read-form` over the contents of `file` — `{}` when the file is missing or unreadable.
 
-    (settings/read-file \"/no/such/settings-file.blsp\" 'config)   → {}"
+    (settings/read-file \"/no/such/settings-file.blsp\" 'config)   ;=> {}"
   (check-allow :discarded-catch
     (if (file/exists? file)
       (try (read-form (file/slurp file) head) (catch e {}))
@@ -97,9 +97,9 @@ never throws: a broken config file must not stop the program it configures.
   "True when `value` is acceptable for the setting `spec`: nil (unset) always is; anything
 else must match the spec's `:type` and pass its `:valid?` predicate.
 
-    (settings/valid? {:type '(or :block :bar)} :bar)   → true
-    (settings/valid? {:type '(or :block :bar)} :blockk)   → false
-    (settings/valid? {:type 'bool} nil)   → true"
+    (settings/valid? {:type '(or :block :bar)} :bar)   ;=> true
+    (settings/valid? {:type '(or :block :bar)} :blockk)   ;=> false
+    (settings/valid? {:type 'bool} nil)   ;=> true"
   (or (nil? value)
     (and (or (not (contains? spec :type)) (type-matches? (:type spec) value))
       (let (check (:valid? spec))
@@ -112,9 +112,9 @@ else must match the spec's `:type` and pass its `:valid?` predicate.
   "How a warning describes a good value for `spec`: its `:want`, else the alternatives of a
 literal `or` type, else the printed type.
 
-    (settings/want-text {:type '(or :block :bar)})   → \":block / :bar\"
-    (settings/want-text {:type 'bool})   → \"bool\"
-    (settings/want-text {:type 'number :want \"a number in 0.8..3.0\"})   → \"a number in 0.8..3.0\""
+    (settings/want-text {:type '(or :block :bar)})   ;=> \":block / :bar\"
+    (settings/want-text {:type 'bool})   ;=> \"bool\"
+    (settings/want-text {:type 'number :want \"a number in 0.8..3.0\"})   ;=> \"a number in 0.8..3.0\""
   (let (t (:type spec))
     (cond
       (string? (:want spec)) (:want spec)
@@ -129,7 +129,7 @@ strings that start with `label` (the file's name): a value its setting rejects, 
 order, then each key no setting declares — a typo, or a setting whose module has not loaded.
 Empty when the config is clean.
 
-    (do (settings/define :doc/warn :cursor {:type '(or :block :bar)}) (settings/warnings :doc/warn {:cursor :blockk :curser :bar} \"init.blsp\"))   → [\"init.blsp: :cursor is :blockk — want :block / :bar\" \"init.blsp: :curser is not a setting (a typo, or one whose module has not loaded)\"]"
+    (do (settings/define :doc/warn :cursor {:type '(or :block :bar)}) (settings/warnings :doc/warn {:cursor :blockk :curser :bar} \"init.blsp\"))   ;=> [\"init.blsp: :cursor is :blockk — want :block / :bar\" \"init.blsp: :curser is not a setting (a typo, or one whose module has not loaded)\"]"
   (let (declared (registry/entries id)
         bad (fold (specs id)
               []
@@ -157,7 +157,7 @@ Empty when the config is clean.
 `:default` — so a typo'd value, or a key deleted before a reload, means the default rather
 than the last value in force. nil for a name nothing declares.
 
-    (do (settings/define :doc/val :cursor {:default :block :type '(or :block :bar)}) [(settings/value-of :doc/val {:cursor :bar} :cursor) (settings/value-of :doc/val {:cursor 7} :cursor) (settings/value-of :doc/val {} :cursor)])   → [:bar :block :block]"
+    (do (settings/define :doc/val :cursor {:default :block :type '(or :block :bar)}) [(settings/value-of :doc/val {:cursor :bar} :cursor) (settings/value-of :doc/val {:cursor 7} :cursor) (settings/value-of :doc/val {} :cursor)])   ;=> [:bar :block :block]"
   (let (spec (spec-of id name)
         value (get config name))
     (cond
@@ -169,7 +169,7 @@ than the last value in force. nil for a name nothing declares.
   "Every setting declared under `id`, name → `value-of` — the whole config with each
 default filled in and each invalid value replaced.
 
-    (do (settings/define :doc/all :a {:default 1}) (settings/define :doc/all :b {:default 2 :type 'int}) (settings/values-of :doc/all {:b \"x\"}))   → {:a 1 :b 2}"
+    (do (settings/define :doc/all :a {:default 1}) (settings/define :doc/all :b {:default 2 :type 'int}) (settings/values-of :doc/all {:b \"x\"}))   ;=> {:a 1 :b 2}"
   (fold (specs id) {} (fn (acc spec) (assoc acc (:name spec) (value-of id config (:name spec))))))
 
 ;; ---- the default file -----------------------------------------------------
@@ -189,5 +189,5 @@ ending in a newline), then one `(head …)` form listing every setting declared 
 in rank order — its doc as comments above it, set to its default, or commented out when it
 is `:commented?`. What `read-form` reads back is exactly the defaults it did not comment.
 
-    (do (settings/define :doc/src :hl-line {:default true :doc \"Highlight the line.\"}) (settings/default-source :doc/src 'config \";; mine\\n\"))   → \";; mine\\n(config\\n  ;; Highlight the line.\\n  :hl-line true\\n  )\\n\""
+    (do (settings/define :doc/src :hl-line {:default true :doc \"Highlight the line.\"}) (settings/default-source :doc/src 'config \";; mine\\n\"))   ;=> \";; mine\\n(config\\n  ;; Highlight the line.\\n  :hl-line true\\n  )\\n\""
   (str preamble "(" head "\n" (string/join (map (specs id) setting-text) "") "  )\n"))

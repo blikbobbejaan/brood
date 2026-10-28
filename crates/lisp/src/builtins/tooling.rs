@@ -36,7 +36,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::range(0, 1),
         Sig::new(vec![any], sym),
         &["prefix"],
-        "A fresh, unique symbol, with an optional name prefix.\n\n    (symbol? (gensym \"tmp\"))   → true\n    (= (gensym) (gensym))      → false",
+        "A fresh, unique symbol, with an optional name prefix.\n\n    (symbol? (gensym \"tmp\"))   ;=> true\n    (= (gensym) (gensym))      ;=> false",
         gensym,
     );
     // source positions (editor tooling; see docs/tooling.md)
@@ -68,7 +68,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![sym], bool_ty),
         &["name"],
-        "Whether the global `name` is module-private (ADR-146). Quote the qualified symbol: (reflect/private? 'mod/helper).\n\n    (reflect/private? 'map)   → false",
+        "Whether the global `name` is module-private (ADR-146). Quote the qualified symbol: (reflect/private? 'mod/helper).\n\n    (reflect/private? 'map)   ;=> false",
         private_p);
     primitives.def(
         "%references-in-source",
@@ -126,7 +126,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], string.union(nil_ty)),
         &["f"],
-        "The docstring of a function, macro, or primitive, or nil.\n\n    (string? (doc inc))   → true\n    (doc (fn (x) x))      → nil",
+        "The docstring of a function, macro, or primitive, or nil.\n\n    (string? (doc inc))   ;=> true\n    (doc (fn (x) x))      ;=> nil",
         doc,
     );
     primitives.def(
@@ -134,7 +134,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], list_ty),
         &["f"],
-        "The parameter list of a function, macro, or primitive, or nil.\n\n    (arglist inc)                  → (n)\n    (arglist (fn (a & more) a))    → (a & more)",
+        "The parameter list of a function, macro, or primitive, or nil.\n\n    (arglist inc)                  ;=> (n)\n    (arglist (fn (a & more) a))    ;=> (a & more)",
         arglist,
     );
     primitives.def(
@@ -142,7 +142,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], list_ty),
         &["f"],
-        "Every arm's parameter list of a function, macro, or primitive — one list per arity of a multi-arity `defn`, where `arglist` shows only the last — or nil.\n\n    (reflect/arglists (fn ((a) a) ((a b) b)))   → ((a) (a b))\n    (reflect/arglists inc)                     → ((n))",
+        "Every arm's parameter list of a function, macro, or primitive — one list per arity of a multi-arity `defn`, where `arglist` shows only the last — or nil.\n\n    (reflect/arglists (fn ((a) a) ((a b) b)))   ;=> ((a) (a b))\n    (reflect/arglists inc)                     ;=> ((n))",
         arglists,
     );
     primitives.def(
@@ -150,7 +150,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(0),
         Sig::nullary(list_ty),
         &[],
-        "Every globally bound symbol, sorted by spelling.\n\n    (includes? (reflect/global-names) 'map)   → true",
+        "Every globally bound symbol, sorted by spelling.\n\n    (includes? (reflect/global-names) 'map)   ;=> true",
         global_names,
     );
     primitives.def(
@@ -158,14 +158,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(0),
         Sig::nullary(list_ty),
         &[],
-        "The special-form / core-macro names (strings) that read as keywords — the canonical list shared by the syntax highlighter and the LSP.\n\n    (includes? (reflect/special-forms) \"let\")   → true",
+        "The special-form / core-macro names (strings) that read as keywords — the canonical list shared by the syntax highlighter and the LSP.\n\n    (includes? (reflect/special-forms) \"let\")   ;=> true",
         special_forms);
     primitives.def(
         "reflect/doc-forms",
         Arity::exact(0),
         Sig::nullary(map_ty),
         &[],
-        "The def... heads that carry a docstring, as head -> :fn or :head — the canonical list shared by the syntax highlighter and the LSP. :fn means the head builds a function, where a lone trailing string is the return value, not a doc.\n\n    (get (reflect/doc-forms) \"defn\")   → :fn",
+        "The def... heads that carry a docstring, as head -> :fn or :head — the canonical list shared by the syntax highlighter and the LSP. :fn means the head builds a function, where a lone trailing string is the return value, not a doc.\n\n    (get (reflect/doc-forms) \"defn\")   ;=> :fn",
         doc_forms,
     );
     primitives.def(
@@ -173,7 +173,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![sym], bool_ty),
         &["sym"],
-        "Whether sym is bound in scope. Quote it: (bound? 'foo).\n\n    (bound? 'first)   → true\n    (bound? 'nope)    → false",
+        "Whether sym is bound in scope. Quote it: (bound? 'foo).\n\n    (bound? 'first)   ;=> true\n    (bound? 'nope)    ;=> false",
         bound_p,
     );
     primitives.def(
@@ -197,7 +197,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![sym], bool_ty),
         &["name"],
-        "Remove the global binding `name` — the inverse of `def` — and everything recorded about it (privacy, metadata, def site, declared sig). Returns true when a binding went away, false when none was bound. The symbol is the global's full name, taken as-is: pass `'my/mod/helper` for a module's definition; a bare `'helper` names the root binding. A name Brood ships (the prelude, a builtin, an embedded std module) is refused, as `def` refuses it.\n\nAfterwards `bound?` is false, and a bare reference compiled from now on resolves as if the name had never been defined — through the module's imports, then root — so removing a module's `map` lets its code reach the prelude `map` again. Code compiled while the name was bound does not keep the old value: every cache of it is invalidated, so such code raises `unbound symbol` naming the removal; re-evaluating it resolves afresh.\n\n    (reflect/undef 'no-such-global)   → false",
+        "Remove the global binding `name` — the inverse of `def` — and everything recorded about it (privacy, metadata, def site, declared sig). Returns true when a binding went away, false when none was bound. The symbol is the global's full name, taken as-is: pass `'my/mod/helper` for a module's definition; a bare `'helper` names the root binding. A name Brood ships (the prelude, a builtin, an embedded std module) is refused, as `def` refuses it.\n\nAfterwards `bound?` is false, and a bare reference compiled from now on resolves as if the name had never been defined — through the module's imports, then root — so removing a module's `map` lets its code reach the prelude `map` again. Code compiled while the name was bound does not keep the old value: every cache of it is invalidated, so such code raises `unbound symbol` naming the removal; re-evaluating it resolves afresh.\n\n    (reflect/undef 'no-such-global)   ;=> false",
         undef,
     );
 }

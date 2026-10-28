@@ -11,7 +11,7 @@
 (defn string/->symbol (s)
   "The symbol whose spelling is the string `s`. Errors if `s` isn't a string.
 
-    (string/->symbol \"foo\")   → foo"
+    (string/->symbol \"foo\")   ;=> foo"
   (if (string? s) (symbol s) (error "string/->symbol: expected a string, got " (type-of s))))
 
 ;; ---- strings ----------------------------------------------------------------
@@ -197,5 +197,5 @@ show a value to a human has no business flooding the screen (or a pipe, or a log
 with a megabyte, and one bounded printer is how that stays true everywhere instead
 of each consumer inventing its own cap.
 
-    (pr-str-bounded [1 2]) → \"[1 2]\""
+    (pr-str-bounded [1 2]) ;=> \"[1 2]\""
   (%pr-bounded x 0))

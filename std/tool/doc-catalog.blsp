@@ -169,7 +169,7 @@
 (defn prelude-file ()
   "The path every prelude definition site names, or nil when the image records none.
 
-    (doc-catalog/prelude-file)   ;=> \"…/prelude.blsp\" — or nil"
+    (doc-catalog/prelude-file)   ;~> \"…/prelude.blsp\" — or nil"
   (first (%source-location 'defn)))
 
 ;; `[line-number header-line]` for every section header of the prelude source, in order.
@@ -186,7 +186,7 @@
   "The prelude section header line above bare `name`'s definition, or nil if `name` is not
   defined in the prelude source.
 
-    (doc-catalog/section-of \"fold\")   ;=> \";; ---- folding (the workhorse; …) ----\""
+    (doc-catalog/section-of \"fold\")   ;~> \";; ---- folding (the workhorse; …) ----\""
   (let (site (%source-location (string/->symbol name)) file (prelude-file))
     (when (and site file (= (first site) file))
       (fold prelude-headers
@@ -202,7 +202,7 @@
 (defn derived-category (name)
   "The category `name`'s definition site gives it, ignoring `*exceptions*`, or nil.
 
-    (doc-catalog/derived-category \"string/join\")  → :strings"
+    (doc-catalog/derived-category \"string/join\")  ;=> :strings"
   (let (slash (string/last-index-of name "/"))
     (if (> slash 0)
       (get *module-categories* (string/substring name 0 slash))
@@ -212,6 +212,6 @@
   "The category keyword for a function name (a string, bare or `mod/name`), or :other when
   nothing places it.
 
-    (doc-catalog/category-of \"string/join\")  → :strings
-    (doc-catalog/category-of \"zz-nope\")      → :other"
+    (doc-catalog/category-of \"string/join\")  ;=> :strings
+    (doc-catalog/category-of \"zz-nope\")      ;=> :other"
   (or (get *exceptions* name) (derived-category name) :other))

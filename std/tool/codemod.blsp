@@ -44,7 +44,7 @@
 (defn token-replace (text:any old:string new:any -> string)
   "`text` with every whole-token `old` replaced by `new` (substrings left alone).
 
-    (codemod/token-replace \"(foo x) (foo-bar y)\" \"foo\" \"baz\")  → \"(baz x) (foo-bar y)\""
+    (codemod/token-replace \"(foo x) (foo-bar y)\" \"foo\" \"baz\")  ;=> \"(baz x) (foo-bar y)\""
   (apply str (reverse (tr-loop text old new (string/length old) 0 nil))))
 
 (defn- apply-pairs (text pairs)
@@ -70,7 +70,7 @@
   "Apply `[[old new] …]` token renames across the project's own .blsp sources. Prints each
   changed file and returns the count.
 
-    (codemod/rename [[\"old-parse\" \"parse\"] [\"mk-user\" \"user/new\"]])   ;=> 3 — files changed, each one printed"
+    (codemod/rename [[\"old-parse\" \"parse\"] [\"mk-user\" \"user/new\"]])   ;~> 3 — files changed, each one printed"
   (let (changed (seq/filter (map (project-blsp) (fn (f) (rewrite-file pairs f)))
                   (fn (f) (not (nil? f)))))
     (for (f changed) (io/puts "  changed: " f))
@@ -242,16 +242,16 @@ definition head), `:in-quote` (also rewrite symbols inside `(quote …)`/`'…` 
 `(new b a)`, and nothing else changes). Lossless: an unmatched file comes back
 byte-identical.
 
-    (codemod/cst-rename-text \"(foo x) ; foo\" \"foo\" \"bar\")  → \"(bar x) ; foo\"
-    (codemod/cst-rename-text \"(defn foo (x) (foo x))\" \"foo\" \"bar\" :refs-only)  → \"(defn foo (x) (bar x))\"
-    (codemod/cst-rename-text \"(old a b)\" \"old\" \"new\" :swap)  → \"(new b a)\""
+    (codemod/cst-rename-text \"(foo x) ; foo\" \"foo\" \"bar\")  ;=> \"(bar x) ; foo\"
+    (codemod/cst-rename-text \"(defn foo (x) (foo x))\" \"foo\" \"bar\" :refs-only)  ;=> \"(defn foo (x) (bar x))\"
+    (codemod/cst-rename-text \"(old a b)\" \"old\" \"new\" :swap)  ;=> \"(new b a)\""
   (rename-kids :root (node-payload (reflect/parse-source text)) old new (or mode :all) false))
 
 (defn cst-rename (old new &optional mode)
   "Apply `cst-rename-text` across the project's own .blsp sources — the context-aware
 counterpart to `rename`. Prints each changed file and returns the count.
 
-    (codemod/cst-rename \"old-parse\" \"parse\" :refs-only)   ;=> 3 — files changed, each one printed"
+    (codemod/cst-rename \"old-parse\" \"parse\" :refs-only)   ;~> 3 — files changed, each one printed"
   (let (changed (seq/filter (map (project-blsp)
                               (fn (f)
                                 (let (before (file/slurp f)

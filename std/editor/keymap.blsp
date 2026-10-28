@@ -46,7 +46,7 @@ flat, single-key path: a binding to a nested keymap (a chord prefix) is ignored
 here — use `keymap-step` for chords. Pure apart from the symbol resolution;
 testable without a terminal.
 
-    (editor/keymap/keymap-dispatch {} 1 :z (fn (s k) (inc s)))   → 2"
+    (editor/keymap/keymap-dispatch {} 1 :z (fn (s k) (inc s)))   ;=> 2"
   (let (sym (get keymap key))
     (if (or (nil? sym) (map? sym))
       (fallback state key)
@@ -79,8 +79,8 @@ resolution is a second set of chord bugs.
 
 Pure — no eval, no state, nothing to mock.
 
-    (editor/keymap/keymap-resolve {:a 'save} nil :a)   → [save nil]
-    (editor/keymap/keymap-resolve {:a 'save} nil :zz)  → [nil nil]"
+    (editor/keymap/keymap-resolve {:a 'save} nil :a)   ;=> [save nil]
+    (editor/keymap/keymap-resolve {:a 'save} nil :zz)  ;=> [nil nil]"
   (keymap-classify (get (if (nil? pending) keymap pending) key)))
 
 (defn keymap-classify (binding -> vector)
@@ -89,8 +89,8 @@ Pure — no eval, no state, nothing to mock.
 `[binding nil]` for a completed chord. For a caller that finds the binding its own way
 — `editor/layers` asks its layers one at a time rather than merging their keymaps.
 
-    (editor/keymap/keymap-classify 'save)   → [save nil]
-    (editor/keymap/keymap-classify nil)     → [nil nil]"
+    (editor/keymap/keymap-classify 'save)   ;=> [save nil]
+    (editor/keymap/keymap-classify nil)     ;=> [nil nil]"
   (cond
     (map? binding) [nil binding]
     (nil? binding) [nil nil]
@@ -119,7 +119,7 @@ Pure apart from the symbol resolution; testable without a terminal."
 pending']` by the same rules. A caller that resolves a key without a merged keymap in
 hand — `editor/layers/layer-dispatch` — steps through this.
 
-    (first (editor/keymap/keymap-run [nil nil] nil 1 :z (fn (s k) (inc s))))   → 2"
+    (first (editor/keymap/keymap-run [nil nil] nil 1 :z (fn (s k) (inc s))))   ;=> 2"
   (let ([binding entered] resolved)
     (cond
       (not (nil? entered)) [state entered]
@@ -140,7 +140,7 @@ hand — `editor/layers/layer-dispatch` — steps through this.
   instead of going stale (Emacs `where-is-internal` / `substitute-command-keys`).
   Pure over the keymap data — no dispatch, no eval.
 
-    (editor/keymap/keymap-where-is {:a 'save :x {:q 'quit}} 'quit)   → ([:x :q])"
+    (editor/keymap/keymap-where-is {:a 'save :x {:q 'quit}} 'quit)   ;=> ([:x :q])"
     ;; `map?` FIRST: a nested keymap is a prefix, never a command — so passing a
     ;; sub-keymap as `command` finds nothing rather than matching by structural `=`.
     (mapcat keymap
@@ -166,7 +166,7 @@ hand — `editor/layers/layer-dispatch` — steps through this.
   Pure over the keymap data — no dispatch, no eval, no load; a command whose module has not
   been loaded appears here like any other, since a keymap names commands by symbol.
 
-    (editor/keymap/keymap-index {:x {:s 'save :q 'quit}})   → {save ([:x :s]), quit ([:x :q])}"
+    (editor/keymap/keymap-index {:x {:s 'save :q 'quit}})   ;=> {save ([:x :s]), quit ([:x :q])}"
     (fold (keymap-bindings keymap)
       {}
       (fn (acc pair)
@@ -183,7 +183,7 @@ hand — `editor/layers/layer-dispatch` — steps through this.
   and because grouping with `append` per binding is what made a first cut of `keymap-index`
   nine times slower than this walk.
 
-    (into #{} (editor/keymap/keymap-bindings {:a 'save :x {:q 'quit}}))   → #{[save [:a]] [quit [:x :q]]}"
+    (into #{} (editor/keymap/keymap-bindings {:a 'save :x {:q 'quit}}))   ;=> #{[save [:a]] [quit [:x :q]]}"
     (mapcat keymap
       (fn (entry)
         (let ([k v] entry)
@@ -204,7 +204,7 @@ can discover a deferred feature's commands WITHOUT loading it — for a command 
 help listing, or an `M-x`-style by-name runner that would otherwise offer only what
 happens to be in memory. Pure over the keymap data — no dispatch, no eval, no load.
 
-    (sort (map (editor/keymap/keymap-commands {:a 'save :x {:q 'quit :s 'save}}) str))   → (\"quit\" \"save\")"
+    (sort (map (editor/keymap/keymap-commands {:a 'save :x {:q 'quit :s 'save}}) str))   ;=> (\"quit\" \"save\")"
   (seq/distinct (map (keymap-bindings keymap) first)))
 
 ;; check-allow: deliberately non-tail — depth = the bound key-sequence length — a few keys.
@@ -220,7 +220,7 @@ happens to be in memory. Pure over the keymap data — no dispatch, no eval, no 
       (-> {} (keymap-bind [:ctrl-x :ctrl-e] 'eval-last-sexp)
              (keymap-bind [:ctrl-x :ctrl-s] 'save-buffer))
 
-    (editor/keymap/keymap-bind {} [:ctrl-x :ctrl-s] 'save-buffer)   → {:ctrl-x {:ctrl-s save-buffer}}"
+    (editor/keymap/keymap-bind {} [:ctrl-x :ctrl-s] 'save-buffer)   ;=> {:ctrl-x {:ctrl-s save-buffer}}"
     (if (= (count keys) 1)
       (assoc keymap (first keys) command)
       (let (k (first keys)

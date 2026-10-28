@@ -36,26 +36,26 @@ look-alike map, and it prints as `#<multimap …>` (`->map` is the plain-map vie
 (defn empty ()
   "An empty multimap.
 
-    (multimap/->map (multimap/empty))   → {}"
+    (multimap/->map (multimap/empty))   ;=> {}"
   (multimap {}))
 
 (defn empty? (mm:multimap -> bool)
   "True if the multimap has no entries.
 
-    (multimap/empty? (multimap/empty))   → true"
+    (multimap/empty? (multimap/empty))   ;=> true"
   (= (count (/get mm :entries)) 0))
 
 (defn assoc (mm:multimap k:any v:any -> multimap)
   "Return a multimap with value `v` added under key `k`.
 
-    (multimap/->map (multimap/assoc (multimap/empty) :a 1))   → {:a (1)}"
+    (multimap/->map (multimap/assoc (multimap/empty) :a 1))   ;=> {:a (1)}"
   (let (entries (/get mm :entries))
     (multimap (/assoc entries k (cons v (/get entries k nil))))))
 
 (defn assoc-all (mm k vs)
   "Return a multimap with all values in list `vs` added under key `k`.
 
-    (multimap/->map (multimap/assoc-all (multimap/empty) :a [1 2]))   → {:a (1 2)}"
+    (multimap/->map (multimap/assoc-all (multimap/empty) :a [1 2]))   ;=> {:a (1 2)}"
   (fold vs mm (fn (m v) (assoc m k v))))
 
 (defn get (mm:multimap k:any -> (list any))
@@ -64,34 +64,34 @@ look-alike map, and it prints as `#<multimap …>` (`->map` is the plain-map vie
 Bare `(get mm k)` answers through `Lookup` in the other order, oldest first, as `get-all`
 does.
 
-    (multimap/get (multimap/assoc (multimap/assoc (multimap/empty) :k 1) :k 2) :k)   → (2 1)"
+    (multimap/get (multimap/assoc (multimap/assoc (multimap/empty) :k 1) :k 2) :k)   ;=> (2 1)"
   (/get (/get mm :entries) k nil))
 
 (defn get-all (mm:multimap k:any -> (or seqable nil))
   "All values for key `k` in insertion order (oldest first), or nil if absent.
 
-    (multimap/get-all (multimap/assoc (multimap/assoc (multimap/empty) :k 1) :k 2) :k)   → (1 2)
+    (multimap/get-all (multimap/assoc (multimap/assoc (multimap/empty) :k 1) :k 2) :k)   ;=> (1 2)
 
-    (multimap/get-all (multimap/assoc-all (multimap/empty) :a [1 2]) :a)   → (1 2)"
+    (multimap/get-all (multimap/assoc-all (multimap/empty) :a [1 2]) :a)   ;=> (1 2)"
   (reverse (get mm k)))
 
 (defn contains? (mm k)
   "True if `k` has at least one value in the multimap.
 
-    (multimap/contains? (multimap/assoc (multimap/empty) :k 1) :k)   → true"
+    (multimap/contains? (multimap/assoc (multimap/empty) :k 1) :k)   ;=> true"
   (not (nil? (get mm k))))
 
 (defn dissoc (mm:multimap k:any -> multimap)
   "Return a multimap with all values for key `k` removed.
 
-    (multimap/->map (multimap/dissoc (multimap/assoc-all (multimap/empty) :a [1 2]) :a))   → {}"
+    (multimap/->map (multimap/dissoc (multimap/assoc-all (multimap/empty) :a [1 2]) :a))   ;=> {}"
   (multimap (/dissoc (/get mm :entries) k)))
 
 (defn remove-value (mm:multimap k:any v:any -> multimap)
   "Return a multimap with the first occurrence of `v` removed from key `k`.
 If no values remain under `k`, the key is dropped.
 
-    (multimap/->map (multimap/remove-value (multimap/assoc-all (multimap/empty) :a [1 2]) :a 1))   → {:a (2)}"
+    (multimap/->map (multimap/remove-value (multimap/assoc-all (multimap/empty) :a [1 2]) :a 1))   ;=> {:a (2)}"
   (let (entries (/get mm :entries)
         vs (/get entries k nil))
     (if (nil? vs)
@@ -151,7 +151,7 @@ If no values remain under `k`, the key is dropped.
   "Return a multimap where each value list has been transformed by `(f key values-list)`.
 Note the arity: `f` receives the KEY as well as the list, not the list alone.
 
-    (multimap/->map (multimap/map-vals (multimap/assoc-all (multimap/empty) :a [1 2]) (fn (k vs) (reverse vs))))   → {:a (2 1)}"
+    (multimap/->map (multimap/map-vals (multimap/assoc-all (multimap/empty) :a [1 2]) (fn (k vs) (reverse vs))))   ;=> {:a (2 1)}"
   (multimap (fold (%map-pairs (/get mm :entries))
               {}
               (fn (m pair) (let (k (first pair) vs (second pair)) (/assoc m k (f k vs)))))))

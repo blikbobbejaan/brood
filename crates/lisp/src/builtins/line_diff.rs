@@ -29,7 +29,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![string.union(rope), string.union(rope)], vec_ty),
         &["old", "new"],
-        "The line diff of old and new (strings or ropes) as git's zero-context hunks: a vector of [old-start old-count new-start new-count], 0-based line numbers, in order. Lines of old-start..+old-count became lines of new-start..+new-count; a count of 0 is a pure insertion or deletion, its start the line the change sits before. A final newline ends the last line rather than starting an empty one. Myers' diff with git's indent-heuristic compaction, so a change lands where `git diff` puts it.\n\n    (%diff-line-hunks \"a\\nb\\nc\\n\" \"a\\nx\\nc\\n\")   → [[1 1 1 1]]",
+        "The line diff of old and new (strings or ropes) as git's zero-context hunks: a vector of [old-start old-count new-start new-count], 0-based line numbers, in order. Lines of old-start..+old-count became lines of new-start..+new-count; a count of 0 is a pure insertion or deletion, its start the line the change sits before. A final newline ends the last line rather than starting an empty one. Myers' diff with git's indent-heuristic compaction, so a change lands where `git diff` puts it.\n\n    (%diff-line-hunks \"a\\nb\\nc\\n\" \"a\\nx\\nc\\n\")   ;=> [[1 1 1 1]]",
         diff_line_hunks,
     );
 }

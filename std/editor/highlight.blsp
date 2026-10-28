@@ -94,8 +94,8 @@ Used by `std/editor/lineedit.blsp` (the REPL editor); pure, so independently tes
   "True if string `s` names a Brood special form / core macro that should highlight
 as a keyword. Mirrors the LSP's SPECIAL_FORMS list.
 
-    (editor/highlight/special-form? \"let\")   → true
-    (editor/highlight/special-form? \"foo\")   → false"
+    (editor/highlight/special-form? \"let\")   ;=> true
+    (editor/highlight/special-form? \"foo\")   ;=> false"
   (= true (get hl-special-set s)))
 
 ;; The `def…` heads that carry a docstring, head -> `:fn` / `:head`. Read from the
@@ -108,8 +108,8 @@ as a keyword. Mirrors the LSP's SPECIAL_FORMS list.
   "True if string `s` names a `def…` head whose form carries a docstring. Mirrors the
 LSP's DOC_FORMS list.
 
-    (editor/highlight/doc-form? \"defn\")   → true
-    (editor/highlight/doc-form? \"let\")    → false"
+    (editor/highlight/doc-form? \"defn\")   ;=> true
+    (editor/highlight/doc-form? \"let\")    ;=> false"
   (not (nil? (get hl-doc-forms s))))
 
 ;; ---- character classes ------------------------------------------------------
@@ -292,8 +292,8 @@ s-expression language: parens, `;` comments, `\"` strings, numbers. Passing anot
 dialect's set is therefore the whole of teaching it to colour, which is what an elisp or
 Scheme mode needs and all it needs.
 
-    (editor/highlight/highlight-spans \"x ; hi\")    → ([2 6 {:fg :dark-grey}])
-    (editor/highlight/highlight-spans \"(let x)\")   → ([1 4 {:fg :blue, :bold true}])"
+    (editor/highlight/highlight-spans \"x ; hi\")    ;=> ([2 6 {:fg :dark-grey}])
+    (editor/highlight/highlight-spans \"(let x)\")   ;=> ([1 4 {:fg :blue, :bold true}])"
   (hl-spans (reflect/scan-tokens src) '() '() specials (hl-faces)))
 (sig highlight-spans (string -> any))
 
@@ -307,7 +307,7 @@ Scheme mode needs and all it needs.
 absolute coordinates of the larger source the slice came from. The one place windowed
 fontification (any lexer's, mode-agnostic) re-bases its spans.
 
-    (editor/highlight/shift-spans [[0 3 :keyword]] 10)   → ([10 13 :keyword])"
+    (editor/highlight/shift-spans [[0 3 :keyword]] 10)   ;=> ([10 13 :keyword])"
   (map spans (fn ([s e f]) [(+ s base) (+ e base) f])))
 
 (defn highlight-window (slice base)
@@ -317,7 +317,7 @@ result is in the larger source's absolute coordinates. Lets a viewport fontify o
 its visible slice yet hand the renderer absolute offsets; `base` 0 is exactly
 `highlight-spans`.
 
-    (editor/highlight/highlight-window \"(let)\" 100)   → ([101 104 {:fg :blue, :bold true}])"
+    (editor/highlight/highlight-window \"(let)\" 100)   ;=> ([101 104 {:fg :blue, :bold true}])"
   (shift-spans (highlight-spans slice) base))
 
 (defn safe-restart (src pos)
@@ -331,7 +331,7 @@ the top (a backward scan can't know string state), which is O(pos) — run nativ
 (`scan-form-start`, the ADR-093 scanner family), because interpreted it stalled eldoc /
 fontify-restart multi-second on every idle beat in a large file.
 
-    (editor/highlight/safe-restart \"(a)\\n(b c)\" 7)   → 4"
+    (editor/highlight/safe-restart \"(a)\\n(b c)\" 7)   ;=> 4"
   (reflect/scan-form-start src pos))
 
 (defn line-restart (src:string pos:int -> int)
@@ -343,7 +343,7 @@ re-lexed on every keystroke. Lives here, beside `safe-restart`, because a mode n
 restart by a SYMBOL resolved at render time: this module is loaded wherever anything is
 fontified, where the lexer that happens to colour the buffer may not be.
 
-    (editor/highlight/line-restart \"line one\" 4)   → 4"
+    (editor/highlight/line-restart \"line one\" 4)   ;=> 4"
   pos)
 
 ;; ---- the line-state cache (ADR-471, ADR-483) -----------------------------------
@@ -387,7 +387,7 @@ it) and the state the next line starts in, given the `state` this one starts in.
 is the state of the first line. States are compared with `=`, so keep them small values:
 a keyword, a short vector (`[:fence \"```\"]`).
 
-    (:initial (editor/highlight/line-lexer (fn (line state) [[] state]) :text))   → :text"
+    (:initial (editor/highlight/line-lexer (fn (line state) [[] state]) :text))   ;=> :text"
   {:lex lex :initial initial :stateless? false})
 
 (defn stateless-lexer (spans-of)
@@ -396,14 +396,14 @@ a keyword, a short vector (`[:fence \"```\"]`).
 text — no state to carry, so no line above the window is ever lexed, and an unchanged
 line is never lexed twice. Every `editor/lexer` grammar is one: `lexer-line-lexer`.
 
-    (:stateless? (editor/highlight/stateless-lexer (fn (line) [])))   → true"
+    (:stateless? (editor/highlight/stateless-lexer (fn (line) [])))   ;=> true"
   {:lex (fn (line state) [(spans-of line) nil]) :initial nil :stateless? true})
 
 (defn line-cache ()
   "An empty line-state cache: what `line-cache-update` takes the first time, and what a
 caller starts again from when the lexer changes (a new mode) — one cache serves one lexer.
 
-    (:rope (editor/highlight/line-cache))   → nil"
+    (:rope (editor/highlight/line-cache))   ;=> nil"
   {:rope nil :tree nil :verified nil :windows '() :memo {}})
 
 ;; ---- the line table: a treap with relative keys ----------------------------------
@@ -687,7 +687,7 @@ buffer's splice log, `editor/buffer/buffer-splices-cover`) spares the compare of
 ropes that finding it costs. It must describe exactly that pair of texts; nil (the default)
 compares them.
 
-    (second (editor/highlight/line-cache-update (editor/highlight/line-cache) (editor/highlight/stateless-lexer (fn (line) (if (string/starts-with? line \"#\") [[0 (string/length line) :c]] []))) (text/from-string \"a\\n# b\") 0 2))   → ([2 5 :c])"
+    (second (editor/highlight/line-cache-update (editor/highlight/line-cache) (editor/highlight/stateless-lexer (fn (line) (if (string/starts-with? line \"#\") [[0 (string/length line) :c]] []))) (text/from-string \"a\\n# b\") 0 2))   ;=> ([2 5 :c])"
   (if (:stateless? lexer)
     (lc-stateless cache lexer rope lo hi)
     (let (top (math/min hi (text/line-count rope))
@@ -708,8 +708,8 @@ compares them.
   "The face of the `[start end face]` span covering offset `pos`, or nil. Linear
 scan; spans need not be sorted.
 
-    (editor/highlight/face-at [[0 3 :keyword] [4 6 :string]] 5)   → :string
-    (editor/highlight/face-at [[0 3 :keyword]] 3)                 → nil"
+    (editor/highlight/face-at [[0 3 :keyword] [4 6 :string]] 5)   ;=> :string
+    (editor/highlight/face-at [[0 3 :keyword]] 3)                 ;=> nil"
   (cond
     (empty? spans) nil
     else
@@ -721,7 +721,7 @@ scan; spans need not be sorted.
 (later ranges win on key conflict via `into`), or nil when none cover it. Region
 highlight, isearch overlays, and bracket-match are all such ranges.
 
-    (editor/highlight/ranges-face [[0 5 {:bold true}] [2 8 {:fg :red}]] 3)   → {:fg :red, :bold true}"
+    (editor/highlight/ranges-face [[0 5 {:bold true}] [2 8 {:fg :red}]] 3)   ;=> {:fg :red, :bold true}"
   (fold ranges
     nil
     (fn (acc [lo hi f])
@@ -740,7 +740,7 @@ or HTML; `()` for empty `text`. `spans` must be ascending + non-overlapping (the
 The whole tile + overlay-merge is the native `%span-runs` (it runs per visible line every
 frame, including a region/isearch overlay during a drag-select), so this is a thin call.
 
-    (editor/highlight/fontify-runs \"ab cd\" 0 [[0 2 :keyword]] [])   → ([\"ab\" :keyword] [\" cd\" nil])"
+    (editor/highlight/fontify-runs \"ab cd\" 0 [[0 2 :keyword]] [])   ;=> ([\"ab\" :keyword] [\" cd\" nil])"
   (%span-runs text base spans ranges))
 
 (defn highlight-chunks (full:any base:any line:any overrides:seqable -> list)
@@ -751,7 +751,7 @@ Adjacent chars of equal face coalesce into one chunk; feed each to a `[:print st
 face]` op. A thin shell over `fontify-runs`: each `[pos face]` override is the
 one-char range `[pos (inc pos) face]`.
 
-    (editor/highlight/highlight-chunks \"(let x)\" 0 \"(let x)\" [])   → ([\"(\" nil] [\"let\" {:fg :blue, :bold true}] [\" x)\" nil])"
+    (editor/highlight/highlight-chunks \"(let x)\" 0 \"(let x)\" [])   ;=> ([\"(\" nil] [\"let\" {:fg :blue, :bold true}] [\" x)\" nil])"
   (fontify-runs line
     base
     (highlight-spans full)
@@ -832,9 +832,9 @@ False inside a string or a comment — `\";)\"` is text — and false at the end
 `full` is a string or the rope an editor holds (ADR-488); only the top-level form up to `pos`
 is read from a rope.
 
-    (editor/highlight/closer-redundant? \"(a)\" 2 \")\")   → true
-    (editor/highlight/closer-redundant? \"(a\" 2 \")\")    → false
-    (editor/highlight/closer-redundant? (text/from-string \"(a)\") 2 \")\")   → true"
+    (editor/highlight/closer-redundant? \"(a)\" 2 \")\")   ;=> true
+    (editor/highlight/closer-redundant? \"(a\" 2 \")\")    ;=> false
+    (editor/highlight/closer-redundant? (text/from-string \"(a)\") 2 \")\")   ;=> true"
   (and (< pos (text/length full))
     (= (text/slice full pos (inc pos)) c)
     ;; From the start of the top-level form `pos` is in, not from 0: there nothing is open and
@@ -857,7 +857,7 @@ one just left of it, else the one under it) has a match, `[p :unmatched]` when i
 has none, or nil when the cursor isn't next to a bracket. Brackets inside strings
 and comments are ignored.
 
-    (editor/highlight/bracket-match \"(a (b))\" 3)   → [3 5]"
+    (editor/highlight/bracket-match \"(a (b))\" 3)   ;=> [3 5]"
   (let (n (string/length full)
         bi (cond
              (and (> pos 0) (hl-bracket? (string/char-at full (dec pos)))) (dec pos)
@@ -889,8 +889,8 @@ that form. Sound, and the difference between O(enclosing form) and O(pos) — th
 interpreted, and at offset 600 of a 1.5 KB buffer the O(pos) version cost 1.4 ms, on every
 newline an auto-indenter handles.
 
-    (editor/highlight/enclosing-open \"(a (b c\" 6)   → 3
-    (editor/highlight/enclosing-open \"a b\" 1)       → -1"
+    (editor/highlight/enclosing-open \"(a (b c\" 6)   ;=> 3
+    (editor/highlight/enclosing-open \"a b\" 1)       ;=> -1"
   (hl-enc-scan full (safe-restart full pos) pos (string/length full) '()))
 
 ;; ---- enclosing call (for signature hints) -----------------------------------
@@ -937,7 +937,7 @@ the scan walks only the *current* defun, not every character above `pos`. This m
 eldoc O(enclosing-form) instead of O(pos) — instant versus a multi-second stall when the
 cursor sits deep in a large file.
 
-    (editor/highlight/enclosing-call \"(foo a b\" 8)   → [\"foo\" 1]"
+    (editor/highlight/enclosing-call \"(foo a b\" 8)   ;=> [\"foo\" 1]"
   (let (n (string/length full)
         op (enclosing-open full pos))
     (if (or (< op 0) (not (= (string/char-at full op) "(")))
@@ -969,8 +969,8 @@ an LSP source must agree on where the prefix starts, or a merge drops the source
 that disagree (a `'foo` prefix used to start at the quote for one and after it for
 another — and the buffer-word candidates silently vanished).
 
-    (editor/highlight/symbol-char? \"-\")   → true
-    (editor/highlight/symbol-char? \"(\")   → false"
+    (editor/highlight/symbol-char? \"-\")   ;=> true
+    (editor/highlight/symbol-char? \"(\")   ;=> false"
   (not (or (hl-delim? c) (= c "'") (= c "`") (= c "~") (= c "^") (= c "@") (= c "#"))))
 
 (defn- hl-sym-start (full:string i:int -> int)
@@ -984,7 +984,7 @@ another — and the buffer-word candidates silently vanished).
 `start` its offset, `prefix` its text — or `[pos \"\"]` when the cursor isn't on a
 symbol.
 
-    (editor/highlight/symbol-prefix-at \"(str/jo\" 7)   → [1 \"str/jo\"]"
+    (editor/highlight/symbol-prefix-at \"(str/jo\" 7)   ;=> [1 \"str/jo\"]"
   (let (s (hl-sym-start full pos)) [s (string/substring full s pos)]))
 
 (defn symbol-at (full:string pos:int -> (or nil (vector any)))
@@ -999,7 +999,7 @@ the token as well, which is what a reader hovering over `(ma|p f xs)` is pointin
 A cursor sitting immediately after a token counts as on it, the way Emacs's `symbol-at-point`
 does — `(map|` reads as `map`, since that is where point lands after typing one.
 
-    (editor/highlight/symbol-at \"(foo bar)\" 6)   → [5 \"bar\"]"
+    (editor/highlight/symbol-at \"(foo bar)\" 6)   ;=> [5 \"bar\"]"
   (let (start (hl-sym-start full pos)
         end (hl-atom-end full pos (string/length full))
         text (string/substring full start end))
@@ -1017,8 +1017,8 @@ does — `(map|` reads as `map`, since that is where point lands after typing on
   "The longest common string prefix shared by every string in `strs` (\"\" when
 `strs` is empty or shares nothing).
 
-    (editor/highlight/common-prefix [\"string/join\" \"string/jump\"])   → \"string/j\"
-    (editor/highlight/common-prefix [\"a\" \"b\"])                       → \"\""
+    (editor/highlight/common-prefix [\"string/join\" \"string/jump\"])   ;=> \"string/j\"
+    (editor/highlight/common-prefix [\"a\" \"b\"])                       ;=> \"\""
   (if (empty? strs)
     ""
     (fold (rest strs) (first strs) hl-cp2)))

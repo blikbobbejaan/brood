@@ -69,7 +69,7 @@ output — reaches its `update` exactly as it would locally. Without the pass-th
 those messages would strand in the session's mailbox (a selective receive never
 consumes them), leaving a served app deaf to everything but keys.
 
-    (editor/serve/remote-display client 80 24)   ;=> {:enter … :leave … :size … :draw … :poll …} shipping frames to `client`"
+    (editor/serve/remote-display client 80 24)   ;~> {:enter … :leave … :size … :draw … :poll …} shipping frames to `client`"
   (let (held (table/new))
     (merge
       {:enter (fn () (serve-busy-start held (fn (on) (serve-send-busy client on))))
@@ -267,7 +267,7 @@ closes) and end the manager — `mgr`, or the one registered under `serve-name`.
 Returns the number of sessions ended, nil when nothing was serving, `:no-reply` on a
 wedged manager. The counterpart of `serve`.
 
-    (editor/serve/serve-stop)   ;=> 2 (sessions ended), or nil when nothing was serving"
+    (editor/serve/serve-stop)   ;~> 2 (sessions ended), or nil when nothing was serving"
   (let (pid (or mgr (proc/whereis serve-name)))
     (if (nil? pid)
       nil
@@ -284,7 +284,7 @@ its pid (non-blocking) — a daemon's `main` typically calls `(serve …)` then 
 its own session. The program must already be a node (`node-start` / `nest run --name`).
 Opt-in: a runtime serves nothing unless it calls `serve`.
 
-    (editor/serve/serve (fn () {:n 0}) view update)   ;=> #<pid …> of the session manager, registered as :ui"
+    (editor/serve/serve (fn () {:n 0}) view update)   ;~> #<pid …> of the session manager, registered as :ui"
   (proc/register serve-name (spawn (serve-manager make-model view update))))
 
 ;; ---- client side (the thin frontend) -----------------------------------------
@@ -364,7 +364,7 @@ wrecking the screen; then enters raw mode, paints the frames the daemon pushes, 
 ships back every key until the app quits (`[:bye]`) or the link drops. The terminal is
 always restored on exit.
 
-    (editor/serve/attach \"editor\")   ;=> returns, terminal restored, once the app quits or the link drops"
+    (editor/serve/attach \"editor\")   ;~> returns, terminal restored, once the app quits or the link drops"
   (node/start (attach-gen-name) "127.0.0.1:0" (or cookie (node/cookie)))
   (let (peer (node/connect spec))
     ; raises a clean error on failure, terminal untouched
@@ -535,7 +535,7 @@ refused / wrong-cookie / bad-spec error surfaces without stranding a window; the
 is always torn down (`:leave`) on exit. `cookie` defaults to `(node/cookie)`; `opts` is
 the optional identity map (see `attach`).
 
-    (editor/serve/attach-display \"editor@host:4000\" (editor/ui/gui-display))   ;=> returns when the app quits or the link drops"
+    (editor/serve/attach-display \"editor@host:4000\" (editor/ui/gui-display))   ;~> returns when the app quits or the link drops"
   (node/start (attach-gen-name) "127.0.0.1:0" (or cookie (node/cookie)))
   (let (peer (node/connect spec))
     (node/monitor peer)
@@ -560,7 +560,7 @@ the one shared model — its own view of the collaborative doc. `opts` is the op
 map (see `attach`) — the host is a participant too. The display is always torn down (`:leave`)
 on exit.
 
-    (editor/serve/attach-display-local (editor/ui/gui-display) {:name \"host\"})   ;=> blocks until the window closes or the app quits"
+    (editor/serve/attach-display-local (editor/ui/gui-display) {:name \"host\"})   ;~> blocks until the window closes or the app quits"
   ((get display :enter))
   (try
     (let ([cols rows] ((get display :size))
@@ -689,7 +689,7 @@ ships keys and paints frames; whether the daemon is per-client or shared is tran
 All clients share ONE cursor this slice; see the module note for the per-participant-cursor
 deferral. Returns the manager pid.
 
-    (editor/serve/serve-shared {:text \"\"} view update)   ;=> #<pid …> of the manager, registered as :ui"
+    (editor/serve/serve-shared {:text \"\"} view update)   ;~> #<pid …> of the manager, registered as :ui"
   (let (hub (spawn (shared-hub () nil [80 24]))
         session (spawn (ui-run model view update (shared-display hub))))
     (proc/register serve-name (spawn (serve-shared-manager session hub)))))

@@ -15,11 +15,11 @@
   "Exact arbitrary-precision base-10 decimals — for money and anything else a float
 cannot hold exactly (`0.1 + 0.2` is `0.30000000000000004` in binary floating point).
 
-    (decimal/of \"1.50\")             → 1.50M
-    (decimal/of 3)                  → 3M
-    (decimal/->string (decimal/of \"1.50\"))   → \"1.50\"
-    (decimal/number-> 1/2)          → 0.5M
-    (decimal? (decimal/of \"1\"))     → true
+    (decimal/of \"1.50\")             ;=> 1.50M
+    (decimal/of 3)                  ;=> 3M
+    (decimal/->string (decimal/of \"1.50\"))   ;=> \"1.50\"
+    (decimal/number-> 1/2)          ;=> 0.5M
+    (decimal? (decimal/of \"1\"))     ;=> true
 
 The literal form is a trailing `M` — `1.50M` — so most code never calls `decimal/of` at
 all. `decimal/of` takes a string, an int, a bignum, or a float; `decimal/number->` takes a

@@ -33,7 +33,7 @@ The set the advisory type-checker walks for `(check)`; the sibling of
 KI-67 found four of (this was the fifth, and it hid inside a map literal until the checker
 learned to walk one).
 
-    (project-check/all-files \"/path/to/proj\")   ;=> (\"/path/to/proj/src/app.blsp\" … \"/path/to/proj/tests/app_test.blsp\" …)"
+    (project-check/all-files \"/path/to/proj\")   ;~> (\"/path/to/proj/src/app.blsp\" … \"/path/to/proj/tests/app_test.blsp\" …)"
   (append (project/source-files root) (project/test-files root)))
 
 ;; ── KI-17 reachability: each file's transitive require-closure ────────────────
@@ -56,7 +56,7 @@ learned to walk one).
 project's module index (a file is parsed only when its size or mtime moved); the graph
 `project-require-closures` closes.
 
-    (project-check/project-module-infos (project-check/all-files \"/path/to/proj\"))   ;=> {\"/path/to/proj/src/app.blsp\" {:module … :requires […]} …}"
+    (project-check/project-module-infos (project-check/all-files \"/path/to/proj\"))   ;~> {\"/path/to/proj/src/app.blsp\" {:module … :requires […]} …}"
   (module-index/infos-of *project-root* files))
 
 ;; The transitive set of module names reachable from `seeds` (a list/vector of module
@@ -81,7 +81,7 @@ project's module index (a file is parsed only when its size or mtime moved); the
 module included), built from the whole `files` universe — the KI-17 reachability set
 `check-file` and `nest run`'s pre-flight read.
 
-    (project-check/project-require-closures (project-check/all-files \"/path/to/proj\"))   ;=> {\"/path/to/proj/src/app.blsp\" […reachable module names…] …}"
+    (project-check/project-require-closures (project-check/all-files \"/path/to/proj\"))   ;~> {\"/path/to/proj/src/app.blsp\" […reachable module names…] …}"
   (let (infos (project-module-infos files)
         module->deps (fold infos
                        {}
@@ -669,7 +669,7 @@ against the fully-loaded state is also what a live image would see. Returns nil.
 (defn check-structured (&optional from)
   "Advisory type-check a project, returning a list of `{:file :line :col :message}` diagnostic maps (one per warning) instead of printing. Returns nil under `BROOD_NO_CHECK=1`. `from` is the directory to find the project from — it defaults to `(file/cwd)`, and naming one lets a caller check a project other than the ambient one. Errors if there is no project there. Backs the `nest mcp` `check` tool.
 
-    (project-check/check-structured \"/path/to/proj\")   ;=> ({:file \"/path/to/proj/src/app.blsp\" :line 12 :col 5 :message \"…\"} …)"
+    (project-check/check-structured \"/path/to/proj\")   ;~> ({:file \"/path/to/proj/src/app.blsp\" :line 12 :col 5 :message \"…\"} …)"
   ;; `from` exists because cwd was the ONLY way in, which made this function
   ;; untestable without process-global state: the case covering the `check` MCP tool
   ;; had to run wherever `cargo test` happened to be, so it type-checked the whole
@@ -828,7 +828,7 @@ them per open file, while every helper it needs is module-private — the altern
 `mcp` reaching for four `defn-` names, which is exactly the dead call site KI-67 found.
 Returns nil when there is nothing to report.
 
-    (project-check/file-shadow-warnings \"/path/to/proj/src/app.blsp\" \"/path/to/proj\")   ;=> nil, or the duplicate-def warnings naming that file's globals"
+    (project-check/file-shadow-warnings \"/path/to/proj/src/app.blsp\" \"/path/to/proj\")   ;~> nil, or the duplicate-def warnings naming that file's globals"
   (let (defined (project-file-def-names file)
         srcs (project/source-files root)
         extracts (project-gather-extracts srcs)
@@ -1008,7 +1008,7 @@ Returns nil when there is nothing to report.
   "The per-project cache directory (`$XDG_CACHE_HOME/brood/<project>` or `~/.cache/…`) the
 check-result cache and the `--failed`/`--stale` records live in; created on demand.
 
-    (project-check/project-cache-dir \"/path/to/proj\")   ;=> \"/home/me/.cache/brood/check/<sha256 of root>\" — nil with no cache dir"
+    (project-check/project-cache-dir \"/path/to/proj\")   ;~> \"/home/me/.cache/brood/check/<sha256 of root>\" — nil with no cache dir"
   (let (base (%cache-dir))
     (when base
       (let (checks (path/join base "check")
@@ -1189,7 +1189,7 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
 (defn check ()
   "Advisory type-check the whole project (every source + test file), printing GNU-style `FILE:LINE:COL:` warnings to stderr. Errors if not in a Brood project. Backs `nest check`.
 
-    (project-check/check)   ;=> 0 — the gating warning count, warnings printed to stderr"
+    (project-check/check)   ;~> 0 — the gating warning count, warnings printed to stderr"
   (project-check-or-replay (project/require-root "check") nil))
 
 ;; ── whole-project verdict replay (ADR-382) ───────────────────────────────────
@@ -1289,7 +1289,7 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
 (defn check-files (paths)
   "Advisory type-check the listed files with the project image loaded first (so cross-module/namespace imports resolve), printing GNU `FILE:LINE:COL:` warnings to stderr and returning the total count. The entry behind `nest check FILE…`; shares its loader and per-file walk with `check`. Outside a project, checks against the prelude alone.
 
-    (project-check/check-files [\"src/app.blsp\" \"src/app/util.blsp\"])   ;=> 2 — the warning count, warnings printed to stderr"
+    (project-check/check-files [\"src/app.blsp\" \"src/app/util.blsp\"])   ;~> 2 — the warning count, warnings printed to stderr"
   (let (root (project/find-root (file/cwd)))
     (if (nil? root)
       (first (first (project-check-files paths nil)))
@@ -1303,7 +1303,7 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
 (defn check-sources ()
   "Like `check`, but checks only the project's source paths (skips `tests/`, whose files reference test-framework macros). Used by `nest run`'s pre-flight.
 
-    (project-check/check-sources)   ;=> 0 — the warning count over the source paths alone"
+    (project-check/check-sources)   ;~> 0 — the warning count over the source paths alone"
   (let (root (project/require-root "check-sources"))
     (project-ensure-loaded root)
     (let (srcs (project/source-files root)
@@ -1383,7 +1383,7 @@ Returns `[gating unbound]` — the gating warning count and, of those, how many 
 symbols (the count `run`'s launch gate refuses over, ADR-304). A module the program never
 reaches is `nest check`/`nest test`'s business.
 
-    (project-check/check-run-closure 'myapp)   ;=> [3 1] — 3 gating warnings, 1 of them an unbound symbol"
+    (project-check/check-run-closure 'myapp)   ;~> [3 1] — 3 gating warnings, 1 of them an unbound symbol"
   (let (root (project/require-root "check-run-closure"))
     (if (= (os/env "BROOD_NO_CHECK") "1")
       *project-tally-zero*
@@ -1510,7 +1510,7 @@ print the plan and change nothing. Returns the count of names left for a human.
 Declines — with the reason printed — a name this project itself defines, a name defined in
 more than one namespace, and a name that moved behind `%`. Backs `nest check --fix-renames`.
 
-    (project-check/fix-renames false)   ;=> 2 — names left for a human; the plan printed, nothing rewritten"
+    (project-check/fix-renames false)   ;~> 2 — names left for a human; the plan printed, nothing rewritten"
   (project/require-root "fix-renames")
   (let (diags (check-structured)
         ledger (renames/ledger)
@@ -1722,7 +1722,7 @@ file before writing it, so a file is either correct or untouched.
 
 `nest check --suggest-sigs` prints the same set and changes nothing.
 
-    (project-check/fix-sigs [] true)   ;=> 0 — sigs written across the project, a summary printed"
+    (project-check/fix-sigs [] true)   ;~> 0 — sigs written across the project, a summary printed"
   (let (targets (if (empty? files)
                   (project/source-files (project/require-root "fix-sigs"))
                   files)
@@ -1751,7 +1751,7 @@ file before writing it, so a file is either correct or untouched.
 lacks one, grouped by file. With `files` empty, the whole project. Writes nothing.
 Backs `nest check --suggest-sigs`.
 
-    (project-check/suggest-sigs [\"src/app.blsp\"])   ;=> the undeclared (sig …) lines printed, grouped by file; nothing written"
+    (project-check/suggest-sigs [\"src/app.blsp\"])   ;~> the undeclared (sig …) lines printed, grouped by file; nothing written"
   (let (targets (if (empty? files)
                   (project/source-files (project/require-root "suggest-sigs"))
                   files)

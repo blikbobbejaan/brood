@@ -228,7 +228,7 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
 (defn subcommands ()
   "The subcommands this module implements, sorted — hidden ones (`complete`) excluded.
 
-    (nest/subcommands)   ;=> (\"add\" \"check\" \"doc\" … \"ws\")"
+    (nest/subcommands)   ;~> (\"add\" \"check\" \"doc\" … \"ws\")"
   (sort (seq/filter (keys *commands*) (fn (cmd) (not (get (get *commands* cmd) :hidden))))))
 
 (defn- command-spec (cmd)
@@ -238,8 +238,8 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
 (defn flags-of (cmd)
   "The flag spellings of `cmd` — Brood-side or Rust-side — sorted; `()` for an unknown one.
 
-    (includes? (nest/flags-of \"format\") \"--check\")  → true
-    (nest/flags-of \"no-such-command\")              → nil"
+    (includes? (nest/flags-of \"format\") \"--check\")  ;=> true
+    (nest/flags-of \"no-such-command\")              ;=> nil"
   (let (spec (command-spec cmd))
     (if spec (sort (keys (get spec :flags))) (list))))
 
@@ -256,7 +256,7 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
 (defn positional-values (cmd)
   "The allowed values of `cmd`'s positional, or `()` when it is free text or absent.
 
-    (nest/positional-values \"grammar\")  → [\"tmlanguage\" \"emacs\" \"tree-sitter\"]"
+    (nest/positional-values \"grammar\")  ;=> [\"tmlanguage\" \"emacs\" \"tree-sitter\"]"
   (positional-values-of (get *commands* cmd)))
 
 (defn- positional-names (spec)
@@ -449,8 +449,8 @@ clap's words."
 `{:flags {\"--all\" true …} :positionals (…) :error nil-or-message}`. An `:int` flag's value
 arrives as an int; a `:repeat` flag's as a list.
 
-    (nest/parse \"format\" [\"--check\"])  → {:positionals nil, :flags {\"--check\" true}, :error nil}
-    (get (nest/parse \"format\" [\"--bogus\"]) :error)  → \"unexpected argument '--bogus'\""
+    (nest/parse \"format\" [\"--check\"])  ;=> {:positionals nil, :flags {\"--check\" true}, :error nil}
+    (get (nest/parse \"format\" [\"--bogus\"]) :error)  ;=> \"unexpected argument '--bogus'\""
   (let (spec (get *commands* cmd))
     (check-int-flags spec
       (check-constraints spec
@@ -741,9 +741,9 @@ outside one, nil."
   "`--for`'s DURATION as milliseconds: `2s`, `500ms`, `1.5s`, or a bare count of
 milliseconds; nil for anything else (garbage, a negative).
 
-    (nest/duration-ms \"1.5s\")   → 1500
-    (nest/duration-ms \"500ms\")  → 500
-    (nest/duration-ms \"soon\")   → nil"
+    (nest/duration-ms \"1.5s\")   ;=> 1500
+    (nest/duration-ms \"500ms\")  ;=> 500
+    (nest/duration-ms \"soon\")   ;=> nil"
   (let (text (string/trim s)
         [digits scale] (cond
                          (string/ends-with? text "ms")
@@ -1112,7 +1112,7 @@ with `blsp_string_list`) — and return the exit code. `--help`/`-h` where nest 
 flags prints the command's usage; after `--`, or among a `:trailing` command's program
 words, it is the program's.
 
-    (nest/main [\"check\" \"src/app.blsp\"])   ;=> 0 — the exit code"
+    (nest/main [\"check\" \"src/app.blsp\"])   ;~> 0 — the exit code"
     (let (cmd (first argv) spec (get *commands* cmd))
       (if (nil? spec)
         (do (eputs "nest: '" cmd "' is not implemented in std/tool/nest.blsp") 2)
@@ -1147,7 +1147,7 @@ list), flags when `current` starts with `-` (the command's own plus the global
 kind (`doc`'s module names, `check`'s `.blsp` files, `test`'s test files). Never raises;
 prints nothing when it cannot tell.
 
-    (nest/complete \"test\" [\"--only\"] \"sl\")   ;=> nil — prints \"slow\", the matching selector"
+    (nest/complete \"test\" [\"--only\"] \"sl\")   ;~> nil — prints \"slow\", the matching selector"
   (try
     (let (spec (command-spec cmd)
           previous (last prior)
@@ -1192,7 +1192,7 @@ prints nothing when it cannot tell.
   "Every subcommand `nest` accepts, hidden ones excluded, sorted: this module's plus the
 ones still implemented in Rust.
 
-    (nest/all-subcommands)   ;=> (\"add\" \"attach\" \"check\" … \"ws\")"
+    (nest/all-subcommands)   ;~> (\"add\" \"attach\" \"check\" … \"ws\")"
   (sort (append (subcommands) (keys *rust-commands*))))
 
 (defn complete-words (words)
@@ -1201,7 +1201,7 @@ partial word last, one candidate per line. With no settled subcommand yet, the s
 names; a settled one completes through [[complete]] — from `*commands*`, or a Rust-side
 one from its mirror in `*rust-commands*`. Never raises.
 
-    (nest/complete-words [\"te\"])   ;=> nil — prints \"test\", the matching subcommand"
+    (nest/complete-words [\"te\"])   ;~> nil — prints \"test\", the matching subcommand"
   (try
     (let (current (or (last words) "")
           prior (if (empty? words) (list) (seq/drop-last words 1))

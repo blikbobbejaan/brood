@@ -59,14 +59,14 @@ the keybindings."
   "A lone pane layout: one selected leaf showing `payload`. The starting tree
 (and what `pane-delete-others` collapses back to).
 
-    (editor/pane/pane-selected-payload (editor/pane/pane-single :a))   → :a"
+    (editor/pane/pane-selected-payload (editor/pane/pane-single :a))   ;=> :a"
   {:pane true :payload payload :selected true})
 
 (defn pane-leaf? (node)
   "True if `node` is a pane (a leaf), false if it's a split.
 
-    (editor/pane/pane-leaf? (editor/pane/pane-single :a))   → true
-    (editor/pane/pane-leaf? (editor/pane/pane-split (editor/pane/pane-single :a) :col :b))   → false"
+    (editor/pane/pane-leaf? (editor/pane/pane-single :a))   ;=> true
+    (editor/pane/pane-leaf? (editor/pane/pane-split (editor/pane/pane-single :a) :col :b))   ;=> false"
   (= true (get node :pane)))
 
 ;; ---- paths (a list of :a/:b from the root to a node) ------------------------
@@ -104,13 +104,13 @@ the keybindings."
 (defn pane-leaf-paths (tree)
   "Every leaf's path, in left-to-right / top-to-bottom traversal order.
 
-    (editor/pane/pane-leaf-paths (editor/pane/pane-split (editor/pane/pane-single :a) :col :b))   → ((:a) (:b))"
+    (editor/pane/pane-leaf-paths (editor/pane/pane-split (editor/pane/pane-single :a) :col :b))   ;=> ((:a) (:b))"
   (pane-paths tree ()))
 
 (defn pane-count (tree)
   "How many panes (leaves) the layout holds.
 
-    (editor/pane/pane-count (editor/pane/pane-split (editor/pane/pane-single :a) :col :b))   → 2"
+    (editor/pane/pane-count (editor/pane/pane-split (editor/pane/pane-single :a) :col :b))   ;=> 2"
   (count (pane-leaf-paths tree)))
 
 ;; ---- selection --------------------------------------------------------------
@@ -118,7 +118,7 @@ the keybindings."
 (defn pane-selected-path (tree)
   "The path of the selected leaf (`()` for a lone pane).
 
-    (editor/pane/pane-selected-path (editor/pane/pane-split (editor/pane/pane-single :a) :col :b))   → (:a)"
+    (editor/pane/pane-selected-path (editor/pane/pane-split (editor/pane/pane-single :a) :col :b))   ;=> (:a)"
   (seq/find (pane-leaf-paths tree) (fn (p) (get (pane-get tree p) :selected))))
 
 ;; check-allow: deliberately non-tail — depth = the pane tree's split nesting — single digits on any screen.
@@ -132,20 +132,20 @@ the keybindings."
 (defn pane-select-path (tree path)
   "The tree with the leaf at `path` made the sole selected pane.
 
-    (editor/pane/pane-selected-payload (editor/pane/pane-select-path (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) '(:b)))   → :b"
+    (editor/pane/pane-selected-payload (editor/pane/pane-select-path (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) '(:b)))   ;=> :b"
   (pane-update (pane-clear tree) path (fn (leaf) (assoc leaf :selected true))))
 
 (defn pane-selected-payload (tree)
   "The payload of the selected pane.
 
-    (editor/pane/pane-selected-payload (editor/pane/pane-other (editor/pane/pane-split (editor/pane/pane-single :a) :col :b)))   → :b"
+    (editor/pane/pane-selected-payload (editor/pane/pane-other (editor/pane/pane-split (editor/pane/pane-single :a) :col :b)))   ;=> :b"
   (get (pane-get tree (pane-selected-path tree)) :payload))
 
 (defn pane-update-selected (tree f)
   "The tree with the selected pane's payload replaced by `(f payload)` — how an
 editor applies an edit to whatever the active pane shows.
 
-    (editor/pane/pane-selected-payload (editor/pane/pane-update-selected (editor/pane/pane-single 1) inc))   → 2"
+    (editor/pane/pane-selected-payload (editor/pane/pane-update-selected (editor/pane/pane-single 1) inc))   ;=> 2"
   (pane-update tree
     (pane-selected-path tree)
     (fn (leaf) (assoc leaf :payload (f (get leaf :payload))))))
@@ -156,7 +156,7 @@ position-targeted sibling of `pane-update-selected`. Lets an editor act on the p
 *under the pointer* (via `pane-at`'s `:path`) — e.g. wheel zoom / scroll — without
 disturbing which pane is selected.
 
-    (editor/pane/pane-payload-at (editor/pane/pane-update-path (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) '(:b) str) '(:b))   → \":b\""
+    (editor/pane/pane-payload-at (editor/pane/pane-update-path (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) '(:b) str) '(:b))   ;=> \":b\""
   (pane-update tree path (fn (leaf) (assoc leaf :payload (f (get leaf :payload))))))
 
 (defn pane-payload-at (tree path)
@@ -165,7 +165,7 @@ position-targeted sibling of `pane-selected-payload`. Combined with `pane-leaf-p
 it lets an editor answer 'which pane, if any, already shows buffer N?' (the reuse rule
 behind an Emacs-style `display-buffer`).
 
-    (editor/pane/pane-payload-at (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) '(:b))   → :b"
+    (editor/pane/pane-payload-at (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) '(:b))   ;=> :b"
   (get (pane-get tree path) :payload))
 
 ;; check-allow: deliberately non-tail — depth = the pane tree's split nesting — single digits on any screen.
@@ -181,7 +181,7 @@ behind an Emacs-style `display-buffer`).
 (defn pane-other (tree)
   "Move selection to the next pane in traversal order, wrapping (Emacs `C-x o`).
 
-    (editor/pane/pane-selected-payload (editor/pane/pane-other (editor/pane/pane-other (editor/pane/pane-split (editor/pane/pane-single :a) :col :b))))   → :a"
+    (editor/pane/pane-selected-payload (editor/pane/pane-other (editor/pane/pane-other (editor/pane/pane-split (editor/pane/pane-single :a) :col :b))))   ;=> :a"
   (let (paths (pane-leaf-paths tree)
         i (index-of paths (pane-selected-path tree)))
     (pane-select-path tree (nth paths (math/mod (inc i) (count paths))))))
@@ -193,7 +193,7 @@ behind an Emacs-style `display-buffer`).
 even panes: the original (still selected) becomes child `a`, a new pane showing
 `new-payload` becomes child `b` (Emacs `C-x 2` / `C-x 3` — point stays put).
 
-    (editor/pane/pane-count (editor/pane/pane-split (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) :row :c))   → 3"
+    (editor/pane/pane-count (editor/pane/pane-split (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) :row :c))   ;=> 3"
   (pane-update tree
     (pane-selected-path tree)
     (fn (leaf)
@@ -208,7 +208,7 @@ even panes: the original (still selected) becomes child `a`, a new pane showing
 selection moves to that subtree's first pane (Emacs `C-x 0`). A lone pane is
 returned unchanged — you can't delete the only one.
 
-    (editor/pane/pane-selected-payload (editor/pane/pane-delete (editor/pane/pane-split (editor/pane/pane-single :a) :col :b)))   → :b"
+    (editor/pane/pane-selected-payload (editor/pane/pane-delete (editor/pane/pane-split (editor/pane/pane-single :a) :col :b)))   ;=> :b"
   (let (p (pane-selected-path tree))
     (if (empty? p)
       tree
@@ -221,7 +221,7 @@ returned unchanged — you can't delete the only one.
   "Collapse the layout to just the selected pane, filling the whole frame (Emacs
 `C-x 1`).
 
-    (editor/pane/pane-count (editor/pane/pane-delete-others (editor/pane/pane-split (editor/pane/pane-single :a) :col :b)))   → 1"
+    (editor/pane/pane-count (editor/pane/pane-delete-others (editor/pane/pane-split (editor/pane/pane-single :a) :col :b)))   ;=> 1"
   (pane-single (pane-selected-payload tree)))
 
 ;; ---- moving panes around (swap / rotate / transpose) ------------------------
@@ -236,7 +236,7 @@ returned unchanged — you can't delete the only one.
   "The tree with the payloads of the panes at `path-a` and `path-b` exchanged; the same
 tree when the two paths are equal. Selection stays where it was.
 
-    (editor/pane/pane-payload-at (editor/pane/pane-swap (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) '(:a) '(:b)) '(:a))   → :b"
+    (editor/pane/pane-payload-at (editor/pane/pane-swap (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) '(:a) '(:b)) '(:a))   ;=> :b"
   (if (= path-a path-b)
     tree
     (let (pa (pane-payload-at tree path-a)
@@ -249,7 +249,7 @@ the payload of the pane `n` before it; the first takes the last's) — a negativ
 the other way. Selection stays put, so the reader ends up looking at a different buffer
 in the same place (Emacs `rotate-frame`'s buffer half).
 
-    (editor/pane/pane-payload-at (editor/pane/pane-rotate (editor/pane/pane-split (editor/pane/pane-single :a) :col :b)) '(:a))   → :b"
+    (editor/pane/pane-payload-at (editor/pane/pane-rotate (editor/pane/pane-split (editor/pane/pane-single :a) :col :b)) '(:a))   ;=> :b"
   (let (paths (pane-leaf-paths tree)
         k (count paths)
         payloads (map paths (fn (p) (pane-payload-at tree p))))
@@ -267,7 +267,7 @@ in the same place (Emacs `rotate-frame`'s buffer half).
   stacked panes becomes side-by-side ones and vice versa, ratios and order kept
   (`transpose-frame`).
 
-    (get (editor/pane/pane-transpose (editor/pane/pane-split (editor/pane/pane-single :a) :col :b)) :dir)   → :row"
+    (get (editor/pane/pane-transpose (editor/pane/pane-split (editor/pane/pane-single :a) :col :b)) :dir)   ;=> :row"
     (if (pane-leaf? tree)
       tree
       (assoc tree
@@ -283,8 +283,8 @@ in the same place (Emacs `rotate-frame`'s buffer half).
   each pane keeps its size. `dir` restricts it to splits of that direction: `:col` mirrors
   left-right (`flop-frame`), `:row` top-bottom (`flip-frame`), nil both.
 
-    (editor/pane/pane-payload-at (editor/pane/pane-flip (editor/pane/pane-split (editor/pane/pane-single :a) :col :b)) '(:a))        → :b
-    (editor/pane/pane-payload-at (editor/pane/pane-flip (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) :row) '(:a))   → :a"
+    (editor/pane/pane-payload-at (editor/pane/pane-flip (editor/pane/pane-split (editor/pane/pane-single :a) :col :b)) '(:a))        ;=> :b
+    (editor/pane/pane-payload-at (editor/pane/pane-flip (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) :row) '(:a))   ;=> :a"
     (if (pane-leaf? tree)
       tree
       (let (a (pane-flip (get tree :a) dir)
@@ -347,7 +347,7 @@ several panes stacked along the edge — go to the one whose centre is most in l
 the source's, first in traversal order on an exact tie. `windmove`'s question, answered
 from the geometry `pane-layout` already computed.
 
-    (get (editor/pane/pane-neighbor (editor/pane/pane-layout (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) [0 0 20 10]) '(:a) :right) :payload)   → :b"
+    (get (editor/pane/pane-neighbor (editor/pane/pane-layout (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) [0 0 20 10]) '(:a) :right) :payload)   ;=> :b"
   (let (me (seq/find (get layout :panes) (fn (p) (= (get p :path) path))))
     (if (nil? me)
       nil
@@ -406,7 +406,7 @@ each pane is `{:path :payload :selected :rect}` and each divider is `{:path :dir
 that split feeds `pane-ratio-for`). Pure — the frontend paints each pane's payload
 into its rect and the dividers between them.
 
-    (map (get (editor/pane/pane-layout (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) [0 0 20 10]) :panes) (fn (p) (get p :rect)))   → ([0 0 10 10] [11 0 9 10])"
+    (map (get (editor/pane/pane-layout (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) [0 0 20 10]) :panes) (fn (p) (get p :rect)))   ;=> ([0 0 10 10] [11 0 9 10])"
   (pane-layout-go tree () rect))
 
 ;; ---- hit-testing + resize (drag-to-resize over :drag mouse events) ----------
@@ -423,21 +423,21 @@ into its rect and the dividers between them.
 (defn pane-at (layout:layout point: (tuple int int) -> (or nil pane))
   "The pane (`{:path :payload :selected :rect}`) under `point`, or nil.
 
-    (get (editor/pane/pane-at (editor/pane/pane-layout (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) [0 0 20 10]) [3 15]) :payload)   → :b"
+    (get (editor/pane/pane-at (editor/pane/pane-layout (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) [0 0 20 10]) [3 15]) :payload)   ;=> :b"
   (pane-find (get layout :panes) point))
 
 (defn divider-at (layout:layout point: (tuple int int) -> (or nil divider))
   "The divider (`{:path :dir :rect :split-rect}`) under `point`, or nil — what a
 frontend stashes on a left-press to begin a drag-resize.
 
-    (get (editor/pane/divider-at (editor/pane/pane-layout (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) [0 0 20 10]) [3 10]) :dir)   → :col"
+    (get (editor/pane/divider-at (editor/pane/pane-layout (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) [0 0 20 10]) [3 10]) :dir)   ;=> :col"
   (pane-find (get layout :dividers) point))
 
 (defn pane-select-at (tree layout point)
   "Move selection to the pane under `point` (a click selects it); unchanged if the
 point is off every pane.
 
-    (editor/pane/pane-selected-payload (editor/pane/pane-select-at (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) (editor/pane/pane-layout (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) [0 0 20 10]) [3 15]))   → :b"
+    (editor/pane/pane-selected-payload (editor/pane/pane-select-at (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) (editor/pane/pane-layout (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) [0 0 20 10]) [3 15]))   ;=> :b"
   (let (pane (pane-at layout point))
     (if (nil? pane) tree (pane-select-path tree (get pane :path)))))
 
@@ -445,7 +445,7 @@ point is off every pane.
   "The ratio that places `divider` at `point`, within the divider's `:split-rect` —
 i.e. dragging the divider to the pointer. Feed the result to `pane-set-ratio`.
 
-    (editor/pane/pane-ratio-for (editor/pane/divider-at (editor/pane/pane-layout (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) [0 0 20 10]) [3 10]) [3 5])   → 5/19"
+    (editor/pane/pane-ratio-for (editor/pane/divider-at (editor/pane/pane-layout (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) [0 0 20 10]) [3 10]) [3 5])   ;=> 5/19"
   (let ([x y w h] (get divider :split-rect) [row col] point)
     (if (= (get divider :dir) :col)
       (/ (- col x) (math/max 1 (- w 1)))
@@ -455,7 +455,7 @@ i.e. dragging the divider to the pointer. Feed the result to `pane-set-ratio`.
   "Set the `:ratio` of the split at `path` (clamped to `[0.1 0.9]` so neither pane
 vanishes), returning the re-proportioned tree — one step of a divider drag.
 
-    (get (editor/pane/pane-set-ratio (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) () 0.95) :ratio)   → 0.9"
+    (get (editor/pane/pane-set-ratio (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) () 0.95) :ratio)   ;=> 0.9"
   (pane-update tree
     path
     (fn (split) (assoc split :ratio (math/max 0.1 (math/min 0.9 ratio))))))

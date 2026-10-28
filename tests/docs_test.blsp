@@ -133,18 +133,6 @@
     (let (model (docs/docs-module-model "docs-test" nil '() "docs-test"))
       (assert= (get model :types) [{:name "doc-cell" :type "(tuple int int)"}]))))
 
-(describe "docs: doctests (nest doctest)"
-  (test "a `expr ;=> expected` line parses into [expr expected]"
-    (assert= (docs/doctest-of-line "(+ 1 2) ;=> 3") ["(+ 1 2)" "3"])
-    (assert= (docs/doctest-of-line "just prose") nil)
-    (assert= (docs/doctest-of-line "  (f x) ;=> :ok  ") ["(f x)" ":ok"]))
-  (test "multiple examples are extracted in order"
-    (assert= (docs/doctests-in "Doc.\n(a) ;=> 1\n(b) ;=> 2") (list ["(a)" "1"] ["(b)" "2"])))
-  (test "run-one-doctest evaluates and compares"
-    (assert= (docs/run-one-doctest "(+ 2 2)" "4") [:ok])
-    (assert= (first (docs/run-one-doctest "(+ 2 2)" "5")) :fail)
-    (assert= (first (docs/run-one-doctest "(this-is-unbound)" "5")) :error)))
-
 (describe "docs: guides (Markdown → HTML)"
   (test "headings, inline code, links, lists, and fenced code render"
     (assert= (markdown/->html "# Hi") "<h1>Hi</h1>")

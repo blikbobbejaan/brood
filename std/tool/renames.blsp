@@ -18,11 +18,11 @@
 (defn ledger (-> (map string map))
   "The whole ledger: a map of old public name (string) to `{:to new-name :adr adr}`.
 
-    (renames/ledger)   ;=> {\"gui/bg!\" {:to \"gui/bg\" :adr \"ADR-302\"} …}"
+    (renames/ledger)   ;~> {\"gui/bg!\" {:to \"gui/bg\" :adr \"ADR-302\"} …}"
   (%renames))
 
 (defn renamed-to (name: (or string symbol) -> (or map nil))
   "The ledger entry `{:to new-name :adr adr}` for the old name `name` (a string or symbol), or nil when the name was never ledgered.
 
-    (renames/renamed-to \"no-such-name-ever\")  → nil"
+    (renames/renamed-to \"no-such-name-ever\")  ;=> nil"
   (get (%renames) (->string name)))

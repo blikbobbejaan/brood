@@ -64,7 +64,7 @@ and the constants `pi`/`e`. `(:use math)` for bare access, or call qualified.")
 ;; docs/compute-frontier.md §2b.
 (defn max "The largest of the arguments.
 
-    (math/max 1 2)   → 2"
+    (math/max 1 2)   ;=> 2"
   ((a b) (%max a b))
   ((& xs) (apply %max xs)))
 ;; The result IS one of the arguments, so its type is theirs — `(math/max 2 3)` is `2 | 3`,
@@ -75,7 +75,7 @@ and the constants `pi`/`e`. `(:use math)` for bare access, or call qualified.")
 (sig max (& ?A -> ?A))
 (defn min "The smallest of the arguments.
 
-    (math/min 1 2)   → 1"
+    (math/min 1 2)   ;=> 1"
   ((a b) (%min a b))
   ((& xs) (apply %min xs)))
 (sig min (& ?A -> ?A))
@@ -83,31 +83,31 @@ and the constants `pi`/`e`. `(:use math)` for bare access, or call qualified.")
   "The remainder of `a / b`, taking the sign of the DIVIDEND (truncated division), the
 partner of `quot`. `mod` is the one whose sign follows the divisor.
 
-    (math/rem 7 2)    → 1
-    (math/rem -7 2)   → -1"
+    (math/rem 7 2)    ;=> 1
+    (math/rem -7 2)   ;=> -1"
   (%rem a b))
 (defn ->fixed (x:number n:int -> string)
   "Render number `x` as a string with exactly `n` digits after the decimal point (rounded).
 
-    (math/->fixed 1.5 2)   → \"1.50\""
+    (math/->fixed 1.5 2)   ;=> \"1.50\""
   (%->fixed x n))
 
 (defn rational (n d)
   "The exact rational `n`/`d` — reduced, with a positive denominator (a denominator
 of 1 gives an integer). Same as `(/ n d)` for integers; errors when `d` is 0.
 
-    (math/rational 1 2)   → 1/2"
+    (math/rational 1 2)   ;=> 1/2"
   (/ n d))
 (defn quot (a:int b:int -> int)
   "Truncated integer division of `a` by `b` (toward zero); the quotient partner to `rem`.
 
-    (math/quot 7 2)    → 3"
+    (math/quot 7 2)    ;=> 3"
   (%quot a b))
 (defn mod (a:int b:int -> int)
   "Euclidean modulo: the result is always non-negative and lies in [0, |b|).
 
-    (math/mod 7 2)     → 1
-    (math/mod -1 3)    → 2   ; sign follows the DIVISOR"
+    (math/mod 7 2)     ;=> 1
+    (math/mod -1 3)    ;=> 2   ; sign follows the DIVISOR"
   ;; `(abs b)` inlined so bare `mod` stays self-sufficient — `abs` now lives in the
   ;; `math` module (ADR-227) and the boot-time prelude cannot require a module.
   ;; Checked here, not left to `%rem`: its message would name `rem`, a function the
@@ -119,10 +119,10 @@ of 1 gives an integer). Same as `(/ n d)` for integers; errors when `d` is 0.
 (defability Numeric
   "Float-domain questions every numeric type can answer.
 
-    (math/nan? nan)        → true
-    (math/nan? 1)          → false   ; an int is a number, and is not NaN
-    (math/infinite? inf)   → true
-    (math/infinite? 1.0)   → false"
+    (math/nan? nan)        ;=> true
+    (math/nan? 1)          ;=> false   ; an int is a number, and is not NaN
+    (math/infinite? inf)   ;=> true
+    (math/infinite? 1.0)   ;=> false"
   (nan? [self] :-> bool)
   (infinite? [self] :-> bool))
 (impl Numeric
@@ -136,10 +136,10 @@ of 1 gives an integer). Same as `(/ n d)` for integers; errors when `d` is 0.
   "True when `self` is the additive identity of its own type — across the whole numeric
 tower, not just the int `0`. A type with no impl RAISES rather than answering.
 
-    (math/zero? 0)      → true
-    (math/zero? 0.0)    → true
-    (math/zero? 0M)     → true
-    (math/zero? 1/2)    → false"
+    (math/zero? 0)      ;=> true
+    (math/zero? 0.0)    ;=> true
+    (math/zero? 0M)     ;=> true
+    (math/zero? 1/2)    ;=> false"
   (zero? [self] :-> bool))
 (impl Zero :int (zero? [n] (%eq n 0)))
 (impl Zero :float (zero? [n] (%eq n 0.0)))
@@ -149,53 +149,53 @@ tower, not just the int `0`. A type with no impl RAISES rather than answering.
 (defn positive? (n:number -> bool)
   "True if `n` is greater than zero.
 
-    (math/positive? 1)    → true"
+    (math/positive? 1)    ;=> true"
   (> n 0))
 
 (defn negative? (n:number -> bool)
   "True if `n` is less than zero.
 
-    (math/negative? -1)   → true"
+    (math/negative? -1)   ;=> true"
   (< n 0))
 
 (defn abs (n:number -> number)
   "The absolute value of `n`.
 
-    (math/abs -3)    → 3
-    (math/abs 3)     → 3
-    (math/abs -2.5)  → 2.5
+    (math/abs -3)    ;=> 3
+    (math/abs 3)     ;=> 3
+    (math/abs -2.5)  ;=> 2.5
 
-    (math/abs -3)          → 3"
+    (math/abs -3)          ;=> 3"
   (if (< n 0) (- n) n))
 
 (defn even? (n:int -> bool)
   "True if integer `n` is even.
 
-    (math/even? 4)   → true
-    (math/even? 3)   → false
-    (math/even? 0)   → true
+    (math/even? 4)   ;=> true
+    (math/even? 3)   ;=> false
+    (math/even? 0)   ;=> true
 
-    (math/even? 4)         → true"
+    (math/even? 4)         ;=> true"
   (= (math/rem n 2) 0))
 (defn odd? (n:int -> bool)
   "True if integer `n` is odd.
 
-    (math/odd? 3)         → true"
+    (math/odd? 3)         ;=> true"
   (not (even? n)))
 
 ;; ---- aggregation ------------------------------------------------------------
 (defn sum (xs:seqable -> number)
   "The sum of the numbers in `xs`.
 
-    (math/sum [1 2 3])  → 6
-    (math/sum [])       → 0
+    (math/sum [1 2 3])  ;=> 6
+    (math/sum [])       ;=> 0
 
-    (math/sum [1 2 3])     → 6"
+    (math/sum [1 2 3])     ;=> 6"
   (fold xs 0 %add))
 (defn product (xs:seqable -> number)
   "The product of the numbers in `xs`.
 
-    (math/product [2 3 4])   → 24"
+    (math/product [2 3 4])   ;=> 24"
   (fold xs 1 %mul))
 
 ;; Rounding & roots, all Brood over the one Float->Int primitive `floor` (toward
@@ -216,8 +216,8 @@ tower, not just the int `0`. A type with no impl RAISES rather than answering.
   "Round `x` toward positive infinity to an integer. A float with no integer value (an
 infinity or NaN) is an error naming `math/ceil`; a magnitude past 2^63 promotes to a bignum.
 
-    (math/ceil 1.2)       → 2
-    (math/ceil -1.2)      → -1"
+    (math/ceil 1.2)       ;=> 2
+    (math/ceil -1.2)      ;=> -1"
   (let (x (%rounding-arg "math/ceil" x) f (math/floor x)) (if (< f x) (+ f 1) f)))
 
 ;; round half away from zero: floor(x+0.5) for x>=0, ceil(x-0.5) for x<0.
@@ -225,8 +225,8 @@ infinity or NaN) is an error naming `math/ceil`; a magnitude past 2^63 promotes 
   "Round `x` to the nearest integer (halves away from zero). A float with no integer
 value (an infinity or NaN) is an error naming `math/round`; a magnitude past 2^63 promotes.
 
-    (math/round 2.5)       → 3
-    (math/round -2.5)      → -3"
+    (math/round 2.5)       ;=> 3
+    (math/round -2.5)      ;=> -3"
   (let (x (%rounding-arg "math/round" x))
     (if (< x 0) (ceil (- x 0.5)) (math/floor (+ x 0.5)))))
 
@@ -247,8 +247,8 @@ value (an infinity or NaN) is an error naming `math/round`; a magnitude past 2^6
 (a ratio) for an exact `base`, a float for a float `base` — every exponent included:
 `(math/pow 2.0 0)` is `1.0`.
 
-    (math/pow 2 10)        → 1024
-    (math/pow 2.0 0)       → 1.0"
+    (math/pow 2 10)        ;=> 1024
+    (math/pow 2.0 0)       ;=> 1.0"
   (cond
     (not (int? exp)) (error "pow: exponent must be an integer (use sqrt for roots), got " exp)
     (< exp 0) (pow-reciprocal base exp)
@@ -318,7 +318,7 @@ value (an infinity or NaN) is an error naming `math/round`; a magnitude past 2^6
   "Round `x` to `places` decimal places (halves away from zero); returns a number —
 a float for a float `x` unless the rounded value is an integer, exact for an exact `x`.
 
-    (math/round-to 3.14159 2)   → 3.14"
+    (math/round-to 3.14159 2)   ;=> 3.14"
   ;; The final `/` is `round`'s int result over the int scale, so since ADR-196 made
   ;; integer `/` exact it yields a RATIO whenever it doesn't divide evenly, and
   ;; `(round-to 3.14159 2)` came back `157/50` instead of `3.14`. Rounding recovers no
@@ -335,18 +335,18 @@ a float for a float `x` unless the rounded value is an integer, exact for an exa
 (defn sqrt (n:number -> float)
   "The square root of `n` (IEEE 754; always a float). Negative `n` raises.
 
-    (math/sqrt 9)          → 3.0"
+    (math/sqrt 9)          ;=> 3.0"
   (cond (< n 0) (error "sqrt: negative argument " n) (<= n 0) 0.0 else (%f64-sqrt n)))
 
 (defn clamp (x:?A lo:?A hi:?A -> ?A)
   "Constrain `x` to the closed range [`lo`, `hi`]: `lo` if `x` is below it, `hi` if above, else `x`.
 
-    (math/clamp 5 0 10)   → 5
-    (math/clamp -1 0 10)  → 0
-    (math/clamp 99 0 10)  → 10
+    (math/clamp 5 0 10)   ;=> 5
+    (math/clamp -1 0 10)  ;=> 0
+    (math/clamp 99 0 10)  ;=> 10
 
-    (math/clamp 12 0 10)   → 10
-    (math/clamp -1 0 10)   → 0"
+    (math/clamp 12 0 10)   ;=> 10
+    (math/clamp -1 0 10)   ;=> 0"
   (math/max lo (math/min hi x)))
 
 ;; ---- transcendental functions -----------------------------------------------
@@ -355,55 +355,55 @@ a float for a float `x` unless the rounded value is an integer, exact for an exa
 (defn sin (x)
   "The sine of `x` (radians). Returns a float.
 
-    (math/sin 0)          → 0.0"
+    (math/sin 0)          ;=> 0.0"
   (%sin x))
 (defn cos (x)
   "The cosine of `x` (radians). Returns a float.
 
-    (math/cos 0)          → 1.0"
+    (math/cos 0)          ;=> 1.0"
   (%cos x))
 (defn tan (x)
   "The tangent of `x` (radians). Returns a float.
 
-    (math/tan 0) → 0.0"
+    (math/tan 0) ;=> 0.0"
   (%tan x))
 (defn asin (x)
   "The arcsine of `x` in radians. `x` must be in [-1, 1]; raises otherwise.
 
-    (math/asin 0) → 0.0"
+    (math/asin 0) ;=> 0.0"
   (%asin x))
 (defn acos (x)
   "The arccosine of `x` in radians. `x` must be in [-1, 1]; raises otherwise.
 
-    (math/acos 1) → 0.0"
+    (math/acos 1) ;=> 0.0"
   (%acos x))
 (defn atan (x)
   "The arctangent of `x` in radians (result in [-π/2, π/2]).
 
-    (math/atan 0) → 0.0"
+    (math/atan 0) ;=> 0.0"
   (%atan x))
 (defn atan2 (y x)
   "The angle in radians of the vector (`x`, `y`) from the positive x-axis, in (-π, π]. Handles x=0.
 
-    (math/atan2 0 1)      → 0.0"
+    (math/atan2 0 1)      ;=> 0.0"
   (%atan2 y x))
 (defn exp (x)
   "e raised to the power `x`. Returns a float.
 
-    (math/exp 0)          → 1.0"
+    (math/exp 0)          ;=> 1.0"
   (%exp x))
 (defn ln (x)
   "The natural logarithm of `x`. `x` must be positive; raises otherwise.
 
-    (math/ln 1)           → 0.0"
+    (math/ln 1)           ;=> 0.0"
   (%ln x))
 (defn log2 (x)
   "The base-2 logarithm of `x`. `x` must be positive; raises otherwise.
 
-    (math/log2 8) → 3.0"
+    (math/log2 8) ;=> 3.0"
   (%log2 x))
 (defn log10 (x)
   "The base-10 logarithm of `x`. `x` must be positive; raises otherwise.
 
-    (math/log10 1000) → 3.0"
+    (math/log10 1000) ;=> 3.0"
   (%log10 x))

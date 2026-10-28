@@ -18,8 +18,7 @@ at the top — keeping it out of the snapshot when it is itself the doc target.
 module name of a source file), which `model-file` needs to attribute a project
 module's namespace-rooted globals (ADR-070) back to it."
   (:use project)
-  (:use-internals project)
-  (:use math))
+  (:use-internals project))
 
 ;; --- module source + leading docstring ---------------------------------------
 
@@ -211,7 +210,7 @@ bare-surface (prelude) name, whose references are bare already."
   file's own load pulls in. Files with no module header, or read outside a project, fall back
   to the delta.
 
-    (docs/document-file \"/path/to/proj/src/app.blsp\")   ;=> \"# app …\" — Markdown for that file's module"
+    (docs/document-file \"/path/to/proj/src/app.blsp\")   ;~> \"# app …\" — Markdown for that file's module"
   (let (src (file/slurp path)
         declared (docs-module-name src)
         ;; check-allow :discarded-catch — a name nothing can type / describe / locate is simply omitted from the docs
@@ -234,7 +233,7 @@ bare-surface (prelude) name, whose references are bare already."
 (defn document-module (modname)
   "The Markdown documentation for the module named `modname` (a symbol or string), resolved baked-in or on `*load-path*`. Errors if it can't be found.
 
-    (docs/document-module 'json)   ;=> \"# json …\" — Markdown for the module's public definitions"
+    (docs/document-module 'json)   ;~> \"# json …\" — Markdown for the module's public definitions"
   (let (key (->string modname) src (docs-source key))
     (if (nil? src)
       (error "doc: cannot find module '" key "'")
@@ -259,7 +258,7 @@ bare-surface (prelude) name, whose references are bare already."
 (defn document-project ()
   "The Markdown documentation for the whole project (every source file under it), found from the cwd. Errors if not in a project.
 
-    (docs/document-project)   ;=> \"# myapp …\" — Markdown for every source file of the project"
+    (docs/document-project)   ;~> \"# myapp …\" — Markdown for every source file of the project"
   ; project/find-root / --collect-sources / setup
   (let (files (project/source-files (docs-setup-root "doc")))
     ;; One join over the whole project, not a per-file recopy of everything emitted
@@ -279,7 +278,7 @@ bare-surface (prelude) name, whose references are bare already."
 (defn document-all ()
   "The Markdown reference for every *public* global currently bound in the image — each builtin and prelude function/macro with its signature and one-line summary. The complete primitive reference (`nest doc --all`); read this once instead of probing names one at a time. Opt-in std modules (`display`, `buffer`, `ansi`, …) aren't loaded here — `nest doc <module>` documents those.
 
-    (docs/document-all)   ;=> \"# Brood reference …\" — Markdown over every public global in the image"
+    (docs/document-all)   ;~> \"# Brood reference …\" — Markdown over every public global in the image"
   (let (syms (seq/filter (reflect/global-names) docs-public?))
     (str "# Brood — global reference\n\n"
       "Every public global bound in a fresh image: the Rust builtins plus the "
@@ -359,7 +358,7 @@ bare-surface (prelude) name, whose references are bare already."
   module is *displayed* under its declared name. A file with no module header, or read
   outside a project, falls back to the load delta.
 
-    (docs/model-file \"/path/to/proj/src/app.blsp\")   ;=> {:module … :doc \"…\" :defs [{:name … :sig … :doc … :macro false :type … :source …} …] …}"
+    (docs/model-file \"/path/to/proj/src/app.blsp\")   ;~> {:module … :doc \"…\" :defs [{:name … :sig … :doc … :macro false :type … :source …} …] …}"
   (let (src (file/slurp path)
         declared (docs-module-name src)
         ;; check-allow :discarded-catch — a name nothing can type / describe / locate is simply omitted from the docs
@@ -380,7 +379,7 @@ bare-surface (prelude) name, whose references are bare already."
   "The whole-project doc model — `{:name :version :modules […]}` — found from the cwd,
   documenting every source file under it. Errors if not in a Brood project.
 
-    (docs/model-project)   ;=> {:name \"myapp\" :version \"0.1.0\" :guides … :modules […]}"
+    (docs/model-project)   ;~> {:name \"myapp\" :version \"0.1.0\" :guides … :modules […]}"
   (let (root (docs-setup-root "docs"))
     {:name *project-name*
      :version *project-version*
@@ -425,7 +424,7 @@ bare-surface (prelude) name, whose references are bare already."
   directory named by the first argument): a rendered `index.html` plus the structured
   `model.json`. The policy behind `nest docs`.
 
-    (docs/generate-site \"site\")   ;=> site/index.html and site/model.json written"
+    (docs/generate-site \"site\")   ;~> site/index.html and site/model.json written"
   (let (out-dir (if (empty? args) "doc" (first args)) model (model-project))
     (write-site out-dir model (get model :name))))
 
@@ -433,7 +432,7 @@ bare-surface (prelude) name, whose references are bare already."
   "Generate an HTML site for the whole builtin + prelude reference into `doc/` (or the
   first-argument directory) — the language reference. Backs `nest docs --all`.
 
-    (docs/generate-site-all)   ;=> doc/index.html and doc/model.json for the whole language reference"
+    (docs/generate-site-all)   ;~> doc/index.html and doc/model.json for the whole language reference"
   (let (out-dir (if (empty? args) "doc" (first args)))
     (write-site out-dir (model-all) "Brood — reference")))
 
@@ -461,82 +460,27 @@ bare-surface (prelude) name, whose references are bare already."
           (fn (path) {:title (guide-title path) :html (markdown/->html (file/slurp path))}))))))
 
 ;; --- doctests (`nest doctest`) -----------------------------------------------
-;; A doctest is a docstring line of the form `<expr> ;=> <expected>` (the expression
-;; alone before the marker, on its own line). `nest doctest` evaluates each and checks it
-;; equals `<expected>`, so a documented example can't silently drift from behaviour.
-
-;; Parse one line into `[expr-str expected-str]`, or nil if it holds no `;=>` example.
-(defn- doctest-of-line (line)
-  (let (i (index-of line ";=>"))
-    (when (and (number? i) (> i 0))
-      (let (expr (string/trim (string/substring line 0 i))
-            expected (string/trim (string/substring line (+ i 3) (string/length line))))
-        (when (and (not (= expr "")) (not (= expected ""))) [expr expected])))))
-
-;; Every `expr ;=> expected` example in a docstring, in source order.
-(defn- doctests-in (docstring)
-  (seq/keep (string/split docstring "\n") doctest-of-line))
-
-;; Evaluate one example: `[:ok]`, `[:fail actual expected]`, or `[:error message]`.
-(defn- run-one-doctest (expr-str expected-str)
-  (try
-    (let (actual (reflect/eval (reflect/read-first expr-str))
-          expected (reflect/eval (reflect/read-first expected-str)))
-      (if (= actual expected) [:ok] [:fail actual expected]))
-    (catch e [:error (error-message e)])))
-
-;; Collect every example from the *project's own* documented globals (those namespaced
-;; under `prefix`, e.g. `myproj/`), evaluated. Scoping to the project keeps the tooling's
-;; own docstrings (this module's `;=>` examples, in prose) and the builtins out.
-(defn- collect-doctests (prefix)
-  (fold (reflect/global-names)
-    nil
-    (fn (acc sym)
-      (if (not (string/starts-with? (->string sym) prefix))
-        acc
-        ;; check-allow :discarded-catch — a name nothing can type / describe / locate is simply omitted from the docs
-        (let (v (check-allow :discarded-catch (try (reflect/eval sym) (catch _ nil)))
-              d (when v (check-allow :discarded-catch (try (doc v) (catch _ nil)))))
-          (if (and (string? d) (includes? d ";=>"))
-            (append acc
-              (map (doctests-in d)
-                (fn (ex) [sym (nth ex 0) (nth ex 1) (run-one-doctest (nth ex 0) (nth ex 1))])))
-            acc))))))
-
-(defn- doctest-report (results)
-  (let (fails (seq/filter results (fn (r) (not (= (first (nth r 3)) :ok)))))
-    (doseq (r results)
-      (let ([sym expr expected outcome] r)
-        (match outcome
-          ([:ok] (io/puts (str "  ok   " (->string sym) ": " expr " ;=> " expected)))
-          ([:fail actual _] (io/puts (str "  FAIL "
-                                       (->string sym)
-                                       ": "
-                                       expr
-                                       " ;=> "
-                                       expected
-                                       " — got "
-                                       (pr-str actual))))
-          ([:error msg] (io/puts (str "  ERR  " (->string sym) ": " expr " — " msg))))))
-    (io/puts (str (count results)
-               " doctests, "
-               (- (count results) (count fails))
-               " passed, "
-               (count fails)
-               " failed"))
-    (count fails)))
+;; One engine checks every documented example: `std/tool/doctest.blsp`, the same one
+;; `nest test` gates a project's docstrings with. This is only its front end.
 
 (defn run-doctests ()
-  "Evaluate every `expr ;=> result` example in the current project's docstrings and check
-  it equals `result`, so documentation examples can't drift from behaviour. Loads the
-  project's sources, prints a line per example, and returns the failure count (0 = all
-  passed). The policy behind `nest doctest`."
-  (let (root (docs-setup-root "doctest"))
+  "Check every documented example in the current project's docstrings with `doctest` — a
+`form ;=> result` case is evaluated and compared, a `form ;~> result` illustration is read
+and its callee checked. Loads the project's sources, prints each failure and a summary, and
+returns the failure count (0 = all hold). The policy behind `nest doctest`."
+  (let (root (docs-setup-root "doctest")
+        prefix (str *project-name* "/"))
     (project-image/load-sources-cached root)
-    (doctest-report (collect-doctests (str *project-name* "/")))))
+    (let (fails (doctest/failures-under prefix))
+      (each fails (fn (f) (io/puts (str "  FAIL " f))))
+      (io/puts (str (count (doctest/documented-names-under prefix))
+                 " documented names checked, "
+                 (count fails)
+                 " failing example(s)"))
+      (count fails))))
 
 (defn generate (& args)
   "Print Markdown documentation to stdout: the whole project with no args, or a single module given its name. The policy behind `nest doc`.
 
-    (docs/generate \"app\")   ;=> module app's Markdown printed to stdout"
+    (docs/generate \"app\")   ;~> module app's Markdown printed to stdout"
   (if (empty? args) (io/puts (document-project)) (io/puts (document-module (first args)))))

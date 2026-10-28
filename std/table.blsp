@@ -7,19 +7,19 @@
 (defn new (-> table)
   "Create a new empty in-memory table: a shared, mutable key→value store behind an opaque handle. Unlike a map it is mutated in place (table/put/table/delete) and shared by identity — the handle can be sent to other processes, which all see the same store. Stores deep clones (keys/values are copied in and out), so no two processes alias a stored value. Local to this runtime; not node-portable. The table dies with the process that created it, unless a global holds it (`def`). Returns the handle.
 
-    (let (t (table/new)) (do (table/put t :k 1) (table/get t :k)))   → 1"
+    (let (t (table/new)) (do (table/put t :k 1) (table/get t :k)))   ;=> 1"
   (%table))
 
 (defn put (t:table k:any v:any -> table)
   "Store v under key k in table t, overwriting any existing entry. Keys use the same structural equality as map keys. Returns t (for threading). Both k and v are deep-copied into the store.
 
-    (table? (table/put (table/new) :a 1))   → true"
+    (table? (table/put (table/new) :a 1))   ;=> true"
   (%table-put t k v))
 
 (defn get "A fresh copy of the value stored under k in table t, or default (nil if omitted) when absent.
 
-    (let (t (table/new)) (do (table/put t :a 1) (table/get t :a)))   → 1
-    (let (t (table/new)) (table/get t :missing :none))   → :none"
+    (let (t (table/new)) (do (table/put t :a 1) (table/get t :a)))   ;=> 1
+    (let (t (table/new)) (table/get t :missing :none))   ;=> :none"
   ;; Two arity CLAUSES rather than one `&optional` head, and the reason is performance, not
   ;; style: a call-site inline follows a *thin wrapper* to the primitive underneath, and an
   ;; `&optional` head is not one — it binds a default first, so `(table/get t k)` stopped
@@ -37,35 +37,35 @@
 (defn has? (t:table k:any -> bool)
   "True if table t has an entry for key k.
 
-    (let (t (table/new)) (do (table/put t :k 1) (table/has? t :k)))   → true"
+    (let (t (table/new)) (do (table/put t :k 1) (table/has? t :k)))   ;=> true"
   (%table-has? t k))
 
 (defn delete (t:table k:any -> table)
   "Remove key k from table t if present. Returns t.
 
-    (let (t (table/new)) (do (table/put t :a 1) (table/delete t :a) (table/has? t :a)))   → false"
+    (let (t (table/new)) (do (table/put t :a 1) (table/delete t :a) (table/has? t :a)))   ;=> false"
   (%table-delete t k))
 
 (defn incr (t:table k:any &optional delta:int -> int)
   "Atomically add delta (default 1) to the integer at key k in table t, treating an absent key as 0, and return the new value. The read-modify-write is atomic under the table lock, so concurrent increments never lose an update — use this for counters. Errors if the existing value is not an integer.
 
-    (let (t (table/new)) (do (table/incr t :n 5) (table/get t :n)))   → 5"
+    (let (t (table/new)) (do (table/incr t :n 5) (table/get t :n)))   ;=> 5"
   (if delta (%table-incr t k delta) (%table-incr t k)))
 
 (defn count (t:table -> int)
   "The number of entries in table t.
 
-    (let (t (table/new)) (do (table/put t :a 1) (table/put t :b 2) (table/count t)))   → 2"
+    (let (t (table/new)) (do (table/put t :a 1) (table/put t :b 2) (table/count t)))   ;=> 2"
   (%table-count t))
 
 (defn snapshot (t:table -> (map any any))
   "A consistent point-in-time copy of the whole table t as an immutable map. Atomic; the returned map is unaffected by later mutation of t. Use map ops (keys/vals/get/reduce) on it. O(n).
 
-    (let (t (table/new)) (do (table/put t :a 1) (table/snapshot t)))   → {:a 1}"
+    (let (t (table/new)) (do (table/put t :a 1) (table/snapshot t)))   ;=> {:a 1}"
   (%table-snapshot t))
 
 (defn drop (t:table -> bool)
   "Remove table t from the registry, freeing its store. Idempotent; returns true if it existed. Other handles to t then error on use. A table is also dropped when the process that created it exits, unless a global holds it.
 
-    (table/drop (table/new))   → true"
+    (table/drop (table/new))   ;=> true"
   (%table-drop t))

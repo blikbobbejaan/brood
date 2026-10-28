@@ -176,7 +176,7 @@ resolves like the baked-in std. A DEPENDENCY's modules are keyed by their PACKAG
 name (`foo/parser`), so two deps each providing a `parser` coexist in one flat bundle —
 dev/release parity for package-rooting (ADR-070). Errors if `root` is nil (not in a project).
 
-    (project-release/bundle-collect \"/path/to/proj\")   ;=> (\"(project :name …)\" \"app\" \"(defmodule app …)\" \"foo/parser\" \"…\" …)"
+    (project-release/bundle-collect \"/path/to/proj\")   ;~> (\"(project :name …)\" \"app\" \"(defmodule app …)\" \"foo/parser\" \"…\" …)"
   (when (nil? root)
     (error "bundle-collect: not in a Brood project (no project.blsp found)"))
   ;; Load `package` explicitly (project↔package cycle, as in project-ensure-deps-on-path):
@@ -449,7 +449,7 @@ string arguments). The `brood` binary calls this when it detects it is a `nest
 release` bundle. Loads the embedded manifest + modules and invokes `:main`
 (default module `main`, fn `main`). Errors if the entry fn is missing/uncallable.
 
-    (project-release/run-bundle [\"serve\" \"--port\" \"8080\"])   ;=> whatever the bundle's :main fn returns"
+    (project-release/run-bundle [\"serve\" \"--port\" \"8080\"])   ;~> whatever the bundle's :main fn returns"
   (let ([modname fname _] (bundle-boot-load))
     (require-one modname)
     (%crash-report-arm-default)
@@ -471,7 +471,7 @@ callable. Reached by running a bundle with the reserved `--brood-boot-check` arg
 which is what `nest release --smoke` does to the binary it just wrote. Loads the modules
 the way a launch does — from the bundle's startup image when it carries one — and says which.
 
-    (project-release/check-bundle-boot)   ;=> 0 — every embedded module loaded and :main resolved; raises otherwise"
+    (project-release/check-bundle-boot)   ;~> 0 — every embedded module loaded and :main resolved; raises otherwise"
   (unless (%bundled?)
     (error "check-bundle-boot: this executable is not a `nest release` bundle"))
   (let ([modname fname sections] (bundle-boot-load))
@@ -498,7 +498,7 @@ running a bundle with the reserved `--brood-build-image PATH` argument, which is
 release` gets an image the shipped runtime wrote itself (ADR-484); a load that cannot be
 imaged (a `table` global) raises, and the release ships without one.
 
-    (project-release/write-bundle-image \"/tmp/app.image\")   → RAISED write-bundle-image: this executable is not a `nest release` bundle"
+    (project-release/write-bundle-image \"/tmp/app.image\")   ;=> RAISED write-bundle-image: this executable is not a `nest release` bundle"
   (unless (%bundled?)
     (error "write-bundle-image: this executable is not a `nest release` bundle"))
   ;; Both baselines before a single module loads, as a project image takes them (KI-106).
@@ -527,10 +527,10 @@ imaged (a `table` global) raises, and the release ships without one.
 keeps the whole triple: always unambiguous, just longer. The libc stays visible on
 Linux so a gnu + musl matrix cannot collide.
 
-    (project-release/release-target-suffix \"aarch64-apple-darwin\") → \"macos-arm64\"
-    (project-release/release-target-suffix \"x86_64-unknown-linux-gnu\") → \"linux-x86_64\"
-    (project-release/release-target-suffix \"x86_64-unknown-linux-musl\") → \"linux-musl-x86_64\"
-    (project-release/release-target-suffix \"wasm32-wasip1\") → \"wasm32-wasip1\""
+    (project-release/release-target-suffix \"aarch64-apple-darwin\") ;=> \"macos-arm64\"
+    (project-release/release-target-suffix \"x86_64-unknown-linux-gnu\") ;=> \"linux-x86_64\"
+    (project-release/release-target-suffix \"x86_64-unknown-linux-musl\") ;=> \"linux-musl-x86_64\"
+    (project-release/release-target-suffix \"wasm32-wasip1\") ;=> \"wasm32-wasip1\""
   (let (arch (let (a (first (string/split triple "-"))) (if (= a "aarch64") "arm64" a))
         os (cond
              (includes? triple "apple-darwin") "macos"
@@ -543,8 +543,8 @@ Linux so a gnu + musl matrix cannot collide.
 (defn release-windows-triple? (triple:string -> bool)
   "Is `triple` a Windows target — i.e. does its artifact need a `.exe` suffix?
 
-    (project-release/release-windows-triple? \"x86_64-pc-windows-msvc\") → true
-    (project-release/release-windows-triple? \"x86_64-unknown-linux-gnu\") → false"
+    (project-release/release-windows-triple? \"x86_64-pc-windows-msvc\") ;=> true
+    (project-release/release-windows-triple? \"x86_64-unknown-linux-gnu\") ;=> false"
   (includes? triple "windows"))
 
 (defn release-plain-filename? (s:string -> bool)
@@ -555,10 +555,10 @@ A defaulted name is manifest data, not an argument: `:name` is read out of a
 30 MB executable two directories above the project root, with no `-o` and no
 warning. An explicit `-o PATH` is the user's own choice and stays unrestricted.
 
-    (project-release/release-plain-filename? \"app\") → true
-    (project-release/release-plain-filename? \"../escape\") → false
-    (project-release/release-plain-filename? \"..\") → false
-    (project-release/release-plain-filename? \"\") → false"
+    (project-release/release-plain-filename? \"app\") ;=> true
+    (project-release/release-plain-filename? \"../escape\") ;=> false
+    (project-release/release-plain-filename? \"..\") ;=> false
+    (project-release/release-plain-filename? \"\") ;=> false"
   (and (not (= s ""))
     (not (= s "."))
     (not (= s ".."))
@@ -576,9 +576,9 @@ the `--target` triples (empty for a host-only release), and `pinned-runtime?`
 whether `--runtime` named a specific base binary. With one target `-o` is the exact
 output path; with several, each binary gets a per-target suffix.
 
-    (project-release/release-plan \"app\" nil [] false) → (\"ok\" \"\" \"app\")
-    (project-release/release-plan \"app\" nil [\"x86_64-pc-windows-msvc\"] false) → (\"ok\" \"x86_64-pc-windows-msvc\" \"app-windows-x86_64.exe\")
-    (project-release/release-plan \"app\" \"out\" [\"a\" \"b\"] true) → (\"error\" \"--runtime names one base binary; use it with at most one --target\" \"2\")"
+    (project-release/release-plan \"app\" nil [] false) ;=> (\"ok\" \"\" \"app\")
+    (project-release/release-plan \"app\" nil [\"x86_64-pc-windows-msvc\"] false) ;=> (\"ok\" \"x86_64-pc-windows-msvc\" \"app-windows-x86_64.exe\")
+    (project-release/release-plan \"app\" \"out\" [\"a\" \"b\"] true) ;=> (\"error\" \"--runtime names one base binary; use it with at most one --target\" \"2\")"
   (cond
     ;; `--runtime` names ONE base binary, so it cannot serve a matrix.
     (and pinned-runtime? (> (count targets) 1))
@@ -610,8 +610,8 @@ output path; with several, each binary gets a per-target suffix.
   "The line `nest release` prints for one artifact it wrote: the path, how many
 modules it embeds, its size, and the target triple when there was one.
 
-    (project-release/release-report \"app\" 1 512 nil) → \"Wrote app (1 module, 512 B)\"
-    (project-release/release-report \"app\" 3 512 \"x86_64-unknown-linux-gnu\") → \"Wrote app (3 modules, 512 B, x86_64-unknown-linux-gnu)\""
+    (project-release/release-report \"app\" 1 512 nil) ;=> \"Wrote app (1 module, 512 B)\"
+    (project-release/release-report \"app\" 3 512 \"x86_64-unknown-linux-gnu\") ;=> \"Wrote app (3 modules, 512 B, x86_64-unknown-linux-gnu)\""
   (str "Wrote "
     out
     " ("
@@ -671,7 +671,7 @@ the two cases.
 Loads no project module, so it answers on a bundle whose modules are broken — which is when
 it is asked. See [[build-info-report]] for the printed form.
 
-    (project-release/build-info)   ;=> {:brood-version \"0.40.0\" :build-id \"…\" :app \"myapp\" :app-version \"0.1.0\" :bundled? false …}"
+    (project-release/build-info)   ;~> {:brood-version \"0.40.0\" :build-id \"…\" :app \"myapp\" :app-version \"0.1.0\" :bundled? false …}"
   (let (base {:brood-version (system/brood-version)
               :build-id (system/build-id)
               :brood-built-at (system/build-time)
@@ -732,9 +732,9 @@ cannot tell them apart. What distinguishes the cases is the parenthetical: a bun
 when `nest release` ran, a source run's is when HEAD was committed, and the second says so
 rather than passing itself off as a build.
 
-    (project-release/build-stamp-text {:built-at 0 :bundled? true})  → \"1970-01-01 00:00 UTC\"
-    (project-release/build-stamp-text {:commit \"a5e2405\"})          → \"from source (a5e2405)\"
-    (project-release/build-stamp-text {})                            → \"unknown\""
+    (project-release/build-stamp-text {:built-at 0 :bundled? true})  ;=> \"1970-01-01 00:00 UTC\"
+    (project-release/build-stamp-text {:commit \"a5e2405\"})          ;=> \"from source (a5e2405)\"
+    (project-release/build-stamp-text {})                            ;=> \"unknown\""
   (let (ms (get info :built-at)
         commit (get info :commit)
         at (when ms (str (datetime/format (datetime/epoch-ms-> ms) "%Y-%m-%d %H:%M") " UTC")))
@@ -752,7 +752,7 @@ rather than passing itself off as a build.
   "Print [[build-info]] as aligned `key: value` lines and return 0. What a bundle run with
 the reserved `--brood-build-info` argument prints.
 
-    (project-release/build-info-report)   ;=> 0 — the build-info map printed as aligned key: value lines"
+    (project-release/build-info-report)   ;~> 0 — the build-info map printed as aligned key: value lines"
   (let (info (build-info))
     (when (get info :app)
       (io/puts (str "app:      "

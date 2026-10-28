@@ -16,55 +16,55 @@
 (defn mem-bytes ()
   "Bytes currently allocated process-wide.
 
-    (int? (dev/mem-bytes))     → true"
+    (int? (dev/mem-bytes))     ;=> true"
   (%mem-bytes))
 
 (defn mem-limit ()
   "Hard memory ceiling in bytes (0 = unlimited); crossing it aborts the process. Set via BROOD_MEM_LIMIT, or by a container's memory cap.
 
-    (int? (dev/mem-limit))   → true"
+    (int? (dev/mem-limit))   ;=> true"
   (%mem-limit))
 
 (defn mem-peak ()
   "High-water mark of allocated bytes since process start.
 
-    (int? (dev/mem-peak))   → true"
+    (int? (dev/mem-peak))   ;=> true"
   (%mem-peak))
 
 (defn mem-soft-limit ()
   "Soft memory ceiling in bytes (0 = unlimited); crossing it stops the process holding the most memory with E0043.
 
-    (int? (dev/mem-soft-limit))   → true"
+    (int? (dev/mem-soft-limit))   ;=> true"
   (%mem-soft-limit))
 
 (defn gc-collect ()
   "Force a collection of this process's LOCAL heap now, returning the post-collection gc-stats map. An observability/test aid, not a load-bearing trigger — automatic collection at the eval safepoint already keeps memory bounded.
 
-    (map? (dev/gc-collect))   → true"
+    (map? (dev/gc-collect))   ;=> true"
   (%gc-collect))
 
 (defn gc-stats ()
   "A snapshot map of GC activity: :collections, :copied, :reclaimed (cumulative object counts), :live, :live-bytes, :threshold (next-collection trigger), and the pause-duration trio :pause-total-us/:pause-max-us/:pause-last-us (cumulative wall time in collections, worst single pause, most recent — the timing tier) for the caller's own LOCAL heap; :runtime-closures and :runtime-threshold for the *shared* RUNTIME code region (its promoted-closure count + next auto-compact trigger — same for every process); and :debug-build (true if built with debug assertions — not a perf build). The LOCAL figures are per-process; use (runtime-collect) for the RUNTIME live/reclaimable split.
 
-    (map? (dev/gc-stats))      → true"
+    (map? (dev/gc-stats))      ;=> true"
   (%gc-stats))
 
 (defn gc-trace (& more)
   "Query (no arg) or set (truthy arg) per-collection GC trace logging for this process; returns the resulting state. When on, each minor/major collection prints a one-line summary to stderr. Defaulted from BROOD_GC_TRACE.
 
-    (dev/gc-trace true)   ;=> true — each collection now prints a line to stderr"
+    (dev/gc-trace true)   ;~> true — each collection now prints a line to stderr"
   (if (empty? more) (%gc-trace) (%gc-trace (first more))))
 
 (defn runtime-collect ()
   "Compact the shared RUNTIME code region, reclaiming superseded versions of redefined globals (hot-reload churn). Returns {:before N :after M :reclaimed (N-M) :ran bool} (closure counts). Runs only when this runtime is uniquely owned (no other live process) — otherwise :ran is false and nothing changes. Usually unnecessary: the eval safepoint auto-compacts once hot-reload churn crosses a threshold (single-process); this forces it now. ADR-076 follow-up / docs/runtime-collector-exploration.md.
 
-    (dev/runtime-collect)   ;=> e.g. {:before 120 :after 80 :reclaimed 40 :ran true}"
+    (dev/runtime-collect)   ;~> e.g. {:before 120 :after 80 :reclaimed 40 :ran true}"
   (%runtime-collect))
 
 (defn profile-start (& more)
   "Arm the sampling CPU profiler at hz samples/sec (default 99, clamped 1..10000), resetting the histogram. `(profile-start hz pid)` samples ONLY that local process — every process that runs takes a sample per tick, so without it a busy program's profile is the sum of all of them, and the process you care about (a UI loop beside its language servers and workers) is a few percent of its own profile. Sampling walks each process's reified call stack (named frames) at its next VM frame boundary after every tick — no signals, near-zero cost when off (one relaxed load per frame boundary). A JIT-resident loop is attributed when it yields at its reduction-budget preempt (~once a quantum); the legacy tree-walker isn't sampled. Stop and read with (profile-stop).
 
-    (dev/profile-start 199)   ;=> armed at 199 Hz; read it with `(dev/profile-stop)`"
+    (dev/profile-start 199)   ;~> armed at 199 Hz; read it with `(dev/profile-stop)`"
   (cond
     (empty? more) (%profile-start)
     (empty? (rest more)) (%profile-start (first more))
@@ -73,7 +73,7 @@
 (defn profile-stop ()
   "Disarm the sampling profiler and return the histogram: a list of {:stack (fn-names... innermost-first) :count n} maps, most-sampled first. Empty list if never armed. A sample whose frames were all anonymous appears with :stack (\"<anonymous>\").
 
-    (dev/profile-stop)   ;=> ({:stack (\"inner\" \"outer\") :count 42} …)"
+    (dev/profile-stop)   ;~> ({:stack (\"inner\" \"outer\") :count 42} …)"
   (%profile-stop))
 
 (defn profile->folded (histogram)
@@ -81,7 +81,7 @@
 by `;`, then a space and its sample count — the format flamegraph.pl, inferno and speedscope
 read (`nest profile` writes it to a file).
 
-    (dev/profile->folded [{:stack [\"inner\" \"outer\"] :count 42}])   → \"outer;inner 42\\n\""
+    (dev/profile->folded [{:stack [\"inner\" \"outer\"] :count 42}])   ;=> \"outer;inner 42\\n\""
   (string/join (map histogram
                  (fn (entry)
                    (str (string/join (reverse (into [] (:stack entry))) ";")
@@ -93,43 +93,43 @@ read (`nest profile` writes it to a file).
 (defn sched-stats ()
   "A snapshot map of the scheduler's cumulative counters: {:spawned :exited :preempts :steals :migrations :workers :peak-threads}. :spawned - :exited is the live-process figure; :preempts counts reduction-budget quantum exhaustions; :steals/:migrations count work-stealing activity. The scheduler half of the observability timing tier (pairs with gc-stats' :pause-* keys).
 
-    (map? (dev/sched-stats))   → true"
+    (map? (dev/sched-stats))   ;=> true"
   (%sched-stats))
 
 (defn spawn-count ()
   "How many green processes have been spawned since program start.
 
-    (int? (dev/spawn-count))   → true"
+    (int? (dev/spawn-count))   ;=> true"
   (%spawn-count))
 
 (defn steal-count ()
   "How many fresh processes the scheduler work-stole across worker threads since program start; 0 means placement-at-spawn kept the pool even.
 
-    (int? (dev/steal-count))   → true"
+    (int? (dev/steal-count))   ;=> true"
   (%steal-count))
 
 (defn peak-threads ()
   "High-water mark of OS threads running processes concurrently.
 
-    (int? (dev/peak-threads))   → true"
+    (int? (dev/peak-threads))   ;=> true"
   (%peak-threads))
 
 (defn worker-threads ()
   "The size of the scheduler's worker-thread pool (about nproc).
 
-    (> (dev/worker-threads) 0)   → true"
+    (> (dev/worker-threads) 0)   ;=> true"
   (%worker-threads))
 
 (defn vm-stats ()
   "A snapshot map of VM work-attribution counters (the perf-stats feature). :enabled is false unless the binary was built with --features perf-stats; when true, process-global cumulative totals: :vm-apply (closure activations), :tail-call/:self-tail (trampoline iterations), :tw-defer (tree-walker fallbacks), :call-ic-hit/:call-ic-miss, :global-ic-hit/:global-ic-miss, :prim2-inline/:prim2-fallback, :prim1-inline/:prim1-fallback, :env-get/:env-hops (lookups + chain frames walked), :alloc (LOCAL allocations). Tells you whether the VM is dispatch-, env-, or alloc-bound. A counting tool, not a timing one — read times from the benches (docs/benchmarking.md).
 
-    (map? (dev/vm-stats))   → true"
+    (map? (dev/vm-stats))   ;=> true"
   (%vm-stats))
 
 (defn vm-stats-reset ()
   "Zero the VM work-attribution counters, returning :enabled (false without --features perf-stats). The counters are process-global and cumulative FROM PROCESS START, so a snapshot after a short program also counts the runtime's own boot — which is macro-expansion-heavy and defers to the tree-walker, so a cold-cache run can read a defer rate orders of magnitude above a warm one. Zero first when measuring a region; `(perf/measure thunk)` packages that.
 
-    (dev/vm-stats-reset)   ;=> false on a binary without perf-stats"
+    (dev/vm-stats-reset)   ;~> false on a binary without perf-stats"
   (%vm-stats-reset))
 
 (defn jit-state (f argc)
@@ -138,7 +138,7 @@ read (`nest profile` writes it to a file).
 `:reason` — for a `:bailed` arm, why it was refused, recorded whether or not
 `BROOD_JIT_BAIL_TRACE` was set. `why-not-native` says the same in words.
 
-    (map? (dev/jit-state inc 1))   → true"
+    (map? (dev/jit-state inc 1))   ;=> true"
   (%jit-arm-state f argc))
 
 ;; What each recorded refusal means, for `why-not-native`. A reason not listed here is shown
@@ -166,7 +166,7 @@ read (`nest profile` writes it to a file).
 The question to ask when a loop is slower than it should be: it names the refusal the JIT
 recorded, without re-running anything under `BROOD_JIT_BAIL_TRACE`.
 
-    (dev/why-not-native (fn (x) x) 1)   ;=> \"never called with 1 argument …\", or nil once it is native"
+    (dev/why-not-native (fn (x) x) 1)   ;~> \"never called with 1 argument …\", or nil once it is native"
   (let (info (%jit-arm-state f argc))
     (match (get info :state)
       (:native nil)
@@ -183,13 +183,13 @@ recorded, without re-running anything under `BROOD_JIT_BAIL_TRACE`.
 (defn ic-stats ()
   "A snapshot map of this process's four inline-cache tables — the largest single attributed item in the green-process floor. :calls, :links, :globals and :blocks each give [len capacity bytes], with bytes from live CAPACITY x the real element size, so a Vec grown past its contents reports the memory it actually holds. :call-entry-bytes is the size of one CallIcEntry slot — the figure a shrink of that struct would move — and :total-bytes their sum. Size these at the PARKED state, not at teardown, where the slot count overstates the steady state (docs/runtime-frontier.md).
 
-    (map? (dev/ic-stats))   → true"
+    (map? (dev/ic-stats))   ;=> true"
   (%ic-stats))
 
 (defn pos-stats ()
   "A snapshot map of the two source-position side tables: :local-forms/:local-cap/:local-bytes for this process's LOCAL `form_pos`, and :runtime-forms/:runtime-cap/:runtime-bytes for the runtime-shared `positions`. Bytes are derived from live CAPACITY, not entry count, so a table holding its high-water capacity after a collection reports the memory it actually occupies. The measurement surface for what source positions cost in load memory.
 
-    (map? (dev/pos-stats))   → true"
+    (map? (dev/pos-stats))   ;=> true"
   (%pos-stats))
 
 ;; A macro, so it expands at the CALL site: `%now` is the kernel primitive, reachable from

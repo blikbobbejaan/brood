@@ -56,7 +56,7 @@ transitively-closed lock file and puts each dep's source on *load-path*."
 (defn tree-hash (dir)
   "The canonical SHA-256 (hex) of a directory's file contents — order-independent of the filesystem, stable across machines (ADR-037).
 
-    (package/tree-hash \"/path/to/proj/_deps/json\")   ;=> \"9f2c…\" — 64 hex digits"
+    (package/tree-hash \"/path/to/proj/_deps/json\")   ;~> \"9f2c…\" — 64 hex digits"
   (hash/sha256 (string/join (map (package-tree-files dir)
                               (fn (rel)
                                 (str rel "\0" (package-sha256-file (path/join dir rel)) "\n")))
@@ -96,7 +96,7 @@ transitively-closed lock file and puts each dep's source on *load-path*."
 (defn resolve-deps (root:any deps:seqable lock:any -> any)
   "Resolve `deps` (dep records from the manifest) and everything they transitively pull in, into a flat list of resolved entries — each its dep record with `:resolved-path`/`:sha256`/`:deps` (and `:commit`/`:version`) assoc'd on, so it keeps the dep's identity and dispatches through the same `Dependency` impls. `lock` is the prior project.lock.blsp :dependencies (or nil). `:path`/`:git`/`:tarball` deps resolve to their exact source (a matching lock entry reuses the pinned commit/sha, network-free); `:registry` deps carry a version RANGE resolved to a concrete version by the backtracking resolver (ADR-209) — a fully-covering lock reuses the prior solution network-free, so pass nil (or drop names via `nest update`) to force a re-solve.
 
-    (package/resolve-deps \"/path/to/proj\" *project-dependencies* (package/read-lockfile \"/path/to/proj\"))   ;=> (…each dep record with :resolved-path :sha256 :deps…)"
+    (package/resolve-deps \"/path/to/proj\" *project-dependencies* (package/read-lockfile \"/path/to/proj\"))   ;~> (…each dep record with :resolved-path :sha256 :deps…)"
   (let (lock-index (package-lock-index lock)
         ;; Direct git/path/tarball pins override a same-named *transitive* registry
         ;; request (ADR-238): a root that pins a dep to an exact source wins over any
@@ -362,7 +362,7 @@ transitively-closed lock file and puts each dep's source on *load-path*."
   written back to the manifest, and reconciled with another request for the same name.
   Sealed over the four manifest kinds.
 
-    (package/dep-kind (project/parse-dep '[foo :path \"../foo\"]))  → :path"
+    (package/dep-kind (project/parse-dep '[foo :path \"../foo\"]))  ;=> :path"
   :sealed [project/dep-path project/dep-git project/dep-tarball project/dep-registry]
   (dep-kind [self] :-> keyword)
   (dep-resolve [self root locked])
@@ -996,7 +996,7 @@ TOFU-pinned signing key, nil for an unsigned package)."
 pinned on first use. `{:status :pin :warning}` — `:pin` the key to keep, `:warning` a sentence
 for the user or nil. Never raises: every input here comes from a registry or a file.
 
-    (get (package/signature-verdict \"p\" \"1.0.0\" \"abc\" nil nil nil) :status)   → :unsigned"
+    (get (package/signature-verdict \"p\" \"1.0.0\" \"abc\" nil nil nil) :status)   ;=> :unsigned"
   ;; `signature`/`pubkey`/`pinned-pubkey` are attacker-controlled (registry JSON / the lock), so
   ;; type-guard to STRINGS before touching hex-decode — a non-string (a JSON number/array) would
   ;; otherwise throw out of hex-decode and turn this advisory check into a hard install block. The
@@ -1064,7 +1064,7 @@ for the user or nil. Never raises: every input here comes from a registry or a f
   "The newest published version string of package `name` (a symbol or string) at the configured
 registry, or nil if it is unpublished. Backs an app's 'is there an update?' check.
 
-    (package/registry-latest-version 'json)   ;=> \"1.4.2\", or nil when unpublished"
+    (package/registry-latest-version 'json)   ;~> \"1.4.2\", or nil when unpublished"
   (let (base (registry-base-for nil)
         versions (registry-list-versions base (if (symbol? name) name (symbol name))))
     (fold versions nil (fn (best v) (if (or (nil? best) (version/newer? v best)) v best)))))
@@ -1074,7 +1074,7 @@ registry, or nil if it is unpublished. Backs an app's 'is there an update?' chec
 `{:name :latest_version :description :kind :enhances}` maps, or nil on a request failure. The
 runtime side of `nest search --enhances`: an app lists its own installable plugins.
 
-    (package/registry-enhancers 'bedit)   ;=> ({:name \"bedit-git\" :latest_version \"0.3.1\" :description \"…\" :kind … :enhances …} …)"
+    (package/registry-enhancers 'bedit)   ;~> ({:name \"bedit-git\" :latest_version \"0.3.1\" :description \"…\" :kind … :enhances …} …)"
   (let (base (registry-base-for nil))
     (match (registry-get-json (registry-search-url base "" app))
       ([:ok data] (or (get data :packages) nil))
@@ -1118,7 +1118,7 @@ never trusted for the bytes). The signature is checked as the lock path checks i
 `:signature` is the verdict's status and `:warning` its sentence (nil when there is nothing to
 say). Advisory, like every signing check: a bad or changed signature is reported, not refused.
 
-    (package/registry-install \"bedit-git\" \"/home/me/.local/share/bedit/packages\")   ;=> {:name \"bedit-git\" :version \"0.3.1\" :path \"…/bedit-git\" :checksum \"…\" :signature … :warning nil}"
+    (package/registry-install \"bedit-git\" \"/home/me/.local/share/bedit/packages\")   ;~> {:name \"bedit-git\" :version \"0.3.1\" :path \"…/bedit-git\" :checksum \"…\" :signature … :warning nil}"
   (let (base (registry-base-for nil)
         name-sym (if (symbol? name) name (symbol name))
         name-str (if (string? name) name (->string name))
@@ -1250,7 +1250,7 @@ say). Advisory, like every signing check: a bad or changed signature is reported
   "List `[module-name file]` pairs for every module defined under `src-dir`, or
   nil if `src-dir` is not a directory.
 
-    (package/module-files \"/path/to/proj/src\")   ;=> ((… \"/path/to/proj/src/app.blsp\") …) — [module-name file] pairs"
+    (package/module-files \"/path/to/proj/src\")   ;~> ((… \"/path/to/proj/src/app.blsp\") …) — [module-name file] pairs"
   (if (not (file/dir? src-dir))
     nil
     (let (files (package-blsp-files src-dir)
@@ -1376,7 +1376,7 @@ that window failed to parse, which made the add roll its own manifest edit back 
 temp name is random, not a timestamp: two writers sharing a name would truncate each other's
 temp, and the second rename would find it gone.
 
-    (package/write-lockfile \"/path/to/proj\" entries)   ;=> project.lock.blsp atomically replaced"
+    (package/write-lockfile \"/path/to/proj\" entries)   ;~> project.lock.blsp atomically replaced"
   (let (path (package-lockfile-path root)
         tmp (str path "." (uuid/v4) ".tmp"))
     (file/spit tmp (package-lockfile-content entries))
@@ -1385,7 +1385,7 @@ temp, and the second rename would find it gone.
 (defn read-lockfile (root)
   "The :dependencies vector from project.lock.blsp under `root`, or nil if absent.
 
-    (package/read-lockfile \"/path/to/proj\")   ;=> [{:name json …} …] — the :dependencies of project.lock.blsp, or nil"
+    (package/read-lockfile \"/path/to/proj\")   ;~> [{:name json …} …] — the :dependencies of project.lock.blsp, or nil"
   (let (path (package-lockfile-path root))
     (if (not (file/exists? path))
       nil
@@ -1416,7 +1416,7 @@ temp, and the second rename would find it gone.
   "Record the modules of each `[package-name src-dir]` pair under that package name in the
   ambient `*ns-package*` map. The ability system's app-vs-library seam; called at setup.
 
-    (package/record-ns-packages [[\"json\" \"/path/to/proj/_deps/json/src\"]])   ;=> the modules under that dir now owned by package json in *ns-package*"
+    (package/record-ns-packages [[\"json\" \"/path/to/proj/_deps/json/src\"]])   ;~> the modules under that dir now owned by package json in *ns-package*"
   (def *ns-package*
     (fold pkg-dir-pairs
       *ns-package*
@@ -1444,7 +1444,7 @@ temp, and the second rename would find it gone.
 (defn ensure-deps (root deps)
   "Resolve `deps`, refresh the lock file, and return the list of source dirs to add to *load-path* (one per resolved dep). Called from `setup`; a no-op when there are no deps.
 
-    (package/ensure-deps \"/path/to/proj\" *project-dependencies*)   ;=> (\"/path/to/proj/_deps/json/src\" …) — one source dir per resolved dep"
+    (package/ensure-deps \"/path/to/proj\" *project-dependencies*)   ;~> (\"/path/to/proj/_deps/json/src\" …) — one source dir per resolved dep"
   (if (empty? deps)
     nil
     (let (entries (resolve-deps root deps (read-lockfile root)))
@@ -1485,7 +1485,7 @@ temp, and the second rename would find it gone.
 (defn fetch ()
   "Resolve and lock the current project's dependencies, (re)writing project.lock.blsp. Reuses the existing lock's pins where the manifest still matches (so a re-run is network-free); :git deps whose ref changed are re-resolved and (re)cloned into _deps/, :path deps are re-hashed. Returns the resolved entries (nil when none are declared). Backs `nest fetch`.
 
-    (package/fetch)   ;=> the resolved lock entries, or nil when no deps are declared"
+    (package/fetch)   ;~> the resolved lock entries, or nil when no deps are declared"
   (package-in-project (fn (root)
                         (if (empty? *project-dependencies*)
                           (do (io/puts "package: no dependencies declared") nil)
@@ -1502,7 +1502,7 @@ temp, and the second rename would find it gone.
 (defn update (& names)
   "Re-resolve dependency refs and re-lock, ignoring the locked commits so moving refs (a branch or floating tag) advance. With no NAMES, re-resolves every dep; with NAMES, only those (others keep their locked pins). Re-clones any :git dep whose commit changed. Backs `nest update`.
 
-    (package/update \"json\")   ;=> the re-resolved lock entries; prints \"package: updated json (3 locked)\""
+    (package/update \"json\")   ;~> the re-resolved lock entries; prints \"package: updated json (3 locked)\""
   (package-in-project
     (fn (root)
       (if (empty? *project-dependencies*)
@@ -1734,7 +1734,7 @@ temp, and the second rename would find it gone.
 (defn add (name & spec)
   "Add a dependency to project.blsp and re-lock. `name` is the require-name; `spec` is `:path PATH`, `:git URL :ref REF`, `:git URL :version RANGE` (newest matching tag, ADR-209), or `:tarball URL :sha256 HEX` (strings). A :git/:tarball dep is fetched into _deps/ as part of the re-lock. Backs `nest add`.
 
-    (package/add \"json\" :git \"https://github.com/me/json\" :version \"^1.2.0\")   ;=> prints \"package: added json\" — project.blsp edited, lock rewritten"
+    (package/add \"json\" :git \"https://github.com/me/json\" :version \"^1.2.0\")   ;~> prints \"package: added json\" — project.blsp edited, lock rewritten"
   ;; Checked BEFORE anything is written, so a bad name can't leave a half-edited
   ;; manifest behind.
   (when (not (project/valid-dep-name? name))
@@ -1778,7 +1778,7 @@ temp, and the second rename would find it gone.
 (defn remove-dep (name)
   "Remove dependency `name` from project.blsp and re-lock (an empty lock if no deps remain). Backs `nest remove`.
 
-    (package/remove-dep \"json\")   ;=> prints \"package: removed json\" — project.blsp edited, lock rewritten"
+    (package/remove-dep \"json\")   ;~> prints \"package: removed json\" — project.blsp edited, lock rewritten"
   (package-in-project
     (fn (root)
       (let (name-sym (symbol name))
@@ -1825,7 +1825,7 @@ are a plist: `:index <base-url>` overrides the configured `:registry`, and
 `:enhances <app>` narrows the results to packages that declare they plug into that
 application (`nest search --enhances bedit zig`). Backs `nest search`.
 
-    (package/search \"json\" :enhances \"bedit\")   ;=> nil — one name / version / description line printed per hit"
+    (package/search \"json\" :enhances \"bedit\")   ;~> nil — one name / version / description line printed per hit"
   (let (term-string (or term "")
         enhances (plist-get opts :enhances)
         base (registry-base-for (plist-get opts :index))
@@ -1950,7 +1950,7 @@ ordinary library, which the server stores as \"nothing\"."
 written 0600), and print the public key to share so others can pin it (TOFU, ADR-212). Refuses
 to overwrite an existing key unless `:force true`. Backs `nest key gen`.
 
-    (package/key-gen :force true)   ;=> \"3b6a27bc…\" — the public key, hex; the keypair written"
+    (package/key-gen :force true)   ;~> \"3b6a27bc…\" — the public key, hex; the keypair written"
   (let (p (package-signing-key-path))
     (when (and (file/exists? p) (not (plist-get opts :force)))
       (error "package: a signing key already exists at "
@@ -2007,7 +2007,7 @@ just built and tested the thing being published.
 
 A declared constraint is returned untouched; nil derives `\">= \"` plus `(system/brood-version)`.
 
-    (package/publish-brood-constraint \">= 0.9\") → \">= 0.9\""
+    (package/publish-brood-constraint \">= 0.9\") ;=> \">= 0.9\""
   (or declared (str ">= " (system/brood-version))))
 
 (defn- report-brood-constraint (declared)
@@ -2061,7 +2061,7 @@ the registry records the URL and every downloader verifies the bytes it fetches 
 ($HIVE_TOKEN or the `:registry-token` config). Releases are immutable — a version already
 published is refused. Backs `nest publish`.
 
-    (package/publish :index \"https://hive.example.org\")   ;=> the release posted; raises when the version is already published"
+    (package/publish :index \"https://hive.example.org\")   ;~> the release posted; raises when the version is already published"
   (let (index (plist-get opts :index)
         source-url (plist-get opts :source-url))
     (package-in-project (fn (root)
@@ -2177,7 +2177,7 @@ the one touched, wherever it appears."
 top-level key, never a dependency's `:version`. `level` is \"patch\" (default), \"minor\", or
 \"major\". Returns the new version string.
 
-    (package/bump-version \"/path/to/proj\" \"minor\")   ;=> \"0.2.0\" — from \"0.1.3\""
+    (package/bump-version \"/path/to/proj\" \"minor\")   ;~> \"0.2.0\" — from \"0.1.3\""
   (let (manifest (path/join root "project.blsp")
         [version new-src] (package-manifest-bump-version (file/slurp manifest) (or level "patch")))
     (file/spit manifest new-src)
@@ -2198,7 +2198,7 @@ top-level key, never a dependency's `:version`. `level` is \"patch\" (default), 
   "`nest publish --bump LEVEL`: bump the project's own version, commit the bump, then publish.
 Stops with an error — publishing nothing — when the bump cannot be committed.
 
-    (package/release \"patch\")   ;=> the bump committed, then the release published"
+    (package/release \"patch\")   ;~> the bump committed, then the release published"
   (package-release-in (project/require-root "package")
     level
     (fn () (apply publish opts))))

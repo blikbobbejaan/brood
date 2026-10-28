@@ -16,13 +16,13 @@
 (defmodule bit
   "Bitwise operations on integers, plus the IEEE-754 float/bit reinterpretations.
 
-    (bit/and 12 10)          → 8
-    (bit/or 12 10)           → 14
-    (bit/xor 12 10)          → 6
-    (bit/shift-left 1 10)    → 1024
-    (bit/shift-right 1024 3) → 128
-    (bit/count 255)          → 8
-    (bit/positions 10)       → [1 3]
+    (bit/and 12 10)          ;=> 8
+    (bit/or 12 10)           ;=> 14
+    (bit/xor 12 10)          ;=> 6
+    (bit/shift-left 1 10)    ;=> 1024
+    (bit/shift-right 1024 3) ;=> 128
+    (bit/count 255)          ;=> 8
+    (bit/positions 10)       ;=> [1 3]
 
 `bit/float->` and `bit/->float` reinterpret the bits of an IEEE-754 double (they do not
 convert the value): `(bit/->float (bit/float-> 1.5))` → `1.5`. Widths follow the operand —

@@ -78,7 +78,7 @@
   "Diff two sequences (lists or vectors) by value equality. Returns a list of
 `[:keep v]`, `[:delete v]`, and `[:insert v]` operations that transform `a` into `b`.
 
-    (diff/seq [1 2 3] [1 3])   → ([:keep 1] [:delete 2] [:keep 3])"
+    (diff/seq [1 2 3] [1 3])   ;=> ([:keep 1] [:delete 2] [:keep 3])"
   (let (av (into [] (/seq a))
         bv (into [] (/seq b))
         m (count av)
@@ -94,7 +94,7 @@
   "Diff two strings line-by-line. `a` and `b` are split on `\\n` first.
 Returns a list of `[:keep line]`, `[:delete line]`, `[:insert line]` ops.
 
-    (count (diff/lines \"a\nb\" \"a\nc\"))   → 3"
+    (count (diff/lines \"a\nb\" \"a\nc\"))   ;=> 3"
   (seq (string/split a "\n") (string/split b "\n")))
 
 ;; ---- the line diff of two whole texts, native (ADR-468) ---------------------
@@ -113,8 +113,8 @@ an empty one, so a lone trailing-newline difference is no change. Placed where `
 places it: a line added in a run of equal ones (closing brackets, blank lines) is marked
 where a reader sees it added.
 
-    (diff/line-hunks \"a\\nb\\nc\\n\" \"a\\nx\\nc\\n\")   → [[1 1 1 1]]
-    (diff/line-hunks \"a\\nc\" \"a\\nb\\nc\\n\")   → [[1 0 1 1]]"
+    (diff/line-hunks \"a\\nb\\nc\\n\" \"a\\nx\\nc\\n\")   ;=> [[1 1 1 1]]
+    (diff/line-hunks \"a\\nc\" \"a\\nb\\nc\\n\")   ;=> [[1 0 1 1]]"
   (%diff-line-hunks old new))
 
 (defn line-status (old new)
@@ -123,8 +123,8 @@ where a reader sees it added.
 the first lines that replace removed ones are `:modified` and the rest `:added`; a pure
 deletion marks the line that follows it `:deleted`. Diff-hl's reading of a hunk.
 
-    (diff/line-status \"a\\nb\\nc\\n\" \"a\\nx\\ny\\nc\\n\")   → {1 :modified 2 :added}
-    (diff/line-status \"a\\nb\\nc\\n\" \"a\\nc\\n\")   → {1 :deleted}"
+    (diff/line-status \"a\\nb\\nc\\n\" \"a\\nx\\ny\\nc\\n\")   ;=> {1 :modified 2 :added}
+    (diff/line-status \"a\\nb\\nc\\n\" \"a\\nc\\n\")   ;=> {1 :deleted}"
   (fold (line-hunks old new)
     {}
     (fn (status hunk)
@@ -142,7 +142,7 @@ deletion marks the line that follows it `:deleted`. Diff-hl's reading of a hunk.
   "Count `[:keep]`, `[:delete]`, and `[:insert]` operations in a diff result.
 Returns `{:keeps n :deletes n :inserts n}`.
 
-    (diff/summary (diff/lines \"a\\nb\\nc\" \"a\\nx\\nc\"))   → {:keeps 2 :deletes 1 :inserts 1}"
+    (diff/summary (diff/lines \"a\\nb\\nc\" \"a\\nx\\nc\"))   ;=> {:keeps 2 :deletes 1 :inserts 1}"
   (fold ops
     {:keeps 0 :deletes 0 :inserts 0}
     (fn (acc op)
@@ -157,7 +157,7 @@ Returns `{:keeps n :deletes n :inserts n}`.
 only for verification (`:delete` and `:keep` ops are expected to match `a` in
 order); the output is built from `:keep` and `:insert` ops.
 
-    (diff/patch [1 2 3] (diff/seq [1 2 3] [1 3]))   → (1 3)"
+    (diff/patch [1 2 3] (diff/seq [1 2 3] [1 3]))   ;=> (1 3)"
   (map (seq/filter ops (fn (op) (not (= (first op) :delete)))) second))
 
 (defn unified (ops context-lines)
@@ -165,7 +165,7 @@ order); the output is built from `:keep` and `:insert` ops.
 of context around each change. Returns a list of strings (one per line of output),
 each prefixed with ` ` (keep), `-` (delete), or `+` (insert).
 
-    (diff/unified (diff/seq [\"a\" \"b\"] [\"a\" \"c\"]) 3)   → (\" a\" \"+c\" \"-b\")"
+    (diff/unified (diff/seq [\"a\" \"b\"] [\"a\" \"c\"]) 3)   ;=> (\" a\" \"+c\" \"-b\")"
   (map ops
     (fn (op)
       (let (tag (first op)
@@ -203,7 +203,7 @@ each prefixed with ` ` (keep), `-` (delete), or `+` (insert).
 :context}` (the text after the closing `@@`, usually the enclosing function), or nil when
 `line` is not a two-way hunk header.
 
-    (:new-start (diff/hunk-header \"@@ -10,3 +12,4 @@ defn f\"))   → 12"
+    (:new-start (diff/hunk-header \"@@ -10,3 +12,4 @@ defn f\"))   ;=> 12"
   (if (not (string/starts-with? line "@@ -"))
     nil
     (let (parts (string/split line " "))
@@ -320,7 +320,7 @@ hunk (`diff --git`, `index`, `---`, `+++`, mode and rename lines); each hunk is
 body lines with their ` `/`+`/`-` prefix. A path is nil on the /dev/null side of an added
 or deleted file.
 
-    (count (:hunks (first (diff/parse-unified \"--- a/f\\n+++ b/f\\n@@ -1 +1 @@\\n-a\\n+b\\n\"))))   → 1"
+    (count (:hunks (first (diff/parse-unified \"--- a/f\\n+++ b/f\\n@@ -1 +1 @@\\n-a\\n+b\\n\"))))   ;=> 1"
   (if (or (nil? text) (= (string/trim text) ""))
     []
     (let (st (fold (string/split text "\n")
@@ -335,7 +335,7 @@ or deleted file.
 newline-terminated — `git apply` calls a patch whose last line has no newline corrupt.
 Hand it to `git apply --cached` to stage the hunk, add `--reverse` to unstage it.
 
-    (diff/hunk-patch {:headers [\"--- a/f\" \"+++ b/f\"]} {:header \"@@ -1 +1 @@\" :lines [\"-a\" \"+b\"]})   → \"--- a/f\\n+++ b/f\\n@@ -1 +1 @@\\n-a\\n+b\\n\""
+    (diff/hunk-patch {:headers [\"--- a/f\" \"+++ b/f\"]} {:header \"@@ -1 +1 @@\" :lines [\"-a\" \"+b\"]})   ;=> \"--- a/f\\n+++ b/f\\n@@ -1 +1 @@\\n-a\\n+b\\n\""
   (str (string/join (append (:headers file) [(:header hunk)] (:lines hunk)) "\n") "\n"))
 
 (defn- header-line (os oc ns nc context)
@@ -357,7 +357,7 @@ context; for a patch applied in REVERSE (`reverse?` — unstaging, discarding) t
 swap, an unselected `-` dropped and an unselected `+` kept as context. The header's
 counts are recomputed; nil when the range holds no change at all.
 
-    (:lines (diff/hunk-select {:header \"@@ -1,2 +1,2 @@\" :old-start 1 :new-start 1 :lines [\"-a\" \"-b\" \"+c\"]} 1 3))   → [\" a\" \"-b\" \"+c\"]"
+    (:lines (diff/hunk-select {:header \"@@ -1,2 +1,2 @@\" :old-start 1 :new-start 1 :lines [\"-a\" \"-b\" \"+c\"]} 1 3))   ;=> [\" a\" \"-b\" \"+c\"]"
   (let (lines (:lines hunk)
         kept (fold (range (count lines))
                {:out '() :dropped? false :changes 0}
@@ -407,11 +407,11 @@ counts are recomputed; nil when the range holds no change at all.
   "The line of the NEW file that body line `i` of `hunk` is, or sits at — for a removed
 line, the line after which it was removed. What a jump from a diff to its file lands on.
 
-    (diff/hunk-new-line {:new-start 10 :lines [\" a\" \"-b\" \"+c\"]} 2)   → 11"
+    (diff/hunk-new-line {:new-start 10 :lines [\" a\" \"-b\" \"+c\"]} 2)   ;=> 11"
   (side-line hunk i :new-start "-"))
 
 (defn hunk-old-line (hunk:map i:int -> int)
   "The line of the OLD file that body line `i` of `hunk` is, or sits at.
 
-    (diff/hunk-old-line {:old-start 10 :lines [\" a\" \"-b\" \"+c\"]} 1)   → 11"
+    (diff/hunk-old-line {:old-start 10 :lines [\" a\" \"-b\" \"+c\"]} 1)   ;=> 11"
   (side-line hunk i :old-start "+"))

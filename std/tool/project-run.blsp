@@ -183,7 +183,7 @@ Returns the coverage percentage (nil when none was measured)."
 (defn run-tests (& opts)
   "Discover, load (register-only), and run the project's whole test suite once, from the cwd. `opts` pass through to `run-tests` (e.g. `:slow`). Runs an advisory `check` pre-flight. Errors if not in a project; a red run raises `test/suite-failed`. Backs `nest test`.
 
-    (project-run/run-tests :slow)   ;=> the summary printed; raises test/suite-failed on a red run"
+    (project-run/run-tests :slow)   ;~> the summary printed; raises test/suite-failed on a red run"
   (let (root (project-load-for-tests "run-tests")
         all-files (project-test-files root)
         ;; `--stale` drops any test file whose transitive deps are unchanged since it last
@@ -288,7 +288,7 @@ mean on a whole-project run — `:failed` resolves against the project's record 
 is updated afterwards, `:cover` instruments the sources; outside one it is the scoped run
 alone.
 
-    (project-run/run-named-tests [\"tests/parse_test.blsp\"] :failed)   ;=> the summary printed; each file run in its own rolled-back scope"
+    (project-run/run-named-tests [\"tests/parse_test.blsp\"] :failed)   ;~> the summary printed; each file run in its own rolled-back scope"
   (let (root (project/find-root (file/cwd)))
     (if (nil? root)
       (do
@@ -305,7 +305,7 @@ alone.
 returns the structured result `{:total :passed :failed :failed-assertions :ms :results [...]}`
 instead of printing and raising on failure. Backs the `nest mcp` `run-tests` tool.
 
-    (project-run/run-tests-structured)   ;=> {:total 42 :passed 41 :failed 1 :failed-assertions 1 :ms 830 :results […]}"
+    (project-run/run-tests-structured)   ;~> {:total 42 :passed 41 :failed 1 :failed-assertions 1 :ms 830 :results […]}"
   (let (root (project-load-for-tests "run-tests-structured"))
     (/apply test/run-tests-scoped-structured
       (map (project-test-files root) (fn (file) (fn () (reflect/load file))))
@@ -327,7 +327,7 @@ function or an application (`defapp`). Raises the error a real boot would when i
 missing or neither — `who` names the caller in its text. [[project-entry-fn]] turns it
 into the callable a boot runs.
 
-    (project-run/project-entry \"run\" 'myapp 'main)   ;=> myapp/main's value, or raises \"run: entry fn 'main' is not defined …\""
+    (project-run/project-entry \"run\" 'myapp 'main)   ;~> myapp/main's value, or raises \"run: entry fn 'main' is not defined …\""
   (let (qual (symbol (str (->string modname) "/" (->string fname)))
         target (cond (bound? qual) qual (bound? fname) fname else nil))
     (when (nil? target)
@@ -343,7 +343,7 @@ or raise the error a real boot would — `who` names the caller in its text. An 
 (`defapp`, ADR-436) resolves to a function that runs it. The ONE implementation `run`,
 `check-boot` and a released bundle share.
 
-    (project-run/project-entry-fn \"run\" 'myapp 'main)   ;=> the callable myapp/main, or raises \"run: no entry point: …\""
+    (project-run/project-entry-fn \"run\" 'myapp 'main)   ;~> the callable myapp/main, or raises \"run: no entry point: …\""
   (let (entry (project-entry who modname fname))
     (if (application/app? entry) (fn (& _args) (application/run entry)) entry)))
 
@@ -351,7 +351,7 @@ or raise the error a real boot would — `who` names the caller in its text. An 
   "The line both boot checks print on success: the entry they resolved, what they loaded
 (`loaded`, e.g. `\"12 source files loaded\"`) and what they ran (`outcome`).
 
-    (project-run/boot-ok-message 'app 'main \"3 modules loaded\" \"nothing run\")   ;=> \"boot ok: app/main (3 modules loaded, nothing run)\""
+    (project-run/boot-ok-message 'app 'main \"3 modules loaded\" \"nothing run\")   ;~> \"boot ok: app/main (3 modules loaded, nothing run)\""
   (str "boot ok: " (->string modname) "/" (->string fname) " (" loaded ", " outcome ")"))
 
 ;; Why the entry point is missing, phrased as the thing the user can act on.
@@ -362,7 +362,7 @@ or raise the error a real boot would — `who` names the caller in its text. An 
   "Why the entry point `modname` is missing, phrased as the thing the user can act on: no
 source paths, no such module under them, or no `:main` naming it.
 
-    (project-run/project-no-entry-advice 'myapp)   ;=> \"no entry point: `:main` names module 'myapp', which does not exist (looked in src)\""
+    (project-run/project-no-entry-advice 'myapp)   ;~> \"no entry point: `:main` names module 'myapp', which does not exist (looked in src)\""
   (let (name (->string modname)
         where (string/join *project-source-paths* ", "))
     (cond
@@ -403,7 +403,7 @@ source paths, no such module under them, or no `:main` naming it.
 (defn run (args &optional no-check? watching?)
   "Run the project's entry point (default module `main`, fn `main`; overridable via the manifest's `:main`), passing `args` (a list of CLI string arguments). Runs the checker over the entry point's require-closure first and REFUSES to launch over an unbound symbol (ADR-304) — other warnings print and do not block; `no-check?` (the `--no-check` flag) skips the pre-flight and launches regardless. Errors if not in a project or the entry fn is missing/uncallable. Backs `nest run`.
 
-    (project-run/run [\"--port\" \"8080\"])   ;=> whatever the entry fn returns, after the require-closure pre-flight"
+    (project-run/run [\"--port\" \"8080\"])   ;~> whatever the entry fn returns, after the require-closure pre-flight"
   (let (root (project/require-root "run"))
     (project/setup root)
     ;; A `--main` override (set via `set-project-main`) wins over the manifest's
@@ -463,7 +463,7 @@ point is missing or not callable, or if an application fails to start. Backs
 The gate between `nest check` (names resolve) and `nest test` (the suite passes): neither
 of those loads the entry point, which is where a stale dependency actually dies (KI-66).
 
-    (project-run/check-boot)   ;=> 0 — every module loaded and :main resolved; raises otherwise"
+    (project-run/check-boot)   ;~> 0 — every module loaded and :main resolved; raises otherwise"
   (let (root (project/require-root "check-boot"))
     (project/setup root)
     ;; Every inferred load is EAGER for this run (ADR-335): a qualified reference into a

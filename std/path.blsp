@@ -40,7 +40,7 @@
   "The last path component — everything after the final /. A trailing slash is
 ignored so `(basename \"/usr/bin/\")` returns `\"bin\"`. `(basename \"/\")` returns `\"/\"`.
 
-    (path/basename \"/a/b/c.txt\")   → \"c.txt\""
+    (path/basename \"/a/b/c.txt\")   ;=> \"c.txt\""
   (let (n (string/length p)
         e (if (and (> n 1) (= (string/char-at p (- n 1)) "/")) (- n 1) n)
         i (string/last-index-of p "/" e))
@@ -54,7 +54,7 @@ ignored so `(basename \"/usr/bin/\")` returns `\"bin\"`. `(basename \"/\")` retu
   "The directory part of `p` — everything up to but not including the final /.
 Returns `\".\"` for a bare name, `\"/\"` for the root.
 
-    (path/dirname \"/a/b/c.txt\")    → \"/a/b\""
+    (path/dirname \"/a/b/c.txt\")    ;=> \"/a/b\""
   (let (n (string/length p)
         e (if (and (> n 1) (= (string/char-at p (- n 1)) "/")) (- n 1) n)
         i (string/last-index-of p "/" e))
@@ -66,7 +66,7 @@ Returns `\".\"` for a bare name, `\"/\"` for the root.
 (defn extension (p:string -> string)
   "The extension of `p`'s basename including the dot (e.g. `\".txt\"`), or `\"\"`.
 
-    (path/extension \"/a/b/c.txt\")  → \".txt\""
+    (path/extension \"/a/b/c.txt\")  ;=> \".txt\""
   (let (b (basename p)
         n (string/length b)
         i (string/last-index-of b "."))
@@ -75,7 +75,7 @@ Returns `\".\"` for a bare name, `\"/\"` for the root.
 (defn stem (p)
   "The basename of `p` without its extension (`\"foo.tar.gz\"` → `\"foo.tar\"`).
 
-    (path/stem \"/a/b/c.txt\")       → \"c\""
+    (path/stem \"/a/b/c.txt\")       ;=> \"c\""
   (let (b (basename p)
         i (string/last-index-of b "."))
     (if (<= i 0) b (string/substring b 0 i))))
@@ -84,8 +84,8 @@ Returns `\".\"` for a bare name, `\"/\"` for the root.
   "Return `p` with its extension replaced by `ext` (which should include the dot,
 or be `\"\"` to remove the extension entirely).
 
-    (path/with-extension \"a/b.txt\" \".md\")   → \"a/b.md\"
-    (path/with-extension \"a/b.txt\" \"\")      → \"a/b\""
+    (path/with-extension \"a/b.txt\" \".md\")   ;=> \"a/b.md\"
+    (path/with-extension \"a/b.txt\" \"\")      ;=> \"a/b\""
   (let (d (dirname p) base (str (stem p) ext))
     (if (= d ".") base (str d "/" base))))
 
@@ -96,7 +96,7 @@ or be `\"\"` to remove the extension entirely).
 resets the path from that point, discarding everything before it. Returns `\".\"` for
 an empty argument list.
 
-    (path/join \"a\" \"b\" \"c.txt\")    → \"a/b/c.txt\""
+    (path/join \"a\" \"b\" \"c.txt\")    ;=> \"a/b/c.txt\""
   (join-loop (seq parts) nil))
 (sig join (& string -> string) :pure :total)
 
@@ -120,7 +120,7 @@ an empty argument list.
   "Split `p` into a list of components, dropping empty segments from
 redundant slashes. An absolute path starts with the `\"/\"` component.
 
-    (path/split \"a/b/c\")           → (\"a\" \"b\" \"c\")"
+    (path/split \"a/b/c\")           ;=> (\"a\" \"b\" \"c\")"
   (let (parts (seq/filter (string/split p "/") (fn (s) (not (= s "")))))
     (if (string/starts-with? p "/") (cons "/" parts) parts)))
 
@@ -130,7 +130,7 @@ redundant slashes. An absolute path starts with the `\"/\"` component.
   "Resolve `.` and `..` components in `p`. Does not touch the filesystem.
 `\"a/b/../c\"` → `\"a/c\"`;  `\"/a/b/../../c\"` → `\"/c\"`.
 
-    (path/normalize \"a/./b/../c\")  → \"a/c\""
+    (path/normalize \"a/./b/../c\")  ;=> \"a/c\""
   (let (absolute (string/starts-with? p "/")
         parts (seq/filter (string/split p "/") (fn (s) (not (or (= s "") (= s ".")))))
         resolved (normalize-reduce parts nil absolute))
@@ -161,7 +161,7 @@ redundant slashes. An absolute path starts with the `\"/\"` component.
 dropped and one `..` is emitted per remaining `base` component, so a fully
 divergent pair still yields a valid relative path (`/x/y` from `/a/b` → `../../x/y`).
 
-    (path/relative-to \"/a/b/c\" \"/a\")   → \"b/c\""
+    (path/relative-to \"/a/b/c\" \"/a\")   ;=> \"b/c\""
   (let (p-parts (seq/filter (string/split p "/") (fn (s) (not (= s ""))))
         base-parts (seq/filter (string/split base "/") (fn (s) (not (= s "")))))
     (relative-strip p-parts base-parts)))
@@ -187,14 +187,14 @@ divergent pair still yields a valid relative path (`/x/y` from `/a/b` → `../..
 (defn absolute? (p)
   "True if `p` is an absolute path (starts with `/`).
 
-    (path/absolute? \"/a\")          → true
-    (path/absolute? \"a\")           → false"
+    (path/absolute? \"/a\")          ;=> true
+    (path/absolute? \"a\")           ;=> false"
   (string/starts-with? p "/"))
 
 (defn relative? (p)
   "True if `p` is a relative path (does not start with `/`).
 
-    (path/relative? \"a\")           → true"
+    (path/relative? \"a\")           ;=> true"
   (not (string/starts-with? p "/")))
 
 ;; Filesystem existence/type predicates are I/O and live in `file`
@@ -217,8 +217,8 @@ among them — is joined onto `base` (default the current directory, `(file/cwd)
 string is returned as is. Makes a path absolute, not canonical — it does not collapse
 `.`/`..` segments.
 
-    (path/absolute? (path/absolute \"a\"))                     → true
-    (= (path/absolute \"~root/x\") (str (%user-home \"root\") \"/x\"))   → true"
+    (path/absolute? (path/absolute \"a\"))                     ;=> true
+    (= (path/absolute \"~root/x\") (str (%user-home \"root\") \"/x\"))   ;=> true"
   (cond
     (or (= path "") (string/starts-with? path "/")) path
     (= path "~") (or (%getenv "HOME") path)
@@ -232,7 +232,7 @@ string is returned as is. Makes a path absolute, not canonical — it does not c
 expansion, the way a shell prompt shows a directory. A path outside the home, or one
 that merely starts with the home's text (`/home/me2` under `/home/me`), is unchanged.
 
-    (path/abbreviate (str (%getenv \"HOME\") \"/src\"))   → \"~/src\""
+    (path/abbreviate (str (%getenv \"HOME\") \"/src\"))   ;=> \"~/src\""
   (let (home (%getenv "HOME"))
     (cond
       (or (nil? home) (= home "")) path
@@ -258,9 +258,9 @@ that merely starts with the home's text (`/home/me2` under `/home/me`), is uncha
 by a literal `$` ([[escape-env]] is the inverse). A variable that is not set stays as
 typed. Nothing else is read: no `~`, no glob, no command.
 
-    (path/expand-env \"/tmp/$$x\")                                   → \"/tmp/$x\"
-    (path/expand-env \"$BROOD_SURELY_UNSET/a\")                      → \"$BROOD_SURELY_UNSET/a\"
-    (= (path/expand-env \"${HOME}/a\") (str (%getenv \"HOME\") \"/a\"))   → true"
+    (path/expand-env \"/tmp/$$x\")                                   ;=> \"/tmp/$x\"
+    (path/expand-env \"$BROOD_SURELY_UNSET/a\")                      ;=> \"$BROOD_SURELY_UNSET/a\"
+    (= (path/expand-env \"${HOME}/a\") (str (%getenv \"HOME\") \"/a\"))   ;=> true"
   (regex/replace *env-reference*
     text
     (fn (found)
@@ -273,8 +273,8 @@ typed. Nothing else is read: no `~`, no glob, no command.
   "`path` with every `$` doubled, so [[expand-env]] and [[substitute]] read it back as
 exactly that name — how a file name from the disk goes into text that will be expanded.
 
-    (path/escape-env \"/tmp/a$b\")                      → \"/tmp/a$$b\"
-    (path/expand-env (path/escape-env \"/tmp/a$HOME\"))   → \"/tmp/a$HOME\""
+    (path/escape-env \"/tmp/a$b\")                      ;=> \"/tmp/a$$b\"
+    (path/expand-env (path/escape-env \"/tmp/a$HOME\"))   ;=> \"/tmp/a$HOME\""
   (string/replace path "$" "$$"))
 
 (defn- names-a-home? (component)
@@ -311,9 +311,9 @@ shadow. `keep?`, when given, is `(fn (directory component) -> bool)`: true when 
 `~name` `component` is a real entry of `directory` (the text before it, its variables
 expanded) and so is a file there, not a home.
 
-    (path/substitute-start \"~/src//etc/\")   → 6
-    (path/substitute-start \"/usr/lib/~/x\")  → 9
-    (path/substitute-start \"~/src/\")        → 0"
+    (path/substitute-start \"~/src//etc/\")   ;=> 6
+    (path/substitute-start \"/usr/lib/~/x\")  ;=> 9
+    (path/substitute-start \"~/src/\")        ;=> 0"
   (restart-scan text 0 (string/length text) 0 (or keep? never-kept) expand-env))
 
 (defn substitute (text:string &optional keep? -> string)
@@ -322,10 +322,10 @@ what follows the last `//` or `/~/` ([[substitute-start]]), with its variables e
 ([[expand-env]]). A variable whose value is an absolute path starts the path over too. A
 `~` stays a `~` — [[absolute]] expands it. `keep?` as in [[substitute-start]].
 
-    (path/substitute \"~/src//etc/hosts\")   → \"/etc/hosts\"
-    (path/substitute \"/usr/lib/~/notes\")   → \"~/notes\"
-    (path/substitute \"/tmp/$$x\")           → \"/tmp/$x\"
-    (path/substitute \"/srv/~/x\" (fn (directory component) true))   → \"/srv/~/x\""
+    (path/substitute \"~/src//etc/hosts\")   ;=> \"/etc/hosts\"
+    (path/substitute \"/usr/lib/~/notes\")   ;=> \"~/notes\"
+    (path/substitute \"/tmp/$$x\")           ;=> \"/tmp/$x\"
+    (path/substitute \"/srv/~/x\" (fn (directory component) true))   ;=> \"/srv/~/x\""
   (let (keep? (or keep? never-kept)
         typed (string/substring text (substitute-start text keep?) (string/length text))
         expanded (expand-env typed)
@@ -343,5 +343,5 @@ copies of the program fight over one file, and anyone on the machine can create 
 path first — as a symlink to something you own — so the `file/spit` overwrites their choice
 of file with your privileges. Neither is possible with a name they cannot predict.
 
-    (path/temp \"myapp-\")   ;=> \"/tmp/myapp-…32 random hex chars…\""
+    (path/temp \"myapp-\")   ;~> \"/tmp/myapp-…32 random hex chars…\""
   (path/join "/tmp" (str prefix (encoding/hex-encode-bytes (%random-bytes 16)))))

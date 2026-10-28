@@ -40,11 +40,11 @@ Comparing the ROUNDED value (`>= 10240` tenths, i.e. 1024 whole units) is what k
 (defn byte-size (n:int -> string)
   "`n` bytes as a short human string: whole bytes below 1 KB, one decimal above it.
 
-    (humanize/byte-size 512)       → \"512 B\"
-    (humanize/byte-size 1024)      → \"1.0 KB\"
-    (humanize/byte-size 13500)     → \"13.2 KB\"
-    (humanize/byte-size 4404019)   → \"4.2 MB\"
-    (humanize/byte-size 1048575)   → \"1.0 MB\""
+    (humanize/byte-size 512)       ;=> \"512 B\"
+    (humanize/byte-size 1024)      ;=> \"1.0 KB\"
+    (humanize/byte-size 13500)     ;=> \"13.2 KB\"
+    (humanize/byte-size 4404019)   ;=> \"4.2 MB\"
+    (humanize/byte-size 1048575)   ;=> \"1.0 MB\""
   (let ([div unit] (humanize-byte-unit n 1 humanize-byte-units))
     (if (= div 1)
       (str n " B")
@@ -55,10 +55,10 @@ Comparing the ROUNDED value (`>= 10240` tenths, i.e. 1024 whole units) is what k
   "`n` bytes the way `ls -h` writes it: lowercase unit, no space, and no decimal at ten
 units or more — the spelling for a column where every character costs.
 
-    (humanize/byte-size-short 900)     → \"900\"
-    (humanize/byte-size-short 1456)    → \"1.4k\"
-    (humanize/byte-size-short 12288)   → \"12k\"
-    (humanize/byte-size-short 4404019) → \"4.2m\""
+    (humanize/byte-size-short 900)     ;=> \"900\"
+    (humanize/byte-size-short 1456)    ;=> \"1.4k\"
+    (humanize/byte-size-short 12288)   ;=> \"12k\"
+    (humanize/byte-size-short 4404019) ;=> \"4.2m\""
   (let ([div unit] (humanize-byte-unit n 1 humanize-byte-units))
     (if (= div 1)
       (->string n)
@@ -79,13 +79,13 @@ units or more — the spelling for a column where every character costs.
 seconds below a minute, then `m` and `s` — the spelling a command uses to say how long it
 took. Negative input reads as `0ms` (a clock that went backwards is not a duration).
 
-    (humanize/duration 0)        → \"0ms\"
-    (humanize/duration 847)      → \"847ms\"
-    (humanize/duration 1500)     → \"1.5s\"
-    (humanize/duration 59900)    → \"59.9s\"
-    (humanize/duration 60000)    → \"1m 00s\"
-    (humanize/duration 125000)   → \"2m 05s\"
-    (humanize/duration 3725000)  → \"62m 05s\""
+    (humanize/duration 0)        ;=> \"0ms\"
+    (humanize/duration 847)      ;=> \"847ms\"
+    (humanize/duration 1500)     ;=> \"1.5s\"
+    (humanize/duration 59900)    ;=> \"59.9s\"
+    (humanize/duration 60000)    ;=> \"1m 00s\"
+    (humanize/duration 125000)   ;=> \"2m 05s\"
+    (humanize/duration 3725000)  ;=> \"62m 05s\""
   (cond
     (< ms 1) "0ms"
     (< ms 1000) (str ms "ms")

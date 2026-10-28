@@ -142,7 +142,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![num], int),
         &["x"],
-        "Round x toward negative infinity to an integer. Accepts the whole numeric tower; a ratio floors exactly (not through f64), so it stays correct past 2^53. Toward NEGATIVE infinity, so a negative argument rounds away from zero.\n\n    (math/floor 3.7)    → 3\n    (math/floor -3.2)   → -4",
+        "Round x toward negative infinity to an integer. Accepts the whole numeric tower; a ratio floors exactly (not through f64), so it stays correct past 2^53. Toward NEGATIVE infinity, so a negative argument rounds away from zero.\n\n    (math/floor 3.7)    ;=> 3\n    (math/floor -3.2)   ;=> -4",
         floor);
     // bitwise — integer bit-twiddling on the i64 two's-complement representation.
     // Table stakes for hashing, flags, and PRNGs (the std xorshift PRNG is built
@@ -152,7 +152,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![int, int], int),
         &["a", "b"],
-        "Bitwise AND of integers a and b.\n\n    (bit/and 12 10)   → 8",
+        "Bitwise AND of integers a and b.\n\n    (bit/and 12 10)   ;=> 8",
         bit_and,
     );
     primitives.def(
@@ -160,7 +160,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![int, int], int),
         &["a", "b"],
-        "Bitwise (inclusive) OR of integers a and b.\n\n    (bit/or 12 10)   → 14",
+        "Bitwise (inclusive) OR of integers a and b.\n\n    (bit/or 12 10)   ;=> 14",
         bit_or,
     );
     primitives.def(
@@ -168,7 +168,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![int, int], int),
         &["a", "b"],
-        "Bitwise exclusive-OR of integers a and b.\n\n    (bit/xor 12 10)   → 6",
+        "Bitwise exclusive-OR of integers a and b.\n\n    (bit/xor 12 10)   ;=> 6",
         bit_xor,
     );
     primitives.def(
@@ -176,7 +176,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![int], int),
         &["a"],
-        "Bitwise complement of integer a (two's-complement, so (bit/not n) = (- (- n) 1)).\n\n    (bit/not 12)   → -13",
+        "Bitwise complement of integer a (two's-complement, so (bit/not n) = (- (- n) 1)).\n\n    (bit/not 12)   ;=> -13",
         bit_not,
     );
     primitives.def(
@@ -184,7 +184,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![int, int], int),
         &["a", "n"],
-        "Shift integer a left by n bits (0 <= n < 64); bits shifted past bit 63 are discarded.\n\n    (bit/shift-left 12 10)   → 12288",
+        "Shift integer a left by n bits (0 <= n < 64); bits shifted past bit 63 are discarded.\n\n    (bit/shift-left 12 10)   ;=> 12288",
         bit_shift_left,
     );
     primitives.def(
@@ -192,7 +192,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![int, int], int),
         &["a", "n"],
-        "Arithmetic (sign-preserving) right shift of integer a by n bits (0 <= n < 64).\n\n    (bit/shift-right 12 10)   → 0",
+        "Arithmetic (sign-preserving) right shift of integer a by n bits (0 <= n < 64).\n\n    (bit/shift-right 12 10)   ;=> 0",
         bit_shift_right,
     );
     primitives.def(
@@ -200,14 +200,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![int], int),
         &["a"],
-        "Population count: the number of 1 bits in integer a's two's-complement representation (a negative a counts its sign bits, so (bit/count -1) = 64). For a bignum it is the popcount of the magnitude.\n\n    (bit/count 12)   → 2",
+        "Population count: the number of 1 bits in integer a's two's-complement representation (a negative a counts its sign bits, so (bit/count -1) = 64). For a bignum it is the popcount of the magnitude.\n\n    (bit/count 12)   ;=> 2",
         bit_count);
     primitives.def(
         "bit/positions",
         Arity::exact(1),
         Sig::new(vec![int], vec_ty),
         &["a"],
-        "A vector of the 0-based bit indices set in non-negative integer a, ascending (e.g. (bit/positions 6) = [1 2]). O(number of set bits) — for a bignum it scans the magnitude. The inverse of summing (bit/shift-left 1 i); handy for enumerating the set bits of an integer.\n\n    (bit/positions 12)   → [2 3]",
+        "A vector of the 0-based bit indices set in non-negative integer a, ascending (e.g. (bit/positions 6) = [1 2]). O(number of set bits) — for a bignum it scans the magnitude. The inverse of summing (bit/shift-left 1 i); handy for enumerating the set bits of an integer.\n\n    (bit/positions 12)   ;=> [2 3]",
         bit_positions);
     // Bit-level reinterpretation of a binary64 — not expressible over the other
     // primitives (no bitcast, no frexp), and the only way to compare two floats
@@ -217,14 +217,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![num], int),
         &["x"],
-        "The IEEE 754 binary64 bit pattern of x, as a non-negative integer (a bignum when the sign bit is set). Reinterpretation, not conversion — the only exact float comparison there is: it separates -0.0 from 0.0 and distinguishes NaN payloads, both of which = collapses. The inverse of bits->float.\n\n    (bit/float-> 12)   → 4622945017495814144",
+        "The IEEE 754 binary64 bit pattern of x, as a non-negative integer (a bignum when the sign bit is set). Reinterpretation, not conversion — the only exact float comparison there is: it separates -0.0 from 0.0 and distinguishes NaN payloads, both of which = collapses. The inverse of bits->float.\n\n    (bit/float-> 12)   ;=> 4622945017495814144",
         float_to_bits);
     primitives.def(
         "bit/->float",
         Arity::exact(1),
         Sig::new(vec![int], float),
         &["n"],
-        "The binary64 float whose bit pattern is n (0 <= n < 2^64). The inverse of float->bits.\n\n    (bit/->float 12)   → 6e-323",
+        "The binary64 float whose bit pattern is n (0 <= n < 2^64). The inverse of float->bits.\n\n    (bit/->float 12)   ;=> 6e-323",
         bits_to_float,
     );
     // `decimal` constructs an exact base-10 decimal from a string ("1.50"), an
@@ -234,14 +234,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string.union(num)], decimal_ty),
         &["x"],
-        "Construct an exact arbitrary-precision base-10 decimal from x: a string (\"1.50\"), an int (3), a bignum, or a float (converted from its shortest round-trip form, since a float is inexact). For money / Postgres numeric — values a float can't hold exactly. The literal form is a trailing M, e.g. 1.50M.\n\n    (decimal/of \"1.50\")   → 1.50M",
+        "Construct an exact arbitrary-precision base-10 decimal from x: a string (\"1.50\"), an int (3), a bignum, or a float (converted from its shortest round-trip form, since a float is inexact). For money / Postgres numeric — values a float can't hold exactly. The literal form is a trailing M, e.g. 1.50M.\n\n    (decimal/of \"1.50\")   ;=> 1.50M",
         prim_decimal);
     primitives.def(
         "decimal/->string",
         Arity::exact(1),
         Sig::new(vec![decimal_ty], string),
         &["d"],
-        "The canonical decimal string of decimal d (no M suffix).\n\n    (decimal/->string (decimal/of \"1.50\"))   → \"1.50\"",
+        "The canonical decimal string of decimal d (no M suffix).\n\n    (decimal/->string (decimal/of \"1.50\"))   ;=> \"1.50\"",
         prim_decimal_to_string,
     );
     primitives.def(
@@ -249,7 +249,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![decimal_ty], float),
         &["d"],
-        "Decimal d as an (inexact) float.\n\n    (decimal/->float (decimal/of \"1.50\"))   → 1.5",
+        "Decimal d as an (inexact) float.\n\n    (decimal/->float (decimal/of \"1.50\"))   ;=> 1.5",
         prim_decimal_to_float,
     );
     primitives.def(
@@ -357,7 +357,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::range(1, 2),
         Sig::with_optional(vec![string], vec![int], num.union(Ty::of(Tag::Failure))),
         &["s", "&optional", "radix"],
-        "Parse s strictly as an int (a bignum when out of i64 range), else a float, else a falsy failure value naming the input (unlike reflect/read-string). The inverse of str. With radix (2-36) the parse is integer-only in that base — how hex/octal/binary is read from DATA (in source, write the literal: 0xFF, 0b1010, 0o17); give the digits alone, no 0x/0b/0o prefix. A radix outside 2-36 raises.\n\n    (string/->number \"42\")   → 42\n    (string/->number \"1F\" 16)   → 31",
+        "Parse s strictly as an int (a bignum when out of i64 range), else a float, else a falsy failure value naming the input (unlike reflect/read-string). The inverse of str. With radix (2-36) the parse is integer-only in that base — how hex/octal/binary is read from DATA (in source, write the literal: 0xFF, 0b1010, 0o17); give the digits alone, no 0x/0b/0o prefix. A radix outside 2-36 raises.\n\n    (string/->number \"42\")   ;=> 42\n    (string/->number \"1F\" 16)   ;=> 31",
         string_to_number);
 }
 
