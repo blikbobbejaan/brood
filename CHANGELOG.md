@@ -6,16 +6,89 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+## v0.45.0 — C-g, one shape for errors, and macros at every level
+
+A busy program can now be stopped without killing it: C-g interrupts a running update or
+view at its next safepoint, long builtins and regex searches poll for it, and the UI loop
+puts the user's input ahead of background work. The language design pass began: every error
+the language raises is a map and `catch` takes a pattern, hygiene covers every binding site,
+and templates nest. Docstring examples are executed everywhere, and markdown blocks run.
+Several changes break callers (see **Changed**). The narrative is the devlog's 2026-10-26 to
+2026-10-28 entries.
+
+**Changed — breaking.**
+- Every error the language raises is a map (ADR-501). `error` raises
+  `{:kind :error :message …}`, `assert` `{:kind :assert …}`, and a pattern nothing matched
+  `{:kind :match :context :value :patterns …}` where it raised `[:match-error …]`; each has a
+  code (`E0090`–`E0092`), position and trace. Code that read a caught `error` as a string, or
+  matched the vector, changes; `error-message` reads every shape. `throw` still raises its
+  value as it is.
+- Template binders are renamed at every binding site (ADR-500): destructuring patterns,
+  `match`/`receive` clauses, and the standard binding macros (`when-let`, `if-let`, `for`,
+  `doseq`, `with`, `as->`, `catch`, and the params of `defn`, `defmethod`, `impl`). A macro
+  that relied on one of these binders being visible to the caller's code must say so with
+  `~'name`. A typed binder keeps its annotation, and a renamed parameter reads as written in
+  arglists, docs and arity errors.
+- Docstring examples: `form ;=> result` is an executed case everywhere, `form ;~> result`
+  an illustration that is checked but not run, and an indented `→` is reported as an old
+  marker. Examples name functions by their full namespace.
+- `supervisor/start-child` and `restart-child` reply a `failure` naming the child and the
+  cause, where they replied `[:error "…"]`; `stream/next`'s error arm is a `failure`
+  (ADR-310).
+
 **Added.**
-- `editor/treesit` face tables key on CONTEXT (ADR-486): a selector map `{:kind :parent
-  :field :nth}` colours a node by its parent's kind, the field it fills, or its place among
-  the parent's named children — HCL's block type, attribute name and function name, a Rust
-  or Go call's function. Matched in the kernel's span walk (`%tree-sitter-spans`,
-  `%tree-sitter-tree-spans`, which now take the face table itself); the most specific entry
-  wins. `face-table-problems` validates a table at registration.
-- `indent-column`'s spec takes `:verbatim` (ADR-486): node kinds whose interior lines are
-  content (a heredoc's body, a raw or triple-quoted string), answered with the indentation
-  they already have.
+- `catch` takes a pattern with an optional `:when` guard, and a `try` may have several; the
+  first that matches runs, and an error none matches is raised again from where it was
+  first raised (ADR-501).
+- Nested quasiquote (ADR-503): each `` ` `` raises the level and each `~`/`~@` lowers it, so
+  `~~x`, `~'~x` and `~@~xs` work and a macro can define a macro with a template. Free names
+  resolve to the defining module at every level.
+- Interrupts: a process can be interrupted at its next safepoint, opened and caught by
+  `proc/interruptible` (a region on the VM's own frame stack), and C-g quits a busy update
+  or view in the window, the terminal and served sessions (ADR-491). Long builtins, case
+  maps, string searches, compression, hashing and unbounded regex searches poll for it
+  (ADR-493); a `receive` inside an interrupt window parks on every engine (ADR-494), and so
+  does one in a `map`/`fold`/`reduce` callback (ADR-502).
+- The UI loop puts input before background (ADR-490): mailbox lanes, a fold budget and a
+  watchdog; a wait cursor while the loop is busy; mailbox lanes and `send-latest` cross a
+  node link, and a v11 node still links with a v10 one.
+- `editor/treesit`: face tables key on a node's context — `{:kind :parent :field :nth}`
+  selectors, the most specific entry winning, validated by `face-table-problems` (ADR-486)
+  — and match a node's text and nest their parent (ADR-487); `indent-column`'s spec takes
+  `:verbatim` node kinds; injections of another language's document, with `:exclude`
+  (ADR-489, ADR-496); a tree handle is owned by its process and never evicted by another's,
+  listed by `owned-trees` (ADR-495); grammars declared by path load at first use (ADR-481);
+  structural queries over a held tree (ADR-467).
+- A native line diff (ADR-468); `diff/map-line` follows a line through a diff and
+  `hunk-changes` reads a parsed hunk.
+- Fuzzy matching: optimal alignment, paths, orderless operators, a history boost and
+  narrowing (ADR-497).
+- `nest doctest` runs fenced markdown blocks, each in a process of its own, from the files
+  `:doc-paths` names.
+
+**Performance.**
+- A contract check costs what changed (ADR-480); an edit re-checks only what it reached
+  (ADR-485); a released bundle starts from its own startup image (ADR-484).
+- The editor: a lean line-state highlight cache (ADR-471), a rope diff that skips shared
+  leaves, a splice log that keeps a run as one entry (ADR-466), GPU quads replayed for an
+  unchanged fragment and only changed columns repainted, the caret blinked by the window
+  (ADR-469, ADR-470).
+- `reflect/eval` of a lone bound symbol is a table read (ADR-465); `(vector a …)` lowers to
+  one instruction; a scheduler wake stops reading the clock; `send-latest` and
+  `take-priority` stop walking the backlog.
+
+**Fixed.**
+- A rebound type predicate reaches native code that inlined it (KI-305).
+- An image section that does not decode is refused, never half-provided (KI-127).
+- `into` and `merge` no longer leak a record's identity into a plain map.
+- A pattern or typed binder in a module's macro template is no longer qualified to the
+  module, so it binds; a function broken twice in the debugger parks once, and a DAP session
+  removes only its own breakpoints.
+- `BROOD_UI_TRACE=1` no longer kills a released app at its first frame; a window's pointer
+  motion coalesces again; a multi-colour terminal line paints once.
+- Interrupt and lane fixes: a pending hard kill wins over an interrupt at a quantum
+  boundary, a superseded latest message is never handed over, a lane survives a locally
+  registered name, and a guest link cannot stop a loop with a wire quit key.
 
 ## v0.44.0 — WASI by grant, typed parameters, and the runtime's long week
 
