@@ -595,9 +595,11 @@
                                                     {:text "def"} :g})
         '()))))
 
-;; The installed grammars an editor fetched (bedit's ~/.config/bedit/grammars); a suite
+;; The installed grammars an editor fetched ($BROOD_TEST_GRAMMARS, else bedit's ~/.config/bedit/grammars); a suite
 ;; runs only when its library is there, so a machine without them stays green.
-(def tsm-grammar-dir (str (or (os/env "HOME") "") "/.config/bedit/grammars/"))
+(def tsm-grammar-dir
+  (str (or (os/env "BROOD_TEST_GRAMMARS") (str (or (os/env "HOME") "") "/.config/bedit/grammars"))
+    "/"))
 
 (defn tsm-installed? (lang)
   (let (path (str tsm-grammar-dir "libtree-sitter-" (->string lang) ".so"))
@@ -959,3 +961,173 @@
              [:block_start 17 18]
              [:body 21 26]
              [:block_end 27 28]))))))
+
+;; ADR-495: a tree handle is its owner's. Before it the handles lived in one runtime-wide LRU of
+;; 32, so a 33rd tree opened ANYWHERE — another test running beside this one — dropped the
+;; oldest, and "an edit inside an embedded document…" above saw `true` (a fresh parse) where
+;; it asked for `[[12 13]]`, once in a while. These say it deterministically.
+(when tsm-grammars?
+  (describe "tree handles are owned"
+    (test "a held tree outlives forty trees another process opens, and updates incrementally"
+      (let (tree (open-tree tsm-inject-src :elixir)
+            parent (self)
+            [child monitor] (spawn-monitor (let (others (into []
+                                                          (map (range 0 40)
+                                                            (fn (_)
+                                                              (open-tree tsm-inject-src :elixir)))))
+                                             (send parent [:opened others])
+                                             (receive (:done :ok) (after *test-wait-ms* :timeout))))
+            others (receive ([:opened others] others) (after *test-wait-ms* []))
+            edited (str (string/substring tsm-inject-src 0 12)
+                     "\""
+                     (string/substring tsm-inject-src 12 (string/length tsm-inject-src))))
+        (assert= (count others) 40)
+        (assert (tree-alive? tree))
+        (let (next (update-tree tree edited :elixir))
+          ;; reparsed from the held tree: what the edit changed, not `true`
+          (assert= (tree-changes next) [[12 13]])
+          (free-tree next))
+        ;; the child's trees go with it — and only its own
+        (send child :done)
+        (assert= (receive ([:down ^monitor _ _] :down) (after *test-wait-ms* :timeout)) :down)
+        (assert (every? others (fn (other) (not (tree-alive? other)))))
+        (assert (tree-alive? tree))
+        (free-tree tree)))
+
+    (test "a task's tree dies with it unless it gives the tree to the process it replies to"
+      (let (parent (self)
+            [_ kept-monitor] (spawn-monitor (let (tree (open-tree "x = 1\n" :elixir))
+                                              (send parent [:kept tree (give-tree tree parent)])))
+            [_ dropped-monitor] (spawn-monitor (send parent
+                                                 [:dropped (open-tree "y = 2\n" :elixir)]))
+            [kept given?] (receive
+                            ([:kept tree given?] [tree given?])
+                            (after *test-wait-ms* [nil :timeout]))
+            dropped (receive ([:dropped tree] tree) (after *test-wait-ms* nil)))
+        (receive ([:down ^kept-monitor _ _] :down) (after *test-wait-ms* :timeout))
+        (receive ([:down ^dropped-monitor _ _] :down) (after *test-wait-ms* :timeout))
+        (assert= given? true)
+        (assert (tree-alive? kept))
+        (assert= (tree-changes kept) true)
+        (assert (not (tree-alive? dropped)))
+        (assert= (tree-changes dropped) nil)
+        (assert= (free-tree kept) true)))
+
+    (test "only a tree's owner can give it away"
+      (let (tree (open-tree "x = 1\n" :elixir)
+            parent (self)
+            _ (spawn (send parent
+                       [:gave
+                         (check-allow :discarded-catch
+                           (try (give-tree tree (self)) (catch e (error-message e))))]))
+            answer (receive ([:gave answer] answer) (after *test-wait-ms* :timeout)))
+        (assert (includes? answer "does not own"))
+        (assert (tree-alive? tree))
+        (assert= (give-tree tree parent) true)
+        (free-tree tree)))))
+
+;; ADR-496: a rule's `:exclude` cuts the content's descendants it selects out of the embedded
+;; document, and they keep the host's colours; and pieces with a line break between them parse
+;; as separate lines.
+(when tsm-grammars?
+  (describe "injections: :exclude and line breaks"
+    (test "an excluded descendant keeps the host's colour and is not part of the document"
+      (let (src "y = \"def m#{x}\nend\n\"\n"
+            host {:string :str}
+            ruby {:string :rb-str :identifier :rb-id})
+        ;; without :exclude Ruby takes the whole text, the interpolation inside its string
+        (assert= (%tree-sitter-spans src
+                   :elixir host
+                   false
+                   {:rules [{:content :string :lang :ruby}] :faces {:ruby ruby}})
+          [[4 20 :rb-str]])
+        ;; with it the `#{x}` is the host's string, and Ruby parses the text on either side
+        (assert= (%tree-sitter-spans src
+                   :elixir host
+                   false
+                   {:rules [{:content :string :exclude :interpolation :lang :ruby}]
+                    :faces {:ruby ruby}})
+          [[4 10 :rb-str] [10 14 :str] [14 20 :rb-str]])
+        (assert= (count (editor/treesit/injection-problems {:rules [{:content :string
+                                                                     :exclude {:kind :interpolation
+                                                                               :feild 1}
+                                                                     :lang :ruby}]
+                                                            :faces {:ruby ruby}}))
+          1)))))
+
+;; The Dockerfile and bash grammars are not built in: the test reads them from
+;; $BROOD_TEST_GRAMMARS, else bedit's grammar directory, and is skipped without them. Loaded
+;; HERE, at file load, never inside a test: a load moves the grammar epoch, and a held tree in
+;; a test running beside it would then reparse from scratch.
+(defn- tsm-load-grammar? (file-name lang)
+  (let (path (str tsm-grammar-dir "libtree-sitter-" file-name ".so"))
+    (and (file/exists? path)
+      (check-allow :discarded-catch
+        (try (do (%tree-sitter-load-grammar path lang) true) (catch _ false))))))
+(def tsm-docker?
+  (and (tsm-load-grammar? "dockerfile" :dockerfile) (tsm-load-grammar? "bash" :bash)))
+
+(when tsm-docker?
+  (describe "injections: a Dockerfile heredoc as bash"
+    ;;  0         10      17      24   29                          53  56
+    ;;  RUN <<EOT\necho a\necho b\nEOT\nRUN cat <<EOF > /x && ls\nhi\nEOF\n
+    (def tsm-docker-src "RUN <<EOT\necho a\necho b\nEOT\nRUN cat <<EOF > /x && ls\nhi\nEOF\n")
+    (def tsm-docker-host {:heredoc_marker :marker :heredoc_end :end})
+    (def tsm-docker-bash {:command_name :cmd :word :w :ERROR :err :file_redirect :redirect})
+
+    (test "the <<EOT marker and the closing EOT stay the host's; bash parses the rest"
+      (assert= (%tree-sitter-spans tsm-docker-src
+                 :dockerfile tsm-docker-host
+                 false
+                 {:rules [{:content {:kind :shell_fragment :parent :shell_command}
+                           :exclude :heredoc_marker
+                           :lang :bash}
+                           {:content :heredoc_block :exclude :heredoc_end :lang :bash}]
+                  :faces {:bash tsm-docker-bash}})
+        [[4 9 :marker]
+          [10 14 :cmd]
+          [15 16 :w]
+          [17 21 :cmd]
+          [22 23 :w]
+          [24 27 :end]
+          [32 35 :cmd]
+          [36 41 :marker]
+          [42 46 :redirect]
+          [50 52 :cmd]
+          [53 55 :cmd]
+          [56 59 :end]]))
+
+    (test "heredoc lines handed over one by one still parse as lines"
+      ;; before ADR-496 the parser saw `echo a echo b`: the second `echo` was an argument
+      (assert= (%tree-sitter-spans tsm-docker-src
+                 :dockerfile tsm-docker-host
+                 false
+                 {:rules [{:content :heredoc_line :lang :bash}] :faces {:bash tsm-docker-bash}})
+        [[4 9 :marker]
+          [10 14 :cmd]
+          [15 16 :w]
+          [17 21 :cmd]
+          [22 23 :w]
+          [24 27 :end]
+          [36 41 :marker]
+          [53 55 :cmd]
+          [56 59 :end]]))))
+
+;; ADR-495: a holder's sweep — what the calling process owns, so it can free what it lost track of.
+(when tsm-grammars?
+  (describe "owned-trees"
+    (test "lists the trees this process owns: not a freed one, not another process's"
+      (let (parent (self)
+            kept (open-tree "x = 1\n" :elixir)
+            freed (open-tree "y = 2\n" :elixir)
+            [child _] (spawn-monitor (let (theirs (open-tree "z = 3\n" :elixir))
+                                       (send parent [:theirs theirs])
+                                       (receive (:done :ok) (after *test-wait-ms* :timeout))))
+            theirs (receive ([:theirs tree] tree) (after *test-wait-ms* nil)))
+        (free-tree freed)
+        ;; a test runs in its own process, so this one owns exactly what it opened
+        (assert= (owned-trees) [kept])
+        (is (tree-alive? theirs))
+        (free-tree kept)
+        (assert= (owned-trees) [])
+        (send child :done)))))

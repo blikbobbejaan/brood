@@ -4373,6 +4373,82 @@ files, `mailbox_order`, `doc_examples`, `audit`; `cargo test -p cli --test serve
 distribution` (46); clippy (gui, treesit-grammars, all targets); `nest check` over
 std/tests/examples and `--strict` over std+tests, zero warnings. Nothing was measured.
 
+2026-10-28 (ADR-495, tree handles are owned): the tree-sitter handle registry was a
+runtime-wide LRU of 32. A 33rd tree anywhere silently dropped the oldest: bedit with many
+tree-sitter buffers fell back to full reparses, and tests running in parallel evicted each
+other's trees, which is the read-the-code explanation of the one-off `treesit_module` failure
+("an edit inside an embedded document…" saw `true`, a fresh parse). Now a handle is owned by
+the process that opened or reparsed it (the `OwnedTable` behind sockets, children and wasm).
+It is freed by `free-tree` or by its owner's exit, before the `[:down]`, and never evicted.
+`%tree-sitter-tree-give` / `editor/treesit/give-tree` hand it to another local process, so
+an off-loop task gives its tree to the editor before replying (bedit's `treewarm` and the
+off-loop reparse must now do this). Deterministic tests: a held tree outlives 40 opened by
+another process, and its update is incremental. A task's tree dies with the task unless
+given. Only the owner gives. Run here: `treesit_module` (81), `tree_sitter`, `doc_examples`,
+`audit`; `cargo test -p brood --lib tree_handle_tests owned::tests`; clippy (treesit-grammars
+all targets, and no default features); cargo fmt. `process_wide_statics` fails on main
+already (`builtins/terminal/native.rs FORWARDER` undeclared), not from this change. Nothing
+was measured.
+
+2026-10-28 (ADR-496, injection `:exclude` and line breaks): an injection rule can now name
+an `:exclude` selector. The content's descendants it selects leave the embedded document and
+keep the host's colours, so a Dockerfile `RUN <<EOT`'s marker is no longer bash's `ERROR`.
+The last line break in a gap between two pieces is now parsed with them (not coloured), so
+heredoc lines given one by one no longer run together. Before this change the second
+`echo a` / `echo b` line's `echo` was an argument. Validated in `injection-problems`. Also
+fixed: `process_wide_statics`, red on main since ADR-491, now declares the terminal's
+`FORWARDER`. Run here: `treesit_module` (84, the Dockerfile tests with bedit's grammars),
+`tree_sitter`, `doc_examples`, `audit`; `cargo test -p brood --lib treesit` (11) and
+`process_wide_statics`; clippy (treesit-grammars, all targets); cargo fmt. Nothing was
+measured.
+
+2026-10-28 (ADR-495 follow-up, `owned-trees`): `%tree-sitter-owned-trees` /
+`editor/treesit/owned-trees` list the tree handles the calling process owns, so a holder can
+sweep handles it lost track of. A turn that opened a tree and was then rolled back used to be
+cleaned up by the 32-entry LRU, and is now held until its owner exits unless swept. bedit's
+`syntaxtree` sweeps on its idle beat. Run here: `treesit_module` (85; the new test was red
+before), `doc_examples`, `audit`, `cargo test --lib owned::`; clippy and fmt.
+2026-10-28 (ADR-493, ADR-491's two limits): an UNBOUNDED regex pattern over a text past a
+window is now STEPPED — its lazy DFA driven a byte at a time by a loop of ours
+(`regex_native::find_stepped`, `hybrid`'s `find_fwd`/`find_rev` without the unrolling, the
+prefix prefilter kept and confined to the window), the DFA state carried across an interrupt
+poll every 64 KB; every search, the lexer's and the anchored longest-match walk's included,
+goes through one `find_polled`. Left as one search: an unbounded pattern with a Unicode `\b`
+over non-ASCII text (the lazy DFA quits; `meta` answers) and the groups of one match a window
+long. And interrupt windows NEST: each has a depth, a request is raised for the innermost
+window open, a ceiling for its own window, only that window's `proc/interruptible` answers,
+and closing it consumes the interrupt — Emacs's `with-local-quit`. A region carries its
+window depth instead of `owner`. Run here: `cargo test -p brood --test interrupt`,
+`cargo test -p brood --lib regex_native process::interrupt`, `doc_examples`, `audit`,
+`regex`, `ui_test`; clippy; cargo fmt. Nothing was measured.
+
+2026-10-28 (ADR-493 follow-up, the two regex corners): a Pike VM of ours
+(`regex_native::pike_search`, regex-automata's `pikevm::search_imp` over its public
+Thompson NFA, a poll per position) now takes the searches the lazy DFA quits on (a Unicode
+`\b` before non-ASCII text) and the groups of a match longer than a window; the capture
+engines have no step API and cannot be resumed across windows. Checked against `meta` for
+every slot over twenty-two patterns × ten texts at every start. Run here: `cargo test -p
+brood --lib regex_native`, `--test interrupt`, `doc_examples`, `audit`, `regex`; clippy;
+cargo fmt. Nothing was measured.
+2026-10-28 (ADR-494, a `receive` in an interrupt window parks on the tree-walker and through
+`apply`): ADR-491's region covered a VM thunk only. The tier-0 machine now runs
+`proc/interruptible` as a frame (`KontKind::Interruptible`, beside `Try`/`Binding`), so a
+`receive` in the window parks a capturing machine; the VM's region unfolds `(apply
+proc/interruptible …)`, and the JIT fences a chunk that reads the builtin as a value. A thin
+wrapper `(fn (c t) (proc/interruptible c t))` was a passthrough whose redirect called the
+builtin nested — `compute_passthrough` now refuses that head. Under a builtin's callback the
+thunk still runs nested and blocks its worker; the §7.4 handoff keeps the pool moving, and an
+interrupt reaches the waiter once it runs, as it does a parked one. The ui test's terminal
+C-g under `BROOD_TIER=0` found an older gap: the machine redid only `%receive` after a
+suspend, so `proc/receive-lane` on a capturing machine died with an empty `runtime error:`
+(a top-level `(proc/receive-lane 50)` at tier 0 did, before this change); it is parked and
+redone like `%receive` now. ADR-491's region test was red under `BROOD_TIER=0` (223 dirty
+blocks) and passes. New `crates/lisp/tests/interrupt_one_worker.rs` (a one-worker pool,
+`proc/info` barriers). Run here, at the default tier and `BROOD_TIER=0`: `--test interrupt`,
+`--test interrupt_one_worker`, the `receive_*` files, `exit_test`, `ui_test`; at the default
+tier `doc_examples`, `audit`, `--lib` filters `jit_subset` and `interrupt`; clippy (gui,
+treesit-grammars, all targets); cargo fmt. Each fix sabotaged red. Nothing was measured; the
+full suite was not run.
 2026-10-28 (docs: argument-order drift; the language design pass opens): `docs/language.md`,
 `docs/brood-for-claude.md`, `docs/parametric-result-types.md` and the `seq/scan` docstring
 still showed callback-first calls ADR-308 had turned around — `(reduce f init coll)`,

@@ -53,7 +53,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::range(4, 5),
         Sig::with_optional(vec![string, kw, list_ty.union(vec_ty).union(map_ty), any], vec![any], vec_ty),
         &["source", "lang", "table", "keywords?", "&optional", "injections"],
-        "The fontify query: [start end reported] for the OUTERMOST nodes the face `table` colours, in source order, not descending into one that matched. `table` is a list/vector of kind keywords (each reported as itself), or a map from SELECTOR to what a span reports: a selector is a kind keyword, or a context map {:kind :parent :field :nth :text} — the node's kind, its parent (a kind, or a selector map the parent must satisfy in turn, at most 3 maps deep), the field it fills in the parent (tree-sitter's field name), its index among the parent's named children and its exact source text (a string or a set of strings) — whose given constraints must all hold. When several match, the most specific wins: the node's own constraints first (:text over :field over :parent over :nth over :kind), then each ancestor selector's, then the narrower :text set, so any context entry beats the plain kind (ADR-486, ADR-487). With keywords? true, an anonymous token beginning with a letter is also reported, as kind :__keyword__ — the cross-language keyword rule, which no grammar names. Which kinds get which face stays with the caller; what this avoids is projecting every node into a map to read its kind and discard the rest, which is what a windowed fontify did on every keystroke. INJECTIONS (ADR-489): an optional {:rules [rule …] :faces {lang table}} naming the nodes whose text is another language's document — a rule is {:content selector :lang :bash} or {:content selector :lang-from kind :aliases {word lang}} (the language read from the first word of the content's sibling, or child, of that kind) — whose spans, from that language's :faces table, replace the host's over the content; a parent's matching children are ONE document (included ranges), and a document whose language has no table or no grammar keeps the host's colours.",
+        "The fontify query: [start end reported] for the OUTERMOST nodes the face `table` colours, in source order, not descending into one that matched. `table` is a list/vector of kind keywords (each reported as itself), or a map from SELECTOR to what a span reports: a selector is a kind keyword, or a context map {:kind :parent :field :nth :text} — the node's kind, its parent (a kind, or a selector map the parent must satisfy in turn, at most 3 maps deep), the field it fills in the parent (tree-sitter's field name), its index among the parent's named children and its exact source text (a string or a set of strings) — whose given constraints must all hold. When several match, the most specific wins: the node's own constraints first (:text over :field over :parent over :nth over :kind), then each ancestor selector's, then the narrower :text set, so any context entry beats the plain kind (ADR-486, ADR-487). With keywords? true, an anonymous token beginning with a letter is also reported, as kind :__keyword__ — the cross-language keyword rule, which no grammar names. Which kinds get which face stays with the caller; what this avoids is projecting every node into a map to read its kind and discard the rest, which is what a windowed fontify did on every keystroke. INJECTIONS (ADR-489): an optional {:rules [rule …] :faces {lang table}} naming the nodes whose text is another language's document — a rule is {:content selector :lang :bash} or {:content selector :lang-from kind :aliases {word lang}} (the language read from the first word of the content's sibling, or child, of that kind) — whose spans, from that language's :faces table, replace the host's over the content; a parent's matching children are ONE document (included ranges, joined by the line breaks between them), a rule's optional :exclude selector cuts the content's descendants it selects out of the document so they keep the host's colours (ADR-496), and a document whose language has no table or no grammar keeps the host's colours.",
         tree_sitter_spans);
     // Tree HANDLES (ADR-443): a whole document's parse tree, held across edits and
     // reparsed incrementally, queried over a range — what an editor's view keeps per
@@ -63,21 +63,21 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![rope.union(string), kw], ref_ty),
         &["text", "lang"],
-        "Parse a whole document — a rope (read chunk by chunk, never copied) or a string — with the tree-sitter grammar named by keyword lang, and return a tree HANDLE: an opaque ref naming the tree and the text it was parsed from. A handle is immutable: %tree-sitter-tree-reparse returns a new one and leaves this one answering as before. Handles live in a bounded runtime-wide registry (32, least recently used dropped first), so a dropped handle reads as nil from every query and reparsing from it is a full parse; free one you have replaced with %tree-sitter-tree-free. Sendable by value, so a task can parse off the loop and hand the handle back. Same grammar rules and errors as %tree-sitter-parse.",
+        "Parse a whole document — a rope (read chunk by chunk, never copied) or a string — with the tree-sitter grammar named by keyword lang, and return a tree HANDLE: an opaque ref naming the tree and the text it was parsed from. A handle is immutable: %tree-sitter-tree-reparse returns a new one and leaves this one answering as before. The handle belongs to the calling process (ADR-495): it is held until that process frees it (%tree-sitter-tree-free — do, for one you have replaced) or exits, and no other process can take it away. A gone handle reads as nil from every query and reparsing from it is a full parse. Sendable by value and readable from any process; a task that parses off the loop hands the tree back with %tree-sitter-tree-give before replying, or it dies with the task. Same grammar rules and errors as %tree-sitter-parse.",
         tree_sitter_tree);
     primitives.def(
         "%tree-sitter-tree-reparse",
         Arity::exact(4),
         Sig::new(vec![ref_ty, rope.union(string), kw, any], ref_ty),
         &["tree", "text", "lang", "edits"],
-        "A NEW tree handle for text, reparsed incrementally from tree's tree (tree-sitter's edit + reparse, ~1 ms where a fresh parse of a large file is hundreds). edits says what changed since tree's text, in CHAR offsets: one [start old-end new-end] (chars [start, old-end) of the old text became [start, new-end) of the new — a splice [lo hi repl] is [lo hi (+ lo (count repl))]), a sequence of them applied in order, or nil to derive the edit by comparing the two texts (common prefix and suffix, chunk by chunk — cheap, and exact for any single contiguous change). An edit whose lengths do not fit the two texts is an error; one that fits them but names the wrong place gives a wrong tree, so pass nil when unsure. A gone handle, another lang, or a grammar reloaded since is a full parse. tree stays valid.",
+        "A NEW tree handle for text, reparsed incrementally from tree's tree (tree-sitter's edit + reparse, ~1 ms where a fresh parse of a large file is hundreds). edits says what changed since tree's text, in CHAR offsets: one [start old-end new-end] (chars [start, old-end) of the old text became [start, new-end) of the new — a splice [lo hi repl] is [lo hi (+ lo (count repl))]), a sequence of them applied in order, or nil to derive the edit by comparing the two texts (common prefix and suffix, chunk by chunk — cheap, and exact for any single contiguous change). An edit whose lengths do not fit the two texts is an error; one that fits them but names the wrong place gives a wrong tree, so pass nil when unsure. A gone handle, another lang, or a grammar reloaded since is a full parse. tree stays valid; the new handle belongs to the calling process, whoever owns tree.",
         tree_sitter_tree_reparse);
     primitives.def(
         "%tree-sitter-tree-spans",
         Arity::range(5, 6),
         Sig::with_optional(vec![ref_ty, list_ty.union(vec_ty).union(map_ty), any, int, int], vec![any], vec_or_nil),
         &["tree", "table", "keywords?", "from", "to", "&optional", "injections"],
-        "The fontify query over a held tree, for chars [from, to) of its text only: [start end reported] for the OUTERMOST nodes the face table colours (as in %tree-sitter-spans, context selectors included) that reach into the range, in source order, each clipped to the range — so a string opened above it reports its visible part, coloured as a string, because the tree is the whole document's. Walks only the nodes that reach the range. keywords? as in %tree-sitter-spans (an anonymous token beginning with a letter is :__keyword__). Absolute char offsets. nil when the handle is gone (freed or evicted): open a fresh tree. injections as in %tree-sitter-spans: the embedded documents reaching the range are parsed for this call (no injected tree is held), each whole when it fits 32 KB and cut to the range otherwise.",
+        "The fontify query over a held tree, for chars [from, to) of its text only: [start end reported] for the OUTERMOST nodes the face table colours (as in %tree-sitter-spans, context selectors included) that reach into the range, in source order, each clipped to the range — so a string opened above it reports its visible part, coloured as a string, because the tree is the whole document's. Walks only the nodes that reach the range. keywords? as in %tree-sitter-spans (an anonymous token beginning with a letter is :__keyword__). Absolute char offsets. nil when the handle is gone (freed, or its owner exited): open a fresh tree. injections as in %tree-sitter-spans: the embedded documents reaching the range are parsed for this call (no injected tree is held), each whole when it fits 32 KB and cut to the range otherwise.",
         tree_sitter_tree_spans);
     primitives.def(
         "%tree-sitter-tree-changes",
@@ -91,7 +91,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![ref_ty], bool_ty),
         &["tree"],
-        "Drop a tree handle now, instead of waiting for the registry to evict it; true when it was still held. Every later query on it answers nil.",
+        "Drop a tree handle now, instead of when its owner exits; true when it was still held. Every later query on it answers nil.",
         tree_sitter_tree_free);
     primitives.def(
         "%tree-sitter-load-grammar",
@@ -123,7 +123,7 @@ pub(super) fn register_tree_queries(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![ref_ty, int], vec_or_nil),
         &["tree", "offset"],
-        "%tree-sitter-chain over a held tree: the nodes containing char offset of the tree's text, outermost first, each as {:kind :start :end :named :container} without its children, the outermost carrying :broken true when the tree has an error anywhere. Parses nothing — O(depth) over the tree an incremental reparse keeps. nil when the handle is gone (freed or evicted): ask the text-keyed query, or open a fresh tree.",
+        "%tree-sitter-chain over a held tree: the nodes containing char offset of the tree's text, outermost first, each as {:kind :start :end :named :container} without its children, the outermost carrying :broken true when the tree has an error anywhere. Parses nothing — O(depth) over the tree an incremental reparse keeps. nil when the handle is gone (freed, or its owner exited): ask the text-keyed query, or open a fresh tree.",
         tree_sitter_tree_chain,
     );
     primitives.def(
@@ -139,7 +139,7 @@ pub(super) fn register_tree_queries(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![ref_ty], bool_ty),
         &["tree"],
-        "Is the tree handle still held (not freed, not evicted)? Marks it used, as a query does, so a holder that only checks keeps it from being the next evicted. Builds nothing — the check a holder makes per event instead of asking %tree-sitter-tree-changes for a vector it throws away. false in a build without feature `treesit`.",
+        "Is the tree handle still held — not freed, its owner not exited? Builds nothing — the check a holder makes per event instead of asking %tree-sitter-tree-changes for a vector it throws away. false in a build without feature `treesit`.",
         tree_sitter_tree_alive,
     );
 }
@@ -455,7 +455,10 @@ fn ts_edits(
 pub(super) fn tree_sitter_tree(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let text = ts_text(heap, "%tree-sitter-tree", arg(args, 0))?;
     let lang = ts_lang(heap, "%tree-sitter-tree", arg(args, 1))?;
-    Ok(Value::Ref(crate::host::treesit::tree_open(text, &lang)?))
+    let owner = crate::process::self_pid();
+    Ok(Value::Ref(crate::host::treesit::tree_open(
+        text, &lang, owner,
+    )?))
 }
 
 pub(super) fn tree_sitter_tree_reparse(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
@@ -465,7 +468,11 @@ pub(super) fn tree_sitter_tree_reparse(args: &[Value], _: EnvId, heap: &mut Heap
     let lang = ts_lang(heap, who, arg(args, 2))?;
     let edits = ts_edits(heap, who, arg(args, 3))?;
     Ok(Value::Ref(crate::host::treesit::tree_reparse(
-        old, text, &lang, edits,
+        old,
+        text,
+        &lang,
+        edits,
+        crate::process::self_pid(),
     )?))
 }
 
@@ -660,28 +667,27 @@ fn ts_injections(
                         ));
                     };
                     let mut content: Option<Selector> = None;
+                    let mut exclude: Option<Selector> = None;
                     let mut fixed: Option<String> = None;
                     let mut from: Option<String> = None;
                     let mut aliases = std::collections::HashMap::new();
+                    let rule_selector = |heap: &Heap, what: &str, v: Value| match v {
+                        Value::Keyword(kind) => Ok(Selector::of_kind(value::symbol_name(kind))),
+                        Value::Map(selector_id) => ts_selector(heap, who, selector_id, 1),
+                        other => Err(LispError::wrong_type(
+                            heap,
+                            who,
+                            &format!("a node kind keyword or a selector map for {what}"),
+                            other,
+                        )),
+                    };
                     for (rule_key, rule_value) in heap.map_entries(rule_id) {
                         match keyword_name(heap, "an injection rule key", rule_key)?.as_str() {
                             "content" => {
-                                content = Some(match rule_value {
-                                    Value::Keyword(kind) => {
-                                        Selector::of_kind(value::symbol_name(kind))
-                                    }
-                                    Value::Map(selector_id) => {
-                                        ts_selector(heap, who, selector_id, 1)?
-                                    }
-                                    other => {
-                                        return Err(LispError::wrong_type(
-                                            heap,
-                                            who,
-                                            "a node kind keyword or a selector map for :content",
-                                            other,
-                                        ));
-                                    }
-                                })
+                                content = Some(rule_selector(heap, ":content", rule_value)?)
+                            }
+                            "exclude" => {
+                                exclude = Some(rule_selector(heap, ":exclude", rule_value)?)
                             }
                             "lang" => fixed = Some(keyword_name(heap, ":lang", rule_value)?),
                             "lang-from" => {
@@ -716,7 +722,7 @@ fn ts_injections(
                             }
                             other => {
                                 return Err(LispError::runtime(format!(
-                                    "{who}: an injection rule takes :content :lang :lang-from :aliases, not :{other}"
+                                    "{who}: an injection rule takes :content :exclude :lang :lang-from :aliases, not :{other}"
                                 )));
                             }
                         }
@@ -736,7 +742,11 @@ fn ts_injections(
                             )));
                         }
                     };
-                    injections.rules.push(InjectionRule { content, language });
+                    injections.rules.push(InjectionRule {
+                        content,
+                        exclude,
+                        language,
+                    });
                 }
             }
             "faces" => {
@@ -761,4 +771,59 @@ fn ts_injections(
         }
     }
     Ok(Some(injections))
+}
+
+/// Handing a held tree to another process (ADR-495) — registered LAST from
+/// `builtins::register`, for the intern-table order reason `register_tree_queries` gives.
+pub(super) fn register_tree_ownership(primitives: &mut super::Primitives) {
+    use super::signature_types::*;
+    use crate::core::value::Arity;
+    use crate::types::Sig;
+    primitives.def(
+        "%tree-sitter-tree-give",
+        Arity::exact(2),
+        Sig::new(vec![ref_ty, pid_ty], bool_ty),
+        &["tree", "pid"],
+        "Hand the tree handle tree to the LOCAL process pid: from now on it is pid's, freed when pid frees it or dies, where it was the caller's. A handle belongs to the process that opened it (%tree-sitter-tree, %tree-sitter-tree-reparse) and is freed when that process exits, so a task that parses off the loop gives its tree to the process it reports to BEFORE replying — else the tree dies with the task. true when pid holds it now; false when the handle was already gone, or pid has died (the tree dies with it). An error when the caller does not own the handle — only the owner decides where it goes — or pid is on another node. false in a build without feature `treesit`.",
+        tree_sitter_tree_give,
+    );
+    primitives.def(
+        "%tree-sitter-owned-trees",
+        Arity::exact(0),
+        Sig::new(vec![], vec_ty),
+        &[],
+        "Every tree handle the calling process owns, as a vector of refs by ascending id: those it opened or reparsed and has not freed or given away, and those given to it. What a holder sweeps against the handles it still references, freeing the rest — a handle it lost track of (opened by a turn that was then rolled back) is otherwise held until the process exits (ADR-495). [] in a build without feature `treesit`.",
+        tree_sitter_owned_trees,
+    );
+}
+
+/// `(%tree-sitter-tree-give tree pid)` — `crate::host::treesit::tree_give`.
+pub(super) fn tree_sitter_tree_give(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let who = "%tree-sitter-tree-give";
+    let handle = ts_handle(heap, who, arg(args, 0))?;
+    let to = match arg(args, 1) {
+        Value::Pid { node, id } if crate::dist::is_local(node) => id,
+        Value::Pid { .. } => {
+            return Err(LispError::runtime(format!(
+                "{who}: a tree lives in this runtime and cannot be given to a process on \
+                 another node"
+            )));
+        }
+        other => return Err(LispError::wrong_type(heap, who, "pid", other)),
+    };
+    match crate::host::treesit::tree_give(handle, crate::process::self_pid(), to) {
+        Ok(held) => Ok(Value::boolean(held)),
+        Err(crate::host::treesit::GiveRefused::NotOwner) => Err(LispError::runtime(format!(
+            "{who}: this process does not own the tree — only its owner can give it away"
+        ))),
+    }
+}
+
+/// `(%tree-sitter-owned-trees)` — `crate::host::treesit::owned_trees` of the caller.
+pub(super) fn tree_sitter_owned_trees(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let owned = crate::host::treesit::owned_trees(crate::process::self_pid())
+        .into_iter()
+        .map(Value::Ref)
+        .collect();
+    Ok(heap.alloc_vector(owned))
 }

@@ -98,8 +98,9 @@ pub use timer::pending_timer_count;
 
 // A window's busy cursor, and `proc/busy?` for one across a link (ADR-491).
 pub(crate) use mailbox::interrupt_busy;
+pub use mailbox::{close_interrupt_window, interrupt_process, open_interrupt_window};
 pub(crate) use mailbox::{
-    current_interrupt_due, current_interrupt_window_open, interrupt_caught, set_quit_key,
+    current_interrupt_due, interrupt_caught, interrupt_raised_for, set_quit_key,
     take_current_interrupt,
 };
 pub use mailbox::{
@@ -107,7 +108,6 @@ pub use mailbox::{
     process_mem, process_reductions, process_status, receive_lane, receive_match, send,
     send_in_lane, set_max_mailbox, take_priority,
 };
-pub use mailbox::{interrupt_process, set_interrupt_window};
 pub use message::{ClosureArmMsg, ClosureMsg, Message, from_message, to_message};
 pub(crate) use message::{chunk_flush, chunk_payload, error_reason};
 pub(crate) use scheduler::exit_reason_phrase;

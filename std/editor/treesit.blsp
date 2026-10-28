@@ -130,20 +130,21 @@ misspelt selector fails at load rather than at the first frame drawn.
 ;; nodes hold another language's text. Checked here for the same reason as a face table —
 ;; the kernel refuses a malformed one, but at the first frame.
 
-(def- injection-rule-keys #{:content :lang :lang-from :aliases})
+(def- injection-rule-keys #{:content :exclude :lang :lang-from :aliases})
 
 (defn- injection-rule-problems (rule faces)
   ;; what is wrong with one injection rule, as a list of messages — the last, a language the
   ;; rule can only ever name that has no table, being a rule that colours nothing
   (let (shown (pr-str rule)
         content (get rule :content)
+        exclude (get rule :exclude)
         fixed (get rule :lang)
         from (get rule :lang-from)
         aliases (get rule :aliases))
     (cond
       (not (map? rule)) (list (str shown " is not an injection rule map"))
       (not (every? (keys rule) (fn (k) (contains? injection-rule-keys k))))
-        (list (str shown " names a key other than :content :lang :lang-from :aliases"))
+        (list (str shown " names a key other than :content :exclude :lang :lang-from :aliases"))
       (any? (keys rule) (fn (k) (nil? (get rule k))))
         (list (str shown ": a key with no value — leave the key out instead"))
       (nil? content) (list (str shown " names no :content selector"))
@@ -151,6 +152,10 @@ misspelt selector fails at load rather than at the first frame drawn.
         (list (str shown ": :content is a node kind or a selector map"))
       (and (map? content) (selector-shape-problem content 1))
         (list (selector-shape-problem content 1))
+      (not (or (nil? exclude) (keyword? exclude) (map? exclude)))
+        (list (str shown ": :exclude is a node kind or a selector map"))
+      (and (map? exclude) (selector-shape-problem exclude 1))
+        (list (selector-shape-problem exclude 1))
       (= (nil? fixed) (nil? from))
         (list (str shown " names its language with :lang or with :lang-from — exactly one"))
       (not (keyword? (or fixed from))) (list (str shown ": :lang and :lang-from are keywords"))
@@ -180,7 +185,10 @@ text, and how to colour it (ADR-489):
      :faces {:heex heex-table :bash bash-table}}                ; each language's face table
 
 `:content` is a face-table selector. A parent's matching children are ONE document (a
-heredoc's pieces between `${…}` interpolations parse together). `:lang-from` names a node
+heredoc's pieces between `${…}` interpolations parse together, a line break between two
+pieces kept). `:exclude`, also a selector, cuts the content's descendants it selects out of
+the document, and they keep the host's colours — a Dockerfile `RUN <<EOT` line is shell
+except its `<<EOT` marker (ADR-496). `:lang-from` names a node
 kind among the content's siblings, else its children — a fence's info string, a sigil's
 name — whose first word, through `:aliases` or lowercased as it is, is the language. A
 document whose language has no table in `:faces`, or no grammar, keeps the host's colours.
@@ -188,7 +196,8 @@ What a registration checks beside `face-table-problems`.
 
     (editor/treesit/injection-problems {:rules [{:content :heredoc :lang :bash}] :faces {:bash {:string :syntax/string}}})   → ()
     (count (editor/treesit/injection-problems {:rules [{:content :heredoc :lang :bash :lang-from :x}] :faces {}}))   → 1
-    (count (editor/treesit/injection-problems {:rules [{:content :x :lang :sql}] :faces {}}))   → 1"
+    (count (editor/treesit/injection-problems {:rules [{:content :x :lang :sql}] :faces {}}))   → 1
+    (editor/treesit/injection-problems {:rules [{:content :shell_fragment :exclude :heredoc_marker :lang :bash}] :faces {:bash {}}})   → ()"
   (cond
     (not (map? injections)) (list (str (pr-str injections) " is not an injection spec map"))
     (not (every? (keys injections) (fn (k) (contains? #{:rules :faces} k))))
@@ -461,10 +470,12 @@ rest is left uncoloured.
 ;; lines on screen without parsing anything.
 ;;
 ;; A handle is an opaque ref, immutable like every value: `update-tree` returns a NEW one
-;; and leaves the old one answering as before. The registry behind them is bounded, so a
-;; handle can go away (freed, or evicted as least recently used); every query on a gone
-;; handle answers nil, and updating from one is a full parse — never an error, never a
-;; wrong tree. Free the handle you replace (`free-tree`) and the bound is never reached.
+;; and leaves the old one answering as before. A handle is OWNED (ADR-495) by the process
+;; that opened or updated it, like a socket: it goes away when that process frees it
+;; (`free-tree` — free the handle you replace) or exits, and nothing another process does
+;; can take it. A task that parses off the loop hands its tree on (`give-tree`) before it
+;; replies, or the tree dies with the task. Every query on a gone handle answers nil, and
+;; updating from one is a full parse — never an error, never a wrong tree.
 
 (defn open-tree (text lang)
   "A tree handle for the whole document `text` — a rope (read in place, never copied) or a
@@ -503,6 +514,29 @@ do not fit the two texts rather than build a wrong tree.
     (fn? editor/treesit/free-tree)   → true"
   (%tree-sitter-tree-free tree))
 
+(defn give-tree (tree pid)
+  "Hand `tree` to the local process `pid`: it becomes `pid`'s to free, and dies when `pid`
+exits instead of when the caller does. A tree belongs to the process that opened (or
+updated) it, so a task parsing off the loop gives the tree to the process it reports to
+BEFORE replying — the task exits right after, and a tree it still owned would go with it.
+True when `pid` holds it now; false when the handle was already gone or `pid` has died. Only
+the owner can give a tree away: anyone else's call is an error.
+
+    (editor/treesit/give-tree tree editor-pid)   ;=> true — then reply with the handle
+    (editor/treesit/give-tree (ref) (self))   → false"
+  (%tree-sitter-tree-give tree pid))
+
+(defn owned-trees ()
+  "Every tree handle the calling process owns, as a vector by ascending id: the ones it opened
+or updated and has not freed or given away, and the ones given to it. A handle is freed only
+by its holder or its owner's exit, so one a holder lost track of — opened by a turn an editor
+then rolled back — stays until that exit. Free every owned handle you no longer reference, at
+some quiet moment, and that is the whole sweep.
+
+    (editor/treesit/owned-trees)   ;=> [] — or the handles this process holds
+    (vector? (editor/treesit/owned-trees))   → true"
+  (%tree-sitter-owned-trees))
+
 (defn tree-changes (tree &optional (injections nil))
   "Where `tree`'s colouring may differ from the tree it was updated from: a sorted vector of
 disjoint char ranges `[start end]` — the edited text, plus every range whose syntax the edit
@@ -534,9 +568,9 @@ tree — each whole up to 32 KB and cut to the range past that (ADR-489).
     (when raw (into [] (table-spans->faces raw kind->face-name injections)))))
 
 (defn tree-alive? (tree)
-  "Whether `tree` is still held — not freed, not evicted. Marks it used, as a query does, so a
-holder that only checks keeps it from being the next one evicted. Builds nothing: the check
-to make per event, where asking `tree-changes` would build a vector only to test it for nil.
+  "Whether `tree` is still held — not freed, and its owner (`give-tree`) not exited. Builds
+nothing: the check to make per event, where asking `tree-changes` would build a vector only
+to test it for nil.
 
     (editor/treesit/tree-alive? (ref))   → false"
   (%tree-sitter-tree-alive? tree))
