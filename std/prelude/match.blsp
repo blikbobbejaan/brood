@@ -618,7 +618,7 @@ NON-LINEAR patterns (the same name twice) work.
       " levels or wider than "
       %match-max-width
       " elements: "
-      (pr-str-bounded pat))))
+      (debug/pr-str-bounded pat))))
 
 ;; The no-match failure: an error map (ADR-501) carrying the context (:match / :case / :let / a
 ;; fn name), the value, and the patterns tried. The lowered form is `(%raise (%match-error …))`,
@@ -633,9 +633,9 @@ refutable `let` and pattern `fn` lowers its no-match branch to.
    :code "E0092"
    :message (str (->string context)
               ": no clause matches "
-              (pr-str-bounded target)
+              (debug/pr-str-bounded target)
               " — tried "
-              (string/join (map patterns pr-str-bounded) ", "))
+              (string/join (map patterns debug/pr-str-bounded) ", "))
    :context context
    :value target
    :patterns patterns})

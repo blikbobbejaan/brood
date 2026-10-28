@@ -1314,8 +1314,8 @@ existed for.
 `each` applies a function to
 each item for effect (`(each xs io/puts)`, the function form of `doseq`).
 
-`tap` and `then` are the single-**function** pipe helpers, where `doto`/`->` splice *forms*: `(tap x f)` calls `(f x)` for its side effects and returns
-`x` unchanged (a probe — `(-> v (tap log) (process))`); `(then x f)` returns `(f x)`, letting a
+`debug/tap` and `then` are the single-**function** pipe helpers, where `doto`/`->` splice *forms*: `(debug/tap x f)` calls `(f x)` for its side effects and returns
+`x` unchanged (a probe — `(-> v (debug/tap log) (process))`); `(then x f)` returns `(f x)`, letting a
 `->` step call an arbitrary function on the threaded value instead of splicing it as a first
 argument (`(-> v (then (fn (n) (g n other))))`).
 
@@ -1376,12 +1376,12 @@ value between the literal text and lowers to a plain `(str …)` (no runtime cos
 (string/interp "sum={(+ a b)} for {name}")   ;=> "sum=7 for ada"
 ```
 
-**`spy`** — a homoiconic tree-tracing debug macro (ADR-173). `(spy expr)` evaluates `expr`, traces **every** evaluated subexpression's
+**`debug/spy`** — a homoiconic tree-tracing debug macro (ADR-173). `(debug/spy expr)` evaluates `expr`, traces **every** evaluated subexpression's
 value in evaluation order, and returns the value **unchanged** — so it's referentially
-transparent: wrap or drop `spy` around any form with no behavioural change.
+transparent: wrap or drop `debug/spy` around any form with no behavioural change.
 
 ```clojure fragment
-(spy (+ (* a 2) (f 2)))     ; a=10, f adds 5
+(debug/spy (+ (* a 2) (f 2)))     ; a=10, f adds 5
 ;; stderr:
 ;;   spy: (+ (* a 2) (f 2))
 ;;       (* a 2) => 20
@@ -1401,7 +1401,7 @@ consume the trace as data (`{:spy :node :form … :value … :depth …}` maps),
 no-op to silence it without editing code:
 
 ```clojure fragment
-(binding (*spy-sink* (fn (entry) nil)) (spy (heavy-computation)))  ; value, no output
+(binding (*spy-sink* (fn (entry) nil)) (debug/spy (heavy-computation)))  ; value, no output
 ```
 
 > Macros are hygienic both ways automatically: a template's introduced `let`/`fn`
@@ -3786,10 +3786,10 @@ unchanged.
 ```
 
 **A module's own definition wins over a root name — function or macro — inside that
-module** (ADR-423). `(defn spy (x) …)` in a module makes every bare `(spy …)` there call
-it, not expand the prelude's `spy` macro; `/spy` still reaches the root one. Because a
+module** (ADR-423). `(defn spy (x) …)` in a module makes every bare `(debug/spy …)` there call
+it, not expand the prelude's `debug/spy` macro; `/spy` still reaches the root one. Because a
 root *macro* changing meaning is easy to miss, defining one's name prints a warning at
-load — `warning: \`m/spy\` shadows the prelude macro \`spy\` …` — unless the header
+load — `warning: \`m/spy\` shadows the prelude macro \`debug/spy\` …` — unless the header
 declares the shadow: `(defmodule m (:shadow spy))`. Shadowing a root *function* is silent:
 modules owning `get`, `map` or `count` is the designed style (ADR-236).
 

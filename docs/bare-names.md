@@ -176,7 +176,7 @@ Predicates — `x?` type and shape tests. Bare because they read as English at a
 - `time-of-day?`
 - `vector?`
 
-## core (132)
+## core (128)
 
 Core vocabulary — the language's own words: special-form companions, sequence and map operations, the process primitives, and the test/dev macros. **This is the group with a real budget.** Before adding here, ask whether the name belongs to a module instead: `string/`, `seq/`, `proc/`, `test/` all exist precisely so a name does not have to be bare.
 - `*e`
@@ -269,10 +269,8 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `or`
 - `partial`
 - `pr-str`
-- `pr-str-bounded`
 - `provide`
 - `range`
-- `read-line`
 - `receive`
 - `reduce`
 - `ref`
@@ -289,11 +287,9 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `spawn`
 - `spawn-link`
 - `spawn-monitor`
-- `spy`
 - `str`
 - `symbol`
 - `take`
-- `tap`
 - `then`
 - `third`
 - `throw`

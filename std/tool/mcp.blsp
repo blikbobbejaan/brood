@@ -1212,7 +1212,7 @@ binary is seen rebuilt."
   (io/write (str (json/encode message) "\n")))
 
 (defn- serve-loop (session)
-  (let (line (read-line))
+  (let (line (io/read-line))
     (cond
       (nil? line) 0
       (string/blank? line) (serve-loop session)

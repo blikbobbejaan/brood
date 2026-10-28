@@ -185,7 +185,7 @@ already print as a summary handle, `#<rope :chars 11 :lines 1>`)."
       (or (= t :string) (= t :bytes)) (%pr-safely (fn () (%pr-bounded-text x)) x)
       else (pr-str x))))
 
-(defn pr-str-bounded (x)
+(defn debug/pr-str-bounded (x)
   "Like `pr-str`, but eliding with `…` past `*print-length*` items per collection,
 `*print-level*` levels of nesting, and `*print-string-length*` characters of a
 string or byte string (`nil` for any of them means no limit). For *display* — the
@@ -197,5 +197,5 @@ show a value to a human has no business flooding the screen (or a pipe, or a log
 with a megabyte, and one bounded printer is how that stays true everywhere instead
 of each consumer inventing its own cap.
 
-    (pr-str-bounded [1 2]) ;=> \"[1 2]\""
+    (debug/pr-str-bounded [1 2]) ;=> \"[1 2]\""
   (%pr-bounded x 0))

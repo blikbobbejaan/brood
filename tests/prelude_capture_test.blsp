@@ -221,9 +221,9 @@
   (test "a module's own function wins a bare call over a root macro; /name reaches the macro"
     (assert=
       (%load-string
-        "(defmodule capture-probe-spy (:shadow spy))
-         (defn- spy (x) [:mine x])
-         [(spy 1) (/spy 3)]")
+        "(defmodule capture-probe-doto (:shadow doto))
+         (defn- doto (x) [:mine x])
+         [(doto 1) (/doto 3)]")
       ;; the macro returns its expression's value; the module's function would give [:mine 3]
       [[:mine 1] 3]))
 

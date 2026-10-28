@@ -115,7 +115,7 @@ Debug Adapter Protocol server sends its `stopped` event from it). Returns nil.
 (defn debugger-sink ()
   "A `*spy-sink*` value that forwards each `spy` entry to the debugger in the current `*trace-context*` (read at emit time, so it follows the context into spawned children).
 
-    (binding (*spy-sink* (debug/debugger-sink)) (work))   ;~> work's value; its `spy` entries reach the debugger"
+    (binding (*spy-sink* (debug/debugger-sink)) (work))   ;~> work's value; its `debug/spy` entries reach the debugger"
   (fn (entry) (let (dbg (tc-debugger)) (when dbg (send dbg [:trace entry (self)])))))
 
 (defn with-debugger (dbg thunk)
@@ -593,7 +593,7 @@ running shows `:value :running`.
               " ["
               (get node :pid)
               "] => "
-              (pr-str-bounded (get node :value)))
+              (debug/pr-str-bounded (get node :value)))
         (causal-lines (get node :children) (inc depth))))))
 (defn print-causal (dbg)
   "Pretty-print the causal tree (`causal-tree`) as an indented, pid-tagged outline.
@@ -616,7 +616,7 @@ cross-process causal tree, and the hottest traced forms. Rendered by both the
                     "  "
                     (get (second entry) :label)
                     "  "
-                    (pr-str-bounded (get (second entry) :vals))))))
+                    (debug/pr-str-bounded (get (second entry) :vals))))))
       (cons "── causal tree ──" (causal-lines (causal-tree dbg) 0))
       (cons "── hot traced forms ──"
         (map (seq/sort-by (hits dbg) (fn (pair) (- (second pair))))
@@ -691,7 +691,7 @@ always runs, even on error, so the terminal is restored.
   "A `*spy-sink*` that parks the process at each `spy` node (one breakpoint per
 subexpression). Non-node entries (`:enter`/`:exit`) pass through.
 
-    (binding (*spy-sink* (debug/stepping-sink)) (work))   ;~> work's value, after parking at each `spy` node"
+    (binding (*spy-sink* (debug/stepping-sink)) (work))   ;~> work's value, after parking at each `debug/spy` node"
   (fn (entry)
     (when (= (get entry :spy) :node)
       (let (dbg (tc-debugger))
@@ -702,7 +702,7 @@ subexpression). Non-node entries (`:enter`/`:exit`) pass through.
               ;; :vals is a MAP, same as `break`'s (`debug-pairs->map`) — so
               ;; `locals-of` / `eval-at` work on a step-park too: the traced node's
               ;; value is in scope as `value` (`(eval-at d 1 "value")`).
-              {:label (str "step " (pr-str-bounded (get entry :form)))
+              {:label (str "step " (debug/pr-str-bounded (get entry :form)))
                :vals {:value (get entry :value)}
                :span (tc-span)}])
           (receive ([:resume] nil)))))))
@@ -710,7 +710,7 @@ subexpression). Non-node entries (`:enter`/`:exit`) pass through.
   "Evaluate `expr` in single-step mode: each `spy`-traced subexpression parks at a
 breakpoint until resumed, so you step through evaluation one node at a time. Run it
 under `with-debugger`; advance the steps from `repl-session` (`r`) or `attach`."
-  `(binding (*spy-sink* (stepping-sink)) (spy ~expr)))
+  `(binding (*spy-sink* (stepping-sink)) (debug/spy ~expr)))
 
 ;; ---- pry: drop into the REAL REPL at a debug point --------------------------
 ;; The `binding.pry` / `IEx.pry` move, done right: instead of a bespoke prompt, launch
@@ -793,7 +793,7 @@ re-implementation; it registers the `,resume`/`,step` commands via the REPL regi
                             "  "
                             (get (second (first es)) :label)
                             " "
-                            (pr-str-bounded (get (second (first es)) :vals)))
+                            (debug/pr-str-bounded (get (second (first es)) :vals)))
                       acc)))))
     (go entries 1 ())))
 (defn- debug-resume-nth (dbg entries n)
@@ -812,7 +812,7 @@ no raw-terminal setup and works when piped.
     (doseq (line (debug-numbered entries)) (io/puts line))
     (doseq (line (cons "── causal tree ──" (causal-lines (causal-tree dbg) 0))) (io/puts line))
     (io/write "debug> ")
-    (let (raw (read-line))
+    (let (raw (io/read-line))
       (if (nil? raw)
         :done (let (line (string/trim raw) parts (string/split line " ") cmd (first parts))
           (cond
@@ -834,6 +834,6 @@ no raw-terminal setup and works when piped.
             else
               (do
                 (try
-                  (io/puts (str "=> " (pr-str-bounded (reflect/eval-string line))))
-                  (catch e (io/puts (str "! " (pr-str-bounded e)))))
+                  (io/puts (str "=> " (debug/pr-str-bounded (reflect/eval-string line))))
+                  (catch e (io/puts (str "! " (debug/pr-str-bounded e)))))
                 (repl-session dbg))))))))

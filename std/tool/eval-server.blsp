@@ -236,9 +236,9 @@ looking identical to a round-trip that cleaned up after itself."
   ;; run) — one shape, so the *Spy* pane reads the same whichever produced it.
   {:kind (->string (or (get e :spy) :event))
    :fn (when (get e :fn) (str (get e :fn)))
-   :args (when (get e :args) (pr-str-bounded (get e :args)))
-   :value (when (contains? e :value) (pr-str-bounded (get e :value)))
-   :form (when (get e :form) (pr-str-bounded (get e :form)))})
+   :args (when (get e :args) (debug/pr-str-bounded (get e :args)))
+   :value (when (contains? e :value) (debug/pr-str-bounded (get e :value)))
+   :form (when (get e :form) (debug/pr-str-bounded (get e :form)))})
 
 ;; The global names that existed before this image ran anything of the user's. A
 ;; Rust-backed `table` rather than a `def`: it is written once, from whichever entry point
@@ -460,9 +460,9 @@ path — the per-request evaluator process dies — but worth knowing when embed
               (try
                 {:ok true
                  ;; `acc` exists exactly when `traced`; testing it says so to the checker.
-                 :value (pr-str-bounded (if acc
-                                          (eval-server-eval-traced src trace-names acc)
-                                          (reflect/eval-string src)))}
+                 :value (debug/pr-str-bounded (if acc
+                                                (eval-server-eval-traced src trace-names acc)
+                                                (reflect/eval-string src)))}
                 (catch e {:ok false :error (error-message e)})))
         _ (%capture-begin)
         r (if traced (binding (*spy-sink* sink) (run)) (run))
@@ -753,7 +753,7 @@ never as a dead server.
 ;; is the unsoundness this module's preamble already refuses to have.
 
 (defn- eval-server-reader (server)
-  (let (line (read-line))
+  (let (line (io/read-line))
     (if (nil? line)
       (send server [:evsrv-eof])
       (do (send server [:evsrv-line line]) (eval-server-reader server)))))

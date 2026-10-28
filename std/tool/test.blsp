@@ -303,7 +303,7 @@ docs/testing.md for the full guide."
           (first forms)
           " must stand directly before a (test …) form, or be "
           "the group's own modifier right after its name — found it before "
-          (pr-str-bounded (second forms))))
+          (debug/pr-str-bounded (second forms))))
     (= (first forms) :tags)
       (if (test-describe-form? (third forms))
         (test-lift-prefix-mods (rest (rest (rest forms)))

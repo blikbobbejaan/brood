@@ -32,7 +32,7 @@ project tooling via `nest test` / `nest run` / `nest new <name>`. At the REPL:
 `*1`/`*2`/`*3` are the last results and `*e` the last error; `,help` lists the
 meta-commands (`,doc name`, `,apropos pat`, `,search words`, `,expand form`,
 `,time expr`); Ctrl-C interrupts the running evaluation without losing the
-session; huge results elide with `…` (see `pr-str-bounded`).
+session; huge results elide with `…` (see `debug/pr-str-bounded`).
 
 ## Syntax
 
@@ -213,7 +213,7 @@ and your packages stay fully redefinable, which is what hot reload is for. If a 
 you want is taken: pick another, shadow it locally (`(let (get …) …)` is fine), or
 define it in a `(defmodule your/mod …)` — that makes `your/mod/get`, which is yours.
 Inside that module your definition wins every bare call, even over a prelude **macro**
-(`(defn spy …)` → `(spy x)` calls yours; `/spy` reaches the macro). Defining a prelude
+(`(defn spy …)` → `(debug/spy x)` calls yours; `/spy` reaches the macro). Defining a prelude
 macro's name warns at load unless the header says `(:shadow spy)` (ADR-423).
 The rule reserves shipped **functions**; a `defdyn` name is never reserved whatever it
 holds, and it is ambient (root) — so `(def *print-length* 3)` from any module rebinds the

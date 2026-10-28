@@ -271,7 +271,7 @@ forms into the eval rather than fail cleanly."
               ms (- (os/now) started))
           ; value shown only interactively (piped ,time reports just the
           ; timing, as before) — and bounded, like any printed result
-          (when (os/stdout-tty?) (io/puts (repl-colorize (pr-str-bounded v))))
+          (when (os/stdout-tty?) (io/puts (repl-colorize (debug/pr-str-bounded v))))
           (io/puts (str "\e[90m; " ms " ms\e[0m")))
         (catch e (io/write (str (repl-error-message e) "\n") :to *err*))))))
 
@@ -448,7 +448,7 @@ interactive TTY, plain on a pipe.
 Printed with `pr-str-bounded`, so a huge or deeply-nested result elides with `…`
 instead of scrolling the session away; `(pr-str *1)` still shows the whole thing,
 and `(binding (*print-length* nil) …)` lifts the bound for a form."
-  (let (s (pr-str-bounded v))
+  (let (s (debug/pr-str-bounded v))
     (io/puts (if (os/stdout-tty?) (repl-colorize s) s))))
 
 ;; ---- advisory type-check (the checker, at the prompt) -----------------------
@@ -716,7 +716,7 @@ ends input; Ctrl-C drops the form and re-prompts."
 complete, echoing the prompt only when stdout is a TTY. Recurses on an incomplete form."
   (do
     (when (os/stdout-tty?) (io/write (if (= acc "") *repl-prompt* *repl-cont-prompt*)))
-    (let (line (read-line))
+    (let (line (io/read-line))
       (cond
         (nil? line)
           (do

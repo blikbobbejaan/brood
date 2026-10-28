@@ -52,20 +52,21 @@
     (assert= 3 (then [1 2 3] count)))
   (test "tap runs f for effect and returns x unchanged"
     (let (t (table/new))
-      (assert= 42 (tap 42 (fn (v) (table/put t :seen v))))
+      (assert= 42 (debug/tap 42 (fn (v) (table/put t :seen v))))
       (assert= 42 (table/get t :seen))))
   (test "then threads an arbitrary call into a -> pipeline"
     (assert= 10 (-> 3 (then (fn (n) (* n n))) (then inc)))
     (assert= 900 (-> 100 (then (fn (n) (- 1000 n))))))
   (test "tap keeps the value flowing through a -> pipeline"
     (let (t (table/new))
-      (assert= 22 (-> 10 (then inc) (tap (fn (v) (table/put t :mid v))) (then (fn (v) (* v 2)))))
+      (assert= 22
+        (-> 10 (then inc) (debug/tap (fn (v) (table/put t :mid v))) (then (fn (v) (* v 2)))))
       (assert= 11 (table/get t :mid))))
   (test "across processes: tap/then compose in spawned workers"
     (let (me (self)
           _ (map (list 1 2 3)
               (fn (k)
-                (spawn (fn () (send me (-> k (then (fn (n) (* n n))) (tap (fn (_) nil))))))))
+                (spawn (fn () (send me (-> k (then (fn (n) (* n n))) (debug/tap (fn (_) nil))))))))
           results (fold (range 3) nil (fn (acc _) (cons (receive) acc))))
       (assert= [1 4 9] (into [] (sort results))))))
 

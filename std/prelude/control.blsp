@@ -314,11 +314,11 @@ The steps after a failure never run, so a pipe does not have to end in `(if (fai
 ;; `tap`/`then` — the single-function pipe helpers.
 ;; `doto` splices *forms* (`->`-style); these take a *function value*, so they compose
 ;; with `->` where a plain function or a one-off closure is what you have in hand.
-(defn tap (x f)
-  "Call `(f x)` for its side effects and return `x` unchanged — a pass-through probe for a `->` pipeline: `(-> v (tap log) (process))` logs `v` and keeps threading it.
+(defn debug/tap (x f)
+  "Call `(f x)` for its side effects and return `x` unchanged — a pass-through probe for a `->` pipeline: `(-> v (debug/tap log) (process))` logs `v` and keeps threading it.
 
-    (with-out-str (tap 5 io/write))   ;=> \"5\"
-    (tap 5 (fn (n) nil))              ;=> 5     ; the value passes through unchanged"
+    (with-out-str (debug/tap 5 io/write))   ;=> \"5\"
+    (debug/tap 5 (fn (n) nil))              ;=> 5     ; the value passes through unchanged"
   (do (f x) x))
 (defn then (x f)
   "Return `(f x)` — apply `f` to `x`. Lets a `->` pipeline step call an arbitrary function on the threaded value, not only splice it as a first argument: `(-> v (then (fn (n) (g n other))))`.

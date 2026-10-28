@@ -126,7 +126,6 @@
    "pair?" :predicates
    "pr-str" :io
    "range?" :predicates
-   "read-line" :io
    "ref" :processes
    "rest" :collections
    "self" :processes

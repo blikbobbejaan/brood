@@ -97,18 +97,22 @@ Values print through `pr-str-bounded`, not `pr-str`: this is a display protocol,
 one traced call carrying a megabyte string must not paint a megabyte to stderr. Lift
 the bound for a run with `(binding (*print-string-length* nil) …)`."
   (case (:spy entry)
-    :enter (%write-err (str "spy: " (pr-str-bounded (:form entry)) "\n"))
+    :enter (%write-err (str "spy: " (debug/pr-str-bounded (:form entry)) "\n"))
     :node
       (%write-err (str "  "
                     (%spy-indent (:depth entry))
-                    (pr-str-bounded (:form entry))
+                    (debug/pr-str-bounded (:form entry))
                     " => "
-                    (pr-str-bounded (:value entry))
+                    (debug/pr-str-bounded (:value entry))
                     "\n"))
-    :exit (%write-err (str "=> " (pr-str-bounded (:value entry)) "\n"))
-    :call (%write-err (str "trace: " (pr-str-bounded (cons (:fn entry) (:args entry))) "\n"))
+    :exit (%write-err (str "=> " (debug/pr-str-bounded (:value entry)) "\n"))
+    :call (%write-err (str "trace: " (debug/pr-str-bounded (cons (:fn entry) (:args entry))) "\n"))
     :return
-      (%write-err (str "trace: " (pr-str (:fn entry)) " => " (pr-str-bounded (:value entry)) "\n"))
+      (%write-err (str "trace: "
+                    (pr-str (:fn entry))
+                    " => "
+                    (debug/pr-str-bounded (:value entry))
+                    "\n"))
     nil))
 (defn- %spy-emit (entry) ((or *spy-sink* %spy-default-sink) entry))
 (defn- %spy-node (form value depth)
@@ -173,6 +177,6 @@ the bound for a run with `(binding (*print-string-length* nil) …)`."
             (contains? %spy-special-forms head) `(%spy-node '~form ~form ~depth)
             else (%spy-walk-call form depth)))))))
 
-(defmacro spy (expr)
+(defmacro debug/spy (expr)
   "Evaluate `expr`, trace every evaluated subexpression's value (in evaluation order) to `*spy-sink*` — default: an indented tree on stderr — and return the value unchanged. Referentially transparent: wrap or drop `spy` around any form with no behavioural change. Homoiconic: fully macroexpands and instruments in place, so laziness (an untaken branch, a short-circuited `and`) is preserved and pipelines trace stage-by-stage for free. `fn` bodies and quoted data are left opaque."
   `(%spy-run '~expr (fn () ~(%spy-walk expr 0))))

@@ -521,7 +521,7 @@ mailbox messages stay queued while waiting (selective receive).
 ;; Trusted, not verified: the line arrives as a kernel message, which the checker cannot
 ;; type — the stdin reader sends a string or nil.
 (check-allow :trusted
-  (defn read-line ()
+  (defn io/read-line ()
     "Read one line from stdin, returning it as a string with the trailing newline
 stripped, or `nil` at end of input (EOF / Ctrl-D). Parks only this process — the
 read happens on the kernel's stdin reader thread, which serves callers in request
@@ -530,7 +530,7 @@ order — so other mailbox messages stay queued while waiting (selective receive
       (receive
         ([:stdin ^tok line] line)
         ([:stdin-error ^tok e] (throw e))))))
-(sig read-line (-> (or nil string)))
+(sig io/read-line (-> (or nil string)))
 
 ;; Membership is `includes?` (value in a sequence, `(includes? coll x)`) and `contains?`
 ;; (key in a map). There is deliberately no `member?` duplicate.

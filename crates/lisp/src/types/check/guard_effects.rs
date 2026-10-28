@@ -52,7 +52,7 @@ pub(super) const EFFECTFUL_IN_GUARD: &[&str] = &[
     "file/spit",
     "file/spit-append",
     "file/slurp",
-    "read-line",
+    "io/read-line",
     "os/cmd",
     "os/run-process",
     "os/spawn",

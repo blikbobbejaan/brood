@@ -37,7 +37,7 @@
 (defn- dm-name-of (form)
   ;; The group/test name as written, for the report — a string literal, or a symbol for
   ;; `deftest`. Anything else prints as itself.
-  (pr-str-bounded (second form)))
+  (debug/pr-str-bounded (second form)))
 
 ;; The body forms of a `(test …)`: modifiers are read as a leading run and nowhere else,
 ;; so anything after the first real body form is dead.

@@ -29,7 +29,9 @@
 ;; sender's causal context, adopted transparently from the message (send-level).
 (defn sl-server ()
   (receive
-    ([:req n from] (span (str "srv-" n) (fn () (spy (* n n)))) (send from [:done n]) (sl-server))
+    ([:req n from] (span (str "srv-" n) (fn () (debug/spy (* n n))))
+      (send from [:done n])
+      (sl-server))
     ([:halt] nil)
     (after *test-wait-ms* nil)))
 
@@ -53,7 +55,7 @@
     (let (dbg (start-debugger) me (self))
       (dotimes (i 4)
         (let (n i)
-          (spawn (with-debugger dbg (fn () (spy (* (inc n) n)) (send me [:done]))))))
+          (spawn (with-debugger dbg (fn () (debug/spy (* (inc n) n)) (send me [:done]))))))
       (letrec (drain (fn (k)
                        (if (= k 0)
                          :ok (receive ([:done] (drain (dec k))) (after *test-wait-ms* :timeout)))))
@@ -98,7 +100,7 @@
         (fn ()
           (span "root"
             (fn ()
-              (dotimes (i 3) (let (n i) (span-spawn (str "w" n) (fn () (spy (* n 2))))))
+              (dotimes (i 3) (let (n i) (span-spawn (str "w" n) (fn () (debug/spy (* n 2))))))
               nil))))
       ;; wait until root + 3 worker spans have all closed
       (assert= true (wait-until dbg (fn (s) (>= (exit-count s) 4))))
@@ -126,7 +128,7 @@
         (fn ()
           (span "root"
             (fn ()
-              (dotimes (i 3) (let (n i) (spawn (span (str "c" n) (fn () (spy (* n 2)))))))
+              (dotimes (i 3) (let (n i) (spawn (span (str "c" n) (fn () (debug/spy (* n 2)))))))
               nil))))
       (assert= true (wait-until dbg (fn (s) (>= (exit-count s) 4))))
       (let (tree (causal-tree dbg))
@@ -211,7 +213,7 @@
     (let (dbg (start-debugger) me (self))
       (dotimes (i 10)
         (let (n i)
-          (spawn (with-debugger dbg (fn () (spy (classify n)) (send me [:done]))))))
+          (spawn (with-debugger dbg (fn () (debug/spy (classify n)) (send me [:done]))))))
       (letrec (drain (fn (k)
                        (if (= k 0)
                          :ok (receive ([:done] (drain (dec k))) (after *test-wait-ms* :timeout)))))

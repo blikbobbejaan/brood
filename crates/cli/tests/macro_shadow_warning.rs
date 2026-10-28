@@ -26,21 +26,21 @@ fn a_root_macro_shadow_warns_unless_declared_and_the_module_definition_wins() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
-    // Undeclared: warned, and the module's own `spy` (a private one, like the case that found
-    // this) is what a bare call reaches; `/spy` still reaches the macro, which prints `spy: 3`.
+    // Undeclared: warned, and the module's own `doto` (a private one, like the case that found
+    // this) is what a bare call reaches; `/doto` still reaches the macro, which returns its argument.
     let (stdout, stderr) = run(
         &dir,
         "(defmodule user)\n\
-         (defn- spy (x) [:mine x])\n\
+         (defn- doto (x) [:mine x])\n\
          (defn get (m k) :mine)\n\
-         (io/puts (pr-str [(spy 1) (/spy 3)]))\n",
+         (io/puts (pr-str [(doto 1) (/doto 3)]))\n",
     );
     assert!(
         stdout.contains("[[:mine 1] 3]"),
-        "the module's own `spy` must win a bare call, `/spy` reach the macro:\n{stdout}\n{stderr}"
+        "the module's own `doto` must win a bare call, `/doto` reach the macro:\n{stdout}\n{stderr}"
     );
     assert!(
-        stderr.contains("`user/spy` shadows the prelude macro `spy`"),
+        stderr.contains("`user/doto` shadows the prelude macro `doto`"),
         "an undeclared root-macro shadow must warn:\n{stderr}"
     );
     assert!(
@@ -51,9 +51,9 @@ fn a_root_macro_shadow_warns_unless_declared_and_the_module_definition_wins() {
     // Declared: the same program, silent.
     let (stdout, stderr) = run(
         &dir,
-        "(defmodule user (:shadow spy))\n\
-         (defn- spy (x) [:mine x])\n\
-         (io/puts (pr-str (spy 1)))\n",
+        "(defmodule user (:shadow doto))\n\
+         (defn- doto (x) [:mine x])\n\
+         (io/puts (pr-str (doto 1)))\n",
     );
     let _ = std::fs::remove_dir_all(&dir);
     assert!(
@@ -62,6 +62,6 @@ fn a_root_macro_shadow_warns_unless_declared_and_the_module_definition_wins() {
     );
     assert!(
         !stderr.contains("shadows the prelude macro"),
-        "(:shadow spy) must silence the warning:\n{stderr}"
+        "(:shadow doto) must silence the warning:\n{stderr}"
     );
 }
