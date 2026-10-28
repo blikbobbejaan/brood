@@ -4691,3 +4691,24 @@ queued it all and was dropped). Run here, each once: that file, `tcp_backpressur
 `tcp_test`, `tls_test`, `http_test`, and the `primitive_docs` and `natives_never_mutate` Rust
 tests; build, clippy, fmt. Not run here: the suite, GC stress, ASan and the loops the reactor's
 concurrency calls for (`make green` after the push).
+
+2026-10-28 (ADR-505, a builtin hands its Brood call back to the engine): ADR-502 left the
+kernel dispatches blocking — a record's `num/add` under `+`, `compare-to` under `<`, `->seq`
+under `first`, `->count` under `empty?` — each one `apply_engine` call under the builtin's Rust
+frame. The builtin now returns `Control::Redirect` with the call waiting on the heap, and the
+engine that called it makes the call in its place: `dispatch` loops on it (a VM closure comes
+back as `Step::Tail`, a frame push), the tier-0 machine continues its dispatch loop. Only for an
+engine that offered: `Heap::offer_redirect` records the argument slice it hands the builtin, and
+the builtin takes the offer only when its own `args` is that slice, so a builtin another builtin
+called from Rust keeps its nested call and nothing else ever sees the signal. `<` and `first`
+hand back a prelude shim (`%ord-lt`, `%record-first`, …) for the step after the method. The
+bytecode's `Prim1`/`Prim2` fallbacks take the call path for a map operand only (the prelude's
+`count` on a record ran nested there too), and the passthrough gate refuses
+`proc/interruptible` under any name (ADR-494 §3's alias). `isolate` stays nested: a frame for
+it is the global snapshot, stamp and reap on every exit, on both engines. Guard:
+`interrupt_one_worker`'s kernel-dispatch case, flipped from "the count rises" to flat and
+widened to eight shapes; sabotaged red per case at both tiers. Run here, each once: that
+binary and `interrupt` at both tiers, `doc_refs`, `sig_in_docstring`, `registry_names`,
+`type_check_catalog`, sixteen record/sequence/numeric `.blsp` files at both tiers; build,
+clippy, fmt. Not run here: the suite, GC stress, and a benchmark (the offer is two stores per
+native call through `dispatch`; `make ab` on the benchmark machine).

@@ -150,6 +150,16 @@ pub enum Control {
     /// only where every frame up to the driver can be rebuilt, so nothing else ever sees
     /// it; like the other control signals, `try` never catches it.
     PreemptUnwind,
+    /// A builtin handed its call back to the engine that called it (ADR-505): the call it
+    /// would have made into Brood from Rust — a record's `num/add` under `+`, a record's
+    /// `->seq` under `first` — waits in [`Heap::take_redirect`], and the engine makes it in
+    /// the builtin's place, as an ordinary call, so a `receive` inside parks. Raised only
+    /// for an engine that offered to take it ([`Heap::redirect_offered`]), which takes it at
+    /// once: no other code ever sees it.
+    ///
+    /// [`Heap::take_redirect`]: crate::core::heap::Heap::take_redirect
+    /// [`Heap::redirect_offered`]: crate::core::heap::Heap::redirect_offered
+    Redirect,
 }
 
 /// One call-stack entry on an error's `:trace` (innermost first). `name` is the
@@ -432,6 +442,11 @@ impl LispError {
     /// nested suspend back onto the VM — only a clean all-VM stack captures/migrates.
     pub fn is_suspend_signal(&self) -> bool {
         matches!(self.control, Some(Control::Suspend { .. }))
+    }
+
+    /// Is this a builtin handing its call back ([`Control::Redirect`])?
+    pub(crate) fn is_redirect(&self) -> bool {
+        matches!(self.control, Some(Control::Redirect))
     }
 
     /// Is this a [`Control`] signal (a suspend) rather than a real error? Error-handling

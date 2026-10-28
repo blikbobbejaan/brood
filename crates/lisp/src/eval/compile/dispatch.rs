@@ -17,7 +17,29 @@ impl Drop for CaptureTopGuard {
 /// closure of matching arity runs on the VM (or, in tail position, returns a
 /// `Tail` for the trampoline); everything else (natives, multi-arm / ineligible
 /// closures, arity mismatches) defers to the tree-walker via `eval::apply`.
+///
+/// A builtin it calls may hand its call back (ADR-505) — the record's `num/add` a `+` would
+/// have called from Rust — and that call is dispatched in the builtin's place, so with
+/// `tail` a VM closure comes back un-run as `Step::Tail` like any other, and the caller
+/// pushes its frame.
 pub(crate) fn dispatch(
+    heap: &mut Heap,
+    callee: Value,
+    argv: SmallVec<[Value; 4]>,
+    tail: bool,
+    genv: EnvId,
+) -> Result<Step, LispError> {
+    let mut callee = callee;
+    let mut argv = argv;
+    loop {
+        match dispatch_once(heap, callee, argv, tail, genv) {
+            Err(error) if error.is_redirect() => (callee, argv) = heap.take_redirect(),
+            outcome => return outcome,
+        }
+    }
+}
+
+fn dispatch_once(
     heap: &mut Heap,
     callee: Value,
     argv: SmallVec<[Value; 4]>,
@@ -31,7 +53,9 @@ pub(crate) fn dispatch(
     if let ValueRef::Native(id) = callee.unpack()
         && !heap.native(id).is_apply
     {
-        return Ok(Step::Done(crate::eval::call_native(heap, id, &argv, genv)?));
+        return Ok(Step::Done(crate::eval::call_native_redirectable(
+            heap, id, &argv, genv,
+        )?));
     }
     let mut cur_callee = callee;
     let mut cur_argv = argv;
@@ -84,7 +108,7 @@ pub(crate) fn dispatch(
             if matches!(inner.unpack(), ValueRef::Fn(iid) if iid.0 == id.0) {
                 break;
             }
-            if !crate::eval::passthrough_redirect_ok(inner)? {
+            if !crate::eval::passthrough_redirect_ok(heap, inner)? {
                 break;
             }
             let mut next: SmallVec<[Value; 4]> = SmallVec::with_capacity(map.len());
@@ -302,6 +326,13 @@ pub(crate) fn dispatch(
         let _guard = CaptureTopGuard(crate::process::set_capture_top_level(false));
         let result = crate::eval::apply(heap, cur_callee, &cur_argv, genv);
         return Ok(Step::Done(result?));
+    }
+    // The builtin a wrapper forwarded to (`+` → `%add`): `eval::apply` of a native is
+    // `call_native`, made here with the redirect offered.
+    if let ValueRef::Native(id) = cur_callee.unpack() {
+        return Ok(Step::Done(crate::eval::call_native_redirectable(
+            heap, id, &cur_argv, genv,
+        )?));
     }
     Ok(Step::Done(crate::eval::apply(
         heap, cur_callee, &cur_argv, genv,

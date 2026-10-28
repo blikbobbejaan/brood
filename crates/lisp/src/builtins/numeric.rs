@@ -560,7 +560,7 @@ pub(super) fn num_bin(
         // the numeric path — a float/decimal operand falls straight to the float arm. A pair
         // with no method raises `no-method`; a plain (non-record) map errors in `num_to_f64`.
         (Value::Map(_), _) | (_, Value::Map(_)) if is_record(heap, a) || is_record(heap, b) => {
-            num_multi_dispatch(heap, who, a, b)
+            num_multi_dispatch(heap, who, args, a, b)
         }
         // A float operand anywhere: the float path (a BigInt/Decimal coerces via `f64` —
         // float contagion, like Clojure's double contagion). A plain non-numeric operand
@@ -591,7 +591,17 @@ fn is_record(heap: &Heap, v: Value) -> bool {
 /// untouched (a Brood `(record? a)` branch in `+` would cost orders of magnitude). A pair
 /// with no method raises the multimethod's loud `no-method` error, so mixed types are
 /// explicit, never silently coerced.
-fn num_multi_dispatch(heap: &mut Heap, who: &str, a: Value, b: Value) -> LispResult {
+///
+/// Called by an engine that offered to make the call itself (ADR-505), it hands the
+/// multimethod back instead of running it under this builtin's frame, so a `receive` in the
+/// method parks; called from Rust (`add_values`), it runs it nested as before.
+fn num_multi_dispatch(
+    heap: &mut Heap,
+    who: &str,
+    args: &[Value],
+    a: Value,
+    b: Value,
+) -> LispResult {
     let op = match who {
         "+" => "num/add",
         "-" => "num/sub",
@@ -605,7 +615,35 @@ fn num_multi_dispatch(heap: &mut Heap, who: &str, a: Value, b: Value) -> LispRes
         .ok_or_else(|| {
             LispError::runtime(format!("{who}: the `{op}` multimethod is not loaded"))
         })?;
+    if heap.redirect_offered(args) {
+        return Err(heap.redirect(callee, &[a, b]));
+    }
     crate::eval::compile::apply_engine(heap, callee, &[a, b], genv)
+}
+
+/// `<` or `<=` on a record, handed back to the engine that offered to make the call
+/// (ADR-505): `shim` is the prelude's `%ord-lt` / `%ord-le`, which calls `compare-to` and reads
+/// its sign as [`compare_multi_dispatch`] does. `None` when the call was not offered, an
+/// operand is no record, or the prelude has not defined the shim yet — the caller then
+/// compares here, nested.
+fn ordering_redirect(
+    heap: &mut Heap,
+    args: &[Value],
+    shim: &str,
+    a: Value,
+    b: Value,
+) -> Option<LispError> {
+    if !matches!((a, b), (Value::Map(_), _) | (_, Value::Map(_)))
+        || !(is_record(heap, a) || is_record(heap, b))
+    {
+        return None;
+    }
+    let genv = heap.global();
+    let callee = heap.env_get(genv, crate::core::value::intern(shim))?;
+    if !heap.redirect_offered(args) {
+        return None;
+    }
+    Some(heap.redirect(callee, &[a, b]))
 }
 
 /// Dispatch a comparison operator to the `Ord` MULTIMETHOD (`compare-to`, ADR-179) when a
@@ -695,7 +733,7 @@ pub(super) fn prim_div(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
     // operands); the `is_record` check is cheap, and int/float division is JIT-inlined and
     // never reaches here.
     if is_record(heap, a) || is_record(heap, b) {
-        return num_multi_dispatch(heap, "/", a, b);
+        return num_multi_dispatch(heap, "/", args, a, b);
     }
     // ---- Exact rational division (ADR-196) ----
     // `/` on two integers is EXACT: `(/ 6 3)` → `2` (an Int, divides evenly), but
@@ -828,6 +866,9 @@ fn ordering(heap: &mut Heap, who: &str, a: Value, b: Value) -> Result<Option<Ord
 
 pub(super) fn prim_lt(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let (a, b) = two(args, "<")?;
+    if let Some(redirect) = ordering_redirect(heap, args, "%ord-lt", a, b) {
+        return Err(redirect);
+    }
     Ok(Value::boolean(
         ordering(heap, "<", a, b)? == Some(Ordering::Less),
     ))
@@ -838,6 +879,9 @@ pub(super) fn prim_lt(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 /// reach (the old `(not (%lt …))` bodies were a nested call it couldn't).
 pub(super) fn prim_le(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let (a, b) = two(args, "<=")?;
+    if let Some(redirect) = ordering_redirect(heap, args, "%ord-le", a, b) {
+        return Err(redirect);
+    }
     let le = matches!(
         ordering(heap, "<=", a, b)?,
         Some(Ordering::Less | Ordering::Equal)

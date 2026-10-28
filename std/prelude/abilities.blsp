@@ -1055,6 +1055,30 @@ record has no impl and counts its fields; see `std/queue.blsp`.
     (->count (queue/list-> [1 2 3]))   ;=> 3"
   (->count [self] :-> int))
 
+;; `first` / `rest` / `empty?` of a RECORD as the kernel builtins hand them back to the engine
+;; (ADR-505): the builtin would ask the record's `->seq` (or `->count`) from Rust, under its own
+;; frame, where a `receive` in the method blocks the worker. Called by the engine instead, the
+;; method runs as an ordinary call and a `receive` in it parks.
+(defn %record-first (r)
+  "The first element of record `r`'s `Seqable` view — `(first r)` for a record, as the kernel
+`first` hands it back to the engine (ADR-505)."
+  (first (->seq r)))
+
+(defn %record-rest (r)
+  "All but the first element of record `r`'s `Seqable` view — `(rest r)` for a record, as the
+kernel `rest` hands it back to the engine (ADR-505)."
+  (rest (->seq r)))
+
+(defn %record-empty? (r)
+  "Whether record `r` is empty — its `->count` is zero when its type implements `Counted`, else
+its `Seqable` view is empty. `(empty? r)` for a record, as the kernel `empty?` hands it back to
+the engine (ADR-505)."
+  (let (methods (%map-get *impls* (quote [Counted ->count]) nil)
+        method (if methods (%map-get methods (%map-get r :__id__ nil) nil) nil))
+    (if method
+      (let (n (method r)) (and (int? n) (= n 0)))
+      (empty? (->seq r)))))
+
 ;; Lookup — keyed access: the seam `get` consults for a RECORD that stores its contents
 ;; somewhere other than its own fields. Without it a record answers `get` from its FIELDS,
 ;; which for such a type is a wrong VALUE and not an error: `(get multimap k)` answered nil
@@ -1119,6 +1143,22 @@ method, everything else to the kernel `compare`. This is the comparator `sort`/`
 use, so a record type that defines one orders itself while built-ins keep the native path. A record type
 with no `compare-to` method is a loud `%no-method` error — never a silent order by map layout."
   (if (record? a) (compare-to a b) (compare a b)))
+
+;; `<` and `<=` on a RECORD as the kernel's `%lt` / `%le` hand them back to the engine (ADR-505):
+;; its `compare-to`, read by its sign. Called by the engine, a `receive` in a `compare-to`
+;; method parks the process instead of blocking its worker under the builtin's frame.
+(defn- %ord-sign (who c)
+  (if (int? c) c (error (str who ": `compare-to` must return an int (-1/0/1)"))))
+
+(defn %ord-lt (a b)
+  "Whether record `a` sorts before `b` by `compare-to` — `(< a b)` for a record, as the kernel
+`<` hands it back to the engine (ADR-505)."
+  (< (%ord-sign "<" (compare-to a b)) 0))
+
+(defn %ord-le (a b)
+  "Whether record `a` sorts before or ties with `b` by `compare-to` — `(<= a b)` for a record,
+as the kernel `<=` hands it back to the engine (ADR-505)."
+  (<= (%ord-sign "<=" (compare-to a b)) 0))
 
 ;; Num — arithmetic for a RECORD (a money value, complex number, 2-D vector, bignum), as
 ;; multimethods (ADR-179) dispatching on BOTH operands. A record operand to `+`/`-`/`*`/`/`

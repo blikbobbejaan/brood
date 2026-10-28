@@ -583,8 +583,12 @@ pub(crate) fn exec_chunk(
                         // `dispatch` (passthrough loop, `apply` test, `eval::apply`,
                         // `call_native`'s arity check on a one-argument call) would reach.
                         // The JIT's `unary_fallback` calls the same functions. The operand
-                        // stays rooted at `n - 1` across a collection inside it.
-                        (PrimOp1::First | PrimOp1::Rest | PrimOp1::IsEmpty, _) => {
+                        // stays rooted at `n - 1` across a collection inside it. A map — a
+                        // record is one — dispatches below instead, where the builtin can
+                        // hand a record's `->seq` back to be called here (ADR-505).
+                        (PrimOp1::First | PrimOp1::Rest | PrimOp1::IsEmpty, _)
+                            if !matches!(sa.unpack(), ValueRef::Map(_)) =>
+                        {
                             crate::perf_bump!(prim1_fallback);
                             let cur_env = heap.read_root_env(genv);
                             let builtin = match op {
@@ -615,6 +619,32 @@ pub(crate) fn exec_chunk(
                 let cur_env = heap.read_root_env(genv);
                 let sa = heap.root_at(n - 1);
                 let argv: SmallVec<[Value; 4]> = SmallVec::from_slice(&[sa]);
+                // A map operand — a record is one — is where Brood runs under the call: a
+                // record's `->seq` or `->count`, called from the builtin or from the
+                // prelude's `count`. Dispatched as a call, a closure comes back un-run and
+                // gets a frame of its own, so a `receive` inside parks (ADR-505). Every
+                // other operand keeps the nested run.
+                if matches!(sa.unpack(), ValueRef::Map(_)) {
+                    let step = dispatch(heap, callee, argv, true, cur_env);
+                    heap.truncate_roots(n - 1);
+                    match step.map_err(|e| tag_pos(e, pos))? {
+                        Step::Done(v) => heap.push_root(v),
+                        Step::Tail {
+                            compiled,
+                            args,
+                            genv,
+                            bases,
+                        } => {
+                            return Ok(ChunkExit::Call {
+                                arm: compiled,
+                                args,
+                                genv,
+                                bases,
+                            });
+                        }
+                    }
+                    continue;
+                }
                 let result =
                     dispatch(heap, callee, argv, false, cur_env).and_then(|s| force(heap, s));
                 heap.truncate_roots(n - 1);
@@ -641,6 +671,25 @@ pub(crate) fn exec_chunk(
                     Some(v) => {
                         heap.truncate_roots(n - 2);
                         heap.push_root(v);
+                    }
+                    // A record operand: the call is made as one (ADR-505).
+                    None if prim2_may_redirect(sa, sb) => {
+                        match prim2_dispatch_step(heap, *head, n - 2, *pos, genv)? {
+                            Step::Done(v) => heap.push_root(v),
+                            Step::Tail {
+                                compiled,
+                                args,
+                                genv,
+                                bases,
+                            } => {
+                                return Ok(ChunkExit::Call {
+                                    arm: compiled,
+                                    args,
+                                    genv,
+                                    bases,
+                                });
+                            }
+                        }
                     }
                     None => {
                         // Operands already rooted at n-2 and n-1.
@@ -751,7 +800,27 @@ pub(crate) fn exec_chunk(
                         let save = heap.roots_len();
                         heap.push_root(sa);
                         heap.push_root(sb);
-                        prim2_dispatch_rooted(heap, *head, save, *pos, genv)?
+                        // A record operand: the call is made as one (ADR-505).
+                        if prim2_may_redirect(sa, sb) {
+                            match prim2_dispatch_step(heap, *head, save, *pos, genv)? {
+                                Step::Done(v) => v,
+                                Step::Tail {
+                                    compiled,
+                                    args,
+                                    genv,
+                                    bases,
+                                } => {
+                                    return Ok(ChunkExit::Call {
+                                        arm: compiled,
+                                        args,
+                                        genv,
+                                        bases,
+                                    });
+                                }
+                            }
+                        } else {
+                            prim2_dispatch_rooted(heap, *head, save, *pos, genv)?
+                        }
                     }
                 };
                 heap.push_root(v);
@@ -785,7 +854,27 @@ pub(crate) fn exec_chunk(
                         let (first, second) = if *swapped { (sb, sa) } else { (sa, sb) };
                         heap.push_root(first);
                         heap.push_root(second);
-                        prim2_dispatch_rooted(heap, *head, save, *pos, genv)?
+                        // A record operand: the call is made as one (ADR-505).
+                        if prim2_may_redirect(sa, sb) {
+                            match prim2_dispatch_step(heap, *head, save, *pos, genv)? {
+                                Step::Done(v) => v,
+                                Step::Tail {
+                                    compiled,
+                                    args,
+                                    genv,
+                                    bases,
+                                } => {
+                                    return Ok(ChunkExit::Call {
+                                        arm: compiled,
+                                        args,
+                                        genv,
+                                        bases,
+                                    });
+                                }
+                            }
+                        } else {
+                            prim2_dispatch_rooted(heap, *head, save, *pos, genv)?
+                        }
                     }
                 };
                 heap.push_root(v);
@@ -1265,6 +1354,10 @@ pub(crate) fn exec_chunk(
                                 Some(crate::error::Control::PreemptUnwind) => unreachable!(
                                     "a native preempt-unwind reached a nested call (ADR-401)"
                                 ),
+                                // `dispatch` takes every redirect it offered (ADR-505).
+                                Some(crate::error::Control::Redirect) => {
+                                    unreachable!("a builtin's redirect escaped `dispatch`")
+                                }
                             };
                             return Ok(ChunkExit::Suspend { deadline });
                         }

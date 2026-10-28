@@ -529,6 +529,25 @@ pub(super) fn record_seq(heap: &mut Heap, v: Value) -> Result<Option<Value>, Lis
     )?))
 }
 
+/// `first` / `rest` / `empty?` of a RECORD, handed back to the engine that offered to make
+/// the call (ADR-505): `shim` is the prelude's `%record-first` / `%record-rest` /
+/// `%record-empty?`, which asks the record's `->seq` (or `->count`) and answers as the builtin
+/// does — called by the engine, so a `receive` in the record's method parks. `None` when `v`
+/// is no record, the call was not offered, or the prelude has not defined the shim yet; the
+/// builtin then asks the record here, nested ([`record_seq`]).
+fn record_redirect(heap: &mut Heap, args: &[Value], shim: &str, v: Value) -> Option<LispError> {
+    let Value::Map(m) = v else {
+        return None;
+    };
+    heap.map_get(m, Value::Keyword(*crate::core::value::RECORD_ID_SYMBOL))?;
+    let genv = heap.global();
+    let callee = heap.env_get(genv, crate::core::value::intern(shim))?;
+    if !heap.redirect_offered(args) {
+        return None;
+    }
+    Some(heap.redirect(callee, &[v]))
+}
+
 /// `first` / `rest` for the JIT's non-pair fallback (`brood_rt_first`/`_rest`): the cases
 /// the kernel decides on its own — nil, vector, range, bytes, set, and the type error —
 /// answered; `None` for the two that need the evaluator (a record's `Seqable` dispatch,
@@ -568,6 +587,9 @@ pub(crate) fn is_empty_without_eval(heap: &mut Heap, v: Value) -> Option<LispRes
 
 pub(crate) fn first(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let v0 = arg(args, 0);
+    if let Some(redirect) = record_redirect(heap, args, "%record-first", v0) {
+        return Err(redirect);
+    }
     // a record dispatches to its `Seqable` view first (custom collection or fields).
     let v = match record_seq(heap, v0)? {
         Some(s) => s,
@@ -619,6 +641,9 @@ pub(crate) fn first(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
 
 pub(crate) fn rest(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let v0 = arg(args, 0);
+    if let Some(redirect) = record_redirect(heap, args, "%record-rest", v0) {
+        return Err(redirect);
+    }
     let v = match record_seq(heap, v0)? {
         Some(s) => s,
         None => v0,
@@ -721,6 +746,9 @@ fn record_counted(heap: &mut Heap, v: Value) -> Result<Option<Value>, LispError>
 
 pub(crate) fn is_empty(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let x0 = arg(args, 0);
+    if let Some(redirect) = record_redirect(heap, args, "%record-empty?", x0) {
+        return Err(redirect);
+    }
     // A record that knows its size (`Counted`) is empty iff that size is zero.
     if let Some(n) = record_counted(heap, x0)? {
         return Ok(Value::boolean(matches!(n, Value::Int(0))));

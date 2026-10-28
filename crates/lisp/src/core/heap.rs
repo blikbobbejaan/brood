@@ -591,6 +591,10 @@ pub(crate) struct HeapExtras {
     /// interpret the table — `builtins::syntax_scan` downcasts it. Holds no handles, so
     /// nothing here is traced.
     pub(crate) form_scan_ropes: Vec<(ropey::Rope, Arc<dyn std::any::Any + Send + Sync>)>,
+    /// The call a builtin handed back to the engine that called it (ADR-505): its callee and
+    /// arguments, set by [`Heap::redirect`] and taken by that engine at once, before anything
+    /// allocates. Never held across a collection, so not traced.
+    pub(crate) pending_redirect: Option<(Value, SmallVec<[Value; 4]>)>,
 }
 
 /// [`Heap::type_alias_cache`]'s contents: `(declared_sigs_version, name → alias key)`.
@@ -1289,6 +1293,13 @@ pub struct Heap {
     /// fetched once at arm entry (`brood_rt_i64_overflow_ptr`).
     #[cfg_attr(not(feature = "jit"), allow(dead_code))]
     pub(crate) jit_i64_overflow: bool,
+    /// The address of the argument slice an engine that can take a redirect is passing the
+    /// builtin it is calling right now (ADR-505), or 0. A builtin whose slow path would call
+    /// Brood compares its own `args` against it ([`Heap::redirect_offered`]): equal means it
+    /// is that call, and may hand the callee back instead of running it nested; anything
+    /// else — a builtin another builtin called from Rust, with a slice of its own — keeps
+    /// the nested call.
+    redirect_offer: usize,
     /// Per-process state almost no process touches — the GC statistics, the `proc/flag`
     /// settings, a test's shared-code floor — boxed at its first write. Inline it was ~130
     /// bytes on every process; most never collect, never set a flag, and park
@@ -1758,6 +1769,49 @@ impl Heap {
         self.extras.get_or_insert_with(Default::default)
     }
 
+    /// An engine that can take a redirect is about to call a builtin on `argv` (ADR-505).
+    /// Returns the offer it replaces, which the engine puts back with
+    /// [`Heap::withdraw_redirect`] once the builtin returns.
+    #[inline]
+    pub(crate) fn offer_redirect(&mut self, argv: &[Value]) -> usize {
+        std::mem::replace(&mut self.redirect_offer, argv.as_ptr() as usize)
+    }
+
+    /// The builtin returned: the offer [`Heap::offer_redirect`] made is over.
+    #[inline]
+    pub(crate) fn withdraw_redirect(&mut self, previous: usize) {
+        self.redirect_offer = previous;
+    }
+
+    /// Whether `args` is the slice an engine offered a redirect for — that is, this builtin
+    /// is the call the engine made, not one another builtin made from Rust — taking the
+    /// offer when it is, so nothing nested under the builtin can take it too.
+    #[inline]
+    pub(crate) fn redirect_offered(&mut self, args: &[Value]) -> bool {
+        if self.redirect_offer != 0 && self.redirect_offer == args.as_ptr() as usize {
+            self.redirect_offer = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Hand `callee` on `args` back to the engine as the builtin's whole result (ADR-505):
+    /// the engine calls it where the builtin was called, as an ordinary call, so a `receive`
+    /// inside parks. Only after [`Heap::redirect_offered`] said yes.
+    pub(crate) fn redirect(&mut self, callee: Value, args: &[Value]) -> crate::error::LispError {
+        self.extras_mut().pending_redirect = Some((callee, SmallVec::from_slice(args)));
+        crate::error::LispError::control(crate::error::Control::Redirect)
+    }
+
+    /// The call a builtin handed back with [`Heap::redirect`].
+    pub(crate) fn take_redirect(&mut self) -> (Value, SmallVec<[Value; 4]>) {
+        self.extras
+            .as_mut()
+            .and_then(|extras| extras.pending_redirect.take())
+            .expect("a redirect signal without its call")
+    }
+
     fn cold(&self) -> Option<&ColdHeap> {
         self.cold.as_deref()
     }
@@ -1870,6 +1924,7 @@ impl Heap {
             cur_native_gateway: 0,
             blocked_under_gateway: 0,
             jit_i64_overflow: false,
+            redirect_offer: 0,
         }
     }
 
