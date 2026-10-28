@@ -156,10 +156,9 @@ whose callee must exist, but that are not evaluated.
   ;; REPL as it stands. The slip that rule invites is the module's own bare name: when
   ;; `bare` is unbound here but bound in that module, say what to write instead.
   ;; A nil `name-str` is an example with no owning name — a markdown block — so no hint.
-  (let (slash (if name-str (string/last-index-of name-str "/") -1)
-        qualified (if (< slash 0)
-                    nil
-                    (str (string/substring name-str 0 slash) "/" bare)))
+  (let (owner (or name-str "")
+        slash (string/last-index-of owner "/")
+        qualified (if (< slash 0) nil (str (string/substring owner 0 slash) "/" bare)))
     (if (and qualified (bound? (symbol qualified)))
       (str " — examples run at the top level: write `" qualified "`")
       "")))
@@ -519,7 +518,7 @@ faults on a last line the parent reads back.
 (defn- child-command (file)
   ;; Run `file` with the binary running now: `nest run` keeps a project's sources reachable,
   ;; so a block in a project's guide can call the project; `brood` runs a file as it is.
-  (let (exe (os/exe-path))
+  (let (exe (or (os/exe-path) "brood"))
     (if (string/starts-with? (path/basename exe) "nest")
       [exe ["run" "--no-check" file]]
       [exe [file]])))
@@ -552,7 +551,7 @@ block holds. `label` names the file in them (default `path`).
         (fn (faults block)
           (let (block-label (str (or label path) ":" (:line block))
                 file (str (path/temp "brood-doctest-") ".blsp")
-                command (child-command file))
+                [program arguments] (child-command file))
             (file/spit file
               (str "(doctest/run-block "
                 (pr-str (or label path))
@@ -561,6 +560,6 @@ block holds. `label` names the file in them (default `path`).
                 " "
                 (pr-str (:source block))
                 ")\n"))
-            (let (result (os/cmd (first command) (second command) {:timeout-ms *block-timeout-ms*}))
+            (let (result (os/cmd program arguments {:timeout-ms *block-timeout-ms*}))
               (file/rm file)
               (append faults (block-outcome block-label result)))))))))
