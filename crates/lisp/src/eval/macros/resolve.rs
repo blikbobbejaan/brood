@@ -1371,9 +1371,7 @@ fn resolve_let(
     let mut scope = locals.to_vec();
     if letrec {
         for &t in binds.iter().step_by(2) {
-            if let ValueRef::Sym(s) = t.unpack() {
-                scope.push(s);
-            }
+            collect_binder_syms(heap, t, &mut scope);
         }
     }
     let mut new_binds = Vec::with_capacity(binds.len());
@@ -1383,8 +1381,8 @@ fn resolve_let(
         let rhs_r = resolve_walk(heap, binds[i + 1], ns_name, &scope);
         new_binds.push(target); // binder verbatim
         new_binds.push(rhs_r);
-        if !letrec && let ValueRef::Sym(s) = target.unpack() {
-            scope.push(s);
+        if !letrec {
+            collect_binder_syms(heap, target, &mut scope);
         }
         i += 2;
     }
@@ -1516,6 +1514,24 @@ fn resolve_param_defaults(
     reuse_or_rebuild(heap, params, &items, out)
 }
 
+/// The names a `let` binder binds, appended to `out`: a symbol, with its base name too when it
+/// carries a type annotation (`x:int` binds `x`); for a destructuring PATTERN, every symbol in
+/// it — the over-approximation `resolve_match` makes, so a binder is never qualified. A
+/// macro template is resolved before its patterns are lowered, and under `ns_assume_own` a
+/// name missed here is qualified to the namespace and comes out unbound.
+fn collect_binder_syms(heap: &Heap, binder: Value, out: &mut Vec<value::Symbol>) {
+    match binder.unpack() {
+        ValueRef::Sym(s) => {
+            out.push(s);
+            let name = value::symbol_name_ref(s);
+            if let Some(i) = name.find(':').filter(|&i| i > 0) {
+                out.push(value::intern(&name[..i]));
+            }
+        }
+        _ => collect_all_syms(heap, binder, out),
+    }
+}
+
 /// Collect parameter-binder symbols from a param list (mirrors `fn_params` /
 /// `parse_params`): plain symbols, `(name default)` optionals' names; skips the
 /// `&`/`&optional`/`&rest` markers. Appends to `out`.
@@ -1533,15 +1549,17 @@ fn collect_param_syms(heap: &Heap, params: Value, out: &mut Vec<value::Symbol>) 
                 {
                     continue;
                 }
-                out.push(s);
+                collect_binder_syms(heap, item, out);
             }
-            ValueRef::Pair(_) | ValueRef::Vector(_) => {
+            ValueRef::Pair(_) => {
                 // `(name default)` — the binder is the first element.
                 let inner = heap.list_or_vector_items(item).unwrap_or_default();
-                if let Some(ValueRef::Sym(s)) = inner.first().map(|v| v.unpack()) {
-                    out.push(s);
+                if let Some(&first) = inner.first() {
+                    collect_binder_syms(heap, first, out);
                 }
             }
+            // A destructuring parameter (`[a b]`, `{:keys [a]}`) binds every name in it.
+            ValueRef::Vector(_) | ValueRef::Map(_) => collect_all_syms(heap, item, out),
             _ => {}
         }
     }

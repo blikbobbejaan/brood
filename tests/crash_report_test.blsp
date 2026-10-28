@@ -107,7 +107,7 @@ passes. A report that does not match belongs to another test — drop it and kee
           (is (string? text))
           (is (includes? text (pr-str crasher)))
           (is (includes? text "boom: 1"))
-          (is (includes? text "kind :user"))
+          (is (includes? text "kind :error"))
           ;; Match the FILE NAME and a position, not a path prefix: `nest test` loads a
           ;; discovered file by ABSOLUTE path and an explicitly-named one relatively, so
           ;; pinning "tests/…" passed alone and failed under discovery — a property of how

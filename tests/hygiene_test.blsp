@@ -136,8 +136,14 @@
       (assert= (fold-for-binder a) 11)
       (assert= (with-binder a) 11)
       (assert= (as-binder a) 11)
-      (assert= (catch-binder a) 11)
-      (assert= (defn-param a) 11)))
+      (assert= (catch-binder a) 11)))
+  ;; A named definition's params are its signature — arglist, docs, arity and contract
+  ;; messages — so they stay as written: `map`'s doc read `(map coll__60 f)` when they were
+  ;; renamed (bedit's spy pane caught it).
+  (test "a template defn keeps its params as written"
+    (defn-param 1)
+    ;; the macro call above defines it at run time, where the checker cannot see it
+    (assert= '(a) (check-allow :unbound (arglist hygiene-helper))))
   (test "if-let's else branch is outside its binding"
     ;; The template's `a` is not in scope in `else`, so the caller's `a` arrives there.
     (let (a 10) (assert= (if-let-else a) 11)))

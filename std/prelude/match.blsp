@@ -684,12 +684,16 @@ refutable `let` and pattern `fn` lowers its no-match branch to.
   (second (%match-splice-fail-in form k code)))
 
 ;; Remaining budget after counting `form`'s pair nodes, or -1 once exhausted —
-;; an early-exit size probe (big trees aren't walked past the budget).
+;; an early-exit size probe (big trees aren't walked past the budget). The no-match raise,
+;; `(%raise (%match-error …))`, costs two whatever patterns it quotes: it is one call, as the
+;; `(throw [vector])` it replaced was, and counting its quoted pattern list pushed a 2-clause
+;; match over the budget into a failure thunk — which also hid its guards from the checker.
 ;; check-allow: deliberately non-tail — expansion-time recursion over pattern syntax — depth is source nesting, not runtime data.
 (check-allow :non-tail-recursion
   (defn- %match-size-budget (form budget)
     (cond
       (< budget 0) -1
+      (and (pair? form) (= (first form) '%raise)) (- budget 2)
       (pair? form) (%match-size-budget (rest form) (%match-size-budget (first form) (- budget 1)))
       else budget)))
 

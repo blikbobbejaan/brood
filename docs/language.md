@@ -1177,8 +1177,8 @@ capture nor be captured by caller code spliced in with `~`/`~@` — no `gensym`,
 That holds at every binding site of the one pattern grammar: `let`/`letrec`/`fn` binders
 and their destructuring patterns, `match`/`receive` clauses (guards, `or` alternatives,
 pins), and the standard binding macros — `when-let`, `if-let`, `for`, `fold-for`, `doseq`,
-`dotimes`, `with`, `as->`, `try`'s `catch`, and the params of `defn`, `defmethod` and
-`impl`. A typed binder keeps its annotation (`x:int` becomes `x__12:int`):
+`dotimes`, `with`, `as->` and `try`'s `catch`. A typed binder keeps its annotation
+(`x:int` becomes `x__12:int`):
 
 ```clojure
 (defmacro my-or (a b)
@@ -1219,6 +1219,9 @@ remains available for a fresh symbol outside a template. New code needs neither.
   names itself, so it names them fresh;
 - a **`{:keys [a]}`** name — the names are the keys looked up, so a renamed `a` would read
   `:a__12`. Bind with `{:a a}` (which requires the key) when that matters.
+- the **params of a named definition** — `defn`, `defn-`, `defmethod`, `impl` — written in
+  a template: they are the function's signature, shown in its arglist, its docs and its
+  arity and contract errors, so they keep the names written.)
 
 The `->` and `as->` threading macros are also defined in the prelude. There is only
 **one** pipe: every collection function takes its collection first (ADR-308), so a

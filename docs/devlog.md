@@ -4576,3 +4576,21 @@ guard; several clauses are tried in order, and an error none matches is raised a
 its first site. The checker's four readers of the old vector now share
 `guards::match_failure_parts`. Run here: probes of every raise shape and catch form, the
 exhaustiveness lint, `nest check`, `--strict`, the std doctest engine. Not run: the suites.
+
+2026-10-28 (ADR-500/501 follow-up: what CI found): four causes behind eight suite failures.
+(1) A macro template is resolved at its `defmacro`, before its patterns are lowered, and under
+`ns_assume_own` the resolver qualified every name it did not see bound: `resolve_let` and
+`collect_param_syms` knew only plain-symbol binders, so `(let ([a] …) a)` and `(fn (a:int) a)`
+in a template came out `ns/a`, unbound. That predates ADR-500 (`(let ((a b) …) (+ a b))` failed
+the same way); pattern binders now count every symbol in them and a typed binder its base
+name. (2) `%match-small?` counted the quoted pattern list of the new `(%raise (%match-error
+…))`, where the old `(throw [vector])` cost two; a two-clause match tipped into a failure
+thunk, which hid its guard chain from the checker (a match's domain, the non-tail lint) and
+cost a closure per run. The raise costs two again. A tree-walker `table_address_space` case
+also went red (192 MB over 2000 exited processes, not reproducible here); the thunks are the
+likely cause, so CI is the check. (3) A template `defn`'s params were renamed, so `map`'s
+arglist read `(map coll__60 f)` in bedit's doc pane: a named definition's params now stay as
+written (its signature) and only shadow. (4) Tests: the crash report says `kind :error` for an
+`error`, and a test macro that exposed `a`/`b` to its body by destructuring now says so with
+`~'a`. Run here: probes of each, `nest check`, `--strict`, clippy `--all-targets
+--all-features`, the std doctest engine, a full `nest doctest`. Not run: the suites.

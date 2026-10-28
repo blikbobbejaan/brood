@@ -36,7 +36,8 @@ use super::*;
 //   left literal: its names ARE the keys looked up, so a renamed `a` would read `:a__12`.
 // - the standard library's binding macros, by shape (`binding_shape`): binding pairs
 //   (`when-let`, `for`, `doseq`, `with`, …), pattern clauses (`match`, `match*`,
-//   `receive`), `try`'s `catch`, `as->`, and the params of `defn`/`defmethod`/`impl`.
+//   `receive`), `try`'s `catch` and `as->`. The params of `defn`/`defmethod`/`impl` only
+//   shadow: they are the function's signature (arglist, docs, arity errors).
 // - a typed binder `x:int` renames its name and keeps its annotation: `x__12:int`.
 //
 // Still literal, opt into `#`/`(gensym)` there: a binder that a USER's binding macro
@@ -209,7 +210,7 @@ fn hyg_list(heap: &mut Heap, form: Value, scope: &[(value::Symbol, value::Symbol
         }
         if value::symbol_is(h, kw::FN) {
             let mut out = vec![items[0]];
-            out.extend(hyg_fn_parts(heap, &items[1..], scope));
+            out.extend(hyg_fn_parts(heap, &items[1..], scope, true));
             return rebuild_list(heap, form, out);
         }
         if let Some(shape) = binding_shape(h) {
@@ -464,6 +465,7 @@ fn hyg_fn_parts(
     heap: &mut Heap,
     parts: &[Value],
     scope: &[(value::Symbol, value::Symbol)],
+    rename: bool,
 ) -> Vec<Value> {
     let (has_doc, clause_start) = match parts.first().map(|v| v.unpack()) {
         Some(ValueRef::Str(_)) if parts.len() > 1 => (true, 1),
@@ -477,12 +479,12 @@ fn hyg_fn_parts(
             out.push(parts[0]);
         }
         for &clause in clauses {
-            out.push(hyg_arity_clause(heap, clause, scope));
+            out.push(hyg_arity_clause(heap, clause, scope, rename));
         }
     } else {
         let params = parts.first().copied().unwrap_or(Value::nil());
         let mut inner = scope.to_vec();
-        out.push(hyg_param_list(heap, params, &mut inner));
+        out.push(hyg_param_list(heap, params, &mut inner, rename));
         for &b in parts.get(1..).unwrap_or(&[]) {
             out.push(hyg_walk(heap, b, &inner));
         }
@@ -494,13 +496,14 @@ fn hyg_arity_clause(
     heap: &mut Heap,
     clause: Value,
     scope: &[(value::Symbol, value::Symbol)],
+    rename: bool,
 ) -> Value {
     let cparts = match heap.list_items(clause) {
         Some(c) if !c.is_empty() => c,
         _ => return clause,
     };
     let mut inner = scope.to_vec();
-    let new_params = hyg_param_list(heap, cparts[0], &mut inner);
+    let new_params = hyg_param_list(heap, cparts[0], &mut inner, rename);
     let mut out = Vec::with_capacity(cparts.len());
     out.push(new_params);
     for &b in &cparts[1..] {
@@ -511,8 +514,10 @@ fn hyg_arity_clause(
 
 /// Rename a parameter list's binders — each param is a pattern — extending `inner` with
 /// them (all bound together for the body). A computed param list (`~params`) is left
-/// verbatim.
-fn hyg_param_list(heap: &mut Heap, params: Value, inner: &mut HygScope) -> Value {
+/// verbatim. Without `rename` the params stay as written and only SHADOW: a named
+/// definition's params are its public signature — its arglist, its docs, its arity and
+/// contract errors — and `(map coll__60 f)` in a doc pane is worse than the capture it avoids.
+fn hyg_param_list(heap: &mut Heap, params: Value, inner: &mut HygScope, rename: bool) -> Value {
     if hyg_is_unquote(heap, params) {
         return params; // `(fn ~params …)` — binders not visible
     }
@@ -520,6 +525,19 @@ fn hyg_param_list(heap: &mut Heap, params: Value, inner: &mut HygScope) -> Value
         Some(e) => e,
         None => return params,
     };
+    if !rename {
+        let mut names = Vec::new();
+        collect_all_syms(heap, params, &mut names);
+        for s in names {
+            let name = value::symbol_name_ref(s);
+            let base = match name.find(':') {
+                Some(i) if i > 0 => value::intern(&name[..i]),
+                _ => s,
+            };
+            inner.push((base, base));
+        }
+        return params;
+    }
     let start = inner.len();
     let mut out = Vec::with_capacity(elems.len());
     for p in elems {
@@ -573,7 +591,7 @@ fn hyg_shaped(
                 return hyg_generic(heap, form, items, scope);
             }
             let mut out = vec![items[0], hyg_walk(heap, items[1], scope)];
-            out.extend(hyg_fn_parts(heap, &items[2..], scope));
+            out.extend(hyg_fn_parts(heap, &items[2..], scope, false));
             rebuild_list(heap, form, out)
         }
         Shape::Defmethod => {
@@ -581,7 +599,7 @@ fn hyg_shaped(
                 return hyg_generic(heap, form, items, scope);
             }
             let mut out = vec![items[0], hyg_walk(heap, items[1], scope), items[2]];
-            out.extend(hyg_fn_parts(heap, &items[3..], scope));
+            out.extend(hyg_fn_parts(heap, &items[3..], scope, false));
             rebuild_list(heap, form, out)
         }
         Shape::Impl => {
@@ -594,7 +612,7 @@ fn hyg_shaped(
                 out.push(match heap.list_items(method) {
                     Some(parts) if parts.len() >= 2 && !hyg_is_unquote(heap, method) => {
                         let mut renamed = vec![parts[0]];
-                        renamed.extend(hyg_fn_parts(heap, &parts[1..], scope));
+                        renamed.extend(hyg_fn_parts(heap, &parts[1..], scope, false));
                         rebuild_list(heap, method, renamed)
                     }
                     _ => hyg_walk(heap, method, scope),
