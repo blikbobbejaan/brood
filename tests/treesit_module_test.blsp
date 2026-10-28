@@ -595,9 +595,11 @@
                                                     {:text "def"} :g})
         '()))))
 
-;; The installed grammars an editor fetched (bedit's ~/.config/bedit/grammars); a suite
+;; The installed grammars an editor fetched ($BROOD_TEST_GRAMMARS, else bedit's ~/.config/bedit/grammars); a suite
 ;; runs only when its library is there, so a machine without them stays green.
-(def tsm-grammar-dir (str (or (os/env "HOME") "") "/.config/bedit/grammars/"))
+(def tsm-grammar-dir
+  (str (or (os/env "BROOD_TEST_GRAMMARS") (str (or (os/env "HOME") "") "/.config/bedit/grammars"))
+    "/"))
 
 (defn tsm-installed? (lang)
   (let (path (str tsm-grammar-dir "libtree-sitter-" (->string lang) ".so"))
@@ -1057,10 +1059,8 @@
 ;; $BROOD_TEST_GRAMMARS, else bedit's grammar directory, and is skipped without them. Loaded
 ;; HERE, at file load, never inside a test: a load moves the grammar epoch, and a held tree in
 ;; a test running beside it would then reparse from scratch.
-(def tsm-grammar-dir
-  (or (os/env "BROOD_TEST_GRAMMARS") (str (os/env "HOME") "/.config/bedit/grammars")))
 (defn- tsm-load-grammar? (file-name lang)
-  (let (path (str tsm-grammar-dir "/libtree-sitter-" file-name ".so"))
+  (let (path (str tsm-grammar-dir "libtree-sitter-" file-name ".so"))
     (and (file/exists? path)
       (check-allow :discarded-catch
         (try (do (%tree-sitter-load-grammar path lang) true) (catch _ false))))))
