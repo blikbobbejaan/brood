@@ -42,9 +42,9 @@ the strict checker flagged on `main` (2026-09-20), and rightly."
     ;; the session's job done right, and the test's assumption broken (seen under GC stress
     ;; on a 2-core runner, 2026-10-17).
     (let (me (self)
-          held (fn (q)
+          held (fn (q options)
                  (when (= q "hold") (send me :holding) (receive (:release nil)))
-                 (scorer q))
+                 (scorer q options))
           session (binding (*fuzzy-scorer* held) (ranker frt-cands)))
       (do
         (rank-async session "hold" 3)
@@ -72,7 +72,7 @@ the strict checker flagged on `main` (2026-09-20), and rightly."
   (test "the session keeps the scorer that was in force when it was created"
     ;; a dynamic binding does not reach a spawned process, so `ranker` captures it — without
     ;; that, a session made under custom rules would quietly rank by the default ones
-    (let (by-length (fn (q) (fn (cand) (- 0 (string/length cand))))
+    (let (by-length (fn (q options) (fn (cand) (- 0 (string/length cand))))
           session (binding (*fuzzy-scorer* by-length) (ranker ["xxx" "z" "yy"])))
       (do
         (rank-async session "q" 3)

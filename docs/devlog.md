@@ -4383,3 +4383,15 @@ named a bare `odd?` and an undefined `sq`; a `%map-pairs` comment said insertion
 gains "Language design pass (2026-10-28)", the backlog for the next month: hygiene holes, one
 caught-error shape, nested quasiquote, the bare/module rule, ADR-170's stale rows, and the rest.
 Docs and comments only; nothing was run.
+
+2026-10-28 (ADR-497: ranking — optimal alignment, paths, term operators, history, narrowing):
+`std/fuzzy` aligns a fuzzy term optimally (a two-row DP over the existing per-char rules;
+greedy past 16384 cells), ranks paths with `{:category :file}` (+2 per char in the file name,
+`^x` anchors there, fewer segments break a tie), dispatches terms orderless-style (`!x` `=x`
+`^x` `x$`) with smart case, and takes a `:boost` map (history, frecency) plus an exact-match
+rule over any scorer. `fuzzy/ranker` holds the options and narrows: a query refining the last
+ranks only the last one's full match set (`%fuzzy-top`'s `:subset` / `:indices`). The native
+pass mirrors all of it with no per-candidate allocation. `*fuzzy-scorer*` takes `(query
+options)`. Run here: `tests/fuzzy_test.blsp`, `fuzzy_native_test`, `fuzzy_ranker_test`, the new
+`fuzzy_ranking_test`, `doc_examples_test`, `audit_test`; `nest check --strict` on the touched
+std/tests; cargo fmt + clippy. Nothing was measured.

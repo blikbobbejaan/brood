@@ -4,10 +4,12 @@
 (defmodule fuzzy-test (:use test))
 
 (describe "fuzzy/match"
-  ; case-insensitive
-  (test "matches a case-insensitive subsequence, reporting positions"
+  ; smart case: a lower-case query ignores case, one with an upper-case letter does not
+  (test "matches a subsequence, reporting positions — smart case"
     (assert= (get (fuzzy/match "fb" "foo-bar") :positions) (list 0 4))
-    (assert= (get (fuzzy/match "FB" "foo-bar") :positions) (list 0 4)))
+    (assert= (get (fuzzy/match "fb" "Foo-Bar") :positions) (list 0 4))
+    (assert= (get (fuzzy/match "FB" "Foo-Bar") :positions) (list 0 4))
+    (is (nil? (fuzzy/match "FB" "foo-bar"))))
   ; order matters
   (test "is nil when the query is not a subsequence"
     (is (nil? (fuzzy/match "xz" "foo-bar")))
@@ -170,7 +172,7 @@
       (assert= timed-out answer) ; the answer is whole either way
       (assert= strays 0)))
   (test "a scorer that throws does not hang the ranking"
-    (assert-error (binding (*fuzzy-scorer* (fn (q) (fn (c) (throw :boom)))
+    (assert-error (binding (*fuzzy-scorer* (fn (q options) (fn (c) (throw :boom)))
                             *fuzzy-worker-timeout-ms* 200)
                     (fuzzy/top "view" big-corpus 5)))))
 
@@ -179,7 +181,7 @@
 ;; including the sharded one, whose workers must be HANDED the scorer rather than inheriting
 ;; a dynamic binding (they don't — bindings are per-process).
 
-(def- shortest-first (fn (q) (fn (c) (if (includes? c q) (- 0 (string/length c)) nil))))
+(def- shortest-first (fn (q options) (fn (c) (if (includes? c q) (- 0 (string/length c)) nil))))
 
 (describe "*fuzzy-scorer*"
   (test "a custom scorer replaces the rules"
@@ -191,8 +193,8 @@
       (binding (*fuzzy-scorer* shortest-first *fuzzy-parallel-min* 1000000)
         (fuzzy/top "view_9" big-corpus 2))))
   (test "scorer composes — it is a value, not a rule buried in the walk"
-    (let (boosted (fn (q)
-                    (let (base (fuzzy/scorer q))
+    (let (boosted (fn (q options)
+                    (let (base (fuzzy/scorer q options))
                       (fn (c) (let (s (base c)) (if (nil? s) nil (+ s 100)))))))
       (assert= (binding (*fuzzy-scorer* boosted) (fuzzy/top "fb" rank-corpus 5))
         (fuzzy/top "fb" rank-corpus 5)))))
