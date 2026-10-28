@@ -4386,3 +4386,12 @@ and closing it consumes the interrupt — Emacs's `with-local-quit`. A region ca
 window depth instead of `owner`. Run here: `cargo test -p brood --test interrupt`,
 `cargo test -p brood --lib regex_native process::interrupt`, `doc_examples`, `audit`,
 `regex`, `ui_test`; clippy; cargo fmt. Nothing was measured.
+
+2026-10-28 (ADR-493 follow-up, the two regex corners): a Pike VM of ours
+(`regex_native::pike_search`, regex-automata's `pikevm::search_imp` over its public
+Thompson NFA, a poll per position) now takes the searches the lazy DFA quits on (a Unicode
+`\b` before non-ASCII text) and the groups of a match longer than a window; the capture
+engines have no step API and cannot be resumed across windows. Checked against `meta` for
+every slot over twenty-two patterns × ten texts at every start. Run here: `cargo test -p
+brood --lib regex_native`, `--test interrupt`, `doc_examples`, `audit`, `regex`; clippy;
+cargo fmt. Nothing was measured.

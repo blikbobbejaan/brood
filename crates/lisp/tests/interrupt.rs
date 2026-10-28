@@ -496,6 +496,15 @@ fn an_unbounded_regex_search_is_interrupted_inside() {
         "(string/repeat \"a\" 1000000)",
         "(%regex-tokens [\"a+\"] [:run] big)",
     );
+    // A Unicode word boundary over non-ASCII text: the lazy DFA quits, our Pike VM polls.
+    builtin_is_stopped_inside(
+        "(string/repeat \"é\" 500000)",
+        "(%regex-find \"\\\\bz\\\\w*\" big 0)",
+    );
+    builtin_is_stopped_inside(
+        "(string/repeat \"é\" 500000)",
+        "(%regex-tokens [\"\\\\bz\\\\w*\"] [:word] big)",
+    );
 }
 
 #[test]
@@ -523,6 +532,30 @@ fn a_stepped_regex_search_finds_what_one_search_finds() {
             "pad {pad}"
         );
     }
+}
+
+#[test]
+fn a_pike_vm_search_answers_what_one_search_does() {
+    // A match longer than a window has its groups found by our polling Pike VM, and a
+    // Unicode word boundary over non-ASCII text is searched by it from the start (ADR-493).
+    let text = format!("zz é{}b é{}x yy", "a".repeat(100_000), "ü".repeat(70_000));
+    let src = format!(
+        r#"(let (text "{text}" m (%regex-find "é(a+)(b)" text 0))
+             [(:start m) (:end m) (:start (first (:groups m))) (:text (second (:groups m)))
+              (:start (%regex-find "\\béü+x\\b" text 0))
+              (:start (%regex-find "\\byy" text 0))
+              (count (%regex-tokens ["\\b[a-zé]+\\b"] [:word] text))])"#
+    );
+    let ü = 3 + 1 + 100_000 + 1 + 1 + 1;
+    assert_eq!(
+        run_at(Tier::Bytecode, src),
+        format!(
+            "[3 {} 4 \"b\" {} {} 3]",
+            3 + 1 + 100_000 + 1,
+            ü - 1,
+            ü + 70_000 + 2
+        )
+    );
 }
 
 #[test]

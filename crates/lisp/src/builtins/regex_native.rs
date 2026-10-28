@@ -32,10 +32,10 @@
 //! pattern ([`find_polled`]): a pattern whose matches have a bounded length is searched a
 //! window at a time (`Input::range`); an unbounded one (`a+`, `.*`) over a text longer than
 //! a window is STEPPED — its lazy DFA driven a byte at a time by a loop of ours
-//! ([`find_stepped`]), which polls between windows with the DFA's state in hand. Two
-//! corners stay one search: an unbounded pattern with a Unicode word boundary over
-//! non-ASCII text (the lazy DFA quits there, and `meta` falls back to the Pike VM), and the
-//! groups of one match a window long or more. The loops OVER searches — every match of
+//! ([`find_stepped`]), which polls between windows with the DFA's state in hand. Where
+//! the lazy DFA cannot go — a Unicode word boundary before non-ASCII text — and for the
+//! groups of a match longer than a window, a Pike VM of ours simulates the NFA with a poll
+//! per position ([`pike_search`]). The loops OVER searches — every match of
 //! `find-all`, every token, the shrinking windows of the longest-match walk (quadratic at
 //! worst) — poll between searches.
 //!
@@ -50,10 +50,11 @@ use crate::core::value::{self, EnvId, StrId, Value};
 use crate::error::{LispError, LispResult};
 use crate::eval::InterruptPoll;
 use regex_automata::meta::Regex;
-use regex_automata::nfa::thompson;
+use regex_automata::nfa::thompson::{self, State};
 use regex_automata::util::captures::Captures;
 use regex_automata::util::prefilter::Prefilter;
 use regex_automata::util::primitives::NonMaxUsize;
+use regex_automata::util::primitives::StateID;
 use regex_automata::{Anchored, Input, MatchKind};
 use regex_automata::{HalfMatch, Match, hybrid};
 use std::collections::HashMap;
@@ -134,6 +135,7 @@ struct Pattern {
     sources: Box<[Box<str>]>,
     match_kind: MatchKind,
     stepped: OnceLock<Option<Stepped>>,
+    nfa: OnceLock<Option<thompson::NFA>>,
 }
 
 impl Pattern {
@@ -152,6 +154,7 @@ impl Pattern {
             sources,
             match_kind,
             stepped: OnceLock::new(),
+            nfa: OnceLock::new(),
         }
     }
 
@@ -161,6 +164,11 @@ impl Pattern {
         self.stepped
             .get_or_init(|| build_stepped(&self.sources, self.match_kind))
             .as_ref()
+    }
+
+    /// The NFA a [`pike_search`] simulates, or `None` past the NFA cap.
+    fn nfa(&self) -> Option<&thompson::NFA> {
+        self.nfa.get_or_init(|| build_nfa(&self.sources)).as_ref()
     }
 }
 
@@ -274,6 +282,15 @@ fn longest_at(
     {
         return Ok(found.map(|end| end.offset()));
     }
+    // The lazy DFA quit (a Unicode word boundary before non-ASCII text): our Pike VM.
+    if rx.longest.is_none()
+        && limit - at > SEARCH_WINDOW
+        && let Some(nfa) = rx.nfa()
+    {
+        let mut slots = vec![None; nfa.group_info().implicit_slot_len()];
+        let found = pike_search(nfa, &input, true, &mut slots, poll)?;
+        return Ok(found.map(|end| end.offset()));
+    }
     Ok(rx.search_half(&input).map(|h| h.offset()))
 }
 
@@ -371,7 +388,9 @@ const SEARCH_WINDOW: usize = 64 * 1024;
 /// reports starting later is left for the next window, where it is whole. A pattern with no
 /// bound (`a+`, `.*`) cannot be cut into windows — a match starting in one may end anywhere,
 /// and a later-starting match inside the window would be taken for the leftmost — so over a
-/// text longer than a window it is STEPPED (ADR-493, [`find_stepped`]).
+/// text longer than a window it is STEPPED (ADR-493, [`find_stepped`]) — or, where the lazy DFA
+/// cannot go (a Unicode word boundary before non-ASCII text), searched by our polling Pike VM
+/// ([`find_pike`]).
 fn find_polled(
     rx: &Pattern,
     s: &str,
@@ -380,7 +399,10 @@ fn find_polled(
 ) -> Result<Option<Match>, LispError> {
     let Some(longest) = rx.longest else {
         if s.len() - start > SEARCH_WINDOW
-            && let Some(found) = find_stepped(rx, s, start, poll)?
+            && let Some(found) = match find_stepped(rx, s, start, poll)? {
+                Some(found) => Some(found),
+                None => find_pike(rx, s, start, poll)?,
+            }
         {
             return Ok(found);
         }
@@ -406,7 +428,8 @@ fn find_polled(
 /// at the match and confined to it finds: the match is the highest-priority one starting
 /// there, so confining the search to where it ends changes neither it nor its groups. A
 /// pattern with no groups of its own needs no second pass; one with groups pays a pass over
-/// the match itself — the one span not polled inside, a single match a window long or more.
+/// the match itself, which for a match longer than a window is our polling Pike VM
+/// ([`pike_search`]) rather than `meta`'s, so it can be stopped too (ADR-493).
 fn search_captures_polled(
     rx: &Pattern,
     s: &str,
@@ -428,6 +451,14 @@ fn search_captures_polled(
     let input = Input::new(s)
         .range(found.range())
         .anchored(Anchored::Pattern(found.pattern()));
+    if found.len() > SEARCH_WINDOW
+        && let Some(nfa) = rx.nfa()
+        && nfa.group_info().slot_len() == caps.slots_mut().len()
+    {
+        let groups = pike_search(nfa, &input, false, caps.slots_mut(), poll)?;
+        caps.set_pattern(groups.map(|end| end.pattern()));
+        return Ok(());
+    }
     rx.search_captures(&input, caps);
     Ok(())
 }
@@ -539,6 +570,42 @@ fn find_stepped_in(
             end.pattern(),
             begin.offset()..end_at,
         ))));
+    }
+}
+
+/// The leftmost-first match of `rx` starting at or after byte `start`, by our polling Pike
+/// VM (ADR-493): where the lazy DFA cannot step, because it quit on a Unicode word boundary
+/// before non-ASCII text. `None` when the NFA could not be built (`meta` answers instead).
+/// An empty match inside a character is skipped, as in [`find_stepped`].
+fn find_pike(
+    rx: &Pattern,
+    s: &str,
+    start: usize,
+    poll: &mut InterruptPoll,
+) -> Result<Option<Option<Match>>, LispError> {
+    let Some(nfa) = rx.nfa() else {
+        return Ok(None);
+    };
+    let mut slots = vec![None; nfa.group_info().implicit_slot_len()];
+    let mut from = start;
+    loop {
+        if from > s.len() {
+            return Ok(Some(None));
+        }
+        let input = Input::new(s).range(from..);
+        let Some(end) = pike_search(nfa, &input, false, &mut slots, poll)? else {
+            return Ok(Some(None));
+        };
+        let pattern = end.pattern().as_usize();
+        let (Some(begin), Some(finish)) = (slots[2 * pattern], slots[2 * pattern + 1]) else {
+            return Ok(None);
+        };
+        let (begin, finish) = (begin.get(), finish.get());
+        if begin == finish && !s.is_char_boundary(finish) {
+            from = finish + 1;
+            continue;
+        }
+        return Ok(Some(Some(Match::new(end.pattern(), begin..finish))));
     }
 }
 
@@ -896,6 +963,211 @@ fn regex_paint(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     })
 }
 
+/// The states a [`pike_search`] has active at one position, in priority order, each with the
+/// capture slots of the thread that reached it first — the Pike VM's sparse set and slot table.
+struct ActiveStates {
+    dense: Vec<StateID>,
+    index: Vec<u32>,
+    slots_per_state: usize,
+    slots: Vec<Option<NonMaxUsize>>,
+}
+
+impl ActiveStates {
+    fn new(state_count: usize, slots_per_state: usize) -> ActiveStates {
+        ActiveStates {
+            dense: Vec::new(),
+            index: vec![0; state_count],
+            slots_per_state,
+            slots: vec![None; state_count * slots_per_state],
+        }
+    }
+
+    /// Add `state` unless it is already active: true when it was added.
+    fn insert(&mut self, state: StateID) -> bool {
+        let at = self.index[state.as_usize()] as usize;
+        if at < self.dense.len() && self.dense[at] == state {
+            return false;
+        }
+        self.index[state.as_usize()] = self.dense.len() as u32;
+        self.dense.push(state);
+        true
+    }
+
+    fn slots_of(&mut self, state: StateID) -> &mut [Option<NonMaxUsize>] {
+        let from = state.as_usize() * self.slots_per_state;
+        &mut self.slots[from..from + self.slots_per_state]
+    }
+}
+
+/// One step of an epsilon closure: a state to explore, or a capture slot to put back when the
+/// exploration below it is done (the Pike VM's `FollowEpsilon`).
+enum Follow {
+    Explore(StateID),
+    Restore(usize, Option<NonMaxUsize>),
+}
+
+/// The Thompson NFA a [`pike_search`] simulates: `sources` compiled with every capture group,
+/// `meta`'s NFA cap, and the slot layout `meta`'s `Captures` for the same patterns has.
+fn build_nfa(sources: &[Box<str>]) -> Option<thompson::NFA> {
+    thompson::Compiler::new()
+        .configure(thompson::Config::new().nfa_size_limit(Some(10 * (1 << 20))))
+        .build_many(sources)
+        .ok()
+}
+
+/// A Pike VM search of `nfa` over `input` that polls (ADR-493): regex-automata's own
+/// `pikevm::search_imp` — the same epsilon closure, thread priority and capture slots — but
+/// in a loop of ours, so `poll` ticks once per position and a search no automaton can step
+/// (a Unicode word boundary over non-ASCII text, which the lazy DFA quits on) or a capture
+/// search over a long match can be stopped. `all`: go on past the first match and report the
+/// LAST position one ends at — the longest, for an anchored search under `MatchKind::All`;
+/// otherwise leftmost-first. `slots` takes the winning thread's slots (group 0 is slots
+/// `2 * pattern` and `2 * pattern + 1`); answers the matching pattern and the match's end.
+fn pike_search(
+    nfa: &thompson::NFA,
+    input: &Input<'_>,
+    all: bool,
+    slots: &mut [Option<NonMaxUsize>],
+    poll: &mut InterruptPoll,
+) -> Result<Option<HalfMatch>, LispError> {
+    let (anchored, start) = match input.get_anchored() {
+        Anchored::No => (nfa.is_always_start_anchored(), nfa.start_anchored()),
+        Anchored::Yes => (true, nfa.start_anchored()),
+        Anchored::Pattern(pattern) => match nfa.start_pattern(pattern) {
+            Some(start) => (true, start),
+            None => return Ok(None),
+        },
+    };
+    let state_count = nfa.states().len();
+    let mut current = ActiveStates::new(state_count, slots.len());
+    let mut next = ActiveStates::new(state_count, slots.len());
+    let mut stack = Vec::new();
+    let mut scratch = vec![None; slots.len()];
+    let mut found = None;
+    let mut at = input.start();
+    while at <= input.end() {
+        poll.tick()?;
+        if current.dense.is_empty()
+            && ((found.is_some() && !all) || (anchored && at > input.start()))
+        {
+            break;
+        }
+        if (found.is_none() || all) && (!anchored || at == input.start()) {
+            scratch.iter_mut().for_each(|slot| *slot = None);
+            closure(
+                nfa,
+                &mut stack,
+                &mut scratch,
+                &mut current,
+                input,
+                at,
+                start,
+            );
+        }
+        // Each active state in priority order: a byte it takes seeds the next position's
+        // closure with its slots; a match ends the lower-priority threads, unless `all`.
+        for index in 0..current.dense.len() {
+            let state = current.dense[index];
+            let target = match nfa.state(state) {
+                State::ByteRange { trans } => {
+                    trans.matches(input.haystack(), at).then_some(trans.next)
+                }
+                State::Sparse(sparse) => sparse.matches(input.haystack(), at),
+                State::Dense(dense) => dense.matches(input.haystack(), at),
+                State::Match { pattern_id } => {
+                    found = Some(HalfMatch::new(*pattern_id, at));
+                    slots.copy_from_slice(current.slots_of(state));
+                    if all {
+                        continue;
+                    }
+                    break;
+                }
+                _ => None,
+            };
+            if let Some(target) = target {
+                scratch.copy_from_slice(current.slots_of(state));
+                closure(
+                    nfa,
+                    &mut stack,
+                    &mut scratch,
+                    &mut next,
+                    input,
+                    at + 1,
+                    target,
+                );
+            }
+        }
+        std::mem::swap(&mut current, &mut next);
+        next.dense.clear();
+        at += 1;
+    }
+    Ok(found)
+}
+
+/// Add `start`'s epsilon closure at position `at` to `active`, in priority order, each state
+/// taking a copy of `slots` as the closure set them (`pikevm::epsilon_closure`).
+fn closure(
+    nfa: &thompson::NFA,
+    stack: &mut Vec<Follow>,
+    slots: &mut [Option<NonMaxUsize>],
+    active: &mut ActiveStates,
+    input: &Input<'_>,
+    at: usize,
+    start: StateID,
+) {
+    stack.push(Follow::Explore(start));
+    while let Some(step) = stack.pop() {
+        let mut state = match step {
+            Follow::Restore(slot, offset) => {
+                slots[slot] = offset;
+                continue;
+            }
+            Follow::Explore(state) => state,
+        };
+        loop {
+            if !active.insert(state) {
+                break;
+            }
+            match nfa.state(state) {
+                State::Look { look, next } => {
+                    if !nfa.look_matcher().matches(*look, input.haystack(), at) {
+                        break;
+                    }
+                    state = *next;
+                }
+                State::Union { alternates } => {
+                    let Some(&first) = alternates.first() else {
+                        break;
+                    };
+                    stack.extend(
+                        alternates[1..]
+                            .iter()
+                            .rev()
+                            .map(|&alternate| Follow::Explore(alternate)),
+                    );
+                    state = first;
+                }
+                State::BinaryUnion { alt1, alt2 } => {
+                    stack.push(Follow::Explore(*alt2));
+                    state = *alt1;
+                }
+                State::Capture { next, slot, .. } => {
+                    let slot = slot.as_usize();
+                    if slot < slots.len() {
+                        stack.push(Follow::Restore(slot, slots[slot]));
+                        slots[slot] = NonMaxUsize::new(at);
+                    }
+                    state = *next;
+                }
+                _ => {
+                    active.slots_of(state).copy_from_slice(slots);
+                    break;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -920,6 +1192,9 @@ mod tests {
         "(?-u:\\b)a",
         "\\z",
         "\\Aa+",
+        "\\b\\w+\\b",
+        "(a)|(é)(x)?",
+        "(?:(é+)|a)+9",
     ];
 
     const TEXTS: &[&str] = &[
@@ -1023,6 +1298,67 @@ mod tests {
             let expected = rx.search(&Input::new(&text));
             let stepped = find_stepped(&rx, &text, 0, &mut InterruptPoll::new()).unwrap();
             assert_eq!(stepped, Some(expected), "pad {pad}");
+        }
+    }
+
+    #[test]
+    fn the_polling_pike_vm_finds_what_meta_finds_with_its_groups() {
+        for pattern in PATTERNS {
+            let rx = compiled("test", pattern, Kind::LeftmostFirst).unwrap();
+            let nfa = rx.nfa().unwrap();
+            for text in TEXTS {
+                for start in starts(text) {
+                    let expected = rx.search(&Input::new(text).range(start..));
+                    let found = find_pike(&rx, text, start, &mut InterruptPoll::new()).unwrap();
+                    assert_eq!(
+                        found,
+                        Some(expected),
+                        "{pattern:?} in {text:?} from {start}"
+                    );
+                    let Some(whole) = expected else {
+                        continue;
+                    };
+                    // the groups of the match, anchored at it and confined to it
+                    let input = Input::new(*text)
+                        .range(whole.range())
+                        .anchored(Anchored::Pattern(whole.pattern()));
+                    let mut groups = rx.create_captures();
+                    rx.search_captures(&input, &mut groups);
+                    let mut caps = rx.create_captures();
+                    let slots = caps.slots_mut();
+                    pike_search(nfa, &input, false, slots, &mut InterruptPoll::new()).unwrap();
+                    assert_eq!(
+                        caps.slots_mut().to_vec(),
+                        groups.slots_mut().to_vec(),
+                        "{pattern:?} in {text:?} from {start}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_polling_pike_vm_finds_the_longest_match_meta_finds() {
+        for pattern in PATTERNS {
+            let rx = compiled("test", pattern, Kind::Longest).unwrap();
+            let nfa = rx.nfa().unwrap();
+            let mut slots = vec![None; 2];
+            for text in TEXTS {
+                for at in starts(text) {
+                    for limit in starts(text).filter(|&limit| limit >= at) {
+                        let input = Input::new(text).range(at..limit).anchored(Anchored::Yes);
+                        let expected = rx.search_half(&input).map(|h| h.offset());
+                        let found =
+                            pike_search(nfa, &input, true, &mut slots, &mut InterruptPoll::new())
+                                .unwrap();
+                        assert_eq!(
+                            found.map(|end| end.offset()),
+                            expected,
+                            "{pattern:?} in {text:?} at {at}..{limit}"
+                        );
+                    }
+                }
+            }
         }
     }
 }
