@@ -251,9 +251,9 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     );
     // map — the *minimal* kernel: construct, read, two producers, and one
     // enumerator (`%map-pairs` → [k v] vectors). `keys`/`vals`/`contains?`/
-    // `reduce-kv` and the `get`/`assoc`/`dissoc` surface (variadic + defaults) are
-    // all Brood over these (std/prelude.blsp). Maps are immutable: each op returns
-    // a fresh map.
+    // `map/reduce-kv` and the `get`/`assoc`/`dissoc` surface (variadic + defaults) are
+    // all Brood over these (std/prelude/map.blsp, std/map.blsp). Maps are immutable:
+    // each op returns a fresh map.
     primitives.def(
         "%hash-map",
         Arity::any(),
@@ -1575,9 +1575,9 @@ pub(super) fn map_dissoc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
     Ok(heap.map_dissoc(id, arg(args, 1)))
 }
 
-/// `(%map-pairs m)` — the entries as a list of `[k v]` vectors, in insertion
-/// order, in one O(n) pass. The *single* map enumerator: `keys`/`vals`/
-/// `contains?`/`reduce-kv` are all Brood over it (std/prelude.blsp).
+/// `(%map-pairs m)` — the entries as a list of `[k v]` vectors, in the trie's hash-derived
+/// order (not insertion order), in one O(n) pass. The *single* map enumerator: `keys`/`vals`/
+/// `contains?`/`map/reduce-kv` are all Brood over it (std/prelude/map.blsp, std/map.blsp).
 pub(super) fn map_pairs(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let id = expect_map(heap, "%map-pairs", arg(args, 0))?;
     let entries = heap.map_entries(id); // copy out, releasing the borrow before we alloc

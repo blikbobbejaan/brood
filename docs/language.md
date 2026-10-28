@@ -29,7 +29,7 @@ these are the ones to unlearn:
 
 | Clojure habit | Brood reality | What you get if you guess wrong |
 |---|---|---|
-| `(try … (catch Type e body))` | `catch` takes a **bare binding**: `(catch e body)`. There is no exception class. | A clean error naming the fix. (It used to bind the *class name* as the variable and evaluate `e` as a statement — and since the prelude defines `e`, `(catch Exception e (io/puts "caught" e))` silently printed 2.718…, a wrong program with no diagnostic.) |
+| `(try … (catch Type e body))` | `catch` takes a **bare binding**: `(catch e body)`. There is no exception class. | A clean error naming the fix. (It used to bind the *class name* as the variable and evaluate `e` as a statement — and since the prelude then defined `e` (it is `math/e` now), `(catch Exception e (io/puts "caught" e))` silently printed 2.718…, a wrong program with no diagnostic.) |
 | Multi-arity `(fn ((x) …) ((x y) …))` | **Supported** (ADR-047) — dispatch by argument count, like Clojure. But param lists are **lists** `(x)`, not vectors `[x]`, and a clause head may *also* be a same-arity **pattern** (see [Pattern matching](#pattern-matching)). | A **clean error** with a hint: vector-headed clauses `([x] …) ([x y] …)` are rejected. (They used to read as one 2-parameter pattern clause with an empty body — a completely different function, diagnosed only later as a misleading arity error at the call site.) |
 | `{:a 1}` map literal | **Supported.** Immutable; `get`/`assoc`/`dissoc`/`keys`/`vals`/`contains?` (see [Maps](#maps)). Iteration order is **hash-derived, not insertion order** (unlike Clojure's array-map — see [Maps](#maps)). | Works as you'd expect, except don't rely on key order. |
 | `{:keys [a b]}` / `:or` map destructuring | **Supported** — a map literal in pattern position binds each `:keys` symbol to the same-named keyword's value (nil if absent, or the `:or` default): `(let ({:keys [a b] :or {b 0}} m) …)`, works in `let`/`fn`/`match`. General `{:key subpattern}` nesting and `:as` are deferred (ADR-011). | Works as in Clojure for the `:keys`/`:or` subset. |
@@ -242,7 +242,7 @@ Maps are immutable — every operation returns a **fresh** map:
 | `(dissoc m k1 k2 …)` | a new map with those keys removed |
 | `(contains? m k)` | whether `k` is present (distinguishes a stored `nil` from absence) |
 | `(keys m)` / `(vals m)` | the keys / values, as a list, in the map's (hash-derived, unspecified) iteration order — sort if you need a defined order |
-| `(reduce-kv f init m)` | fold over the entries: `(f acc k v)` left to right → the final acc |
+| `(map/reduce-kv m init f)` | fold over the entries: `(f acc k v)` left to right → the final acc — the `map` module, like `merge-with` below |
 | `(merge m1 m2 …)` | combine maps left to right; rightmost key wins (`nil` maps skipped) |
 | `(map/merge-with f m1 m2 …)` | like `merge`, but a shared key's value is `(f old new)` — the `map` module (ADR-227; `(:use map)` or qualify) |
 | `(update m k f args…)` | a new map with `k`'s value replaced by `(f current args…)` (`current` is `nil` if absent; also works on a **vector** by integer index, which must be in range) |
@@ -306,8 +306,8 @@ mean the literal keyword `:k`.
 
 A map is **seqable as its `[k v]` pairs**: `seq`, `first`, `rest`, `last`, `map`,
 `seq/filter`, `fold`/`reduce`, `into`, and `vec` all read it that way, so
-`(map first m)` is its keys and `(first m)` is a `[k v]` vector (`nil` for an empty
-map). Use `reduce-kv` when you want the key and value as separate arguments.
+`(map m first)` is its keys and `(first m)` is a `[k v]` vector (`nil` for an empty
+map). Use `map/reduce-kv` when you want the key and value as separate arguments.
 
 These are thin Brood wrappers (`std/prelude/map.blsp`) over a small kernel of `map-*`
 primitives; the representation is a **CHAMP hash-array-mapped trie** (ADR-040),
@@ -315,7 +315,7 @@ which is why `count` is O(1) and structural key equality is O(log n).
 
 ### Records
 
-`defrecord` names a map shape and gives it a **nominal identity**. There is no new
+`defrecord` names a map shape and gives it an **identity for dispatch**. There is no new
 value kind — a record *is* a map underneath, so every map operation above still applies
 — but the constructor bakes in a reserved `:__id__` field holding a `:module/name`
 keyword, so `ability` dispatch tells a record apart from a bare map and from other
@@ -329,15 +329,20 @@ field:
 (assoc p :x 9)           ; => a fresh record {…:x 9 :y 4}, id and all
 (fields p)               ; => {:x 3 :y 4}   — the clean, id-free view
 (record? p) (record-id p); => true, :<ns>/point
-(= (point 1 2) {:x 1 :y 2})   ; => false    — a record is NOT = a bare map (nominal)
-(= (point 1 2) (point 1 2))   ; => true     — same shape + same id
+(= (point 1 2) {:x 1 :y 2})   ; => false    — the bare map has no :__id__ entry
+(= (point 1 2) (point 1 2))   ; => true     — same fields, same id
 ```
 
 The accessors are the reason to reach for it: `(point-x p)` names the field, and a
 typo `(point-witdh p)` is a call to an **undefined function** — caught by `nest check`
-and at runtime — whereas `(get p :witdh)` silently returns `nil`. Records are **nominal,
-not structural**: a record is never `=` to a bare map with the
-same fields, and `record?`/`record-id`/`fields` are the identity API. Functional update
+and at runtime — whereas `(get p :witdh)` silently returns `nil`.
+
+**Equality is structural; dispatch is nominal.** `=` has no record case: it compares two
+maps entry by entry, and the `:__id__` entry is one of them. So a record is never `=` to a
+bare map with the same fields, nor to a record of another type with the same fields — the
+ids differ — while two records of one type with equal fields are `=`. The identity is
+nominal only where ability dispatch reads it (below). `record?`/`record-id`/`fields` are
+the identity API. Functional update
 is plain `assoc`/`merge` (the id rides along).
 
 A field may carry a type — `(defrecord point ((x int) (y int)))` — and when every
@@ -433,18 +438,22 @@ mismatch.
 op's `:default` impl. An `impl` that supplies only the **required** ops (the bodyless
 specs) inherits every provided op; an id-keyed impl of a provided op **overrides** its
 default. Write the minimal contract and derive the rest (Rust/Haskell *provided methods*) —
-implement `compare-to`, get the rest free:
+implement `priority`, get the rest free:
 
 ```clojure
-(defability Ord
-  (compare-to [self other] :-> int)                           ; required
-  (lt  [self other] :-> bool (< (compare-to self other) 0))   ; provided
-  (gt  [self other] :-> bool (> (compare-to self other) 0)))  ; provided
+(defrecord task (title level))
 
-(impl Ord money/amount                       ; only the required op
-  (compare-to [a b] (- (cents a) (cents b))))
-(lt (amount 100) (amount 200))               ;=> true   — via the provided default
+(defability Priority
+  (priority      [self] :-> int)                                              ; required
+  (more-urgent?  [self other] :-> bool (> (priority self) (priority other)))   ; provided
+  (same-urgency? [self other] :-> bool (= (priority self) (priority other))))  ; provided
+
+(impl Priority task (priority [t] (task-level t)))   ; only the required op
+(more-urgent? (task "deploy" 3) (task "lunch" 1))    ;=> true   — via the provided default
 ```
+
+(Ordering itself is not an ability: `compare-to` is a `defmulti` over the operand pair —
+see [Multiple dispatch](#polymorphism-multiple-dispatch-defmulti).)
 
 To **override** a provided op for a type, add its method to that type's `impl` (the same
 form as the required ops), since each `impl` form is checked for completeness on its own.
@@ -462,7 +471,7 @@ the record opts in with `:derives`:
   (ncols [self] :-> int (count (columns self)))     ; provided — composes with derive
   :derive-record
   (fn (flds)
-    (list `(columns [r] [~@(map (fn (f) `(get r ~(keyword (->string f)))) flds)]))))
+    (list `(columns [r] [~@(map flds (fn (f) `(get r ~(keyword (->string f)))))]))))
 
 (defrecord point (x y) :derives [Columns])
 (columns (point 3 4))    ;=> [3 4]     — synthesized
@@ -570,9 +579,9 @@ time, not by a runtime `no-impl` later. Advisory and checker-only, like `:sealed
 means it can't gate); a required ability's *provided* op is satisfied by its default.
 
 ```clojure
-(defability Eq  (eqv [self other] :-> bool))
-(defability Ord :requires [Eq] (compare-to [self other] :-> int))
-(impl Ord money (compare-to [a b] …))   ; warns unless `money` also impls Eq
+(defability Named    (label [self] :-> string))
+(defability Priority :requires [Named] (priority [self] :-> int))
+(impl Priority task (priority [t] …))   ; warns unless `task` also impls Named
 ```
 
 **Introspection and helpers.** `(satisfies? 'Shape x)` is true when every declared
@@ -1225,7 +1234,7 @@ language — a pipe for a channel that is not one. `get-in` covers the nil-chain
 existed for.
 
 `each` applies a function to
-each item for effect (`(each io/puts xs)`, the function form of `doseq`).
+each item for effect (`(each xs io/puts)`, the function form of `doseq`).
 
 `tap` and `then` are the single-**function** pipe helpers, where `doto`/`->` splice *forms*: `(tap x f)` calls `(f x)` for its side effects and returns
 `x` unchanged (a probe — `(-> v (tap log) (process))`); `(then x f)` returns `(f x)`, letting a
@@ -1645,7 +1654,7 @@ idiomatic** — it visually collides with multi-clause `(defn f ((p) body))`,
 where the outer `(…)` wraps a clause. Prefer naming the param and unpacking
 with `let`: `(defn area (p) (let ([x y] p) (* x y)))`. Multi-clause `defn`
 pattern dispatch and tuple-destructured params on anonymous `fn` in
-higher-order context (`(map (fn ([k v]) …) …)`) remain idiomatic. See
+higher-order context (`(map … (fn ([k v]) …))`) remain idiomatic. See
 [brood-for-claude.md](brood-for-claude.md) §"Style — lists for code, vectors
 for data" for the full rule.
 
@@ -2991,10 +3000,10 @@ In the `math` module: `math/mod`  `math/rem`  `math/quot`  `math/floor`  `math/m
 
 - `first`/`rest` of `nil` are `nil`. `nth` takes an optional default:
   `(nth coll i default)` — one value; a fourth argument is an arity error.
-- **`reduce-while`** is the early-terminating fold: `(reduce-while f init coll)`
+- **`reduce-while`** is the early-terminating fold: `(seq/reduce-while coll init f)`
   where `(f acc x)` returns `[:cont acc']` to continue or `[:halt acc']` to stop,
-  returning the last accumulator. `(reduce-while (fn (a x) (if (> a 100) [:halt a]
-  [:cont (+ a x)])) 0 (range 1000))` → `105`. An all-`:cont` reducer is just `fold`.
+  returning the last accumulator. `(seq/reduce-while (range 1000) 0 (fn (a x) (if (> a 100)
+  [:halt a] [:cont (+ a x)])))` → `105`. An all-`:cont` reducer is just `fold`.
 - **One sequence view, every collection.** `first`/`rest`/`last`/`count`/`empty?`/
   `map`/`seq/filter`/`fold`/`reduce`/`into`/`vec`/`seq` accept a list, vector, `bytes`,
   **set** (as its elements) or **map** (as its `[k v]` pairs) — so
@@ -3003,7 +3012,7 @@ In the `math` module: `math/mod`  `math/rem`  `math/quot`  `math/floor`  `math/m
   `(into [] coll)` the vector form. `conj`/`into` insert at each kind's natural
   point and **preserve the kind** (vector→vector, set→set, map→map, list→list).
 - `enumerate` pairs each item with its index as `[i x]` vectors — the
-  `map-indexed`/`keep-indexed` idiom is `(map (fn ([i x]) …) (enumerate xs))`.
+  `map-indexed`/`keep-indexed` idiom is `(map (seq/enumerate xs) (fn ([i x]) …))`.
 - `append` concatenates any number of sequences — lists *and* vectors, read as
   sequences — left to right, returning a **list**; wrap in `(into [] …)` for a
   vector. (The `concat` alias was removed — one spelling each.)
@@ -3063,11 +3072,11 @@ In the `math` module: `math/mod`  `math/rem`  `math/quot`  `math/floor`  `math/m
   `(sort xs >)`); `sort-by` orders by a key function. Both are a **stable**
   merge sort. All of these are tail-recursive (stack-safe on long inputs).
 - **Lazy, fusing pipelines.** `map`/`seq/filter`/`seq/keep`/`seq/reject` are **eager** — they
-  return a concrete list and run their function immediately (so `(map f xs)` for
+  return a concrete list and run their function immediately (so `(map xs f)` for
   side effects works). When you want a pipeline to **fuse** — fold/reduce in a
   single pass with no intermediate lists — use the lazy combinators `seq/lmap`,
   `seq/lfilter`, `seq/lkeep`, `seq/lreject`, threaded with `->`:
-  `(-> (range n) (seq/lfilter odd?) (seq/lmap sq) (reduce 0 +))`. Each returns a **lazy
+  `(-> (range n) (seq/lfilter math/odd?) (seq/lmap (fn (x) (* x x))) (reduce 0 +))`. Each returns a **lazy
   seq-view** — an O(1) value (like a [lazy range](#lists--sequences)) that stands
   in for the list it would produce. Chaining composes the stages onto one view,
   so the whole pipeline walks the source once, building nothing in between (≈3×
@@ -3088,7 +3097,7 @@ machinery with the stages exposed, for when the pipeline is **computed, reused, 
 your own**:
 
 ```clojure
-(seq/transduce (range 10) (comp (seq/xfilter odd?) (seq/xmap sq)) + 0)   ;=> 165, one pass
+(seq/transduce (range 10) (comp (seq/xfilter math/odd?) (seq/xmap (fn (x) (* x x)))) + 0)   ;=> 165, one pass
 (seq/transduce (list 1 2 3) (seq/xmap inc) conj [])                      ;=> [2 3 4]
 ```
 
@@ -3145,11 +3154,11 @@ reducing function, where `(- acc)` negates. A stateful stage outside a `transduc
 The run's table costs ~0.45 µs per `transduce` call.
 
 ### Maps
-`hash-map`  `get`  `assoc`  `dissoc`  `contains?`  `keys`  `vals`  `reduce-kv`
+`hash-map`  `get`  `assoc`  `dissoc`  `contains?`  `keys`  `vals`
 `merge`  `update`  `get-in`  `assoc-in`  `dissoc-in`  `update-in`  `map?`
 
-The transformation helpers `merge-with`, `update-vals`, `update-keys`, and
-`select-keys` live in the **`map` module** (ADR-227) — `(:use map)` for bare
+The transformation helpers `reduce-kv`, `merge-with`, `update-vals`, `update-keys`,
+`select-keys` and `zipmap` live in the **`map` module** (ADR-227) — `(:use map)` for bare
 access, or call qualified (`map/update-vals`). The core protocol above stays bare.
 
 See the [Maps](#maps) section above. `{ }` is the literal form; the rest are
@@ -3189,8 +3198,8 @@ closure: put a `(sig …)` beside the `def` to give its callers a type.
 vector-returning variants for when the caller needs indexed access — the named form of
 `(into [] (map …))`.
 
-`reduce` takes `(reduce f init coll)` or `(reduce f coll)` (first item as the
-seed); `fold` is the strict 3-argument form it wraps (`(fold f init coll)`) and is
+`reduce` takes `(reduce coll init f)` or `(reduce coll f)` (first item as the
+seed); `fold` is the strict 3-argument form it wraps (`(fold coll init f)`) and is
 what the prelude itself folds with. Both are public and both stay: `reduce` is the
 surface you reach for, `fold` the strict-arity primitive it dispatches to (ADR-163).
 
@@ -3883,7 +3892,7 @@ its names bare. Run `nest doc <module>` for the full API of any module.
 | `std/io.blsp` | `'io` | Output **ports** — the `Port` ability (`io-write`), `stdout-port`, `stderr-port`, `process-port`, `file-port`, `fn-port`, and the `with-out`/`with-err` redirections — so output has a first-class destination instead of a fixed stdout. Also the writers themselves: `io/write`, `io/puts`, `io/inspect`, each taking an optional trailing `:to <port>` (see also `std/log.blsp`) |
 | `std/text.blsp` | `'text` | Plain-text transforms with no editor/buffer/IO dependency: `fill`, greedy word-wrap to a column width. Pure Brood over the string primitives, so it is reusable anywhere (fill-paragraph, wrapping help text or REPL output) |
 | `std/seq.blsp` | `'seq` | Derived **sequence helpers** (ADR-227) layered over the bare collection protocol: `dedupe`, `distinct-by`, `group-by`, `frequencies`, `chunk-by`, `chunk-every`, `interpose`, `interleave`, `scan`, `zip-with`, `reduce-while`, `min-by`, `max-by`, `enumerate`, `index-where`. Also `filter`/`reject`/`keep`/`filterv`/`rejectv`/`distinct`/`zip`/`find`/`flatten` and the transducer + lazy stages. The core ops (`map`/`reduce`/`fold`/`take`/`drop`/`take-while`/`partition`) stay bare in the prelude; `(:use seq)` for bare access or call qualified |
-| `std/map.blsp` | `'map` | Derived **map-transformation helpers** (ADR-227): `merge-with`, `update-vals`, `update-keys`, `select-keys`. The core map protocol (`assoc`/`dissoc`/`get`/`keys`/`vals`/`contains?`/`reduce-kv`/`update`/`get-in`/`update-in`/`merge`) stays bare in the prelude; `(:use map)` for bare access or call qualified (the bare `map` *function* is unaffected) |
+| `std/map.blsp` | `'map` | Derived **map-transformation helpers** (ADR-227): `reduce-kv`, `merge-with`, `update-vals`, `update-keys`, `select-keys`, `zipmap`. The core map protocol (`assoc`/`dissoc`/`get`/`keys`/`vals`/`contains?`/`update`/`get-in`/`update-in`/`merge`) stays bare in the prelude; `(:use map)` for bare access or call qualified (the bare `map` *function* is unaffected) |
 | `std/math.blsp` | `'math` | The derived **math library** (ADR-227): `sqrt`, `pow`, `ceil`, `round`, `round-to`, `clamp`, `abs`, `sum`, `product`, the sign/parity predicates (`positive?`/`negative?`/`even?`/`odd?`), and the constants `pi`/`e`. Only the **operators** (`+` `-` `*` `/` `<` `=` …) and `inc`/`dec` stay bare in the prelude — `quot`/`mod`/`rem`/`floor`/`min`/`max` are derived arithmetic and live here too, so they are `math/quot`, `math/min`, … unless `(:use math)` brings them back bare |
 | `std/ansi.blsp` | `'ansi` | ANSI/VT100 escape-sequence **stripping** for pipe output — `strip-ansi` removes CSI colour/cursor sequences (reading a subprocess that emits colour). For *emitting* escapes in a display frontend, see `std/editor/ansi.blsp` instead |
 | `std/vt.blsp` | `'vt` | A **virtual terminal as pure data** (ADR-384): `(vt/feed vt chunk)` folds a program's output — cursor motion, erases, scroll regions, the alternate screen, SGR 16/256/true colour, the modes and queries an interactive program relies on — into a grid of cells; `(vt/screen vt palette)` reads it back as `{:text :spans :cursor …}` for a buffer to show, `(vt/line row palette)` a scrolled-off row with its colour, `(vt/key->bytes key vt)` an editor key — and `mouse->bytes` a click or wheel notch — as the bytes a program expects. The other direction from `std/term`: Brood *being* the terminal for a program under `os/spawn-pty` |

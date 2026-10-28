@@ -152,7 +152,7 @@ A multi-key result prints in the map's internal order, not the order given."
   (fold ks m %map-dissoc))
 
 ;; `%map-pairs` (kernel) is the single map enumerator: the entries as a list of
-;; [k v] vectors, in one O(n) pass. `keys`/`vals`/`contains?`/`reduce-kv` are all
+;; [k v] vectors, in one O(n) pass. `keys`/`vals`/`contains?` (and `map/reduce-kv`) are all
 ;; Brood over it — no per-key `get`, so no O(n²).
 ;; `seq` (not `%map-pairs`) so a record's keys/vals are its fields — no internal `:__id__`.
 (defn keys (m: (or nil map) -> any)
@@ -209,7 +209,7 @@ can.)
 
 ;; ---- map: merge / update / nested access -----------------------------------
 ;; All Brood over the kernel ops (`%map-assoc`/`%map-pairs`) and the surface above
-;; (`reduce-kv`/`contains?`/`get`). Every one returns a fresh map — maps are
+;; (`contains?`/`get`). Every one returns a fresh map — maps are
 ;; immutable (ADR-026). The builders fold with the 3-arg kernel `%map-assoc` (no
 ;; per-step rest-list, unlike variadic `assoc`).
 

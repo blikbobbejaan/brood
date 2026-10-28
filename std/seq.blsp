@@ -169,7 +169,7 @@ A new chunk starts each time the return value of `f` changes.
     (let (next (f acc (first coll)))
       (scan-acc f next (rest coll) (cons next result)))))
 (defn scan (coll init f)
-  "Return a list of successively accumulated values of `(fold f init coll)`,
+  "Return a list of successively accumulated values of `(fold coll init f)`,
 starting with `init`. `(scan '(1 2 3) 0 +)` → `(0 1 3 6)`.
 
     (seq/scan [1 2 3] 0 +)      → (0 1 3 6)"

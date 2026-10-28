@@ -4449,3 +4449,13 @@ blocks) and passes. New `crates/lisp/tests/interrupt_one_worker.rs` (a one-worke
 tier `doc_examples`, `audit`, `--lib` filters `jit_subset` and `interrupt`; clippy (gui,
 treesit-grammars, all targets); cargo fmt. Each fix sabotaged red. Nothing was measured; the
 full suite was not run.
+2026-10-28 (docs: argument-order drift; the language design pass opens): `docs/language.md`,
+`docs/brood-for-claude.md`, `docs/parametric-result-types.md` and the `seq/scan` docstring
+still showed callback-first calls ADR-308 had turned around — `(reduce f init coll)`,
+`(fold f init coll)`, `(reduce-while f init coll)`, `(map first m)`, `(each io/puts xs)`,
+`(mapcat f xs)` and others; all now collection-first. `reduce-kv` was documented as bare but is
+`map/reduce-kv` (language.md, the `map` module header, Rust comments); the transducer examples
+named a bare `odd?` and an undefined `sq`; a `%map-pairs` comment said insertion order. ROADMAP
+gains "Language design pass (2026-10-28)", the backlog for the next month: hygiene holes, one
+caught-error shape, nested quasiquote, the bare/module rule, ADR-170's stale rows, and the rest.
+Docs and comments only; nothing was run.
