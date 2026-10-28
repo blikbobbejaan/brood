@@ -90,7 +90,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![int.union(nil_ty.clone()), callable], vec_ty.clone()),
         &["ceiling-ms", "thunk"],
-        "Run `(thunk)` in an INTERRUPT WINDOW (ADR-491): `[:ok value]`, or `[:interrupted e]` when it was stopped mid-computation — by `proc/interrupt`, by the process's quit key (`proc/set-quit-key`), or, when ceiling-ms is a number, by itself once that many ms have passed. `e` is the map a `catch` binds (`{:kind :interrupted :code \"E0047\" …}`). The interrupt is raised at the next safepoint — within about a millisecond of work, at every tier, inside long builtins — and it is STICKY: a `catch` inside thunk that swallows it is interrupted again at its next safepoint, so only this call ends it. Any other error propagates as it would. A window opened inside an open one adds nothing: the outer one owns the interrupt (and its ceiling). A process blocked in `receive` is not interrupted until it runs again (a ceiling) or at all (a request).\n\n    (proc/interruptible nil (fn () 42))   ;=> [:ok 42]\n    (first (proc/interruptible 0 (fn () (letrec (spin (fn (n) (spin (inc n)))) (spin 0)))))   ;=> :interrupted\n    (first (proc/interruptible 0 (fn () (letrec (stubborn (fn (n) (do (try (stubborn-spin n) (catch e nil)) (stubborn (inc n)))) stubborn-spin (fn (n) (stubborn-spin (inc n)))) (stubborn 0)))))   ;=> :interrupted",
+        "Run `(thunk)` in an INTERRUPT WINDOW (ADR-491): `[:ok value]`, or `[:interrupted e]` when it was stopped mid-computation — by `proc/interrupt`, by the process's quit key (`proc/set-quit-key`), or, when ceiling-ms is a number, by itself once that many ms have passed. `e` is the map a `catch` binds (`{:kind :interrupted :code \"E0047\" …}`). The interrupt is raised at the next safepoint — within about a millisecond of work, at every tier, inside long builtins — and it is STICKY: a `catch` inside thunk that swallows it is interrupted again at its next safepoint, so only this call ends it. Any other error propagates as it would. Windows nest (ADR-493): a window opened inside an open one is stopped by a request while it is the innermost, and by its own ceiling; an outer window's ceiling passes through it to the outer call, and an interrupt it answered does not stop the outer one. A process blocked in `receive` is not interrupted until it runs again (a ceiling) or at all (a request).\n\n    (proc/interruptible nil (fn () 42))   ;=> [:ok 42]\n    (proc/interruptible nil (fn () (first (proc/interruptible 0 (fn () (letrec (spin (fn (n) (spin (inc n)))) (spin 0)))))))   ;=> [:ok :interrupted]\n    (first (proc/interruptible 0 (fn () (letrec (spin (fn (n) (spin (inc n)))) (spin 0)))))   ;=> :interrupted\n    (first (proc/interruptible 0 (fn () (letrec (stubborn (fn (n) (do (try (stubborn-spin n) (catch e nil)) (stubborn (inc n)))) stubborn-spin (fn (n) (stubborn-spin (inc n)))) (stubborn 0)))))   ;=> :interrupted",
         interruptible);
     primitives.def(
         "proc/interrupt",
@@ -449,14 +449,17 @@ pub(crate) fn interrupt_ceiling(heap: &Heap, value: Value) -> Result<Option<u64>
 
 /// `(proc/interruptible ceiling-ms thunk)` — run thunk in an interrupt window (ADR-491).
 ///
-/// The bytecode driver never calls this for a VM thunk: it runs the call as an interrupt
-/// REGION on its own frame stack (`ChunkExit::Interruptible`), so a `receive` in the thunk
-/// parks the process. This is every other path — the tree-walker, `apply`, a native or
-/// tree-walked thunk — where the thunk runs nested under this frame, and a `receive` in it
-/// blocks the worker as any native-nested receive does. Both open and close the window and
+/// The bytecode driver never calls this for a VM thunk: it runs the call — `apply`'d too — as
+/// an interrupt REGION on its own frame stack (`ChunkExit::Interruptible`), and the tier-0
+/// machine as a frame (`KontKind::Interruptible`, ADR-494), so a `receive` in the thunk parks
+/// the process. This is what is left: a thunk with no VM arm above tier 0, or a call made
+/// under a native frame (a builtin's callback), where the thunk runs nested under this frame
+/// and a `receive` in it blocks the worker as any native-nested receive does — the worker
+/// leaves the executors and its queue moves (ADR-100 §7.4). Both open and close the window and
 /// catch the interrupt with no Brood code between a raise and the close for a sticky
-/// re-raise to land in. A window already open makes this a plain call: the outer one owns
-/// the interrupt, which propagates to it.
+/// re-raise to land in. A window opened inside an open one is a window of its own (ADR-493):
+/// it answers `[:interrupted e]` only for an interrupt raised FOR it — a request while it is
+/// the innermost, or its own ceiling — and lets one raised for an outer window pass.
 ///
 /// A `receive` under this frame never SUSPENDS (which would close the window here and re-run
 /// the thunk on the replay, as a nested `%try` would): the thunk runs in a nested driver, and
@@ -464,17 +467,15 @@ pub(crate) fn interrupt_ceiling(heap: &Heap, value: Value) -> Result<Option<u64>
 pub(super) fn interruptible(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let ceiling = interrupt_ceiling(heap, arg(args, 0))?;
     let thunk = arg(args, 1);
-    let ok = value::kw("ok");
-    if crate::process::current_interrupt_window_open() {
-        let value = crate::eval::compile::apply_engine(heap, thunk, &[], env)?;
-        return Ok(heap.alloc_vector2(ok, value));
-    }
-    crate::process::set_interrupt_window(Some(ceiling));
+    let window = crate::process::open_interrupt_window(ceiling);
     let outcome = crate::eval::compile::apply_engine(heap, thunk, &[], env);
-    crate::process::set_interrupt_window(None);
+    let ours = matches!(&outcome, Err(e) if !e.is_control()
+        && e.kind == crate::error::ErrorKind::Interrupted)
+        && crate::process::interrupt_raised_for(window);
+    crate::process::close_interrupt_window(window);
     match outcome {
-        Ok(value) => Ok(heap.alloc_vector2(ok, value)),
-        Err(e) if !e.is_control() && e.kind == crate::error::ErrorKind::Interrupted => {
+        Ok(value) => Ok(heap.alloc_vector2(value::kw("ok"), value)),
+        Err(e) if ours => {
             let caught = e.caught_value(heap);
             Ok(heap.alloc_vector2(value::kw("interrupted"), caught))
         }

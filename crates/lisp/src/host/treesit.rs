@@ -1066,6 +1066,10 @@ pub enum InjectedLanguage {
 #[cfg_attr(not(feature = "treesit"), allow(dead_code))]
 pub struct InjectionRule {
     pub content: Selector,
+    /// `:exclude` (ADR-496): the content's descendants this selects are cut out of the
+    /// embedded document and keep the host's colours — a Dockerfile heredoc's `<<EOT` marker
+    /// inside the shell it introduces, tree-sitter's `injection.include-children` false.
+    pub exclude: Option<Selector>,
     pub language: InjectedLanguage,
 }
 
@@ -1081,12 +1085,14 @@ pub struct Injections {
 }
 
 /// One embedded document as the walk finds it: the rule that matched, the parent whose
-/// matching children it is, and those children — its pieces, in source order.
+/// matching children it is, and those children — its pieces, in source order — less the byte
+/// ranges of their descendants the rule's `:exclude` selects.
 #[cfg(feature = "treesit")]
 struct InjectedDocument<'tree> {
     rule: usize,
     parent: tree_sitter::Node<'tree>,
     pieces: Vec<tree_sitter::Node<'tree>>,
+    excluded: Vec<(usize, usize)>,
 }
 
 #[cfg(feature = "treesit")]
@@ -1142,14 +1148,24 @@ fn injections_into<'tree, T: SpanText>(
             .iter()
             .position(|rule| rule.content.holds(child, &child_context, text))
         {
-            Some(rule) => match here.iter_mut().find(|document| document.rule == rule) {
-                Some(document) => document.pieces.push(child),
-                None => here.push(InjectedDocument {
-                    rule,
-                    parent: node,
-                    pieces: vec![child],
-                }),
-            },
+            Some(rule) => {
+                let mut excluded = Vec::new();
+                if let Some(selector) = &rules[rule].exclude {
+                    excluded_into(child, &child_context, text, selector, &mut excluded);
+                }
+                match here.iter_mut().find(|document| document.rule == rule) {
+                    Some(document) => {
+                        document.pieces.push(child);
+                        document.excluded.extend(excluded);
+                    }
+                    None => here.push(InjectedDocument {
+                        rule,
+                        parent: node,
+                        pieces: vec![child],
+                        excluded,
+                    }),
+                }
+            }
             None if !past && overlaps(child.start_byte(), child.end_byte(), window) => {
                 injections_into(child, &child_context, text, rules, window, out);
             }
@@ -1166,6 +1182,43 @@ fn injections_into<'tree, T: SpanText>(
             .any(|piece| overlaps(piece.start_byte(), piece.end_byte(), window))
     }));
     out.truncate(INJECTION_DOCUMENTS);
+}
+
+/// The byte ranges of `node`'s descendants that `selector` holds for — the outermost ones: a
+/// node it selects is not entered. What a rule's `:exclude` cuts out of its document.
+#[cfg(feature = "treesit")]
+fn excluded_into<T: SpanText>(
+    node: tree_sitter::Node,
+    context: &NodeContext,
+    text: &T,
+    selector: &Selector,
+    out: &mut Vec<(usize, usize)>,
+) {
+    let mut cursor = node.walk();
+    if !cursor.goto_first_child() {
+        return;
+    }
+    let mut named_index = 0;
+    loop {
+        let child = cursor.node();
+        let child_context = NodeContext {
+            parent: Some(node),
+            field: cursor.field_name(),
+            nth: child.is_named().then_some(named_index),
+            outer: Some(context),
+        };
+        if child.is_named() {
+            named_index += 1;
+        }
+        if selector.holds(child, &child_context, text) {
+            out.push((child.start_byte(), child.end_byte()));
+        } else {
+            excluded_into(child, &child_context, text, selector, out);
+        }
+        if !cursor.goto_next_sibling() {
+            break;
+        }
+    }
 }
 
 /// The word a `:lang-from` node names: its text's leading run of letters, digits and `_ - +
@@ -1260,9 +1313,61 @@ fn parse_pieces<T: SpanText>(
     tree
 }
 
-/// The injected document's spans: `pieces` of `text` parsed as one `lang` document and
-/// walked with `table`, each span clipped to the pieces (a string spanning an interpolation
-/// colours only the string's own text) and to `window`. None when there is no grammar.
+/// `pieces` (sorted, disjoint) with, between each two, the last line break of the text they
+/// skip — what the embedded parser reads. An included-ranges parse sees nothing of a gap, so
+/// two heredoc lines handed over as two pieces, or a line on each side of an excluded node,
+/// were one line to it: `echo a` then `echo b` parsed as `echo a echo b`. The break is parsed,
+/// never coloured: spans stay clipped to the pieces, so it keeps the host's colour (ADR-496).
+#[cfg(feature = "treesit")]
+fn with_line_breaks<T: SpanText>(text: &T, pieces: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut joined = Vec::with_capacity(pieces.len() * 2);
+    for (index, piece) in pieces.iter().enumerate() {
+        if index > 0 {
+            let gap_start = pieces[index - 1].1;
+            if gap_start < piece.0
+                && let Some(at) = text.text_in(gap_start, piece.0).rfind('\n')
+            {
+                joined.push((gap_start + at, gap_start + at + 1));
+            }
+        }
+        joined.push(*piece);
+    }
+    normalized_pieces(joined)
+}
+
+/// `pieces` (sorted, disjoint) with every byte of `cut` (sorted, disjoint) taken out — a
+/// document's pieces less what its rule's `:exclude` selected.
+#[cfg(feature = "treesit")]
+fn without_ranges(pieces: Vec<(usize, usize)>, cut: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    if cut.is_empty() {
+        return pieces;
+    }
+    let mut kept = Vec::with_capacity(pieces.len() + cut.len());
+    for (start, end) in pieces {
+        let mut cursor = start;
+        for (cut_start, cut_end) in cut {
+            if *cut_end <= cursor {
+                continue;
+            }
+            if *cut_start >= end {
+                break;
+            }
+            if *cut_start > cursor {
+                kept.push((cursor, *cut_start));
+            }
+            cursor = (*cut_end).min(end);
+        }
+        if cursor < end {
+            kept.push((cursor, end));
+        }
+    }
+    kept
+}
+
+/// The injected document's spans: `pieces` of `text` parsed as one `lang` document (joined by
+/// their gaps' line breaks, [`with_line_breaks`]) and walked with `table`, each span clipped to
+/// the pieces (a string spanning an interpolation colours only the string's own text) and to
+/// `window`. None when there is no grammar.
 #[cfg(feature = "treesit")]
 fn injected_spans<T: SpanText>(
     text: &T,
@@ -1272,7 +1377,7 @@ fn injected_spans<T: SpanText>(
     keywords: bool,
     window: Option<(usize, usize)>,
 ) -> Option<Vec<RawSpan>> {
-    let tree = parse_pieces(text, lang, pieces)?;
+    let tree = parse_pieces(text, lang, &with_line_breaks(text, pieces))?;
     let query = SpanQuery {
         table,
         keywords,
@@ -1375,12 +1480,15 @@ fn splice_injections<T: SpanText>(
         let Some(table) = injections.tables.get(&lang) else {
             continue;
         };
-        let pieces = normalized_pieces(
-            document
-                .pieces
-                .iter()
-                .map(|piece| (piece.start_byte(), piece.end_byte()))
-                .collect(),
+        let pieces = without_ranges(
+            normalized_pieces(
+                document
+                    .pieces
+                    .iter()
+                    .map(|piece| (piece.start_byte(), piece.end_byte()))
+                    .collect(),
+            ),
+            &normalized_pieces(document.excluded.clone()),
         );
         let Some(pieces) = bounded_pieces(pieces, query.window) else {
             continue;
@@ -1588,21 +1696,21 @@ fn normalized_pieces_keep_empty(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, 
 // the window — a slice with no context above it, so a string opened off screen is code.
 //
 // A handle is the tree of a WHOLE document, held across edits. It is a `Ref`: opaque,
-// compared by identity, sendable by value (the registry is runtime-wide, so a task can
-// parse off the loop and hand the editor the result). Each handle is IMMUTABLE — a reparse
-// returns a NEW handle and leaves the old one answering exactly as before, so a model that
-// keeps one beside a rope can never see it change underneath it. What a handle costs is a
-// registry slot, and the registry is bounded: past `TREE_HANDLE_CAP` the least recently
-// used is dropped. A dropped handle is not an error to reparse from (that is a full parse)
-// and reads as `nil` from every query — the caller opens a fresh tree. `%tree-sitter-tree-
-// free` drops one eagerly; a caller that replaces its tree per edit should free the old one,
-// and successive versions share almost all of their subtrees, so the ones it forgets cost
-// little until the cap reclaims them.
-
-/// The most tree handles kept at once. Each is one document version; consecutive versions
-/// of one document share their unchanged subtrees, so the cost is mostly distinct documents.
-#[cfg(feature = "treesit")]
-const TREE_HANDLE_CAP: usize = 32;
+// compared by identity, sendable by value (the registry is runtime-wide, so any process
+// holding the ref can query it). Each handle is IMMUTABLE — a reparse returns a NEW handle
+// and leaves the old one answering exactly as before, so a model that keeps one beside a
+// rope can never see it change underneath it.
+//
+// A handle is OWNED (ADR-495), the way a socket, a child process and a wasm instance are:
+// by the process that opened it, until that process hands it on (`%tree-sitter-tree-give`
+// — a task parsing off the loop gives the editor its tree before replying). It goes away
+// only when its owner frees it or dies; no other process's allocations can take it. Before
+// ADR-495 the registry was a runtime-wide LRU of 32, and a 33rd document anywhere in the
+// runtime — another buffer, another test running beside this one — silently dropped the
+// oldest, so an editor with many files open quietly fell back to full parses and a test
+// that opened a tree, edited it and asked what changed saw `true` (a fresh parse) instead.
+// A gone handle still reads as `nil` from every query and reparsing from it is a full
+// parse — but now only its holder can make it gone.
 
 /// Bumped by every `%tree-sitter-load-grammar`. A tree parsed under an older grammar is
 /// never handed to the new grammar's parser as the tree to reparse from: that is not stale
@@ -1628,52 +1736,26 @@ struct TreeEntry {
     /// Byte ranges of THIS text whose highlighting may differ from the previous version's:
     /// the edited text plus tree-sitter's `changed_ranges`. `None` for a fresh parse.
     changed: Option<Vec<(usize, usize)>>,
-    last_used: u64,
 }
 
+/// Every live handle, indexed by the process that owns it, so a process's death frees its
+/// trees in O(what it owned) ([`close_process_trees`]).
 #[cfg(feature = "treesit")]
-#[derive(Default)]
-struct TreeHandles {
-    entries: HashMap<u64, TreeEntry>,
-    clock: u64,
-}
+static TREE_HANDLES: LazyLock<Mutex<crate::host::owned::OwnedTable<TreeEntry>>> =
+    LazyLock::new(|| Mutex::new(crate::host::owned::OwnedTable::default()));
 
-#[cfg(feature = "treesit")]
-static TREE_HANDLES: LazyLock<Mutex<TreeHandles>> =
-    LazyLock::new(|| Mutex::new(TreeHandles::default()));
-
-/// A clone of handle `id`'s entry (cheap: a tree refcount and a rope refcount), marking it
-/// used; `None` when the handle was freed or evicted.
+/// A clone of handle `id`'s entry (cheap: a tree refcount and a rope refcount); `None` when
+/// the handle was freed or its owner died.
 #[cfg(feature = "treesit")]
 fn tree_entry(id: u64) -> Option<TreeEntry> {
-    let mut handles = crate::core::sync::lock(&TREE_HANDLES);
-    handles.clock += 1;
-    let now = handles.clock;
-    handles.entries.get_mut(&id).map(|entry| {
-        entry.last_used = now;
-        entry.clone()
-    })
+    crate::core::sync::lock(&TREE_HANDLES).get(&id).cloned()
 }
 
-/// Register `entry` under a fresh ref id, evicting the least recently used past the cap.
+/// Register `entry` under a fresh ref id, owned by process `owner`.
 #[cfg(feature = "treesit")]
-fn tree_register(mut entry: TreeEntry) -> u64 {
+fn tree_register(entry: TreeEntry, owner: u64) -> u64 {
     let id = crate::process::monitor::next_ref();
-    let mut handles = crate::core::sync::lock(&TREE_HANDLES);
-    handles.clock += 1;
-    entry.last_used = handles.clock;
-    while handles.entries.len() >= TREE_HANDLE_CAP {
-        let oldest = handles
-            .entries
-            .iter()
-            .min_by_key(|(_, e)| e.last_used)
-            .map(|(k, _)| *k);
-        match oldest {
-            Some(k) => handles.entries.remove(&k),
-            None => break,
-        };
-    }
-    handles.entries.insert(id, entry);
+    crate::core::sync::lock(&TREE_HANDLES).insert(id, owner, entry);
     id
 }
 
@@ -1866,18 +1948,21 @@ fn input_edit(
     }
 }
 
-/// `(%tree-sitter-tree text lang)` — parse a whole document into a fresh handle.
+/// `(%tree-sitter-tree text lang)` — parse a whole document into a fresh handle owned by
+/// process `owner`.
 #[cfg(feature = "treesit")]
-pub fn tree_open(text: ropey::Rope, lang: &str) -> Result<u64, LispError> {
+pub fn tree_open(text: ropey::Rope, lang: &str, owner: u64) -> Result<u64, LispError> {
     let tree = parse_rope(&text, lang, None)?;
-    Ok(tree_register(TreeEntry {
-        tree,
-        text,
-        lang: lang.to_string(),
-        epoch: grammar_epoch(),
-        changed: None,
-        last_used: 0,
-    }))
+    Ok(tree_register(
+        TreeEntry {
+            tree,
+            text,
+            lang: lang.to_string(),
+            epoch: grammar_epoch(),
+            changed: None,
+        },
+        owner,
+    ))
 }
 
 /// `(%tree-sitter-tree-reparse tree text lang edits)` — the handle for `text`, reparsed
@@ -1885,20 +1970,22 @@ pub fn tree_open(text: ropey::Rope, lang: &str) -> Result<u64, LispError> {
 /// triples `[start old-end new-end]` applied in order; `None` derives the edit by comparing
 /// the ropes (prefix and suffix, chunk by chunk). An edit that does not fit the two texts —
 /// whose unchanged tails differ in length — is an error. Only the lengths are checked: an edit
-/// that fits them but names the wrong place gives a wrong tree.
+/// that fits them but names the wrong place gives a wrong tree. The new handle is `owner`'s,
+/// whoever owns `old`.
 #[cfg(feature = "treesit")]
 pub fn tree_reparse(
     old: u64,
     text: ropey::Rope,
     lang: &str,
     edits: Option<Vec<(usize, usize, usize)>>,
+    owner: u64,
 ) -> Result<u64, LispError> {
     // Resolved before the epoch is read: a declared grammar's first use (re)loads it here and
     // moves the epoch, and the old tree must then not be handed to the new grammar's parser.
     language_for(lang)?;
     let previous = tree_entry(old).filter(|e| e.lang == lang && e.epoch == grammar_epoch());
     let Some(previous) = previous else {
-        return tree_open(text, lang); // gone, another language, or another grammar
+        return tree_open(text, lang, owner); // gone, another language, or another grammar
     };
     let byte_edit = match edits {
         None => derive_rope_edit(&previous.text, &text),
@@ -1929,18 +2016,21 @@ pub fn tree_reparse(
     };
     let Some(byte_edit) = byte_edit else {
         // the same text: a new handle on the same tree, nothing changed
-        return Ok(tree_register(TreeEntry {
-            changed: Some(Vec::new()),
-            text,
-            ..previous
-        }));
+        return Ok(tree_register(
+            TreeEntry {
+                changed: Some(Vec::new()),
+                text,
+                ..previous
+            },
+            owner,
+        ));
     };
     let (start, old_end, new_end) = byte_edit;
     let old_length = previous.text.len_bytes();
     // the same rule as `derive_edit`: an edit spanning most of a large document is a new
     // document, and reparsing from the old tree buys nothing
     if (old_end - start) * 4 > old_length && old_length > 4096 {
-        return tree_open(text, lang);
+        return tree_open(text, lang, owner);
     }
     let mut edited = previous.tree.clone();
     edited.edit(&input_edit(&previous.text, &text, byte_edit));
@@ -1958,14 +2048,16 @@ pub fn tree_reparse(
             _ => merged.push((from, to)),
         }
     }
-    Ok(tree_register(TreeEntry {
-        tree,
-        text,
-        lang: lang.to_string(),
-        epoch: previous.epoch,
-        changed: Some(merged),
-        last_used: 0,
-    }))
+    Ok(tree_register(
+        TreeEntry {
+            tree,
+            text,
+            lang: lang.to_string(),
+            epoch: previous.epoch,
+            changed: Some(merged),
+        },
+        owner,
+    ))
 }
 
 /// `(%tree-sitter-tree-spans tree table keywords? from to injections)` — the fontify walk over
@@ -2033,9 +2125,56 @@ pub fn tree_changes(heap: &mut Heap, handle: u64, injections: Option<&Injections
 #[cfg(feature = "treesit")]
 pub fn tree_free(handle: u64) -> bool {
     crate::core::sync::lock(&TREE_HANDLES)
-        .entries
         .remove(&handle)
         .is_some()
+}
+
+/// Why a [`tree_give`] was refused.
+#[derive(Debug, PartialEq, Eq)]
+pub enum GiveRefused {
+    /// The giving process does not own the handle: only the owner decides where it goes.
+    NotOwner,
+}
+
+/// `(%tree-sitter-tree-give tree pid)` — hand handle `handle`, owned by `from`, to process
+/// `to`, which then decides when it goes. `Ok(true)` when `to` holds it now; `Ok(false)` when
+/// it was already gone, or `to` has died — a tree given to a dead process dies with it, as
+/// it would have had the death come a moment later. The owner is moved BEFORE `to`'s
+/// liveness is read, so the retirement sweep either runs after the move (and frees it) or
+/// has already run (and the dead `to` is seen here): it is never stranded on a corpse.
+#[cfg(feature = "treesit")]
+pub fn tree_give(handle: u64, from: u64, to: u64) -> Result<bool, GiveRefused> {
+    {
+        let mut handles = crate::core::sync::lock(&TREE_HANDLES);
+        match handles.owner_of(&handle) {
+            None => return Ok(false),
+            Some(owner) if owner != from => return Err(GiveRefused::NotOwner),
+            Some(_) => handles.set_owner(handle, to),
+        }
+    }
+    if crate::process::is_alive(to) {
+        return Ok(true);
+    }
+    tree_free(handle);
+    Ok(false)
+}
+
+/// `(%tree-sitter-owned-trees)` — every handle `pid` owns, by ascending id. What a holder sweeps against what it still references: a handle it lost
+/// track of (a turn rolled back after opening one) is otherwise held until it exits.
+#[cfg(feature = "treesit")]
+pub fn owned_trees(pid: u64) -> Vec<u64> {
+    let mut owned = crate::core::sync::lock(&TREE_HANDLES).owned_by(pid);
+    owned.sort_unstable();
+    owned
+}
+
+/// Free every tree `pid` owns — the process-death hook, beside the socket, subprocess and
+/// wasm sweeps in the scheduler's retirement path. O(the trees it owned).
+#[cfg(feature = "treesit")]
+pub fn close_process_trees(pid: u64) {
+    // Dropped outside the lock: the last reference to a tree frees all of its nodes.
+    let closed = crate::core::sync::lock(&TREE_HANDLES).remove_owned_by(pid);
+    drop(closed);
 }
 
 /// `(%tree-sitter-tree-chain tree offset)` — [`chain`] over a held tree: no parse, no flat
@@ -2058,20 +2197,10 @@ pub fn tree_kids(heap: &mut Heap, handle: u64, offset: i64, all: bool) -> LispRe
     Ok(kids_in(heap, &entry.tree, &entry.text, offset, all))
 }
 
-/// `(%tree-sitter-tree-alive? tree)` — is the handle still held? Marks it used, as every
-/// query does, so a holder that only checks keeps its tree from being the one evicted.
+/// `(%tree-sitter-tree-alive? tree)` — is the handle still held: not freed, its owner alive?
 #[cfg(feature = "treesit")]
 pub fn tree_alive(handle: u64) -> bool {
-    let mut handles = crate::core::sync::lock(&TREE_HANDLES);
-    handles.clock += 1;
-    let now = handles.clock;
-    match handles.entries.get_mut(&handle) {
-        Some(entry) => {
-            entry.last_used = now;
-            true
-        }
-        None => false,
-    }
+    crate::core::sync::lock(&TREE_HANDLES).contains_key(&handle)
 }
 
 #[cfg(not(feature = "treesit"))]
@@ -2082,7 +2211,7 @@ fn without_treesit(who: &str) -> LispError {
 }
 
 #[cfg(not(feature = "treesit"))]
-pub fn tree_open(_text: ropey::Rope, _lang: &str) -> Result<u64, LispError> {
+pub fn tree_open(_text: ropey::Rope, _lang: &str, _owner: u64) -> Result<u64, LispError> {
     Err(without_treesit("%tree-sitter-tree"))
 }
 
@@ -2092,6 +2221,7 @@ pub fn tree_reparse(
     _text: ropey::Rope,
     _lang: &str,
     _edits: Option<Vec<(usize, usize, usize)>>,
+    _owner: u64,
 ) -> Result<u64, LispError> {
     Err(without_treesit("%tree-sitter-tree-reparse"))
 }
@@ -2121,6 +2251,19 @@ pub fn tree_changes(
 #[cfg(not(feature = "treesit"))]
 pub fn tree_free(_handle: u64) -> bool {
     false
+}
+
+#[cfg(not(feature = "treesit"))]
+pub fn tree_give(_handle: u64, _from: u64, _to: u64) -> Result<bool, GiveRefused> {
+    Ok(false)
+}
+
+#[cfg(not(feature = "treesit"))]
+pub fn close_process_trees(_pid: u64) {}
+
+#[cfg(not(feature = "treesit"))]
+pub fn owned_trees(_pid: u64) -> Vec<u64> {
+    Vec::new()
 }
 
 #[cfg(not(feature = "treesit"))]
@@ -2775,15 +2918,16 @@ mod tree_handle_tests {
             .map(|i| format!("def m{i}\n  x = \"s{i}\" # c{i}\nend\n"))
             .collect();
         let old_text = ropey::Rope::from_str(&source);
-        let old = tree_open(old_text.clone(), "ruby").expect("parses");
+        let owner = crate::process::self_pid();
+        let old = tree_open(old_text.clone(), "ruby", owner).expect("parses");
         // open a string above the window: everything after it is a string now
         let mut new_text = old_text.clone();
         new_text.insert(4, "\"");
         let length = new_text.len_chars() as i64;
-        let fresh = tree_open(new_text.clone(), "ruby").expect("parses");
-        let derived = tree_reparse(old, new_text.clone(), "ruby", None).expect("reparses");
-        let explicit =
-            tree_reparse(old, new_text.clone(), "ruby", Some(vec![(4, 4, 5)])).expect("reparses");
+        let fresh = tree_open(new_text.clone(), "ruby", owner).expect("parses");
+        let derived = tree_reparse(old, new_text.clone(), "ruby", None, owner).expect("reparses");
+        let explicit = tree_reparse(old, new_text.clone(), "ruby", Some(vec![(4, 4, 5)]), owner)
+            .expect("reparses");
         let window = (length / 2, length / 2 + 400);
         assert_eq!(
             spans_of(derived, window.0, window.1),
@@ -2795,16 +2939,52 @@ mod tree_handle_tests {
         );
         // the old handle is untouched by the reparse
         assert_eq!(spans_of(old, 0, 40), {
-            let again = tree_open(old_text, "ruby").expect("parses");
+            let again = tree_open(old_text, "ruby", owner).expect("parses");
             spans_of(again, 0, 40)
         });
         // an edit that does not fit the texts is refused
-        assert!(tree_reparse(old, new_text, "ruby", Some(vec![(4, 4, 9)])).is_err());
+        assert!(tree_reparse(old, new_text, "ruby", Some(vec![(4, 4, 9)]), owner).is_err());
         assert!(tree_free(fresh));
         let mut heap = Heap::new();
         let empty = SpanTable::default();
         let gone = tree_spans(&mut heap, fresh, &empty, false, 0, 10, None).expect("answers");
         assert!(matches!(gone, Value::Nil), "a freed handle reads as nil");
+    }
+
+    /// ADR-495: a handle is its owner's. Another process opening any number of trees cannot
+    /// take it (the old 32-entry LRU dropped it at the 33rd), and its owner's exit frees it
+    /// and only it. The owners are pids no process will ever have, so nothing else in
+    /// the runtime frees them under the test.
+    #[test]
+    fn a_handle_survives_other_owners_and_dies_with_its_own() {
+        let mine = u64::MAX - 1;
+        let theirs = u64::MAX - 2;
+        let text = ropey::Rope::from_str("def a\n  1\nend\n");
+        let kept = tree_open(text.clone(), "ruby", mine).expect("parses");
+        let others: Vec<u64> = (0..40)
+            .map(|_| tree_open(text.clone(), "ruby", theirs).expect("parses"))
+            .collect();
+        assert!(
+            tree_alive(kept),
+            "40 trees opened by another owner left mine alone"
+        );
+        // and an edit from it is incremental: a gone handle would reparse fresh (`None`)
+        let mut edited = text.clone();
+        edited.insert(9, "2");
+        let next = tree_reparse(kept, edited, "ruby", None, mine).expect("reparses");
+        assert!(tree_entry(next).expect("held").changed.is_some());
+        close_process_trees(theirs);
+        assert!(others.iter().all(|handle| !tree_alive(*handle)));
+        assert!(
+            tree_alive(kept) && tree_alive(next),
+            "another owner's exit is not mine"
+        );
+        // only the owner gives a tree away; given to a dead process, it dies with it
+        assert_eq!(tree_give(kept, theirs, mine), Err(GiveRefused::NotOwner));
+        assert_eq!(tree_give(kept, mine, theirs), Ok(false));
+        assert!(!tree_alive(kept));
+        close_process_trees(mine);
+        assert!(!tree_alive(next));
     }
 }
 
@@ -2895,5 +3075,34 @@ mod declared_grammar_tests {
         assert!(heap.failure_message(reported).is_some());
         crate::core::sync::lock(&DECLARED).remove("ruby");
         assert!(is_keyword(status("ruby"), "built-in"));
+    }
+}
+
+#[cfg(all(test, feature = "treesit"))]
+mod injection_piece_tests {
+    use super::*;
+
+    /// ADR-496: an excluded range is cut out of every piece it reaches, wholly or in part.
+    #[test]
+    fn excluded_ranges_are_cut_out_of_the_pieces() {
+        let pieces = vec![(0, 10), (20, 30)];
+        assert_eq!(without_ranges(pieces.clone(), &[]), pieces);
+        assert_eq!(
+            without_ranges(pieces.clone(), &[(2, 4), (8, 22), (29, 40)]),
+            vec![(0, 2), (4, 8), (22, 29)]
+        );
+        assert_eq!(without_ranges(pieces, &[(0, 30)]), Vec::new());
+    }
+
+    /// ADR-496: the last line break of each gap joins the pieces it separates, so the
+    /// embedded parser still reads two lines as two lines (the break touches both pieces, so
+    /// the three merge); a gap without one adds nothing.
+    #[test]
+    fn a_gap_with_a_line_break_parses_with_it() {
+        let text = ropey::Rope::from_str("echo a\necho b <<X y\n");
+        assert_eq!(
+            with_line_breaks(&text, &[(0, 6), (7, 13), (17, 19)]),
+            vec![(0, 13), (17, 19)]
+        );
     }
 }

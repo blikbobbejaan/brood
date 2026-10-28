@@ -304,14 +304,117 @@ fn an_error_passes_through_a_region_and_closes_its_window() {
     assert_eq!(run_at(Tier::Bytecode, src.into()), "[:caught false 100000]");
 }
 
+/// Windows nest (ADR-493) on every path that opens one: the bytecode driver's REGION, the tier-0
+/// machine's FRAME (ADR-494), and the builtin under a native frame.
+const NESTING_TIERS: [Tier; 2] = [Tier::Bytecode, Tier::TreeWalk];
+
 #[test]
-fn a_region_inside_an_open_window_leaves_the_interrupt_to_the_outer() {
+fn an_outer_ceiling_passes_through_an_inner_window_to_the_outer() {
+    // The outer window's ceiling is the outer window's: the inner one, with no ceiling of its
+    // own, lets it pass — and the code after the inner call never runs.
     let src = r#"
         (defn spin (n) (spin (inc n)))
-        (first (proc/interruptible 0
-                 (fn () [:inner (proc/interruptible nil (fn () (spin 0)))])))
+        (let (r (proc/interruptible 0
+                  (fn () (do (proc/interruptible nil (fn () (spin 0)))
+                             (send (self) :inner-answered)))))
+          [(first r) (receive (:inner-answered :inner-answered) (after 0 :passed-through))])
     "#;
-    assert_eq!(run_at(Tier::Bytecode, src.into()), ":interrupted");
+    for tier in NESTING_TIERS {
+        assert_eq!(
+            run_at(tier, src.into()),
+            "[:interrupted :passed-through]",
+            "{tier:?}"
+        );
+    }
+}
+
+#[test]
+fn an_inner_ceiling_is_answered_by_the_inner_window_and_the_outer_runs_on() {
+    let src = r#"
+        (defn spin (n) (spin (inc n)))
+        (defn count-to (n limit) (if (= n limit) n (count-to (inc n) limit)))
+        (proc/interruptible nil
+          (fn () [(first (proc/interruptible 0 (fn () (spin 0)))) (count-to 0 100000)]))
+    "#;
+    for tier in NESTING_TIERS {
+        assert_eq!(
+            run_at(tier, src.into()),
+            "[:ok [:interrupted 100000]]",
+            "{tier:?}"
+        );
+    }
+}
+
+#[test]
+fn a_request_lands_in_the_innermost_window_and_the_outer_needs_its_own() {
+    // `proc/interrupt` from another process while the worker is in BOTH windows: the inner
+    // answers it, and the outer window — the ui-run turn around a command's own region —
+    // runs on, consumed interrupt and all, until a second request stops it.
+    let src = r#"
+        (def root (self))
+        (defn spin (n) (spin (inc n)))
+        (defn interrupt-until (pid tries)
+          (cond (proc/interrupt pid) :landed
+                (= tries 0) :never
+                :else (do (sleep 10) (interrupt-until pid (dec tries)))))
+        (def worker
+          (spawn (send root [:outer (proc/interruptible nil
+                                      (fn () (do (send root [:inner (first (proc/interruptible nil
+                                                                             (fn () (do (send root :in-inner)
+                                                                                    (spin 0)))))])
+                                                 (spin 0))))])))
+        (receive (:in-inner nil) (after 10000 nil))
+        (def first-landed (interrupt-until worker 500))
+        (def inner (receive ([:inner r] r) (after 10000 :inner-lost)))
+        (def outer-early (receive ([:outer r] :outer-stopped-too) (after 100 :outer-runs-on)))
+        [first-landed inner outer-early
+         (interrupt-until worker 500)
+         (receive ([:outer r] (first r)) (after 10000 :outer-lost))]
+    "#;
+    let mut interp = brood::Interp::new();
+    let printed = match interp.eval_str(src) {
+        Ok(value) => interp.print(value),
+        Err(error) => format!("error: {}", error.message),
+    };
+    assert_eq!(
+        printed,
+        "[:landed :interrupted :outer-runs-on :landed :interrupted]"
+    );
+}
+
+#[test]
+fn windows_nest_across_the_frame_and_the_builtin() {
+    // The outer window is the engine's own (the VM's region, the tier-0 machine's frame); the
+    // inner one is opened in a `reduce` callback, under a native frame, so the builtin opens
+    // it. Depths are one count whoever opens them: the inner ceiling is the inner's, and the
+    // outer's passes through the inner to the outer.
+    let src = r#"
+        (defn spin (n) (spin (inc n)))
+        (defn count-to (n limit) (if (= n limit) n (count-to (inc n) limit)))
+        (defn inner (ceiling) (reduce [ceiling] nil (fn (_ c) (proc/interruptible c (fn () (spin 0))))))
+        [(proc/interruptible nil (fn () [(first (inner 0)) (count-to 0 100000)]))
+         (first (proc/interruptible 0 (fn () (do (inner nil) :inner-answered))))]
+    "#;
+    for tier in NESTING_TIERS {
+        assert_eq!(
+            run_at(tier, src.into()),
+            "[[:ok [:interrupted 100000]] :interrupted]",
+            "{tier:?}"
+        );
+    }
+}
+#[test]
+fn a_catch_all_in_an_inner_window_cannot_keep_an_outer_ceiling() {
+    // The outer ceiling's interrupt is sticky through a `try` inside the INNER window too: the
+    // catch-all only delays it, the inner window lets it pass, the outer answers.
+    let src = r#"
+        (defn stubborn-spin (n) (stubborn-spin (inc n)))
+        (defn stubborn (n) (do (try (stubborn-spin n) (catch e nil)) (stubborn (inc n))))
+        (first (proc/interruptible 0 (fn () (proc/interruptible nil (fn () (stubborn 0))))))
+    "#;
+    for tier in NESTING_TIERS {
+        assert_eq!(run_at(tier, src.into()), ":interrupted", "{tier:?}");
+    }
 }
 
 #[test]
@@ -384,6 +487,95 @@ fn a_bounded_regex_search_is_interrupted_inside() {
     builtin_is_stopped_inside(
         "(string/repeat \"a\" 1000000)",
         "(%regex-find \"zq\" big 0)",
+    );
+}
+
+#[test]
+fn an_unbounded_regex_search_is_interrupted_inside() {
+    // A pattern with no bound on its match length cannot be cut into windows; it is stepped
+    // (ADR-493): its lazy DFA driven a byte at a time, a poll every window. Each of these is
+    // one search over a megabyte — no match at all (`a+z`), a match the whole text long
+    // (`a+`), a literal prefix the prefilter finds nowhere (`zq.*`), a lexer whose rules
+    // never match, and an anchored longest match the whole text long.
+    builtin_is_stopped_inside(
+        "(string/repeat \"a\" 1000000)",
+        "(%regex-match? \"a+z\" big)",
+    );
+    builtin_is_stopped_inside(
+        "(string/repeat \"a\" 1000000)",
+        "(%regex-find \"a+\" big 0)",
+    );
+    builtin_is_stopped_inside(
+        "(string/repeat \"a\" 1000000)",
+        "(%regex-find \"zq.*\" big 0)",
+    );
+    builtin_is_stopped_inside(
+        "(string/repeat \"a\" 1000000)",
+        "(%regex-tokens [\"b[^z]*z\"] [:never] big)",
+    );
+    builtin_is_stopped_inside(
+        "(string/repeat \"a\" 1000000)",
+        "(%regex-tokens [\"a+\"] [:run] big)",
+    );
+    // A Unicode word boundary over non-ASCII text: the lazy DFA quits, our Pike VM polls.
+    builtin_is_stopped_inside(
+        "(string/repeat \"é\" 500000)",
+        "(%regex-find \"\\\\bz\\\\w*\" big 0)",
+    );
+    builtin_is_stopped_inside(
+        "(string/repeat \"é\" 500000)",
+        "(%regex-tokens [\"\\\\bz\\\\w*\"] [:word] big)",
+    );
+}
+
+#[test]
+fn a_stepped_regex_search_finds_what_one_search_finds() {
+    // Over a text past a window, after multi-byte text, with a literal the prefilter finds
+    // straddling a window edge: the match, its groups, an empty match, and a word boundary
+    // the stepped DFA quits on (é is not ASCII), so `meta` answers it.
+    for pad in [65_534usize, 65_535, 65_536, 131_070] {
+        let text = format!("{}é zqyyy xbcd {}", "a".repeat(pad), "a".repeat(70_000));
+        let zq = pad + 2;
+        let x = zq + 6;
+        let src = format!(
+            r#"(let (text "{text}")
+                 [(:start (%regex-find "zq\\w*" text 0))
+                  (:text (%regex-find "zq(y+)" text 0))
+                  (:text (first (:groups (%regex-find "zq(y+)" text 0))))
+                  (:start (%regex-find "x(b|bc)d+" text 0))
+                  (:start (%regex-find "q*" text 5))
+                  (:start (%regex-find "\\bx[a-d]+" text 0))
+                  (%regex-match? "[^a-z ]+\\d" text)])"#
+        );
+        assert_eq!(
+            run_at(Tier::Bytecode, src),
+            format!("[{zq} \"zqyyy\" \"yyy\" {x} 5 {x} false]"),
+            "pad {pad}"
+        );
+    }
+}
+
+#[test]
+fn a_pike_vm_search_answers_what_one_search_does() {
+    // A match longer than a window has its groups found by our polling Pike VM, and a
+    // Unicode word boundary over non-ASCII text is searched by it from the start (ADR-493).
+    let text = format!("zz é{}b é{}x yy", "a".repeat(100_000), "ü".repeat(70_000));
+    let src = format!(
+        r#"(let (text "{text}" m (%regex-find "é(a+)(b)" text 0))
+             [(:start m) (:end m) (:start (first (:groups m))) (:text (second (:groups m)))
+              (:start (%regex-find "\\béü+x\\b" text 0))
+              (:start (%regex-find "\\byy" text 0))
+              (count (%regex-tokens ["\\b[a-zé]+\\b"] [:word] text))])"#
+    );
+    let ü = 3 + 1 + 100_000 + 1 + 1 + 1;
+    assert_eq!(
+        run_at(Tier::Bytecode, src),
+        format!(
+            "[3 {} 4 \"b\" {} {} 3]",
+            3 + 1 + 100_000 + 1,
+            ü - 1,
+            ü + 70_000 + 2
+        )
     );
 }
 

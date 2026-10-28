@@ -97,6 +97,9 @@ fn retire_pid_tail(pid: u64, reason: Message) {
     // And any wasm instances it loaded — each holds a whole store and linear memory.
     #[cfg(feature = "wasm")]
     crate::host::wasm::close_process_instances(pid);
+    // And the tree-sitter trees it held (ADR-495): a handle is its owner's, never evicted
+    // by anyone else's allocations, so its owner's exit is what frees a forgotten one.
+    crate::host::treesit::close_process_trees(pid);
     // Registered names and node monitors were swept with the REGISTRY removal
     // (`unregister_dead_pid_while`), by both callers.
     //
