@@ -184,7 +184,7 @@ the alternative is a noisy extra `let`.
 
 (defn neighbours (cell)
   (let ([x y] cell)
-    (map (fn ([dx dy]) [(+ x dx) (+ y dy)]) offsets)))
+    (map offsets (fn ([dx dy]) [(+ x dx) (+ y dy)]))))
 
 ;; multi-clause defn is fine — clause heads are lists, no [ ] collision
 (defn fac
@@ -194,7 +194,7 @@ the alternative is a noisy extra `let`.
 ;; not idiomatic — single-clause defn with a tuple-destructured param
 (defn area ([x y]) (* x y))
 (defn neighbours ([x y])
-  (map (fn ([dx dy]) [(+ x dx) (+ y dy)]) offsets))
+  (map offsets (fn ([dx dy]) [(+ x dx) (+ y dy)])))
 ```
 
 **Why rule 2:** `(defn f ([x y]) body)` is *single-clause* with one
@@ -203,7 +203,7 @@ tuple-destructured param, but visually collides with *multi-clause* `(defn f
 correct (the parser checks whether the inner head is a list); the *reader*
 pays a re-parse every time. The cost is highest at a top-level `defn` — that
 name is the thing readers look up later. Confining the rule there preserves
-the ergonomic `(map (fn ([k v]) …) …)` idiom, which reads locally and never
+the ergonomic `(map … (fn ([k v]) …))` idiom, which reads locally and never
 gets looked up by name.
 
 **Reserved names: you cannot redefine what Brood ships.** `(def get …)`,
@@ -568,7 +568,7 @@ map keyed by index and convert once at the end.**
 **`catch` takes ONE bare binder** — `(catch e body…)`, never Clojure's
 `(catch Type e body…)`, which is rejected with a hint. (Reading it Brood's way
 would bind the *class name* to the raised value and evaluate `e` as a statement;
-because the prelude defines `e`, that silently printed 2.718… instead of failing.)
+because the prelude then defined `e` (now `math/e`), that silently printed 2.718… instead of failing.)
 
 **In a `catch`, use `(error-message e)`.** A caught value has no single shape:
 `throw` hands back its argument verbatim (often a bare string from `error`),
@@ -616,7 +616,7 @@ frame their *intermediate allocations* dominate. Two rules for code on a hot
 path:
 
 - **`mapcat`-then-reduce builds a list only to walk it once.** `(seq/frequencies
-  (mapcat f xs))` materialises the entire `(len-of-each × count)` list of items
+  (mapcat xs f))` materialises the entire `(len-of-each × count)` list of items
   before `seq/frequencies` tallies it — thousands of throwaway cells per frame. Fuse
   the two into one `fold` so nothing intermediate is built:
 

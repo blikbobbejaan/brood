@@ -71,7 +71,7 @@ In Brood `map` always returns a list (`(reverse (fold … nil coll))`), empty in
 |------|-------------|-------|
 | `(filter pred coll)` | `nil \| list<A>`, `A = elem(coll)` | element of arg2 only — trivial, no callback analysis |
 | `(map f coll)` | `nil \| list<B>`, `B = ret(f applied to A)` | callback return type |
-| `(reduce f init coll)` / `(fold f init coll)` | `B ∪ ty(init)`, `B = ret(f)` | callback return + init type (slice 2) |
+| `(reduce coll init f)` / `(fold coll init f)` | `B ∪ ty(init)`, `B = ret(f)` | callback return + init type (slice 2) |
 
 **Slice 1 = `filter` + `map`.** `filter` is the trivial, immediately-useful case
 (`(first (filter even? [1 2 3])) : int`). `reduce`/`fold` (accumulator-typed) are

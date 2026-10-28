@@ -29,6 +29,7 @@ Legend: ✅ done · 🟡 in progress · ⬜ not started · ❌ tried and reverte
 
 - [**Active work**](#active-work--dated-findings--backlogs) — dated findings & backlogs (the
   large, time-ordered section; skim by the `###` sub-headers below)
+  - [**Language design pass (the current focus)**](#language-design-pass-2026-10-28--the-next-months-focus) ·
   - [Lisp survey + process-library backlog](#lisp-survey--process-library-backlog-2026-08-30) ·
   - [Backend seams](#backend-seams--swappable-jit--engine--perf-legibility-2026-08-11) ·
     [Runtime-feature parity](#runtime-feature-parity-program-2026-07-22) ·
@@ -56,6 +57,147 @@ protocol on abilities** (read half done), **std-library breadth** (no markdown/W
 and **observability**. See "What's next — by area".
 
 ## Active work — dated findings & backlogs
+
+### Language design pass (2026-10-28) — the next month's focus
+
+A read of the language as a Lisp: what is wrong, what is missing, and what an experienced
+Lisp/Clojure user will trip on. The source was `docs/language.md` checked against `std/`.
+For roughly the next month, language design is the whole front; perf, runtime and editor
+work wait. Each item below ends in a decision, recorded as an ADR, and only then an
+implementation.
+
+**Ground rule: do not re-litigate ADR-170.** Items that ADR-170's freeze list refuses are
+listed separately (§D). Reopen one only when a concrete program needs it, never because
+another Lisp has it.
+
+#### A. Documentation drift
+
+- ✅ **Collection-first argument order in the reference (2026-10-28).** ADR-308 put the
+  collection first everywhere, but the docs still showed the old order:
+  - `docs/language.md`: `(reduce f init coll)`, `(fold f init coll)`,
+    `(reduce-while f init coll)`, `(reduce-kv f init m)`, `(map first m)`,
+    `(each io/puts xs)`, `(map (fn …) (enumerate xs))`, and the `:derive-record` example;
+  - `docs/brood-for-claude.md`: `(map (fn …) offsets)` and `(mapcat f xs)`;
+  - `docs/parametric-result-types.md` and the `seq/scan` docstring.
+
+  Fixed in all of them. Smaller fixes in the same pass:
+  - `reduce-kv` was listed as bare in the prelude, but it is `map/reduce-kv`. Fixed in
+    language.md, the `map` module header and the Rust comments.
+  - The transducer examples used a bare `odd?` (it is `math/odd?`) and an undefined `sq`.
+  - The `catch` note said the prelude defines `e` (it is `math/e` now).
+  - A `%map-pairs` comment said "insertion order"; it is hash order.
+- ⬜ **ADR-170's freeze list contradicts later ADRs.**
+  - It lists "multiple dispatch" as refused, but ADR-179 shipped `defmulti`.
+  - It says record `=` "stays structural", but language.md §Records says a record is
+    never `=` to a bare map (nominal).
+  - language.md shows `Ord` as an ability example (§Provided ops) and, a page later, as a
+    `defmulti` multimethod.
+
+  Amend ADR-170 with dated notes (ADRs are not rewritten), and make §Provided ops use an
+  ability that really is one.
+- ⬜ **A drift gate for argument order in docs.** This drift survived ADR-308's sweep
+  because prose examples are not executed; only `form → result` docstrings are
+  (`tests/doc_examples_test.blsp`). Decide whether language.md's fenced examples should run
+  too, or at least go through `nest check`.
+
+#### B. Design problems — decide, then fix
+
+1. ⬜ **Hygiene has holes.** Only plain-symbol `let`/`letrec`/`fn` binders in a template
+   are renamed. Destructuring binders, `match` pattern binders and computed `~params`
+   binders stay literal (language.md §Macro hygiene, "v1 limit"). Capture can therefore
+   still happen silently, exactly where the docs say hygiene is automatic. Extend the
+   renamer to every binding site the one pattern grammar has.
+2. ⬜ **One shape for a caught error.** Today a `catch` handler sees three shapes:
+   - a built-in error: a map `{:kind :message …}`;
+   - an unmatched `match`/`case`: a `[:match-error ctx value patterns]` vector;
+   - a user `throw`: the raw value.
+
+   `error-message` hides the difference, but anything that branches has to know all three.
+   Decide whether `match-error` becomes an error map with `:kind :match-error`, and whether
+   `catch` should be able to filter by `:kind` (it has no filtering today, so handlers
+   rethrow by hand).
+3. ⬜ **Nested quasiquote.** It is rejected (levels are not tracked), so macros that write
+   macros need `` `(a ~(inner-template x)) `` workarounds. Track levels. The rejection was
+   chosen precisely so this lands additively (ADR-011).
+4. ⬜ **The bare/module boundary has no rule a newcomer can predict.** `mapv` is bare but
+   `seq/filterv` is not; `filter` is `seq/filter`; `reduce-kv`, `merge-with` and `zipmap`
+   are `map/…`; `even?` is `math/even?` while `inc` is bare. Write down the rule ADR-227
+   applied, and audit the bare namespace against it (the 2026-08-26 audit is the
+   starting point).
+5. ⬜ **Exceptions to "callback last".**
+   - `(map/merge-with f & maps)`: variadic maps force the function first.
+   - `condp` is value-first, the opposite of Clojure's `(pred test expr)`.
+   - Transducer `comp` composes left to right while plain `comp` goes right to left (as in
+     Clojure).
+
+   For each: keep it and document why, or reshape it (e.g. `merge-with` over a vector of
+   maps).
+6. ⬜ **"Lists for code, vectors for data" has exceptions.** These use vectors for
+   parameters: ability op specs `(area [self] :-> float)`, `impl` methods `(area [c] …)`,
+   `defmethod`'s `[money money]` dispatch tuple, and `{:keys [a b]}`. `defn`, `fn`, `let`
+   and `defrecord` fields use lists, and a vector there is an error with a hint (ADR-149).
+   Either make the ability forms take lists, or restate the rule with its exceptions.
+7. ⬜ **Two polymorphism mechanisms.** Abilities dispatch on the first argument;
+   `defmulti` dispatches on the tuple of argument identities (ADR-179). Write the rule for
+   which one a library author picks, and say in one place why both exist.
+8. ⬜ **What a record is.** A record is a map with a reserved `:__id__` key: `type-of` is
+   `:map`, but `=` is nominal. Audit which map operations expose `:__id__` (`keys`,
+   `count`, `seq`, `merge` with a plain map, `into {}`, `pr-str`, JSON encoding) and make
+   them agree with `fields`.
+9. ⬜ **`cond`'s catch-all.** It is the bare symbol `else`; `:else` works only because a
+   keyword is truthy. Either make `:else` a checker lint (a second spelling, which
+   ADR-170's "one spelling per thing" refuses) or accept it silently and say so.
+10. ⬜ **Tail position is not checkable.** With no `recur`, nothing tells you that a
+    `letrec` loop's self-call is in tail position. A non-tail one shows up at runtime as
+    "recursion too deep", at whatever depth the data reaches. Candidate: a checker lint
+    for a self-call in a `letrec`/`defn` body that is not in tail position. This is
+    additive tooling, not a new form.
+11. ⬜ **Lint the common misuse of failure values.** A failure is truthy (ADR-310), so the
+    old `(or (string/->number s) 0)` habit returns the failure. The checker knows which
+    functions return a failure; flag `(or <failure-returning call> default)` and
+    `(if <failure-returning call> …)`.
+12. ⬜ **Lifetime traps.**
+    - `memoize` inside a loop leaks a table per call.
+    - A `table` dies with the process that made it, unless a global can reach it (ADR-418).
+
+    Both are documented, neither is caught. Decide on a lint, or a construct that cannot
+    be misused.
+13. ⬜ **Small silent results.** `(reduce [] +)` is `nil`: no items and no seed gives
+    absence, not a failure or a raise. Decide whether that is the right channel under
+    ADR-310.
+14. ⬜ **Reserved names vs hot redefinition.** `(def get …)` at the top level is an error
+    (ADR-166), but `(defn get …)` inside a module defines `mod/get`, and a `let` may shadow
+    it. Every rule is sound, but there is no single place that tells a user of a
+    "redefine anything at runtime" system where redefinition stops.
+
+#### C. Teaching — the "Coming from Clojure" table
+
+⬜ Add rows for the habits that are still wrong and are not yet in the table:
+- collection-first argument order and the missing `->>`;
+- `condp` taking the value first;
+- `else` rather than `:else`;
+- vectors in ability op specs;
+- a failure being truthy (the `or`-default habit);
+- `let` on an `*earmuffed*` name being lexical, and `spawn` not inheriting `binding`s;
+- callable keywords but not callable maps or vectors;
+- `()` being `nil`.
+
+#### D. Refused by ADR-170 — reopen only with a concrete need
+
+These are the absences a Lisp user will notice first. Each was decided, and by ADR-166's
+asymmetry each can still be added later without breaking anything. For each, keep the ADR's
+answer unless a real program in `std/` or downstream shows the workaround costing more
+than the feature would:
+- `&key` (ADR-163: an options map plus `{:keys …}`);
+- `loop`/`recur` (ADR-154: `letrec`; see B10 for the part that is missing);
+- unbounded laziness / `lazy-seq` (`seq/cycle` needs a length; seq-views cannot be sent);
+- metadata and reader macros (ADR-150);
+- a character type (ADR-159).
+
+There is also a constraint for B-items: arity clauses do not mix with pattern clauses in
+one `defn`, an `&optional` slot cannot be a pattern, and `:when` does not combine with
+`&optional`/`&`. Each is defensible on its own; together they are a matrix users have to
+look up. Any B-item that touches `fn` heads should state where it leaves this matrix.
 
 ### Findings from bedit (2026-09-13) — the display seam, buffers as a directory, and regex speed
 

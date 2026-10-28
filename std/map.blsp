@@ -3,7 +3,7 @@
 ;; consumers `(:use map)` to refer them bare, or call them qualified.
 ;;
 ;; The *core* map protocol stays bare in the prelude — `assoc`/`dissoc`/`get`/`keys`/
-;; `vals`/`contains?`/`reduce-kv`/`update`/`get-in`/`update-in`/`merge` (and `hash-map`,
+;; `vals`/`contains?`/`update`/`get-in`/`update-in`/`merge` (and `hash-map`,
 ;; which the record/ability machinery uses during bootstrap) are the universal map
 ;; surface. This module is the derived transformation helpers layered on top.
 ;;
@@ -13,10 +13,11 @@
 (defmodule map
   "Map transformations — the derived helpers over the bare map protocol.
 
-The core ops (`assoc` `dissoc` `get` `keys` `vals` `contains?` `reduce-kv`
+The core ops (`assoc` `dissoc` `get` `keys` `vals` `contains?`
 `update` `get-in` `update-in` `merge`) stay bare in the prelude and need no import.
-This module adds: `merge-with` (combine on shared keys), `update-vals` / `update-keys`
-(map value/key every), and `select-keys` (project a subset). `(:use map)` for bare
+This module adds: `reduce-kv` (fold over key and value), `merge-with` (combine on shared
+keys), `update-vals` / `update-keys` (map value/key every), `select-keys` (project a
+subset) and `zipmap` (pair keys with values). `(:use map)` for bare
 access, or call qualified (`map/update-vals`).")
 
 ;; merge-with: on a shared key, combine with `(f existing new)` instead of replacing.
