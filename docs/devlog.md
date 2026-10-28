@@ -4539,3 +4539,16 @@ now scans outside strings and skips a block line inside an open string. ADR-498 
 doctest design; `docs/tooling.md` gains "Checking examples: `nest doctest`". Run here: the
 full `nest doctest` (0 failures), the std doctest engine (0 over 2,036 names), `nest check`,
 `--strict`, `nest format --check`, `cargo fmt --check`. Not run: the test suites.
+
+2026-10-28 (ADR-499, hygiene at every binding site): a template's binders were renamed only
+in plain-symbol `let`/`letrec`/`fn` positions. A probe macro binding `a` and splicing the
+caller's `a` captured it in ten of twelve shapes: destructuring `let`/`fn`, `match`,
+`when-let`, `if-let`, `for`, a template `defn`'s params and more. The rename now follows the
+one pattern grammar (pins, `or`, `bytes` sizes, `:or` defaults are references; a repeated
+name keeps one replacement) and a table of the standard binding macros' shapes (pairs,
+clauses, `catch`, `as->`, params). It also turned up a live bug: a typed template param
+`(fn (x:int) …)` became `x:int__609`, losing the annotation and the body's binding; it is
+now `x__609:int`. Still literal by decision: a user's binding macro, computed binders,
+`{:keys}` names. Run here: the probe over 24 shapes, `nest check`, `--strict`, the std
+doctest engine, clippy `--all-features` on the crate, `cargo fmt --check`. Not run: the
+test suites (`tests/hygiene_test.blsp` gains a block per site and a cross-process case).

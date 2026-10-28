@@ -87,3 +87,72 @@
   (test "letrec-loop macro result round-trips a send"
     (let (me (self) _ (spawn (sumto-worker me)))
       (assert= (receive) 55))))
+
+;; ---- every binding site of the one pattern grammar (ADR-499) -----------------
+;; Each macro binds `a` itself and splices caller code `e`; the caller's own `a` is 10,
+;; so a hygienic expansion answers 11 and a capturing one 2.
+
+(defmacro let-vector (e) `(let ([a] [1]) (+ a ~e)))
+(defmacro let-map (e) `(let ({:k a} {:k 1}) (+ a ~e)))
+(defmacro fn-pattern (e) `((fn ([a]) (+ a ~e)) [1]))
+(defmacro match-pattern (e) `(match [1] ([a] (+ a ~e))))
+(defmacro match-guard (e) `(match 1 (a :when (= a 1) (+ a ~e)) (_ 0)))
+(defmacro match-or (e) `(match [1 1] ((or [a 2] [1 a]) (+ a ~e))))
+(defmacro match-pin (e) `(let (a 1) (match 1 (^a (+ a ~e)) (_ 0))))
+(defmacro receive-pattern (e) `(do (send (self) [:v 1]) (receive ([:v a] (+ a ~e)))))
+(defmacro when-let-binder (e) `(when-let (a 1) (+ a ~e)))
+(defmacro if-let-binder (e) `(if-let (a 1) (+ a ~e) 0))
+(defmacro if-let-else (e) `(if-let (a nil) 0 (+ 1 ~e)))
+(defmacro for-binder (e) `(first (for (a [1] :when (= a 1)) (+ a ~e))))
+(defmacro fold-for-binder (e) `(fold-for (s 0 a [1]) (+ s a ~e)))
+(defmacro with-binder (e) `(with (a 1) (+ a ~e)))
+(defmacro as-binder (e) `(as-> 1 a (+ a ~e)))
+(defmacro catch-binder (e) `(try (throw 1) (catch a (+ a ~e))))
+(defmacro defn-param (e) `(do (defn hygiene-helper (a) (+ a ~e)) (hygiene-helper 1)))
+(defmacro typed-param (e) `((fn (a:int) (+ a ~e)) 1))
+;; `{:keys [a]}` names ARE the keys looked up, so they stay literal — renamed, `a` would
+;; read `:a__12` and bind nil.
+(defmacro keys-read () `(let ({:keys [a]} {:a 1}) a))
+
+(describe "hygiene at every binding site"
+  (test "destructuring let and fn binders do not capture"
+    (let (a 10)
+      (assert= (let-vector a) 11)
+      (assert= (let-map a) 11)
+      (assert= (fn-pattern a) 11)))
+  (test "match, its guard, or-alternatives and a pin"
+    (let (a 10)
+      (assert= (match-pattern a) 11)
+      (assert= (match-guard a) 11)
+      (assert= (match-or a) 11)
+      (assert= (match-pin a) 11)))
+  (test "receive clause patterns"
+    (let (a 10) (assert= (receive-pattern a) 11)))
+  (test "the standard binding macros"
+    (let (a 10)
+      (assert= (when-let-binder a) 11)
+      (assert= (if-let-binder a) 11)
+      (assert= (for-binder a) 11)
+      (assert= (fold-for-binder a) 11)
+      (assert= (with-binder a) 11)
+      (assert= (as-binder a) 11)
+      (assert= (catch-binder a) 11)
+      (assert= (defn-param a) 11)))
+  (test "if-let's else branch is outside its binding"
+    ;; The template's `a` is not in scope in `else`, so the caller's `a` arrives there.
+    (let (a 10) (assert= (if-let-else a) 11)))
+  (test "a typed binder keeps its annotation and its references"
+    (let (a 10) (assert= (typed-param a) 11))
+    (let (((_ (param) (_ reference _)) _) (macroexpand '(typed-param 5)))
+      (let (name (->string param))
+        (is (string/ends-with? name ":int"))
+        (assert= (->string reference) (string/drop-suffix name ":int")))))
+  (test "a :keys binder still binds by its name"
+    (assert= (keys-read) 1)))
+
+(defn pattern-worker (parent) (send parent (let (a 10) (match-or a))))
+
+(describe "pattern hygiene across processes"
+  :isolated (test "a destructuring macro's result built in another process"
+    (let (me (self) _ (spawn (pattern-worker me)))
+      (assert= (receive) 11))))

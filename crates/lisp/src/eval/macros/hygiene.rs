@@ -1,48 +1,52 @@
-//! Automatic binding hygiene (ADR-066 amendment): a quasiquote template's own binders
-//! are alpha-renamed before the template is built.
+//! Automatic binding hygiene (ADR-066 amendment, ADR-499): a quasiquote template's own
+//! binders are alpha-renamed before the template is built.
 
 use super::*;
 
 // ============================================================================
-// Automatic binding hygiene (ADR-066 amendment — "Option A")
+// Automatic binding hygiene (ADR-066 amendment — "Option A"; ADR-499)
 // ============================================================================
 //
-// A quasiquote template's OWN lexical binders — the `let`/`letrec`/`fn` binders it
-// introduces as *literal* symbols — are alpha-renamed to fresh gensyms before the
-// template is built, so a template binder can neither capture nor be captured by
-// caller code spliced in via `~`/`~@`. Hygiene is thus the DEFAULT: a macro no
-// longer needs `x#` or `(gensym)` for a safe temp binding.
+// A quasiquote template's OWN lexical binders — the names it introduces as *literal*
+// symbols — are alpha-renamed to fresh gensyms before the template is built, so a template
+// binder can neither capture nor be captured by caller code spliced in via `~`/`~@`.
+// Hygiene is thus the DEFAULT: a macro needs no `x#` or `(gensym)` for a safe binding.
 //
 // - Free-reference hygiene (a template's `helper`/`map` resolving to the *defining*
-//   namespace) is already handled by the auto-qualifying resolver (ADR-065 §7); this
-//   closes the remaining half — *introduced-binding* capture (ADR-066 concern #2) —
-//   without the per-symbol lexical context (fat `Value::Sym`) full Scheme hygiene
-//   needs, which ADR-066 rejected on ship-by-name/homoiconicity/GC grounds.
-// - Scope-aware: a binder renames only the references it actually binds, so a
-//   same-named prelude reference elsewhere in the template is untouched (correct
-//   even when a binder shadows a prelude name). Hence a scope map, not `#`'s flat
-//   name→gensym table.
-// - Fresh per expansion: a template that introduces a renamable binder takes the
-//   runtime expand path (like `#`), so two nested expansions of one macro —
-//   `(m (m x))` — get distinct binders. `template_introduces_binder` gates the
-//   static-quasiquote optimisation accordingly.
-// - Opt-out for intentional anaphora (a name the template deliberately exposes to
-//   the caller, e.g. `it` in an `aif`, or `defseq`'s `item`/`acc`): write `~'it` —
-//   an unquoted quoted symbol, which lands in a `~unquote` hole the rename never
-//   descends, emitting a literal `it`.
+//   namespace) is handled by the auto-qualifying resolver (ADR-065 §7); this closes the
+//   other half — *introduced-binding* capture (ADR-066 concern #2) — without the
+//   per-symbol lexical context (fat `Value::Sym`) full Scheme hygiene needs, which ADR-066
+//   rejected on ship-by-name/homoiconicity/GC grounds.
+// - Scope-aware: a binder renames only the references it actually binds, so a same-named
+//   prelude reference elsewhere in the template is untouched. Hence a scope map, not
+//   `#`'s flat name→gensym table.
+// - Fresh per expansion: a template that binds anything takes the runtime expand path
+//   (like `#`), so two nested expansions of one macro — `(m (m x))` — get distinct
+//   binders. `template_introduces_binder` gates the static-quasiquote optimisation.
+// - Opt-out for intentional anaphora (a name the template deliberately exposes to the
+//   caller, e.g. `it` in an `aif`): write `~'it` — an unquoted quoted symbol, which lands
+//   in a `~unquote` hole the rename never descends, emitting a literal `it`.
 //
-// v1 scope: only `let`/`letrec`/`fn` PLAIN-SYMBOL binders are renamed. Destructuring
-// binders, `match*` pattern binders, and computed (`~params`/`~bindings`) or `defn`
-// binders inside a template stay literal — a sound under-approximation (leaving a
-// binder un-renamed only preserves the pre-change capturable-but-explicit behaviour;
-// it never miscompiles a real macro), opt into `#`/`(gensym)` there as before. The
-// one documented non-soundness is the pathological case of an outer template binder
-// shadowed by a *computed* (`~params`/`~bindings`) inner binder of the same name.
+// The pass runs on the template BEFORE the macros inside it expand, so it must know where
+// each form binds. It knows:
+// - the core binders `let`/`letrec`/`fn`, whose binders are PATTERNS (the one pattern
+//   grammar, `std/prelude/match.blsp`): a symbol binds; a pin's expression, a quoted
+//   symbol, a literal and a `record` name do not; a name repeated inside one pattern (an
+//   equality constraint, or each `or` alternative) keeps one replacement. `{:keys [a]}` is
+//   left literal: its names ARE the keys looked up, so a renamed `a` would read `:a__12`.
+// - the standard library's binding macros, by shape (`binding_shape`): binding pairs
+//   (`when-let`, `for`, `doseq`, `with`, …), pattern clauses (`match`, `match*`,
+//   `receive`), `try`'s `catch`, `as->`, and the params of `defn`/`defmethod`/`impl`.
+// - a typed binder `x:int` renames its name and keeps its annotation: `x__12:int`.
+//
+// Still literal, opt into `#`/`(gensym)` there: a binder that a USER's binding macro
+// introduces (the pass cannot know its shape), and a computed binder (`(fn ~params …)`,
+// `(let ~bindings …)`), which the macro author builds and so names.
 
 /// A hygiene scope frame: original binder symbol → its replacement in the output.
-/// A replacement equal to the original means "bound here, but not renamed" (a
-/// non-plain-symbol or `#`/`_`/`&`/qualified binder) — it still SHADOWS an outer
-/// rename so an inner reference stays literal.
+/// A replacement equal to the original means "bound here, but not renamed" (`_`, a
+/// `&`-marker, `x#`, a qualified name, a `:keys` name) — it still SHADOWS an outer rename
+/// so an inner reference stays literal.
 type HygScope = Vec<(value::Symbol, value::Symbol)>;
 
 /// Look up `s` (innermost — last — binding wins).
@@ -75,6 +79,14 @@ fn hyg_fresh(orig: value::Symbol) -> value::Symbol {
 /// structure, so we can't rename them.
 fn hyg_is_unquote(heap: &Heap, v: Value) -> bool {
     tagged(heap, v, kw::UNQUOTE).is_some() || tagged(heap, v, kw::UNQUOTE_SPLICING).is_some()
+}
+
+/// The head symbol of `v`'s list, if it has one.
+fn head_sym(heap: &Heap, v: Value) -> Option<value::Symbol> {
+    match heap.list_items(v)?.first()?.unpack() {
+        ValueRef::Sym(h) => Some(h),
+        _ => None,
+    }
 }
 
 /// The hygiene pre-pass: alpha-rename a template's introduced binders. A no-op
@@ -131,6 +143,50 @@ fn hyg_walk_inner(heap: &mut Heap, v: Value, scope: &[(value::Symbol, value::Sym
     }
 }
 
+/// How a standard-library binding macro binds, by its bare head name. The pass runs before
+/// the macros in a template expand, so this is the only way it can see their binders.
+#[derive(Clone, Copy)]
+enum Shape {
+    /// `(head (pattern expr … :keyword expr …) body…)` — sequential pairs, each pattern in
+    /// scope for the later pairs and the body; a keyword modifier (`:when`, `:into`) takes
+    /// an expression.
+    Pairs,
+    /// `(head (pattern expr) then else…)` — as `Pairs`, but only `then` sees the binding.
+    PairsThenElse,
+    /// `(head x… (pattern [:when guard] body…)…)` — the first `n` items (head included)
+    /// are not clauses; a `receive` `(after ms body…)` clause binds nothing.
+    Clauses(usize),
+    /// `(try body… (catch e handler…) (finally …))`.
+    Try,
+    /// `(as-> expr name forms…)`.
+    AsArrow,
+    /// `(defn name doc? params body…)` / `(defn name doc? (params body…)…)`.
+    Defn,
+    /// `(defmethod name ids params body…)`.
+    Defmethod,
+    /// `(impl ability key (op params body…)…)`.
+    Impl,
+}
+
+fn binding_shape(head: value::Symbol) -> Option<Shape> {
+    let name = value::symbol_name_ref(head);
+    match name.strip_prefix('/').unwrap_or(name) {
+        "when-let" | "when-some" | "for" | "fold-for" | "doseq" | "dotimes" | "dolist" | "with" => {
+            Some(Shape::Pairs)
+        }
+        "if-let" | "if-some" => Some(Shape::PairsThenElse),
+        "match" => Some(Shape::Clauses(2)),
+        "match*" => Some(Shape::Clauses(3)),
+        "receive" => Some(Shape::Clauses(1)),
+        "try" => Some(Shape::Try),
+        "as->" => Some(Shape::AsArrow),
+        "defn" | "defn-" => Some(Shape::Defn),
+        "defmethod" => Some(Shape::Defmethod),
+        "impl" => Some(Shape::Impl),
+        _ => None,
+    }
+}
+
 fn hyg_list(heap: &mut Heap, form: Value, scope: &[(value::Symbol, value::Symbol)]) -> Value {
     let items = match heap.list_items(form) {
         Some(i) => i,
@@ -152,13 +208,17 @@ fn hyg_list(heap: &mut Heap, form: Value, scope: &[(value::Symbol, value::Symbol
             return hyg_let(heap, form, &items, scope);
         }
         if value::symbol_is(h, kw::FN) {
-            return hyg_fn(heap, form, &items, scope);
+            let mut out = vec![items[0]];
+            out.extend(hyg_fn_parts(heap, &items[1..], scope));
+            return rebuild_list(heap, form, out);
+        }
+        if let Some(shape) = binding_shape(h) {
+            return hyg_shaped(heap, form, &items, scope, shape);
         }
     }
     // Generic: rename references in every position (head included) under the same
-    // scope. A `match*`/`def`/`defn` etc. rides here — a nested binder that matches
-    // an enclosing rename stays consistent (shadowing preserved); one with no
-    // enclosing rename stays literal (v1 under-approx).
+    // scope. A nested binder that matches an enclosing rename stays consistent
+    // (shadowing preserved); one this pass cannot see stays literal.
     hyg_generic(heap, form, &items, scope)
 }
 
@@ -175,35 +235,181 @@ fn hyg_generic(
     rebuild_list(heap, form, out)
 }
 
-/// Add scope entries for a binder position (a `let`/`fn` binder).
-fn hyg_bind(heap: &Heap, target: Value, scope: &mut HygScope) {
-    match target.unpack() {
-        ValueRef::Sym(s) if hyg_renamable(s) => scope.push((s, hyg_fresh(s))),
-        ValueRef::Sym(s) => scope.push((s, s)), // `_`/`&rest`/`x#`/qualified — shadow, keep literal
+// ---- patterns ------------------------------------------------------------------------
+
+/// Bind one binder symbol into `scope` and return the symbol to emit in its place. A name
+/// already bound since `start` — earlier in the same pattern — keeps its replacement, so
+/// an equality constraint (`[x x]`) and `or`'s alternatives stay one name. A typed binder
+/// `x:int` renames `x` and keeps `:int`.
+fn hyg_bind_sym(s: value::Symbol, scope: &mut HygScope, start: usize) -> Value {
+    let name = value::symbol_name_ref(s);
+    let (base, annotation) = match name.find(':') {
+        Some(i) if i > 0 => (value::intern(&name[..i]), &name[i..]),
+        _ => (s, ""),
+    };
+    if !hyg_renamable(base) {
+        scope.push((base, base));
+        return Value::symbol(s);
+    }
+    let target = match scope[start..].iter().rev().find(|(orig, _)| *orig == base) {
+        Some((_, target)) => *target,
+        None => {
+            let fresh = hyg_fresh(base);
+            scope.push((base, fresh));
+            fresh
+        }
+    };
+    if annotation.is_empty() {
+        Value::symbol(target)
+    } else {
+        let typed = format!("{}{annotation}", value::symbol_name_ref(target));
+        Value::symbol(value::intern(&typed))
+    }
+}
+
+/// Rename the binders of `pattern`, adding them to `scope` (this pattern's own entries
+/// begin at `start`). A reference inside the pattern — a pin's expression, a dynamic
+/// `bytes` size, an `:or` default — resolves through `scope` as it stands.
+fn hyg_pattern(heap: &mut Heap, pattern: Value, scope: &mut HygScope, start: usize) -> Value {
+    match pattern.unpack() {
+        ValueRef::Sym(s) => hyg_bind_sym(s, scope, start),
+        ValueRef::Vector(id) => {
+            let elems = heap.vector(id).to_vec();
+            let mut out = Vec::with_capacity(elems.len());
+            for e in elems {
+                out.push(hyg_pattern(heap, e, scope, start));
+            }
+            heap.alloc_vector(out)
+        }
+        ValueRef::Map(id) => hyg_map_pattern(heap, id, scope, start),
+        ValueRef::Pair(_) => hyg_list_pattern(heap, pattern, scope, start),
+        _ => pattern, // a literal
+    }
+}
+
+fn hyg_list_pattern(heap: &mut Heap, pattern: Value, scope: &mut HygScope, start: usize) -> Value {
+    if hyg_is_unquote(heap, pattern) {
+        return pattern; // a computed sub-pattern — not visible
+    }
+    let items = match heap.list_items(pattern) {
+        Some(i) => i,
+        None => return pattern,
+    };
+    let head = match items.first().map(|v| v.unpack()) {
+        Some(ValueRef::Sym(h)) => Some(h),
+        _ => None,
+    };
+    let mut out = Vec::with_capacity(items.len());
+    match head {
+        Some(h) if value::symbol_is(h, kw::QUOTE) => return pattern, // the literal symbol
+        Some(h) if value::symbol_is(h, kw::PIN) => {
+            // `^expr` — matched against the CURRENT value of `expr`: a reference.
+            out.push(items[0]);
+            for &e in &items[1..] {
+                out.push(hyg_walk(heap, e, scope));
+            }
+        }
+        Some(h) if value::symbol_is(h, kw::OR) || value::symbol_is(h, kw::AND) => {
+            out.push(items[0]);
+            for &p in &items[1..] {
+                out.push(hyg_pattern(heap, p, scope, start));
+            }
+        }
+        Some(h) if value::symbol_name_ref(h) == "record" => {
+            // `(record name {…})` — the name is a record id, then a map pattern.
+            out.extend(items.iter().take(2).copied());
+            for &p in items.get(2..).unwrap_or(&[]) {
+                out.push(hyg_pattern(heap, p, scope, start));
+            }
+        }
+        Some(h) if value::symbol_name_ref(h) == "bytes" => {
+            out.push(items[0]);
+            for &segment in &items[1..] {
+                out.push(hyg_bytes_segment(heap, segment, scope, start));
+            }
+        }
         _ => {
-            // A pattern binder (vector/map/list). Shadow every name it binds so an
-            // inner reference stays literal, but don't rename it (v1 under-approx).
-            let mut names = Vec::new();
-            collect_all_syms(heap, target, &mut names);
-            for s in names {
-                scope.push((s, s));
+            // A list pattern: every element, the first included, is a pattern.
+            for &p in &items {
+                out.push(hyg_pattern(heap, p, scope, start));
             }
         }
     }
+    rebuild_list(heap, pattern, out)
 }
 
-/// The binder position for the output: a renamed symbol for a plain binder, else
-/// the pattern verbatim (v1 doesn't rewrite pattern internals).
-fn hyg_binder_out(target: Value, scope: &[(value::Symbol, value::Symbol)]) -> Value {
-    match target.unpack() {
-        ValueRef::Sym(s) => Value::symbol(hyg_lookup(scope, s).unwrap_or(s)),
-        _ => target,
+/// One `bytes` segment: `x` binds a byte; `(x n)` binds `x` to `n` bytes, where a symbol
+/// `n` is an earlier binding (a reference); `(x :u16)` a typed read; a literal is matched.
+fn hyg_bytes_segment(heap: &mut Heap, segment: Value, scope: &mut HygScope, start: usize) -> Value {
+    match segment.unpack() {
+        ValueRef::Sym(s) => hyg_bind_sym(s, scope, start),
+        ValueRef::Pair(_) => {
+            let parts = match heap.list_items(segment) {
+                Some(p) if !p.is_empty() => p,
+                _ => return segment,
+            };
+            let mut out = Vec::with_capacity(parts.len());
+            out.push(match parts[0].unpack() {
+                ValueRef::Sym(s) => hyg_bind_sym(s, scope, start),
+                _ => parts[0],
+            });
+            for &size in &parts[1..] {
+                out.push(hyg_walk(heap, size, scope));
+            }
+            rebuild_list(heap, segment, out)
+        }
+        _ => segment,
     }
 }
 
-/// `(let/letrec (b0 v0 …) body…)` — rename plain-symbol binders. `letrec` binders
-/// are all in scope for every RHS and the body; plain `let` is sequential (a binder
-/// scopes only the *later* RHSs and the body — matching `resolve_let`).
+/// A map pattern: `{:k pattern}` entries rename their sub-patterns; `:keys [a b]` names
+/// stay literal (they are the keys looked up) but shadow; `:or {a default}` defaults are
+/// references, resolved after every name the map binds.
+fn hyg_map_pattern(heap: &mut Heap, id: value::MapId, scope: &mut HygScope, start: usize) -> Value {
+    let entries = heap.map_entries(id);
+    let keyword_named = |k: Value, name: &str| matches!(k.unpack(), ValueRef::Keyword(s) if value::symbol_name_ref(s) == name);
+    let mut out = Vec::with_capacity(entries.len());
+    for &(k, v) in &entries {
+        if keyword_named(k, "or") {
+            continue;
+        }
+        if keyword_named(k, "keys") {
+            let mut names = Vec::new();
+            collect_all_syms(heap, v, &mut names);
+            for s in names {
+                scope.push((s, s));
+            }
+            out.push((k, v));
+        } else {
+            let renamed = hyg_pattern(heap, v, scope, start);
+            out.push((k, renamed));
+        }
+    }
+    for &(k, v) in &entries {
+        if keyword_named(k, "or") {
+            let defaults = match v.unpack() {
+                ValueRef::Map(defaults_id) => {
+                    let pairs = heap.map_entries(defaults_id);
+                    let mut renamed = Vec::with_capacity(pairs.len());
+                    for (name, default) in pairs {
+                        let default = hyg_walk(heap, default, scope);
+                        renamed.push((name, default));
+                    }
+                    heap.map_from_pairs(renamed)
+                }
+                _ => v,
+            };
+            out.push((k, defaults));
+        }
+    }
+    heap.map_from_pairs(out)
+}
+
+// ---- the core binders ----------------------------------------------------------------
+
+/// `(let/letrec (p0 v0 …) body…)` — rename each binder pattern. `letrec` binders are all
+/// in scope for every RHS and the body; plain `let` is sequential (a binder scopes only
+/// the *later* RHSs and the body — matching `resolve_let`).
 fn hyg_let(
     heap: &mut Heap,
     form: Value,
@@ -223,22 +429,24 @@ fn hyg_let(
         _ => return hyg_generic(heap, form, items, scope),
     };
     let mut new_scope = scope.to_vec();
-    if letrec {
-        for &t in binds.iter().step_by(2) {
-            hyg_bind(heap, t, &mut new_scope);
-        }
-    }
     let mut new_binds = Vec::with_capacity(binds.len());
-    let mut i = 0;
-    while i < binds.len() {
-        let target = binds[i];
-        let rhs = hyg_walk(heap, binds[i + 1], &new_scope);
-        if !letrec {
-            hyg_bind(heap, target, &mut new_scope); // sequential: bind AFTER the RHS
+    if letrec {
+        let mut targets = Vec::with_capacity(binds.len() / 2);
+        for &t in binds.iter().step_by(2) {
+            let start = new_scope.len();
+            targets.push(hyg_pattern(heap, t, &mut new_scope, start));
         }
-        new_binds.push(hyg_binder_out(target, &new_scope));
-        new_binds.push(rhs);
-        i += 2;
+        for (target, &rhs) in targets.into_iter().zip(binds.iter().skip(1).step_by(2)) {
+            new_binds.push(target);
+            new_binds.push(hyg_walk(heap, rhs, &new_scope));
+        }
+    } else {
+        for pair in binds.chunks(2) {
+            let rhs = hyg_walk(heap, pair[1], &new_scope);
+            let start = new_scope.len(); // sequential: bind AFTER the RHS
+            new_binds.push(hyg_pattern(heap, pair[0], &mut new_scope, start));
+            new_binds.push(rhs);
+        }
     }
     let new_bind_form = rebuild_seq_like(heap, binds_form, new_binds);
     let mut out = Vec::with_capacity(items.len());
@@ -250,23 +458,20 @@ fn hyg_let(
     rebuild_list(heap, form, out)
 }
 
-/// `(fn …)` — single-arity `(params body…)` or multi-arity `(doc? (params body…)…)`.
-/// Params bind together in their body. Mirrors `resolve_fn`'s dispatch.
-fn hyg_fn(
+/// The parts of a `fn` after its head — single-arity `(params body…)` or multi-arity
+/// `(doc? (params body…)…)`. Params bind together in their body. Mirrors `resolve_fn`.
+fn hyg_fn_parts(
     heap: &mut Heap,
-    form: Value,
-    items: &[Value],
+    parts: &[Value],
     scope: &[(value::Symbol, value::Symbol)],
-) -> Value {
-    let parts = &items[1..];
+) -> Vec<Value> {
     let (has_doc, clause_start) = match parts.first().map(|v| v.unpack()) {
         Some(ValueRef::Str(_)) if parts.len() > 1 => (true, 1),
         _ => (false, 0),
     };
     let clauses = &parts[clause_start..];
     let multi = !clauses.is_empty() && clauses.iter().all(|&f| is_arity_clause(heap, f));
-    let mut out = Vec::with_capacity(items.len());
-    out.push(items[0]); // fn head
+    let mut out = Vec::with_capacity(parts.len());
     if multi {
         if has_doc {
             out.push(parts[0]);
@@ -282,7 +487,7 @@ fn hyg_fn(
             out.push(hyg_walk(heap, b, &inner));
         }
     }
-    rebuild_list(heap, form, out)
+    out
 }
 
 fn hyg_arity_clause(
@@ -304,8 +509,9 @@ fn hyg_arity_clause(
     rebuild_list(heap, clause, out)
 }
 
-/// Rename plain-symbol params, extending `inner` with them (all bound together for
-/// the body). A computed param list (`~params`) is left verbatim.
+/// Rename a parameter list's binders — each param is a pattern — extending `inner` with
+/// them (all bound together for the body). A computed param list (`~params`) is left
+/// verbatim.
 fn hyg_param_list(heap: &mut Heap, params: Value, inner: &mut HygScope) -> Value {
     if hyg_is_unquote(heap, params) {
         return params; // `(fn ~params …)` — binders not visible
@@ -314,18 +520,193 @@ fn hyg_param_list(heap: &mut Heap, params: Value, inner: &mut HygScope) -> Value
         Some(e) => e,
         None => return params,
     };
+    let start = inner.len();
     let mut out = Vec::with_capacity(elems.len());
     for p in elems {
-        hyg_bind(heap, p, inner);
-        out.push(hyg_binder_out(p, inner));
+        out.push(hyg_pattern(heap, p, inner, start));
     }
     rebuild_seq_like(heap, params, out)
 }
 
-/// True if `v` contains a `let`/`letrec`/`fn` that introduces a plain-symbol binder
-/// the hygiene pass would rename — so the static-quasiquote optimisation must defer
-/// to the runtime expand path (fresh gensyms per expansion). Skips `quote`/`unquote`/
-/// `quasiquote` subtrees (a `let` in caller code or quoted data isn't the template's).
+// ---- the standard library's binding macros ---------------------------------------------
+
+fn hyg_shaped(
+    heap: &mut Heap,
+    form: Value,
+    items: &[Value],
+    scope: &[(value::Symbol, value::Symbol)],
+    shape: Shape,
+) -> Value {
+    match shape {
+        Shape::Pairs => hyg_pairs(heap, form, items, scope, false),
+        Shape::PairsThenElse => hyg_pairs(heap, form, items, scope, true),
+        Shape::Clauses(leading) => hyg_clauses(heap, form, items, scope, leading),
+        Shape::Try => {
+            let mut out = vec![items[0]];
+            for &part in &items[1..] {
+                let is_catch =
+                    head_sym(heap, part).is_some_and(|h| value::symbol_name_ref(h) == "catch");
+                out.push(if is_catch {
+                    hyg_clause(heap, part, scope, 1)
+                } else {
+                    hyg_walk(heap, part, scope)
+                });
+            }
+            rebuild_list(heap, form, out)
+        }
+        Shape::AsArrow => {
+            if items.len() < 3 {
+                return hyg_generic(heap, form, items, scope);
+            }
+            let expr = hyg_walk(heap, items[1], scope);
+            let mut inner = scope.to_vec();
+            let start = inner.len();
+            let name = hyg_pattern(heap, items[2], &mut inner, start);
+            let mut out = vec![items[0], expr, name];
+            for &step in &items[3..] {
+                out.push(hyg_walk(heap, step, &inner));
+            }
+            rebuild_list(heap, form, out)
+        }
+        Shape::Defn => {
+            if items.len() < 3 {
+                return hyg_generic(heap, form, items, scope);
+            }
+            let mut out = vec![items[0], hyg_walk(heap, items[1], scope)];
+            out.extend(hyg_fn_parts(heap, &items[2..], scope));
+            rebuild_list(heap, form, out)
+        }
+        Shape::Defmethod => {
+            if items.len() < 4 {
+                return hyg_generic(heap, form, items, scope);
+            }
+            let mut out = vec![items[0], hyg_walk(heap, items[1], scope), items[2]];
+            out.extend(hyg_fn_parts(heap, &items[3..], scope));
+            rebuild_list(heap, form, out)
+        }
+        Shape::Impl => {
+            if items.len() < 3 {
+                return hyg_generic(heap, form, items, scope);
+            }
+            let mut out = vec![items[0], hyg_walk(heap, items[1], scope), items[2]];
+            for &method in &items[3..] {
+                // `(op params body…)` — `op` names the ability's operation.
+                out.push(match heap.list_items(method) {
+                    Some(parts) if parts.len() >= 2 && !hyg_is_unquote(heap, method) => {
+                        let mut renamed = vec![parts[0]];
+                        renamed.extend(hyg_fn_parts(heap, &parts[1..], scope));
+                        rebuild_list(heap, method, renamed)
+                    }
+                    _ => hyg_walk(heap, method, scope),
+                });
+            }
+            rebuild_list(heap, form, out)
+        }
+    }
+}
+
+/// `(head (pattern expr … :modifier expr …) body…)`. With `then_else`, only the first body
+/// form (`then`) sees the bindings; the rest (`else`) are outside them.
+fn hyg_pairs(
+    heap: &mut Heap,
+    form: Value,
+    items: &[Value],
+    scope: &[(value::Symbol, value::Symbol)],
+    then_else: bool,
+) -> Value {
+    let binds_form = items.get(1).copied().unwrap_or(Value::nil());
+    if hyg_is_unquote(heap, binds_form) {
+        return hyg_generic(heap, form, items, scope);
+    }
+    let binds = match heap.list_or_vector_items(binds_form) {
+        Some(b) => b,
+        None => return hyg_generic(heap, form, items, scope),
+    };
+    let mut inner = scope.to_vec();
+    let mut new_binds = Vec::with_capacity(binds.len());
+    let mut i = 0;
+    while i < binds.len() {
+        let Some(&next) = binds.get(i + 1) else {
+            // An odd tail — malformed; leave it for the macro to report.
+            new_binds.push(binds[i]);
+            break;
+        };
+        if matches!(binds[i].unpack(), ValueRef::Keyword(_)) {
+            // `:when guard`, `:into coll` — an expression over the bindings so far.
+            new_binds.push(binds[i]);
+            new_binds.push(hyg_walk(heap, next, &inner));
+        } else {
+            let expr = hyg_walk(heap, next, &inner);
+            let start = inner.len();
+            new_binds.push(hyg_pattern(heap, binds[i], &mut inner, start));
+            new_binds.push(expr);
+        }
+        i += 2;
+    }
+    let new_bind_form = rebuild_seq_like(heap, binds_form, new_binds);
+    let mut out = vec![items[0], new_bind_form];
+    for (index, &b) in items.iter().enumerate().skip(2) {
+        let sees_bindings = !then_else || index == 2;
+        out.push(hyg_walk(
+            heap,
+            b,
+            if sees_bindings { &inner } else { scope },
+        ));
+    }
+    rebuild_list(heap, form, out)
+}
+
+/// `(head x… clause…)` — the first `leading` items (head included) are expressions, the
+/// rest `(pattern [:when guard] body…)` clauses.
+fn hyg_clauses(
+    heap: &mut Heap,
+    form: Value,
+    items: &[Value],
+    scope: &[(value::Symbol, value::Symbol)],
+    leading: usize,
+) -> Value {
+    let mut out = vec![items[0]];
+    for (index, &item) in items.iter().enumerate().skip(1) {
+        let is_after = head_sym(heap, item).is_some_and(|h| value::symbol_name_ref(h) == "after");
+        out.push(
+            if index < leading || is_after || hyg_is_unquote(heap, item) {
+                hyg_walk(heap, item, scope)
+            } else {
+                hyg_clause(heap, item, scope, 0)
+            },
+        );
+    }
+    rebuild_list(heap, form, out)
+}
+
+/// One clause whose item at `at` is a pattern binding everything after it: a match clause
+/// `(pattern [:when guard] body…)` (`at` 0), or `(catch e handler…)` (`at` 1).
+fn hyg_clause(
+    heap: &mut Heap,
+    clause: Value,
+    scope: &[(value::Symbol, value::Symbol)],
+    at: usize,
+) -> Value {
+    let parts = match heap.list_items(clause) {
+        Some(p) if p.len() > at => p,
+        _ => return hyg_walk(heap, clause, scope),
+    };
+    let mut inner = scope.to_vec();
+    let start = inner.len();
+    let mut out = Vec::with_capacity(parts.len());
+    out.extend(parts.iter().take(at).copied());
+    out.push(hyg_pattern(heap, parts[at], &mut inner, start));
+    for &b in &parts[at + 1..] {
+        out.push(hyg_walk(heap, b, &inner));
+    }
+    rebuild_list(heap, clause, out)
+}
+
+/// True if `v` contains a form that binds — a `let`/`letrec`/`fn` or a standard binding
+/// macro — so the static-quasiquote optimisation must defer to the runtime expand path
+/// (fresh gensyms per expansion). Skips `quote`/`unquote`/`quasiquote` subtrees (a `let`
+/// in caller code or quoted data isn't the template's). Conservative: a binding form
+/// whose binders are all `_` or computed also takes the runtime path.
 pub(super) fn template_introduces_binder(heap: &Heap, v: Value) -> bool {
     crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
         template_introduces_binder_inner(heap, v)
@@ -347,16 +728,11 @@ fn template_introduces_binder_inner(heap: &Heap, v: Value) -> bool {
                 {
                     return false;
                 }
-                if value::symbol_is(h, kw::LET) || value::symbol_is(h, kw::LETREC) {
-                    let binds_form = items.get(1).copied().unwrap_or(Value::nil());
-                    if !hyg_is_unquote(heap, binds_form)
-                        && let Some(binds) = heap.list_or_vector_items(binds_form)
-                        && binds.iter().step_by(2).any(hyg_binder_renamable)
-                    {
-                        return true;
-                    }
-                }
-                if value::symbol_is(h, kw::FN) && fn_has_renamable_param(heap, &items) {
+                if value::symbol_is(h, kw::LET)
+                    || value::symbol_is(h, kw::LETREC)
+                    || value::symbol_is(h, kw::FN)
+                    || binding_shape(h).is_some()
+                {
                     return true;
                 }
             }
@@ -376,37 +752,4 @@ fn template_introduces_binder_inner(heap: &Heap, v: Value) -> bool {
             .any(|&e| template_introduces_binder(heap, e)),
         _ => false,
     }
-}
-
-/// A binder position that hyg would rename: a plain renamable symbol.
-fn hyg_binder_renamable(t: &Value) -> bool {
-    matches!(t.unpack(), ValueRef::Sym(s) if hyg_renamable(s))
-}
-
-/// Does any clause of this `fn` form have a renamable plain-symbol param?
-fn fn_has_renamable_param(heap: &Heap, items: &[Value]) -> bool {
-    let parts = &items[1..];
-    let clause_start = matches!(parts.first().map(|v| v.unpack()), Some(ValueRef::Str(_)) if parts.len() > 1)
-        as usize;
-    let clauses = &parts[clause_start..];
-    if !clauses.is_empty() && clauses.iter().all(|&f| is_arity_clause(heap, f)) {
-        clauses.iter().any(|&c| {
-            heap.list_items(c)
-                .and_then(|cp| cp.first().copied())
-                .is_some_and(|params| param_list_has_renamable(heap, params))
-        })
-    } else {
-        parts
-            .first()
-            .copied()
-            .is_some_and(|params| param_list_has_renamable(heap, params))
-    }
-}
-
-fn param_list_has_renamable(heap: &Heap, params: Value) -> bool {
-    if hyg_is_unquote(heap, params) {
-        return false;
-    }
-    heap.list_or_vector_items(params)
-        .is_some_and(|elems| elems.iter().any(hyg_binder_renamable))
 }

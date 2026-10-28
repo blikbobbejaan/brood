@@ -1171,10 +1171,14 @@ evaluated in its place. Templates are written with quasiquote: `` `x `` quotes,
 
 ### Macro hygiene — automatic
 
-Macros are **hygienic by default**. A `let`/`letrec`/`fn` binder a backtick
-template introduces is automatically alpha-renamed to a fresh symbol, so a plain
-literal binder can neither capture nor be captured by caller code spliced in with
-`~`/`~@` — no `gensym`, no `#`:
+Macros are **hygienic by default**. A binder a backtick template introduces is
+automatically alpha-renamed to a fresh symbol, so a plain literal binder can neither
+capture nor be captured by caller code spliced in with `~`/`~@` — no `gensym`, no `#`.
+That holds at every binding site of the one pattern grammar: `let`/`letrec`/`fn` binders
+and their destructuring patterns, `match`/`receive` clauses (guards, `or` alternatives,
+pins), and the standard binding macros — `when-let`, `if-let`, `for`, `fold-for`, `doseq`,
+`dotimes`, `with`, `as->`, `try`'s `catch`, and the params of `defn`, `defmethod` and
+`impl`. A typed binder keeps its annotation (`x:int` becomes `x__12:int`):
 
 ```clojure
 (defmacro my-or (a b)
@@ -1206,10 +1210,15 @@ write it as an unquoted quoted symbol, `~'name`, which emits the literal name:
 template still becomes a fresh gensym (the Clojure shorthand), and `gensym`
 remains available for a fresh symbol outside a template. New code needs neither.
 
-*v1 limit:* only plain-symbol `let`/`letrec`/`fn` binders are auto-renamed;
-destructuring binders, `match*` pattern binders, and computed (`~params`) binders
-inside a template stay literal — opt into `#`/`gensym` there if capture is a
-concern.
+**What stays literal**, so opt into `#`/`gensym` there if capture is a concern:
+
+- a binder introduced by **your own binding macro** used inside a template — the rename
+  runs before the macros in a template expand, so it knows the standard library's shapes
+  but cannot know yours;
+- a **computed** binder, `(fn ~params …)` or `(let ~bindings …)` — the macro builds those
+  names itself, so it names them fresh;
+- a **`{:keys [a]}`** name — the names are the keys looked up, so a renamed `a` would read
+  `:a__12`. Bind with `{:a a}` (which requires the key) when that matters.
 
 The `->` and `as->` threading macros are also defined in the prelude. There is only
 **one** pipe: every collection function takes its collection first (ADR-308), so a
