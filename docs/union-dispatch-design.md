@@ -20,7 +20,7 @@ already is — that is why Brood has both forms, and the split is worth keeping.
 
 So the move is the other direction: **give `defmulti` a declared return type**.
 
-```lisp
+```lisp fragment
 (defmulti compare-to :antisymmetric :-> int)
 ```
 
@@ -71,7 +71,7 @@ widest. No existing program changes meaning.
 
 **The ambiguity that must raise:**
 
-```lisp
+```lisp fragment
 (defmethod f [usd (or :int :float)] …)
 (defmethod f [(or usd eur) :int]    …)
 (f (usd 1) 2)   ; key [:m/usd :int] matches both
@@ -95,7 +95,7 @@ call-site check kept as the backstop for methods registered across modules.
 `:commutative` derives each off-diagonal method's mirror. The question was whether a derived
 method could collide with a hand-written one. **It cannot, and this already works** — verified:
 
-```lisp
+```lisp fragment
 (defmulti m :commutative)
 (defmethod m [usd :int] (a b) :upper)
 (defmethod m [:int usd] (a b) :lower-explicit)

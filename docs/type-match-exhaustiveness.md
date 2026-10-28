@@ -44,7 +44,7 @@ correctly — there's nothing else to wire it into.
 `match` (`std/prelude/match.blsp`, `match*`/`match` macros, `%match-build-chain`/
 `%match-no-match`) compiles
 
-```lisp
+```lisp fragment
 (match expr
   (p1 body1)
   (p2 body2))
@@ -52,7 +52,7 @@ correctly — there's nothing else to wire it into.
 
 to
 
-```lisp
+```lisp fragment
 (let (m__N expr)
   (if (%eq m__N p1) (do body1)
     (if (%eq m__N p2) (do body2)

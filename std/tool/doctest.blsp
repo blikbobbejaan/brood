@@ -86,10 +86,24 @@ An indented line still carrying the old ` → ` marker is reported, never skippe
                 (and (= result "") (= marker ";=>")) [:malformed]
                 else [:example form result]))))))))
 
+(defn- outside-strings (code)
+  ;; `code` with every string literal's contents removed, so a search finds only what is
+  ;; written outside them. The same scan as `comment-index`.
+  (letrec (go (fn (cs in-string escaped kept)
+                (cond
+                  (empty? cs) (string/join kept "")
+                  escaped (go (rest cs) in-string false kept)
+                  (= (first cs) "\\")
+                    (go (rest cs) in-string in-string (if in-string kept (append kept ["\\"])))
+                  (= (first cs) "\"") (go (rest cs) (not in-string) false kept)
+                  in-string (go (rest cs) true false kept)
+                  else (go (rest cs) false false (append kept [(first cs)])))))
+    (go (string/->list code) false false [])))
+
 (defn- old-marker? (line)
   ;; Indented, with ` → ` outside any string or comment: an example written in the retired
   ;; convention. Reported rather than skipped, so a missed line cannot fall out of the gate.
-  (and (string/starts-with? line "    ") (includes? (strip-comment line) " → ")))
+  (and (string/starts-with? line "    ") (includes? (outside-strings (strip-comment line)) " → ")))
 
 (defn example-lines (d)
   "The indented ` ;=> ` lines of docstring `d` — the example cases it carries.
@@ -400,6 +414,21 @@ other language is never run. A block indented inside a list item loses that inde
                     (str label ": setup raised: " (error-message e) " — in " (pr-str (first forms))))))
       (or fault (run-setup label (rest forms))))))
 
+(defn- inside-string? (lines)
+  ;; Do `lines`, read in order, end inside an open string literal? A line continuing a
+  ;; multi-line string — a docstring's second line — is text, not an example, whatever
+  ;; it holds. A `;` outside a string comments out the rest of its line.
+  (letrec (go (fn (cs in-string escaped in-comment)
+                (cond
+                  (empty? cs) in-string
+                  in-comment (go (rest cs) false false (not (= (first cs) "\n")))
+                  escaped (go (rest cs) in-string false false)
+                  (= (first cs) "\\") (go (rest cs) in-string in-string false)
+                  (= (first cs) "\"") (go (rest cs) (not in-string) false false)
+                  (and (= (first cs) ";") (not in-string)) (go (rest cs) false false true)
+                  else (go (rest cs) in-string false false))))
+    (go (string/->list (string/join lines "\n")) false false false)))
+
 (defn block-faults (label start source)
   "How the fenced block `source` fails, as a vector of descriptions — empty when it holds.
 `label` names the document and `start` is the line the block's code begins on, so each
@@ -444,35 +473,40 @@ THIS process — `markdown-failures` gives each block a process of its own.
                                           (if fault
                                             (append faults [fault])
                                             (continue (check (last forms)))))))))
-                      (if (old-marker? padded)
-                        (continue (str here
-                                    ": "
-                                    (string/trim line)
-                                    "  — old marker: write ` ;=> ` for a case, ` ;~> ` for an illustration"))
-                        (match (marked padded ";=>")
-                          ([:malformed] (continue (str here
-                                                    ": "
-                                                    (string/trim line)
-                                                    "  — malformed example: expected one form, a marker, one result")))
-                          ([:example form-text expected] (checked form-text
+                      (cond
+                        ;; A line continuing a multi-line string is text, whatever it holds.
+                        (inside-string? buffer)
+                          (walk (rest lines) (+ n 1) (append buffer [line]) faults)
+                        (old-marker? padded)
+                          (continue (str here
+                                      ": "
+                                      (string/trim line)
+                                      "  — old marker: write ` ;=> ` for a case, ` ;~> ` for an illustration"))
+                        else
+                          (match (marked padded ";=>")
+                            ([:malformed] (continue (str here
+                                                      ": "
+                                                      (string/trim line)
+                                                      "  — malformed example: expected one form, a marker, one result")))
+                            ([:example form-text expected] (checked form-text
+                                                             (fn (form)
+                                                               (case-fault here
+                                                                 nil
+                                                                 (pr-str form)
+                                                                 (fn () (reflect/eval form))
+                                                                 expected))))
+                            (_ (match (marked padded ";~>")
+                                 ([:malformed] (continue (str here
+                                                           ": "
+                                                           (string/trim line)
+                                                           "  — malformed example: expected one form, a marker, one result")))
+                                 ([:example form-text _] (checked form-text
                                                            (fn (form)
-                                                             (case-fault here
+                                                             (illustration-fault here
                                                                nil
                                                                (pr-str form)
-                                                               (fn () (reflect/eval form))
-                                                               expected))))
-                          (_ (match (marked padded ";~>")
-                               ([:malformed] (continue (str here
-                                                         ": "
-                                                         (string/trim line)
-                                                         "  — malformed example: expected one form, a marker, one result")))
-                               ([:example form-text _] (checked form-text
-                                                         (fn (form)
-                                                           (illustration-fault here
-                                                             nil
-                                                             (pr-str form)
-                                                             form))))
-                               (_ (walk (rest lines) (+ n 1) (append buffer [line]) faults))))))))))
+                                                               form))))
+                                 (_ (walk (rest lines) (+ n 1) (append buffer [line]) faults))))))))))
     (apply vector (walk (string/split source "\n") start [] []))))
 
 (defn run-block (label start source)

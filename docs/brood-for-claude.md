@@ -70,7 +70,7 @@ Common macros (expanded once at the compile pass — runtime-free): `defmacro`
 
 ## Defining things
 
-```lisp
+```lisp fragment
 (defn greet (name) (str "hello, " name))            ; defn = (def greet (fn (name) ...))
 (defn add (& xs) (fold xs 0 +))                     ; variadic via & rest
 (defn opt-arg (x &optional (y 10)) (+ x y))         ; optionals with defaults
@@ -138,8 +138,8 @@ Local bindings — `let` takes a **flat** name/value list (not Scheme's double-p
 ```lisp
 (let (a 1
       b (+ a 1)         ; sees a
-      [x y] some-vec)   ; destructuring works in the binding target
-  (+ a b x y))
+      [x y] [3 4])     ; destructuring works in the binding target
+  (+ a b x y))          ;=> 10
 ```
 
 ## Style — lists for code, vectors for data
@@ -156,7 +156,7 @@ sequence literals (`[1 2 3]`), and tuple **patterns** that match against tuple
 values inside `match` / `let` / `receive` heads. Code is cons-lists so the
 editor and macros manipulate one structure uniformly (ADR-010).
 
-```lisp
+```lisp fragment
 ;; good                          ;; ERROR: "bindings must be a list, not a vector"
 (let (a 1 b 2) …)                (let [a 1 b 2] …)
 (for (x xs :when p) …)           (for [x xs :when p] …)
@@ -302,7 +302,7 @@ paragraph on what the module is for and where its Rust substrate lives, if any.
 **Error messages** read `"fn-name: what went wrong"`, lowercase, with the
 offending value appended via `str`-style trailing args:
 
-```lisp
+```lisp fragment
 (error "reload-on-change: no such path: " path)
 ```
 
@@ -358,7 +358,7 @@ named error, never `nil`:
 provided ones; to override a provided op, add its method to that type's `impl` (same form).
 This is Rust/Haskell provided methods:
 
-```lisp
+```lisp fragment
 (defability Ord
   (compare-to [self other] :-> int)                          ; required
   (lt [self other] :-> bool (< (compare-to self other) 0)))  ; provided
@@ -376,7 +376,7 @@ record's use; deriving an ability with no recipe is a clean error.
   (columns [self] :-> vector)
   :derive-record (fn (fs) (list `(columns [r] [~@(map fs (fn (f) `(get r ~(keyword (->string f)))))]))))
 (defrecord point (x y) :derives [Columns])
-(columns (point 3 4))          ;=> [3 4]   — synthesized, no impl written
+(columns (point 3 4))          ;=> [3 4]   ; synthesized, no impl written
 ```
 
 Other things worth knowing:
@@ -473,7 +473,7 @@ x                bind x; a repeated x is an equality constraint (non-linear)
                  write (x :when (not …) body…).
 ```
 
-```lisp
+```lisp fragment
 (match shape
   ([:circle r]    (* 3.14 r r))
   ([:rect w h]    (* w h))
@@ -499,7 +499,7 @@ inline instead of forcing a top-level helper, and threads only the *changing* st
 ```lisp
 (letrec (go (fn (n acc)
               (if (= n 0) acc (go (- n 1) (+ acc n)))))
-  (go 100000 0))                                   ; => 5000050000, O(1) stack
+  (go 100000 0))                                   ;=> 5000050000   ; O(1) stack
 ```
 
 There is **no `loop`/`recur`** — Brood has proper tail calls, so recursion is just
@@ -508,12 +508,14 @@ calling a name (`go` here), and the tail call keeps it O(1).
 Prefer the higher-order combinators:
 
 ```lisp
-(reduce xs 0 +)
-(map xs sq)
-(seq/filter xs math/even?)         ; even?/odd?/… live in the `math` module (ADR-227)
-(seq/reject xs math/even?)         ; the complement — `reject`, not `remove` (ADR-330)
-(fold (range 10) {} (fn (m k) (assoc m k (* k k))))
-(map xs (partial + 10))            ; partial / complement / constantly / comp all exist
+(def xs [1 2 3 4])
+(defn sq (n) (* n n))
+(reduce xs 0 +)                    ;=> 10
+(map xs sq)                        ;=> (1 4 9 16)
+(seq/filter xs math/even?)         ;=> (2 4)   ; even?/odd?/… live in the `math` module (ADR-227)
+(seq/reject xs math/even?)         ;=> (1 3)   ; the complement — `reject`, not `remove` (ADR-330)
+(fold (range 10) {} (fn (m k) (assoc m k (* k k))))   ;=> {0 0, 1 1, 2 4, 3 9, 4 16, 5 25, 6 36, 7 49, 8 64, 9 81}
+(map xs (partial + 10))            ;=> (11 12 13 14)   ; partial / complement / constantly / comp all exist
 ```
 
 **One sequence view over every collection.** `count` `empty?` `first` `rest` `last`
@@ -530,7 +532,8 @@ pairs with a lone trailing default, and its tests must be *literals* — a bare 
 is an error, because in `match` a bare symbol silently *binds* instead of comparing:
 
 ```lisp
-(case status :ok :fine :missing :gone (handle-other status))
+(def status :missing)
+(case status :ok :fine :missing :gone (handle-other status))   ;=> :gone
 ```
 
 **A keyword is callable — `(:name p)` ≡ `(get p :name)`** (ADR-165), and it is a
@@ -584,10 +587,11 @@ For longer pipelines over large data, the **lazy `l*` combinators** fuse
 intermediate collections (one pass, no throwaway lists). Thread them with `->`:
 
 ```lisp
+(defn sq (n) (* n n))
 ;; eager: builds two throwaway lists of ~1000 / ~500 elements
-(reduce (map (seq/filter (range 1000) math/even?) sq) 0 +)
+(reduce (map (seq/filter (range 1000) math/even?) sq) 0 +)   ;=> 166167000
 ;; fused: one pass, no intermediate lists (≈3× faster on large inputs)
-(-> (range 1000) (seq/lfilter math/even?) (seq/lmap sq) (reduce 0 +))
+(-> (range 1000) (seq/lfilter math/even?) (seq/lmap sq) (reduce 0 +))   ;=> 166167000
 ```
 
 `seq/lmap`/`seq/lfilter`/`seq/lkeep`/`seq/lreject` each return a lazy **seq-view** — a
@@ -620,7 +624,7 @@ path:
   before `seq/frequencies` tallies it — thousands of throwaway cells per frame. Fuse
   the two into one `fold` so nothing intermediate is built:
 
-  ```lisp
+  ```lisp fragment
   ;; allocates the full neighbour list, then counts it
   (seq/frequencies (mapcat neighbours cells))
   ;; fused: tally straight into the map, no intermediate list
@@ -651,7 +655,7 @@ path:
   — the 8 neighbours of a cell, say — list them directly and compute each shared
   sub-expression once:
 
-  ```lisp
+  ```lisp fragment
   ;; per-call comprehension machinery for a fixed 3×3 minus the centre
   (for (dx [-1 0 1] dy [-1 0 1] :when (not (and (= dx 0) (= dy 0))))
     [(+ x dx) (+ y dy)])
@@ -727,7 +731,7 @@ other down, or arrives as a trappable `[:EXIT pid reason]` after
 `(proc/trap-exit true)`), and `spawn-link` takes one expression like `spawn` — no
 named form.
 
-```lisp
+```lisp fragment
 (proc/trap-exit true)
 (let (p (spawn-link (worker)))                     ; linked before the child runs
   (receive ([:EXIT ^p :normal] :done)              ; true reason, never :noproc
@@ -744,7 +748,7 @@ Two runtimes become a distributed pair over a local Unix socket (or TCP) with
 **no extra machinery** — the same `send`/`receive`/closures, just addressed across
 a node link (ADR-073). The whole model in one example:
 
-```lisp
+```lisp fragment
 ;; --- on node "alice" ---------------------------------------------------------
 (node/start "alice")                  ; this runtime is now :alice@host (a keyword)
 (proc/register :inbox (self))              ; bind a LOCAL name -> this pid
@@ -809,8 +813,8 @@ kinds:
 (def c (start counter 0))        ; spawn with initial state 0 → pid
 (cast c :inc)                           ; cast (returns immediately)
 (cast c [:add 10])
-(call c :value)                         ; => 11  (synchronous; blocks for reply)
-(call c :double)                        ; => 22  (query — read-only)
+(call c :value)                         ;=> 11   ; synchronous; blocks for reply
+(call c :double)                        ;=> 22   ; query — read-only
 (stop c)                                ; graceful shutdown; ends the loop
 ```
 
@@ -967,7 +971,7 @@ scaffold complete `ui-run` apps; `--template tui-loop` a plain stdout animation.
 Writing a live script: just write a normal Brood file. The
 `nest run --watch` wrapper re-loads on save.
 
-```lisp
+```lisp fragment
 ;; live.blsp — run with: nest run --watch live.blsp
 (defn my-loop (n)
   (do (io/puts "iter:" n) (sleep 1000) (my-loop (+ n 1))))
@@ -1019,7 +1023,7 @@ To run a one-off entry point without editing the manifest's `:main`, pass
 
 ## Errors
 
-```lisp
+```lisp fragment
 (try
   (work)
   (catch e
@@ -1041,7 +1045,10 @@ wherever text interleaves values — it beats quote-chopped `str`. (It was calle
 until 2026-08; that name is gone.)
 
 ```lisp
-(string/interp "sum={(+ a b)} for {name}")   ; => "sum=7 for ada"
+(def a 3)
+(def b 4)
+(def name "ada")
+(string/interp "sum={(+ a b)} for {name}")   ;=> "sum=7 for ada"
 ```
 
 **Failures are values, bugs raise** — see *A `failure` is a returned value* below; the
@@ -1404,7 +1411,7 @@ What `nest new greeter` writes, with the module docstrings and comments abridged
   "hello greeter")
 ```
 
-```lisp
+```lisp fragment
 ;; src/main.blsp
 ;; `(:use greeter)` brings `greeter`'s public names (here `greeting`) into scope
 ;; bare; without it you'd call `(greeter/greeting)` (a qualified reference that
@@ -1422,7 +1429,7 @@ What `nest new greeter` writes, with the module docstrings and comments abridged
   (io/puts (greeting)))
 ```
 
-```lisp
+```lisp fragment
 ;; tests/greeter_test.blsp
 ;; `(:use greeter)` brings `greeting` into scope; `(:use test)` the test macros.
 (defmodule greeter-test (:use greeter) (:use test))
@@ -1438,7 +1445,7 @@ structural equality with a diff on failure; `(is expr)` asserts truthy.
 generator (over the PRNG) and asserts `pred` on each — deterministic, and on a
 counterexample it fails with the value + seed:
 
-```clojure
+```clojure fragment
 (check-property 100 (fn (s) (rand/int s 1000)) (fn (x) (and (>= x 0) (< x 1000))))
 ```
 

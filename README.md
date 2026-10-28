@@ -287,11 +287,11 @@ dispatch happens on real values.
 *Strong — no implicit coercions.* The language would rather raise than guess:
 
 ```clojure
-(+ 1 "2")          ;=> error: +: expected number, got string ("2")
-(= [1 2] '(1 2))   ;=> false      — a vector is not a list
+(+ 1 "2")          ;=> RAISED +: expected number, got string ("2")
+(= [1 2] '(1 2))   ;=> false   ; a vector is not a list
 (= 1 1.0)          ;=> false
-(/ 3 4)            ;=> 3/4        — exact, not 0.75
-(if 0 :t :f)       ;=> :t         — only nil and false are falsy
+(/ 3 4)            ;=> 3/4     ; exact, not 0.75
+(if 0 :t :f)       ;=> :t      ; only nil and false are falsy
 ```
 
 `->float` is a function call, not a cast. The one implicit widening is numeric
@@ -313,8 +313,8 @@ derives body and return types; primitive signatures come from the kernel rather 
 hand-kept table. No annotation is needed to catch this:
 
 ```clojure
-(check '(defn g (x) (string-length (+ 1 2))))
-;=> ("string-length: argument 1 expects string, got int ((+ 1 2))")
+(reflect/check
+  '(defn g (x) (string/length (+ 1 2))))   ;=> ("string/length: argument 1 expects string, got 3 ((+ 1 2))")
 ```
 
 Where you want more, `(sig …)` adds function **arrows** (`(sig area (number -> number))`),

@@ -9,7 +9,7 @@
 The current grammar has `(or A B)` for unions but no intersection form. This
 limits what annotations can express:
 
-```lisp
+```lisp fragment
 ;; I want to say: a non-empty list of integers
 ;; today I can't — I have to fall back to the weaker (list int)
 ;; and accept that an empty list slips through the runtime check
@@ -22,7 +22,7 @@ limits what annotations can express:
 The natural fix is `(and (list int) pair)` — "a list of ints that is
 also a cons pair, i.e. non-empty":
 
-```lisp
+```lisp fragment
 (sig! process-items ((and (list int) pair) -> int))
 (process-items nil)    ; throws — nil is not pair?
 (process-items (list 1 2 3)) ; passes — pair? and every element is int
@@ -55,7 +55,7 @@ No new data type, no new `Ty` variant, no compatibility-contract risk.
 In the `pair?` branch of `type-matches?`, add a symmetric `and` arm alongside
 the existing `or` arm:
 
-```lisp
+```lisp fragment
 ;; current:
 (%eq h 'or) (any? (fn (s) (type-matches? s v)) (rest t))
 
@@ -122,7 +122,7 @@ bare `(and)` in `parse_type` as `Ty::ANY` to stay consistent.
 
 In `contract_test.blsp`:
 
-```lisp
+```lisp fragment
 ;; (and pair (list int)) = non-empty list of ints
 (defn c-head (xs) (first xs))
 (sig! c-head ((and pair (list int)) -> int))

@@ -13,7 +13,7 @@ After ADR-078, `(list int)` and `(vector string)` carry element types that flow
 through `first`/`nth`/`map`/`filter`. Maps are still flat — a `map?` check is the
 best `type-matches?` can do:
 
-```lisp
+```lisp fragment
 (sig! lookup ((map keyword int) -> int))
 (lookup {:a "oops"})  ; passes the contract — map? is true
                       ; but the value is a string, not int
@@ -40,7 +40,7 @@ deliberately not supported — if you only care about keys, use `(map K any)`.
 
 The check walks `(%map-pairs m)` and verifies each `[k v]` pair:
 
-```lisp
+```lisp fragment
 ;; in the (pair? t) / (cond ...) branch of type-matches?:
 (%eq h 'map)
   (and (map? v)
@@ -125,7 +125,7 @@ use `Ty::of(Tag::Map)` and keep working unchanged.
 
 In `contract_test.blsp`:
 
-```lisp
+```lisp fragment
 (defn c-lookup (m k) (get m k 0))
 (sig! c-lookup ((map keyword int) keyword -> int))
 

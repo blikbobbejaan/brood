@@ -14,7 +14,7 @@
 in the type checker: a function whose return type depends on which "clause"
 matched its argument — the classic overloaded-function shape:
 
-```lisp
+```lisp fragment
 (sig f (and (int -> int) (bool -> bool)))
 (defn f (x) (if (int? x) (inc x) (not x)))
 

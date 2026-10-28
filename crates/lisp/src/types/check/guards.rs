@@ -617,7 +617,7 @@ fn chain_shape(heap: &Heap, test: Value, want_then_g: bool) -> Option<(Value, Va
 /// may have failed on a later conjunct). The one construction the checker's three `if` readers share —
 /// `check_if` (the walk), `gradual_of` (the checked value type) and `expr_ty` (the inferred
 /// type, which drives a function's inferred return) — so all three see the same branch
-/// types — so `(or (string/->number s) -1)` infers `number`, not `nil | number`.
+/// types — so `(or (string/->number s) -1)` infers `number | failure`, not `nil | number`.
 pub(super) fn branch_scopes(heap: &Heap, test: Value, ctx: &Ctx) -> (Ctx, Ctx) {
     let (mut then_ctx, mut else_ctx) = match guard_assertion(heap, test, ctx) {
         Some(g) => {

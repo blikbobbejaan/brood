@@ -357,7 +357,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::range(1, 2),
         Sig::with_optional(vec![string], vec![int], num.union(Ty::of(Tag::Failure))),
         &["s", "&optional", "radix"],
-        "Parse s strictly as an int (a bignum when out of i64 range), else a float, else a falsy failure value naming the input (unlike reflect/read-string). The inverse of str. With radix (2-36) the parse is integer-only in that base — how hex/octal/binary is read from DATA (in source, write the literal: 0xFF, 0b1010, 0o17); give the digits alone, no 0x/0b/0o prefix. A radix outside 2-36 raises.\n\n    (string/->number \"42\")   ;=> 42\n    (string/->number \"1F\" 16)   ;=> 31",
+        "Parse s strictly as an int (a bignum when out of i64 range), else a float, else a failure value naming the input (truthy, like every failure: test it with failure? — unlike reflect/read-string). The inverse of str. With radix (2-36) the parse is integer-only in that base — how hex/octal/binary is read from DATA (in source, write the literal: 0xFF, 0b1010, 0o17); give the digits alone, no 0x/0b/0o prefix. A radix outside 2-36 raises.\n\n    (string/->number \"42\")   ;=> 42\n    (string/->number \"1F\" 16)   ;=> 31",
         string_to_number);
 }
 
@@ -1348,8 +1348,8 @@ pub(super) fn math_atan2(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
 }
 
 /// `(string/->number s &optional radix)` — parse `s` as an integer if it is one, else as
-/// a float, else a **failure** value naming the input (falsy, so `(or … d)` still
-/// defaults, but it says *why* where `nil` could not). The inverse of `str`. A robust parse can't be
+/// a float, else a **failure** value naming the input (truthy like every failure, so `(or … d)`
+/// does NOT default it — test `failure?`; it says *why* where `nil` could not). The inverse of `str`. A robust parse can't be
 /// expressed over `reflect/read-string` (which would read `"3abc"` as `3` and stop), so
 /// the strict parse is a primitive. Surrounding whitespace is not accepted —
 /// `trim` first if the input may carry any.
@@ -1470,8 +1470,8 @@ pub(super) fn string_to_number(args: &[Value], _: EnvId, heap: &mut Heap) -> Lis
         Ok(Value::float(f))
     } else {
         // Text this cannot interpret is a *known failure*, not an absence: it comes
-        // back as a falsy `failure` naming the input, so `(or (string/->number s) 0)`
-        // still defaults while anything that looks at the value learns why.
+        // back as a `failure` naming the input — truthy, so `(or (string/->number s) 0)`
+        // hands the failure on rather than defaulting it, and whoever looks learns why.
         Ok(heap.alloc_failure(&format!("string/->number: not a number: {s:?}")))
     }
 }

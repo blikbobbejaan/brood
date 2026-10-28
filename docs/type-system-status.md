@@ -39,7 +39,7 @@ after the change; the four entries under **Still missed** are the honest residue
 
 Everything the audit listed, plus:
 
-```lisp
+```lisp fragment
 ;; the domain rule (ADR-261) — no annotation anywhere
 (defn f (x) (if (string? x) (string/length x) (+ x 1)))   (f :kw)   ; neither branch admits it
 (defn d ([a b]) (+ a b))                                  (d 5)     ; head destructuring
@@ -88,7 +88,7 @@ the code (`(get r :ok)` over a tagged union, `(not (tuple int))` against `[1]`, 
 whose result is wrong, and a product covered jointly by two alternatives). What is left in
 this position is not a missing rule but a deliberate **reporting policy**:
 
-```lisp
+```lisp fragment
 ;; an argument the checker cannot prove is right, but cannot rule out either,
 ;; is NOT reported when its type is dynamic (ADR-110's gradual relation)
 (sig takes-int (int -> any))
@@ -792,7 +792,7 @@ is falsy — a Brood predicate is not automatically a `bool`.
 **Then the part worth keeping.** Narrowing `project/find-root` to its honest `(or nil
 string)` took the strict gate from 0 to 17, and 16 were one shape:
 
-```brood
+```brood fragment
 (let (root (project/find-root (file/cwd)))
   (when (nil? root) (error "not in a Brood project …"))
   (project/setup root)      ; ← "expects string, got nil | string"

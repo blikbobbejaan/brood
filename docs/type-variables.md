@@ -93,7 +93,7 @@ and matches how element types in `reduce` already work.
 At runtime, a type variable is an *unknown* type. The `type-matches?` function
 (which drives `sig!` checks) already returns `true` for unknown type names:
 
-```lisp
+```lisp fragment
 ;; in the (symbol? t) / else branch of type-matches?:
 else true   ; unknown base name → accept
 ```

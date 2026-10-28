@@ -378,6 +378,40 @@ same process (this is why `docs` lazily requires `project`). Accurate
 attribution independent of load order is the job of the static CST walk planned
 in `docs/lsp.md`.
 
+## Checking examples: `nest doctest`
+
+`nest doctest` checks that what the documentation shows still holds (ADR-498). It runs the
+project's docstring examples, then the fenced blocks of the markdown `:doc-paths` names
+(default `README.md` when there is one). `nest doctest FILE.md…` runs only those files.
+It exits 1 on any failure and prints one `FAIL` line per failure, naming `file:line`:
+
+```text
+  FAIL README.md:4: (+ 1 1)  ;=> got 2, documented 3
+  FAIL docs/guide.md:31: setup raised: unbound symbol: conn — in (send conn :ping)
+  FAIL docs/guide.md:58: block did not finish — timed out after 10000 ms
+1 markdown file(s), 12 block(s) checked, 3 failing example(s)
+```
+
+The markers are the same everywhere: `form ;=> result` is evaluated and compared as a value;
+`form ;~> result` is read, and its head must exist with an arity that takes the arguments,
+but it is not run. Examples run at the top level, so they are written with the full
+namespace.
+
+In markdown, ```` ```clojure ````, ```` ```lisp ```` and ```` ```brood ```` blocks run, and
+```` ```clojure fragment ```` opts one out. A block's unmarked lines are setup, run in
+order; a block runs in a process of its own (`nest run --no-check`) under a 10 s timeout, so
+its definitions do not reach the next block. The manifest key:
+
+```clojure fragment
+(project
+  :name "myapp"
+  ;; files, directories (every .md under them), and ! to leave a path out
+  :doc-paths ["README.md" "guides" "!guides/drafts"])
+```
+
+`nest test` still gates the docstrings on every run; the markdown is checked on demand.
+The engine is `std/tool/doctest.blsp` and the command's policy `docs/run-doctests`.
+
 ## Editor side (Emacs)
 
 Everything lives in one file, `lisp/progmodes/brood.el` (`brood-mode`, derived

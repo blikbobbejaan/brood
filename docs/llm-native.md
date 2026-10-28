@@ -240,7 +240,7 @@ Brood's structural equality + pattern matching make property tests
 writing example cases. This is a natural fit you'd offer almost for
 free.
 
-```lisp
+```lisp fragment
 (prop "addition commutes" (a int? b int?)
   (= (+ a b) (+ b a)))
 
@@ -329,7 +329,7 @@ helpers. Mine reinvented at least three.
 Beyond stable codes (#4): tag errors with what an LLM (or its harness)
 should *do*:
 
-```lisp
+```lisp fragment
 [:error :E0042 …
         :recoverable true
         :retry-with [:flag "-j 1"]

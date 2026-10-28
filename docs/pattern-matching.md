@@ -89,7 +89,7 @@ same-named value. So this is wrong:
 (def none :none)
 (match x
   (none   0)        ; does NOT compare x to `none` — it binds `none` to x
-  ([:v n] n))
+  ([:v n] n))       ;=> RAISED match: unreachable clause after a catch-all (an irrefutable pattern must come last)
 ```
 
 Match a *known* value one of three ways, idiomatic first:
@@ -121,12 +121,13 @@ the two diverge. Lists remain the sequence pattern; vectors are tuples/records.
 shape `fn` and `receive` use, so there is one "clause" concept across the language:
 
 ```clojure
+(def msg [:add 2 3])
 (match msg
-  ([:say text]      (println text))
+  ([:say text]      (io/puts text))
   ([:add a b]       (+ a b))
   ((x & xs)         (str "head " x ", rest " xs))
   (n :when (int? n) (handle-int n))
-  (_                (println "unknown")))      ; explicit catch-all
+  (_                (io/puts "unknown")))      ;=> 5   ; `_` is the explicit catch-all
 ```
 
 Wrapped, not flat `pattern body` like `cond`, for three reasons:
@@ -152,7 +153,7 @@ patterns — no separate construct.
 target becomes a pattern. A bare symbol is the degenerate pattern, so today's
 code is unchanged:
 
-```clojure
+```clojure fragment
 (let (a 1                       ; trivial pattern (unchanged)
       [:ok v] (fetch key)       ; refutable: raises if fetch isn't [:ok _]
       (x & xs) (range 10))      ; destructure
@@ -235,10 +236,11 @@ These are layers on the same compiler.
   truthy. `:when` (not bare `when`, which is a special form) avoids any clash.
 
   ```clojure
+  (def n 5)
   (match n
     (n :when (> n 0) :positive)
     (0               :zero)
-    (_               :negative))
+    (_               :negative))   ;=> :positive
   ```
 
   **A guard must be a *decision*, not an *action* — keep it pure.** A guard runs
@@ -264,10 +266,11 @@ These are layers on the same compiler.
   pattern. Spelled `^x` (or `^(expr)`):
 
   ```clojure
+  (def resp [:ok 42])
   (let (expected :ok)
     (match resp
       ([^expected v] v)        ; matches only when the tag equals `expected`
-      (_             :other)))
+      (_             :other)))   ;=> 42
   ```
 
   It was originally `~x` — reusing `(unquote …)` for the same "drop to
@@ -288,8 +291,9 @@ These are layers on the same compiler.
   destructures a map, Clojure-style:
 
   ```clojure
+  (def pt {:x 3})
   (let ({:keys [x y] :or {y 0}} pt)   ; x <- (:x pt), y <- (:y pt) or 0 if absent
-    (+ x y))
+    (+ x y))                         ;=> 3
   ```
 
   Each symbol in `:keys` binds to the value at the same-named keyword — `nil`
@@ -321,7 +325,7 @@ area: no clause matched arguments (7 :hexagon) — clauses ([:circle r]), ([:rec
 
 Structured means a handler can match on the failure itself:
 
-```clojure
+```clojure fragment
 (try (decode x)
   (catch e
     (match e
@@ -333,7 +337,7 @@ Structured means a handler can match on the failure itself:
 - a malformed pattern — `(a & b c)` → `match: '&' must be followed by exactly one
   tail pattern`;
 - an **unreachable clause** after an irrefutable one → `match: unreachable clause
-  after catch-all`;
+  after a catch-all (an irrefutable pattern must come last)`;
 - a clause that isn't `(pattern body…)`, or a `:when` with no guard.
 
 *Infra note.* `throw` carries a payload value, but an uncaught error's printed
@@ -409,9 +413,9 @@ leave non-matching messages queued**. That is true **selective receive**
 (no head-of-line blocking), not the simpler "match the next message or fall
 through" form first sketched here.
 
-```clojure
+```clojure fragment
 (receive
-  ([:say text]      (println text))
+  ([:say text]      (io/puts text))
   (n :when (int? n) (handle-int n))
   (after 5000       (throw [:timeout])))   ; optional timeout; catchable via try/catch
 ```

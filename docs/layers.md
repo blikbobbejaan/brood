@@ -36,7 +36,7 @@ Architecture (`model`/`view`/`update`), and dispatch already happens inside
 A **layer** is a `def`'d, late-bound value — resolved by symbol at use, exactly
 like a keymap command (so redefining it hot-swaps everywhere; models stay small):
 
-```clojure
+```clojure fragment
 (def magit/layer
   {:name 'magit
    :keymap (-> {} (keymap-bind ["s"] 'magit/stage) (keymap-bind ["c" "c"] 'magit/commit))

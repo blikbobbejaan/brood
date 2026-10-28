@@ -427,7 +427,7 @@ tail-recursive loop, `nest run` in a bare image:
 
 Reproduce:
 
-```lisp
+```lisp fragment
 (defn cd ((0) :liftoff) ((n) (cd (- n 1))))
 (let (t (now) _ (cd 1000000)) (println "compiled: " (- (now) t) "ms"))
 

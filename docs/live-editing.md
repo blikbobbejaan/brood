@@ -129,7 +129,7 @@ It's a **pure prelude macro — no kernel change at all**, because the needed
 predicate `(bound? 'sym)` already exists (`crates/lisp/src/builtins/tooling.rs`) and `unless` is in
 the prelude:
 
-```clojure
+```clojure fragment
 (defmacro defonce (name val)
   "Bind `name` to `val` only if it isn't already bound — so the value
 survives hot-reload (cf. Emacs `defvar`). Re-evaluating this form is a

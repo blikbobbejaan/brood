@@ -86,7 +86,7 @@ to `parse_type`.
 
 One new branch, next to the keyword one:
 
-```lisp
+```lisp fragment
 (int? t) (= t v)                   ; an int type-expr is a literal too (ADR-117)
 ```
 

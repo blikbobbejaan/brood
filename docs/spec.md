@@ -282,7 +282,7 @@ optionals). A `&` rest makes a trailing surplus legal.
 
 **Examples**
 
-```clojure
+```clojure fragment
 (a b)                      ; exactly two
 (a b & more)               ; two or more; `more` is the extras as a list
 (a &optional b (c 9))      ; (f 1) => a=1 b=nil c=9 ;  (f 1 2 3) => a=1 b=2 c=3

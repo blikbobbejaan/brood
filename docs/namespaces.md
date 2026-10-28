@@ -294,7 +294,7 @@ Binding capture (#2) is handled (auto-gensym, above). The remaining hazard was t
 **free** references in a macro template would resolve as plain symbols, and with
 use-site expand-time rewriting that breaks across namespaces:
 
-```clojure
+```clojure fragment
 (ns a)
 (defn helper (x) ...)
 (defmacro m (x) `(helper ~x))   ; emits bare (helper …)

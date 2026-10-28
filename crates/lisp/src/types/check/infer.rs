@@ -912,7 +912,7 @@ fn control_flow_ty(heap: &Heap, head: Symbol, items: &[Value], ctx: &Ctx) -> Opt
     // are `let`+`if`, handled above); kept for fragments.
     // Exactly, not "any operand": an operand that is NOT the last one is the value only
     // when it short-circuits — falsy for `and`, truthy for `or` — so it contributes that
-    // half of its type alone. `(or (string/->number s) -1)` is `number`, never `nil`; the
+    // half of its type alone. `(or (string/->number s) -1)` is `number | failure`, never `nil`; the
     // `nil` that made every `(or x default)` read as maybe-nil under `--strict` was this
     // union being taken over the whole operand.
     if value::symbol_is(head, kw::AND) {

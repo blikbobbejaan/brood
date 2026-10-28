@@ -48,7 +48,7 @@ You get `project.blsp`, `src/`, and `tests/`. The framework modules are baked
 into the binary, so you reach them by *naming* them — no dependency wiring and no load
 step (ADR-229): a qualified reference loads its module, and `(:use …)` refers it bare.
 
-```clojure
+```clojure fragment
 (editor/buffer/make-buffer "")     ; the buffer model — the reference loads it
 (editor/display/frame …)           ; the render-op protocol
 ;; …or, in a module header: (defmodule my-editor (:use editor/buffer) (:use editor/display))
@@ -66,12 +66,13 @@ rarely touch the fields directly — you use the pure functions, each returning 
 buffer:
 
 ```clojure
+(defmodule tour (:use editor/buffer))   ; any module that uses the buffer model
 (def b (make-buffer "hello world"))   ; point at 0, no mark
-(buffer-text b)                        ; => "hello world"
-(buffer-point b)                       ; => 0
+(buffer-text b)                        ;=> "hello world"
+(buffer-point b)                       ;=> 0
 
 ;; movement returns a fresh buffer with point moved (all clamp to bounds)
-(-> b (goto-char 5) (insert ",") end-of-line buffer-text)   ; => "hello, world"
+(-> b (goto-char 5) (insert ",") end-of-line buffer-text)   ;=> "hello, world"
 ```
 
 The vocabulary you'll use most:
@@ -108,11 +109,12 @@ You render by building a **frame**: a vector of render ops. The constructors are
 pure data builders:
 
 ```clojure
+(defmodule tour (:use editor/display))  ; any module that uses the display protocol
 (frame
   (clear)                              ; clear the screen
   (text 0 0 "── my-editor ──" {:reverse true})   ; row 0, col 0, styled
   (text 1 0 "hello world")             ; an unstyled line
-  (cursor 1 5))                        ; place the hardware cursor
+  (cursor 1 5))                        ;=> [[:clear] [:text 0 0 "── my-editor ──" {:reverse true}] [:text 1 0 "hello world"] [:cursor 1 5]]
 ```
 
 - `(clear)` → `[:clear]`
@@ -152,8 +154,8 @@ value — the buffer plus the top visible line (the viewport) — and render it:
               (buffer-line-at (get ed :buffer) line-idx)
               "~")                       ; past end-of-buffer
         ;; strip the trailing newline rope-line includes
-        s (if (ends-with? raw "\n") (substring raw 0 (dec (string-length raw))) raw))
-    (text row 0 (if (> (string-length s) cols) (substring s 0 cols) s))))
+        s (if (string/ends-with? raw "\n") (string/substring raw 0 (dec (string/length raw))) raw))
+    (text row 0 (if (> (string/length s) cols) (string/substring s 0 cols) s))))
 
 (defn render-frame (ed cols rows)
   "Pure: render editor state `ed` ({:buffer :top}) on a `cols`×`rows` terminal —
@@ -161,8 +163,8 @@ a status line, the visible buffer lines, and the cursor."
   (let (buf (get ed :buffer)
         top (get ed :top)
         text-rows (math/max 1 (dec rows))             ; reserve the last row for status
-        body (map (fn (i) (render--line ed i (+ top i) cols))
-                  (range text-rows))
+        body (map (range text-rows)
+                  (fn (i) (render--line ed i (+ top i) cols)))
         cur-row (- (buffer-current-line buf) top)
         cur-col (buffer-column buf)
         status (str " " (buffer-name buf)
@@ -226,7 +228,7 @@ A **command** is a function `editor -> editor` (or `editor -> :quit` to exit). A
 unbound key is a no-op. Returns a new editor state, or `:quit`."
   (cond
     (contains? *keymap* key) ((get *keymap* key) ed)
-    (and (string? key) (= (string-length key) 1))
+    (and (string? key) (= (string/length key) 1))
       ((cmd--on-buffer (fn (b) (insert b key))) ed)
     :else ed))
 ```
@@ -242,7 +244,7 @@ The only impure part. Mirror the observer's structure: a tail-recursive loop tha
 renders, polls a key with a finite timeout, dispatches, and recurses with the new
 state — until a command returns `:quit`.
 
-```clojure
+```clojure fragment
 ;; src/main.blsp
 (defmodule main "my-editor entry point."
   (:use editor/buffer) (:use editor/display) (:use render) (:use commands))
@@ -269,7 +271,7 @@ state — until a command returns `:quit`.
 
 (defn main (args)
   (if (empty? args)
-    (eprintln "usage: my-editor <file>")
+    (io/puts "usage: my-editor <file>" :to *err*)
     (run (first args))))
 ```
 
@@ -285,7 +287,7 @@ saves, ^Q quits.
 
 Everything except the loop is pure, so test it like any other Brood code:
 
-```clojure
+```clojure fragment
 ;; tests/editor_test.blsp
 (defmodule editor-test (:use test) (:use render) (:use commands))
 
@@ -299,8 +301,8 @@ Everything except the loop is pure, so test it like any other Brood code:
   (test "render-frame fits the terminal"
     (let (f (render-frame {:buffer (make-buffer "one\ntwo") :top 0 :height 5} 20 6))
       (is (vector? f))
-      (is (every? (fn (op) (or (not (= (first op) :text))
-                               (<= (string-length (nth op 3)) 20))) f)))))
+      (is (every? f (fn (op) (or (not (= (first op) :text))
+                                 (<= (string/length (nth op 3)) 20))))))))
 ```
 
 ## 8. Where to grow it

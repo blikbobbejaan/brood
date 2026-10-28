@@ -435,7 +435,7 @@ struct LispErrorData {
 
 ### `try` / `catch` semantics
 
-```clojure
+```clojure fragment
 (try
   (risky-thing)
   (catch e
@@ -451,7 +451,7 @@ struct LispErrorData {
 
 It desugars to the `%try` primitive:
 
-```clojure
+```clojure fragment
 (try a b (catch e h))
 ;; expands to:
 (%try (fn () a b) (fn (e) h))
@@ -465,7 +465,7 @@ wrapped. `error` throws a string, so `e` is that string.
 For a **kernel-raised** error (parse, unbound, arity, type, runtime — e.g. `%div`
 ÷0), `e` is a **structured map**:
 
-```lisp
+```lisp fragment
 {:kind <keyword>           ; :parse | :unbound | :arity | :type | :runtime | :user
  :message <string>         ; the rendered text
  :code <string>            ; stable, "E00xx"

@@ -51,7 +51,7 @@ Everything is prelude Brood. The only Rust support is the interned key (`core/ke
 
 ## 2. The leaks (confirmed 2026-10-27 with a one-file probe)
 
-```clojure
+```clojure fragment
 (defrecord point (x y))
 (def p (point 1 2))
 (record? (into {} p))                     ;=> true   — should be a plain map of the fields

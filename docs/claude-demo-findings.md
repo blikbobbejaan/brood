@@ -289,7 +289,7 @@ to reach into the prelude to find:
 
 After `nest format`, my carefully aligned code became:
 
-```lisp
+```lisp fragment
 ;; before
 (let (w       64
       h       28
@@ -484,7 +484,7 @@ All three are blocked on the same runtime issue.
 
 In a fresh `nest new` project, add:
 
-```lisp
+```lisp fragment
 ;; src/race.blsp
 (defmodule race)
 (require 'hatch)

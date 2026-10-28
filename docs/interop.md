@@ -186,7 +186,7 @@ model); a prebuilt artifact is an optional optimization.
 
 Plus a capability grant list (deny-by-default):
 
-```lisp
+```lisp fragment
 (project brood-fastjson                          ; the dep's OWN manifest
   :native [fastjson
            :wasm-build  (:crate "native" :target "wasm32-wasip2" :toolchain cargo)
@@ -225,7 +225,7 @@ toolchain present and pays compile time — which is exactly why `:wasm-artifact
 `project.lock.blsp` gains a `:native` field per dep — the `.wasm` hash, plus
 build provenance when built from source:
 
-```lisp
+```lisp fragment
 [fastjson
  :git    "https://…/brood-fastjson" :ref "v1.0.0" :commit "…" :sha256 "…"
  :native (:wasm :sha256 "deadbeef…"            ; the artifact hash — the "compiled with the code" pin
@@ -263,7 +263,7 @@ each NIF as a stub the loader replaces. Brood mirrors this:
   marshalling args/results across the boundary, so callers see ordinary Brood
   functions:
 
-  ```lisp
+  ```lisp fragment
   (ns fastjson)
   ;; binds `parse`, `stringify`, … from the instantiated component as
   ;; namespace functions — the `use Rustler` moment, but driven by the WIT.

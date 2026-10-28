@@ -40,7 +40,7 @@ now — with a present-day consumer — is consistent, not premature.
 
 Today a node is hand-wired:
 
-```lisp
+```lisp fragment
 (node/start :server "127.0.0.1:9001" "demo-cookie")   ; pick a port, invent a secret
 (connect "client@127.0.0.1:9002")                      ; know the peer's host:port
 ```
@@ -59,7 +59,7 @@ Three frictions, all incidental to the share-nothing model:
 
 ## The shape
 
-```lisp
+```lisp fragment
 ;; same machine — name is the whole address, secret is implicit
 (node/start :server)            ; listen on a per-user Unix socket; cookie auto-loaded
 (proc/register :echo (self))

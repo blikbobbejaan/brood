@@ -4523,3 +4523,19 @@ optional label so failures name the file relative to the project. Run here: `nes
 in a scaffold with no README, a failing README and a missing `:doc-paths` entry; `doc-files`
 over this repo; the std doctest engine (0 failures over 2,036 names); `nest check`,
 `--strict`, `nest format --check`. Not run: the test suites.
+
+2026-10-28 (doctest triage; ADR-498): the first full `nest doctest` over Brood's 88 doc files
+found 184 failures in 252 blocks; it is now 0 (143 blocks run, 109 tagged `fragment`, 29 s).
+Most were marker spelling (`; =>`), prose after a result, and snippets naming values defined
+elsewhere. Real drift, fixed in the docs: `fmt` (now `string/interp`); `string/->number`
+documented as nil-or-falsy where it returns a truthy failure (its Rust docstring and two
+checker comments said the same); `unimpl`/`unregister-impl` (now `%`-prefixed); `println`,
+`eprintln`, `rand-int`, `string-length`, `substring`; old-order `map`, `every?` and
+`string/join`; a geometry `area` returning an int under its own `:-> float`; a node cookie
+below the 16-byte minimum; `reflect/check`'s message. The run also found an engine bug: an
+arrow inside a string literal, or on a multi-line string's continuation line, read as the
+retired marker (the existing `doctest_test` case for it would have failed in CI). The engine
+now scans outside strings and skips a block line inside an open string. ADR-498 records the
+doctest design; `docs/tooling.md` gains "Checking examples: `nest doctest`". Run here: the
+full `nest doctest` (0 failures), the std doctest engine (0 over 2,036 names), `nest check`,
+`--strict`, `nest format --check`, `cargo fmt --check`. Not run: the test suites.

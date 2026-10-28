@@ -16,7 +16,7 @@ tool's `:value`/`:error` result).
 
 When `catch` rebinds a kernel error (`(try expr (catch e …))`), `e` is a map:
 
-```lisp
+```lisp fragment
 {:kind <keyword>           ; :parse | :unbound | :arity | :type | :runtime | :user | :interrupted
  :message <string>         ; the rendered text
  :code <string>            ; stable, "E00xx"; absent for user-thrown values
@@ -119,7 +119,7 @@ type error is a real bug"). `:code` is for **specific** matching ("the
 scheduler race specifically — try `-j 1`"). Prefer the broader one unless
 you need the precision.
 
-```lisp
+```lisp fragment
 ;; Categorical: handle any unbound symbol uniformly.
 (try
   (do-work)

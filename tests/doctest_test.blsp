@@ -168,7 +168,10 @@
     (is (includes? (first (doctest/block-faults "a.md" 1 "(file/slurpp \"a\")   ;~> \"…\""))
           "not defined")))
   (test "an old marker is reported"
-    (is (includes? (first (doctest/block-faults "a.md" 1 "(+ 1 1)   → 2")) "old marker"))))
+    (is (includes? (first (doctest/block-faults "a.md" 1 "(+ 1 1)   → 2")) "old marker")))
+  (test "an arrow inside a string is not one, so the setup around it still runs"
+    (assert= []
+      (doctest/block-faults "a.md" 1 "(defn arrow-doc ()\n  \"a → b\"\n  1)\n(arrow-doc)   ;=> 1"))))
 
 (describe "markdown-failures — each block in a process of its own"
   (test "a holding document has no failures; a failing block names its line"
@@ -194,3 +197,12 @@
         (file/rm path)
         (assert= 1 (count faults))
         (is (includes? (first faults) "block did not finish — exit 3"))))))
+
+(describe "block-faults — a multi-line string is text"
+  ;; A docstring's later lines inside a block are part of a string, not examples: an arrow
+  ;; or a marker there is prose about the function the block defines.
+  (test "a marker or an arrow on a string's continuation line is not checked"
+    (assert= []
+      (doctest/block-faults "a.md"
+        1
+        "(defn arrow-doc ()\n  \"Doc.\n\n    (arrow-doc)   ;=> 99\n    a → b\"\n  1)\n(arrow-doc)   ;=> 1"))))

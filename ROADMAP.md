@@ -97,7 +97,7 @@ another Lisp has it.
   - language.md taught provided ops and `:requires` with an `Ord` ability, while the real
     `Ord` is a multimethod. The examples now use `Priority`/`Named` (not `Rank`: `std`
     ships `Ranked`).
-- 🟡 **A drift gate for argument order in docs.** This drift survived ADR-308's sweep
+- ✅ **A drift gate for argument order in docs.** This drift survived ADR-308's sweep
   because prose examples are not executed; only docstring examples are
   (`tests/doc_examples_test.blsp`). Decided 2026-10-28: fenced markdown examples are
   **executed, opt-out** (a ```` ```clojure fragment ```` block is skipped). The docs to check
@@ -131,8 +131,20 @@ another Lisp has it.
      README is unchanged. A named path that does not exist is a failure. Brood names
      `README.md` and `docs`, leaving out `docs/decisions*`, `docs/devlog*` and `docs/archive`:
      88 files.
-  5. ⬜ Triage Brood's docs.
-  6. ⬜ ADR, `docs/tooling.md`, devlog.
+  5. ✅ **Triage (2026-10-28).** The first full run: 184 failures in 252 blocks over 88
+     files. Now 0. 109 blocks are tagged `fragment` (snippets, design proposals, manifests,
+     nodes, servers); the rest run, after marker spelling, prose after a result moved into a
+     `; comment`, and missing setup. Real drift fixed in the docs:
+     - `fmt` → `string/interp`;
+     - `string/->number` returns a failure, not nil, and a failure is truthy, so
+       `(or … 0)` does not default it (also wrong in its Rust docstring);
+     - `unimpl` → `%unimpl`, `println`/`eprintln`, `rand-int`, `string-length` and
+       old-order `map`/`every?`/`string/join` calls;
+     - an `area` example that broke its own `:-> float`;
+     - a node cookie under the 16-byte minimum.
+     The run also found an engine bug: an arrow inside a string literal, or anywhere in a
+     multi-line string, read as the old marker.
+  6. ✅ ADR-498, `docs/tooling.md` § "Checking examples", devlog.
 - ✅ **Docstring examples take the full namespace (2026-10-28).** An example is evaluated at
   the top level, not in the namespace of the name it documents, so in a project's
   `(defmodule lies)` the example `(two) ;=> 2` fails as `unbound symbol: two`. Decided, like

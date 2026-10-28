@@ -170,13 +170,13 @@ a Rust-backed opaque handle (genuine mutable state, never a mutable `Value`):
 ```clojure
 (def t (table/new))               ; create — returns an opaque handle
 (table/put t :hits 0)             ; store (overwrites); returns t
-(table/get t :hits)               ; => 0   (a fresh copy)
-(table/get t :missing :default)   ; => :default
-(table/has? t :hits)              ; => true
-(table/incr t :hits)              ; => 1   (atomic; default delta 1)
-(table/incr t :hits 10)           ; => 11
-(table/count t)                   ; => 1
-(table/snapshot t)                ; => {:hits 11}  (an immutable map)
+(table/get t :hits)               ;=> 0   ; a fresh copy
+(table/get t :missing :default)   ;=> :default
+(table/has? t :hits)              ;=> true
+(table/incr t :hits)              ;=> 1   ; atomic; default delta 1
+(table/incr t :hits 10)           ;=> 11
+(table/count t)                   ;=> 1
+(table/snapshot t)                ;=> {:hits 11}  ; an immutable map
 (table/delete t :hits)
 (table/drop t)                    ; free it now (else it goes when this process exits)
 ```
@@ -258,17 +258,18 @@ Maps are immutable — every operation returns a **fresh** map:
 
 ```lisp
 (def person {:name "Ada" :born 1815})
-(get person :name)                  ; => "Ada"
-(get person :died "unknown")        ; => "unknown"
-(assoc person :field "computing")   ; => a new map; `person` is unchanged
-(-> person (assoc :born 1816) (get :born))   ; => 1816
+(get person :name)                  ;=> "Ada"
+(get person :died "unknown")        ;=> "unknown"
+(assoc person :field "computing")   ;=> {:name "Ada" :born 1815 :field "computing"}
+person                              ;=> {:name "Ada" :born 1815}   ; unchanged
+(-> person (assoc :born 1816) (get :born))   ;=> 1816
 ```
 
 ### Keyword accessors
 
 A **keyword is callable** — the one exception to "the head of a form is a function":
 
-```clojure
+```clojure fragment
 (:name person)              ; ≡ (get person :name)
 (:name person "unknown")    ; ≡ (get person :name "unknown")
 (map :name people)          ; the reason for the exception
@@ -288,9 +289,9 @@ keyword** — including an integer-indexed collection, because `(:name deps)` wh
 
 ```clojure
 (:name {:name "ada"})    ;=> "ada"
-(:name #{:name})         ;=> :name        (membership, like get)
+(:name #{:name})         ;=> :name        ; membership, like get
 (:name nil)              ;=> nil
-(:name deps)             ; type error: :name: expected a map, set or nil …
+(:name [{:name "ada"}])  ;=> RAISED :name: expected a map, set or nil to look up in, got vector ([{:name "ada"}])
 ```
 
 The advisory checker knows the form (ADR-167): it flags a receiver that provably
@@ -324,13 +325,14 @@ field:
 
 ```lisp
 (defrecord point (x y))
-(def p (point 3 4))      ; => {:__id__ :<ns>/point, :x 3, :y 4}
-(point-x p)              ; => 3             — accessor, one per field
-(assoc p :x 9)           ; => a fresh record {…:x 9 :y 4}, id and all
-(fields p)               ; => {:x 3 :y 4}   — the clean, id-free view
-(record? p) (record-id p); => true, :<ns>/point
-(= (point 1 2) {:x 1 :y 2})   ; => false    — the bare map has no :__id__ entry
-(= (point 1 2) (point 1 2))   ; => true     — same fields, same id
+(def p (point 3 4))      ; {:__id__ :<ns>/point, :x 3, :y 4}
+(point-x p)              ;=> 3             ; accessor, one per field
+(= (assoc p :x 9) (point 9 4))   ;=> true  ; a fresh record, id and all
+(fields p)               ;=> {:x 3 :y 4}   ; the clean, id-free view
+(record? p)              ;=> true
+(record-id p)            ;~> :<ns>/point
+(= (point 1 2) {:x 1 :y 2})   ;=> false    ; the bare map has no :__id__ entry
+(= (point 1 2) (point 1 2))   ;=> true     ; same fields, same id
 ```
 
 The accessors are the reason to reach for it: `(point-x p)` names the field, and a
@@ -381,10 +383,10 @@ An argument's **dispatch identity** is one of two things:
   (area [self] :-> float))
 
 (impl Shape geometry/circle (area [c] (* 3.0 (get c :r) (get c :r))))
-(impl Shape geometry/rect   (area [r] (* (get r :w) (get r :h))))
+(impl Shape geometry/rect   (area [r] (* 1.0 (get r :w) (get r :h))))
 
 (area (circle 2))         ;=> 12.0
-(area (rect 3 4))         ;=> 12
+(area (rect 3 4))         ;=> 12.0
 ```
 
 Built-in kinds work the same way, with **`:default`** as the fallback:
@@ -395,26 +397,30 @@ Built-in kinds work the same way, with **`:default`** as the fallback:
 (impl Size :string   (size [s] (count s)))
 (impl Size :default  (size [_] -1))
 
-(size 7) (size "hello") (size 1.5)     ;=> 7, 5, -1
+(size 7)          ;=> 7
+(size "hello")    ;=> 5
+(size 1.5)        ;=> -1
 ```
 
-**Retracting an impl.** `unimpl` is the inverse — the named ops, or every op the
+**Retracting an impl.** `%unimpl` is the inverse — the named ops, or every op the
 ability declares when none are named:
 
 ```clojure
+(defability Size (size [self] :-> int))
+(impl Size :default (size [_] -1))
 (impl Size :int (size [n] n))
 (size 7)                    ;=> 7
-(unimpl Size :int)          ;=> 1   (impls removed)
-(size 7)                    ;=> -1  (falls back to :default; no :default → a no-impl error)
+(%unimpl Size :int)         ;=> 1   ; impls removed
+(size 7)                    ;=> -1  ; falls back to :default; no :default → a no-impl error
 ```
 
 The slot becomes **unclaimed**, not `:default`-y: a later `impl` of any tier takes it,
 because precedence compares against an incumbent and there is none. It returns how many
 impls it removed, so a retraction is distinguishable from a no-op, and it is idempotent —
-retracting what was never there is a quiet zero. `unregister-impl` is the function
+retracting what was never there is a quiet zero. `%unregister-impl` is the function
 underneath, for a caller holding names as values.
 
-Two things `unimpl` will not do: retract the language's own `:default` for an ability the
+Two things `%unimpl` will not do: retract the language's own `:default` for an ability the
 runtime dispatches on itself (`Display`, `Inspect`, `Seqable`, `Conjable` — that one line
 would leave every value unprintable, so it errors and points at `impl` for your own id), and
 touch any impl but the one named (retracting one id leaves its siblings, including `:default`,
@@ -449,7 +455,7 @@ implement `priority`, get the rest free:
   (same-urgency? [self other] :-> bool (= (priority self) (priority other))))  ; provided
 
 (impl Priority task (priority [t] (task-level t)))   ; only the required op
-(more-urgent? (task "deploy" 3) (task "lunch" 1))    ;=> true   — via the provided default
+(more-urgent? (task "deploy" 3) (task "lunch" 1))    ;=> true   ; via the provided default
 ```
 
 (Ordering itself is not an ability: `compare-to` is a `defmulti` over the operand pair —
@@ -474,8 +480,8 @@ the record opts in with `:derives`:
     (list `(columns [r] [~@(map flds (fn (f) `(get r ~(keyword (->string f)))))]))))
 
 (defrecord point (x y) :derives [Columns])
-(columns (point 3 4))    ;=> [3 4]     — synthesized
-(ncols   (point 3 4))    ;=> 2         — provided op, on the derived required op
+(columns (point 3 4))    ;=> [3 4]     ; synthesized
+(ncols   (point 3 4))    ;=> 2         ; provided op, on the derived required op
 ```
 
 The recipe runs at **load** (via `derive-into`), so the ability's `defability` need only be
@@ -797,11 +803,11 @@ import, no activation step. Built-ins are unchanged and pay no dispatch cost.
 (impl Display usd
   (->string [m] (str "$" (math/->fixed (/ (get m :cents) 100.0) 2))))
 
-(io/puts (usd 1050))          ; => $10.50   (not {:__id__ :money/usd, :cents 1050})
-(->string (usd 1050))           ; => "$10.50" — the explicit call, for use inside str/fmt
+(io/puts (usd 1050))          ; prints .50   (not {:__id__ :money/usd, :cents 1050})
+(->string (usd 1050))         ;=> "$10.50"   ; the explicit call, for use inside str/string/interp
 ```
 
-Scope is the screen printers; `str` / `pr-str` / `fmt` stay on the native renderer
+Scope is the screen printers; `str` / `pr-str` / `string/interp` stay on the native renderer
 (reach for `(->string x)` explicitly there). It rides on the prelude's `*show*`
 dynamic var, so `(binding (*show* nil) …)` disables it for a scope. Default record
 printing keeps its `:__id__` — that is intended (records print unlike bare maps); the
@@ -879,13 +885,14 @@ method for an exact tuple of ids (a built-in id keyword `:int`, or a record name
 
 ```clojure
 (defrecord money (cents))
-(defmulti  num/add :commutative)                                  ; declare (with an algebra)
-(defmethod num/add [money money] (a b) (money (+ (cents a) (cents b))))
-(defmethod num/add [money :int]  (m n) (money (+ (cents m) n)))   ; scalar mixing, if you want it
+;; `num/add` ships declared — `(defmulti num/add :commutative)`, the seam `+` consults for a
+;; record — so you only add methods:
+(defmethod num/add [money money] (a b) (money (+ (money-cents a) (money-cents b))))
+(defmethod num/add [money :int]  (m n) (money (+ (money-cents m) n)))   ; scalar mixing, if you want it
 
-(+ (money 100) (money 50))   ;=> (money 150)
-(+ (money 100) 5)            ;=> (money 105)
-(+ 5 (money 100))            ;=> (money 105)   ; commutative: the [:int money] mirror is derived
+(= (+ (money 100) (money 50)) (money 150))   ;=> true
+(= (+ (money 100) 5) (money 105))            ;=> true
+(= (+ 5 (money 100)) (money 105))            ;=> true   ; commutative: the [:int money] mirror is derived
 ```
 
 **Resolution is total and unambiguous by construction.** A call resolves by (1) an **exact**
@@ -1146,11 +1153,13 @@ evaluated in its place. Templates are written with quasiquote: `` `x `` quotes,
 `~x` unquotes (inserts a value), `~@xs` splices a sequence.
 
 ```clojure
-;; defn is itself a macro, defined in the prelude:
-(defmacro defn (name params & body)
+;; defn is itself a macro, defined in the prelude — this is its shape (`defn` is reserved,
+;; so it is spelled `my-defn` here):
+(defmacro my-defn (name params & body)
   `(def ~name (fn ~params ~@body)))
 
-(defn square (x) (* x x))     ; => (def square (fn (x) (* x x)))
+(my-defn square (x) (* x x))     ; expands to (def square (fn (x) (* x x)))
+(square 4)                       ;=> 16
 
 ;; your own:
 (defmacro unless2 (c & body) `(if ~c nil (do ~@body)))
@@ -1172,7 +1181,7 @@ literal binder can neither capture nor be captured by caller code spliced in wit
   `(let (r ~a)            ; plain `r` — auto-renamed to a fresh symbol
      (if r r ~b)))
 
-(let (r 1) (my-or false r))   ;=> 1  (the caller's `r` is not captured)
+(let (r 1) (my-or false r))   ;=> 1  ; the caller's `r` is not captured
 ```
 
 The rename is scope-aware (it touches only the references a binder actually binds)
@@ -1185,7 +1194,7 @@ halves of hygiene are automatic.
 name for the caller's spliced code to reference (an anaphoric macro like `aif`),
 write it as an unquoted quoted symbol, `~'name`, which emits the literal name:
 
-```clojure
+```clojure fragment
 (defmacro aif (test then else)
   `(let (~'it ~test)          ; ~'it stays the literal `it`
      (if ~'it ~then ~else)))
@@ -1242,7 +1251,7 @@ channels (ADR-310) — so `ok->` threads straight through a nil.
 
 ```clojure
 (ok-> "12" string/->number inc)          ;=> 13
-(ok-> "q"  string/->number (* 2) (+ 5))  ;=> #failure{…}   ; neither * nor + ran
+(failure? (ok-> "q" string/->number (* 2) (+ 5)))  ;=> true   ; neither * nor + ran
 (ok-> nil identity)                      ;=> nil           ; nil is not a sentinel
 ```
 
@@ -1266,7 +1275,7 @@ argument (`(-> v (then (fn (n) (g n other))))`).
 **Binding-conditionals** bind, test the *source* value, then branch (the target may
 destructure):
 
-```clojure
+```clojure fragment
 (if-let (v (get m :k)) (use v) :absent)   ; bind v; take `then` when truthy, else `else`
 (when-let (v (get m :k)) (use v))         ; body only when truthy
 ```
@@ -1275,7 +1284,7 @@ destructure):
 that is a failure short-circuits the whole form to that failure, so the steps after it
 never run:
 
-```clojure
+```clojure fragment
 (with (account (lookup user)
        card    (payment-method account)
        receipt (charge card 10))
@@ -1306,22 +1315,25 @@ stack):
 
 ```clojure
 (letrec (go (fn (n acc) (if (= n 0) acc (go (- n 1) (+ acc n)))))
-  (go 100000 0))                                ;=> 5000050000, O(1) stack
+  (go 100000 0))                                ;=> 5000050000   ; O(1) stack
 ```
 
-**`fmt`** — string interpolation. `(fmt "…{expr}…")` splices each `{expr}` hole's
+**`string/interp`** — string interpolation. `(string/interp "…{expr}…")` splices each `{expr}` hole's
 value between the literal text and lowers to a plain `(str …)` (no runtime cost);
 `{{`/`}}` are literal braces and braces nest inside a hole:
 
 ```clojure
-(fmt "sum={(+ a b)} for {name}")   ;=> "sum=7 for ada"
+(def a 3)
+(def b 4)
+(def name "ada")
+(string/interp "sum={(+ a b)} for {name}")   ;=> "sum=7 for ada"
 ```
 
 **`spy`** — a homoiconic tree-tracing debug macro (ADR-173). `(spy expr)` evaluates `expr`, traces **every** evaluated subexpression's
 value in evaluation order, and returns the value **unchanged** — so it's referentially
 transparent: wrap or drop `spy` around any form with no behavioural change.
 
-```clojure
+```clojure fragment
 (spy (+ (* a 2) (f 2)))     ; a=10, f adds 5
 ;; stderr:
 ;;   spy: (+ (* a 2) (f 2))
@@ -1341,7 +1353,7 @@ prints the indented tree to stderr, but a host can `binding` it to a collector a
 consume the trace as data (`{:spy :node :form … :value … :depth …}` maps), or to a
 no-op to silence it without editing code:
 
-```clojure
+```clojure fragment
 (binding (*spy-sink* (fn (entry) nil)) (spy (heavy-computation)))  ; value, no output
 ```
 
@@ -1393,7 +1405,7 @@ with a keyword (`:ok`), a quoted symbol (`'none`), or a pin (`^x`).
 
 `(or p q …)` matches if **any** alternative matches, first one wins:
 
-```clojure
+```clojure fragment
 (match code
   ((or 200 201 204) :success)
   ((or 301 302)     :redirect)
@@ -1408,7 +1420,7 @@ input (`(or [1 x] [2 x])` is fine; `(or a 2)` is a compile error).
 with later patterns seeing what earlier ones bound. That is how you capture the whole
 while destructuring it — Clojure's `:as`, Rust's `x @ pat`:
 
-```clojure
+```clojure fragment
 (match msg
   ((and whole {:keys [kind]}) (log kind whole)))
 ```
@@ -1456,7 +1468,7 @@ Without a trailing `& rest` the pattern requires the bytes be consumed
 repeated binder is an equality constraint, as everywhere else. A full-range
 `:u64` read past `i64` widens to a big integer transparently.
 
-```clojure
+```clojure fragment
 ;; TLV: a u16 length prefix drives a dynamic-size payload
 (match frame
   ((bytes (len :u16) (payload len) & rest) (handle payload rest))
@@ -1479,7 +1491,7 @@ parsing: `(bytes-uint bs off n)` / `bytes-uint-le` / `bytes-int` /
 Clauses are **wrapped** `(pattern [:when guard] body…)`; the first whose pattern
 (and guard) matches runs its body.
 
-```clojure
+```clojure fragment
 (match msg
   ([:say text]      (io/puts text))
   ([:add a b]       (+ a b))
@@ -1493,7 +1505,7 @@ No clause matching **crashes** with a structured, catchable value
 `[:match-error <context> <value> <patterns-tried>]` — add a `_` clause to make a
 match total:
 
-```clojure
+```clojure fragment
 (try (match resp ([:ok v] v))
   (catch e
     (match e
@@ -1531,7 +1543,7 @@ be slow, or not terminate (discipline keeps it pure, not the compiler); and a gu
 `case` dispatches on a **value** against literal tests, written as flat
 `test result` pairs (`cond`'s shape) with a lone trailing form as the default:
 
-```clojure
+```clojure fragment
 (case status
   :ok      (render body)
   :missing (render-404)
@@ -1557,7 +1569,8 @@ predicate reads, which is the opposite of Clojure's `(pred test expr)`:
 
 ```clojure
 (condp < 15 10 :small 100 :medium :large)                            ;=> :medium
-(condp string/starts-with? line "#" :heading "-" :item :text)        ; a lone trailing form is the default
+(def line "# Title")
+(condp string/starts-with? line "#" :heading "-" :item :text)        ;=> :heading   ; a lone trailing form is the default
 ```
 
 **`if-some` / `when-some`** are `if-let` / `when-let` testing for *presence* rather than
@@ -1569,7 +1582,7 @@ value may legitimately be `false`: `(if-some (flag (get config :verbose)) flag :
 A `let` binding target may be a pattern; it's a refutable bind (Brood's `=`) that
 raises on mismatch. Bindings stay sequential, freely mixed with plain symbols:
 
-```clojure
+```clojure fragment
 (let (a 1                    ; plain symbol (unchanged)
       [:ok v] (fetch key)    ; refutable: raises if fetch isn't [:ok _]
       (x & xs) (range 10))   ; destructure a list
@@ -1712,12 +1725,13 @@ quietly disappears into a default — you handle it, or it flows onward and the 
 operation reports it:
 
 ```clojure
-(or (string/->number s) 0)                ; the FAILURE, not 0 — it is truthy
-(if (string/->number s) :yes :no)         ; :yes — there IS a value, just not a number
-(seq/keep lines string/->number)          ; keeps them: `keep` drops only nil
+(def s "abc")
+(failure? (or (string/->number s) 0))     ;=> true    ; the FAILURE, not 0 — it is truthy
+(if (string/->number s) :yes :no)         ;=> :yes    ; there IS a value, just not a number
+(count (seq/keep ["1" s] string/->number))  ;=> 2    ; keeps them: `keep` drops only nil
 
 (let (n (string/->number s))              ; the way to default, said out loud
-  (if (failure? n) 0 n))
+  (if (failure? n) 0 n))                  ;=> 0
 ```
 
 **It is not `nil`, though**, and that is the point: `nil` means *absence* — a lookup
@@ -1743,7 +1757,7 @@ it should unwind.
 Raise with `throw` (any value) or `error` (a formatted message), and handle with
 `try`/`catch`:
 
-```clojure
+```clojure fragment
 (try
   (risky)
   (catch e
@@ -1759,7 +1773,7 @@ Raise with `throw` (any value) or `error` (a formatted message), and handle with
 `test`'s value, so it can wrap the expression it checks. The message parts are evaluated
 only when it raises. It is always on — there is no build that strips it.
 
-```clojure
+```clojure fragment
 (assert (> n 0))                    ; raises "assert failed: (> n 0)" when n is 0
 (assert (> n 0) "got " n)           ; "assert failed: (> n 0): got 0"
 (let (conn (assert (lookup id)))    ; the value of (lookup id), or a raise
@@ -1774,7 +1788,7 @@ is discarded; a throw from `cleanup` replaces the pending one. It is the
 released on the way out of a handler that stays alive — a port, a `table` row, a
 lock held in a `gen` server — where letting the process die is not an option:
 
-```clojure
+```clojure fragment
 (try
   (io-write port (render frame))
   (catch e (log/warn "render failed" {:error (error-message e)}))
@@ -1827,7 +1841,7 @@ not raise — `nest mcp` answering a tool handler's `throw` — uses it:
 
 ```clojure
 (%try-described (fn () (error "bad input"))
-  (fn (caught error) [caught (get error :line)]))   ; → ["bad input" 1]
+  (fn (caught error) [caught (get error :line)]))   ;~> ["bad input" 1]
 ```
 
 Because a caught value has no single shape, **`(error-message e)`** is the
@@ -1835,7 +1849,7 @@ shape-agnostic accessor: a raised string as-is, the `:message` of an error map,
 else the value's printed form. A `catch` handler that just wants a human string
 uses it directly instead of branching on `string?`/`map?`:
 
-```clojure
+```clojure fragment
 (try (risky) (catch e (log (str "failed: " (error-message e)))))
 ```
 
@@ -1864,9 +1878,9 @@ through every intermediate call.
 
 (defn level () *indent*)         ; reads *indent* — whatever is bound right now
 
-(level)                          ; => 0   (*indent* is its default)
-(binding (*indent* 4) (level))   ; => 4   (rebound for this dynamic extent)
-(level)                          ; => 0   (restored afterwards)
+(level)                          ;=> 0   ; *indent* is its default
+(binding (*indent* 4) (level))   ;=> 4   ; rebound for this dynamic extent
+(level)                          ;=> 0   ; restored afterwards
 ```
 
 - **`(defdyn *name* default)`** declares `*name*` dynamic and gives it a default.
@@ -1927,7 +1941,7 @@ scoping macros (thin wrappers over `binding`). Pull it in with `(:use io)` so th
 names read bare — otherwise a qualified `io/fn-port` reference auto-loads the
 module but leaves the names qualified:
 
-```lisp
+```lisp fragment
 (defmodule my-app (:use io))
 
 (with-out (fn-port (fn (s) (collect s)))   ; route output to a callback
@@ -1961,7 +1975,7 @@ log call is a fire-and-forget cast, so it never blocks the caller, and the singl
 process serialises every write — lines never interleave, and a backend that throws
 takes down only that line, not the caller.
 
-```lisp
+```lisp fragment
 (defmodule my-app (:use log))
 
 (start-logger)                          ; default: stdout, :info and up
@@ -1977,7 +1991,7 @@ The stock one is an `io` port + a minimum level + a filter + a formatter, so the
 *reuses* ports rather than inventing its own sink; build it with `stdout-backend` /
 `stderr-backend` / `file-backend` / `fn-backend` / `process-backend`, and add it live:
 
-```lisp
+```lisp fragment
 (add-backend (file-backend "app.log"))         ; also append to a file
 (add-backend (process-backend buffer-pid))     ; …and to a buffer-owning process
 ```
@@ -2016,7 +2030,7 @@ itself; `(check-allow :category form…)` records a deliberate exception where i
 declaration — a runtime no-op — read by the advisory checker, which then flags a
 provably wrong call against it (both the argument and the result type flow):
 
-```clojure
+```clojure fragment
 (defn area (r) (* 3.14159 r r))
 (sig area (number -> number))
 
@@ -2114,7 +2128,7 @@ error.
 ```clojure
 (defn area (r) (* 3.14159 r r))
 (sig! area (number -> number))
-(area "circle")   ;=> throws — area: argument 1 expected number, got string
+(area "circle")   ;=> RAISED area: argument 1 expected number, got :string ("circle")
 ```
 
 **Enforcement is a property of the binding, not of the declaring form** (ADR-381). The
@@ -2245,7 +2259,7 @@ child's own pid** — to hand the parent's pid in, bind it in an enclosing `let`
 queued for a later `receive` (true selective receive — no head-of-line
 blocking). Clauses may carry a `:when` guard.
 
-```clojure
+```clojure fragment
 (receive
   ([:say text]      (io/puts text))     ; clause = (pattern [:when guard] body...)
   ([:add a b]       (+ a b))
@@ -2261,7 +2275,7 @@ non-blocking poll. Because the timeout body is ordinary code, a timeout is
 (try
   (receive ([:pong] :ok)
            (after 5000 (throw [:timeout])))   ; raise a structured, catchable value
-  (catch e e))                                 ;=> [:timeout] on timeout
+  (catch e e))                                 ;=> [:timeout]   ; on timeout
 ```
 
 Messages are **copied** between processes. You can send a **closure** too: it
@@ -2317,6 +2331,7 @@ value kind, because a `ref` is already the unforgeable per-request token a reply
 carries:
 
 ```clojure
+(def r (ref))
 (%ref-deactivate r)   ;; r is a ref THIS process minted
 ```
 
@@ -2370,7 +2385,7 @@ does not get to own. `(def call …)` is yours again.)
 
 (def c (start counter 0))
 (cast c :inc)              ; fire-and-forget
-(call c :value)            ; => 1  (synchronous, 5 s default timeout)
+(call c :value)            ;=> 1  ; synchronous, 5 s default timeout
 (stop c)                   ; graceful shutdown — runs terminate, then ends the loop
 ```
 
@@ -2409,7 +2424,7 @@ receive. See "One-shot reply aliases" under Synchronous calls above.
 named state lists one block per state; `gen/start`, `gen/cast`, `gen/call` and
 `gen/stop` drive it unchanged:
 
-```clojure
+```clojure fragment
 (defstatem door (code)
   (:locked
     (cast [:digit d] :when (= d code) [:next :open code {:timeout 5000}])
@@ -2458,7 +2473,7 @@ A `{:via registry :key key}` address works wherever `gen` takes a pid: `gen/call
 the new server (a taken key stops it and answers the failure). A call to a key nobody
 holds raises; a cast to one is dropped.
 
-```clojure
+```clojure fragment
 (gen/start counter 0 {:name {:via :sessions :key [:counter 1]}})
 (gen/call {:via :sessions :key [:counter 1]} :value)
 ```
@@ -2485,7 +2500,7 @@ drop. There is no cluster-wide lock or unique name.
 `(monitor pid)` starts watching another process and returns a monitor `ref`.
 When that process dies, the watcher receives one message:
 
-```clojure
+```clojure fragment
 [:down <monitor-ref> <pid> <reason>]
 ```
 
@@ -2504,7 +2519,7 @@ watched process) and **one-shot** (it fires once). `(demonitor mref)` drops it,
 best-effort — a DOWN already queued is not recalled. Pin the ref to wait for a
 specific process's death and ignore unrelated messages:
 
-```clojure
+```clojure fragment
 (def w (spawn worker))
 (def m (monitor w))
 (receive
@@ -2557,12 +2572,12 @@ true reason, so a clean `:normal` return arrives looking like a failure.
 (proc/trap-exit true)
 
 (let (p (spawn-link :ok))                  ; child returns immediately
-  (receive ([:EXIT ^p reason] reason)))    ;=> :normal — always
+  (receive ([:EXIT ^p reason] reason)))    ;=> :normal   ; always
 
 (let (p (spawn :ok))                       ; the hand-rolled version: `link` races the child
   (receive (after 20 :settle))             ; ...lose the race (here, deliberately)
   (link p)
-  (receive ([:EXIT ^p reason] reason)))    ;=> :noproc — the :normal is gone
+  (receive ([:EXIT ^p reason] reason)))    ;=> :noproc   ; the :normal is gone
 ```
 
 That difference is not cosmetic: a supervisor whose restart policy keys off the
@@ -2588,7 +2603,7 @@ takes the returned ref.
 ```clojure
 (let ([p r] (spawn-monitor (error "boom")))
   (receive ([:down ^r _ reason] (first reason))
-    (after 500 :lost)))                    ;=> :error — always
+    (after 500 :lost)))                    ;=> :error   ; always
 ```
 
 The gap it closes is the link one exactly: `(let (p (spawn expr) r (monitor p)) …)`
@@ -2693,7 +2708,7 @@ pending timer costs no worker thread); `(cancel-timer h)` stops it, idempotently
 stays sent). An interval timer monitors its target and exits when the target
 dies, so a forgotten interval can't tick forever.
 
-```clojure
+```clojure fragment
 (def t (timer/send-interval 1000 (self) :heartbeat))
 (receive (:heartbeat (redraw)))
 (cancel-timer t)
@@ -2707,7 +2722,7 @@ the **dirty-offload OS pool** instead (ADR-144): only the calling *process* wait
 hood, so other mailbox messages stay queued), and errors rethrow at the call
 site, catchable as usual.
 
-```clojure
+```clojure fragment
 (offload file/slurp-bytes "big-archive.tar")     ; the worker keeps running others
 (offload %pbkdf2-sha256-bytes pw salt 600000 32)
 ```
@@ -2805,13 +2820,13 @@ other** — *the network is just a longer copy*. A **pid carries node identity**
 the same value addresses a process whether it's local or on a peer; `send` routes
 transparently.
 
-```clojure
+```clojure fragment
 ;; node A: name the runtime, listen, expose a process by name
-(node/start :a "127.0.0.1:9001" "secret")
+(node/start :a "127.0.0.1:9001" "a-shared-cookie-of-16+-bytes")
 (proc/register :echo (self))
 
 ;; node B: connect, reach A's :echo by name, then talk to the pid it replies with
-(node/start :b "127.0.0.1:9002" "secret")
+(node/start :b "127.0.0.1:9002" "a-shared-cookie-of-16+-bytes")
 (node/connect "a@127.0.0.1:9001")
 (send {:name :echo :node :a} [:hi (self)])
 (def peer (receive ([:pong p] p)))   ; p is a remote pid
@@ -2828,7 +2843,9 @@ transparently.
 | `(node/monitor name)` | Deliver `[:nodedown name]` when the link to `name` goes down (clean close or heartbeat timeout). |
 | `(pid? x)` | True if `x` is a process id. |
 
-The cookie is a shared secret (links are encrypted — ADR-089). One
+The cookie is a shared secret of at least 16 bytes — anyone holding it has remote eval on the
+node, so a shorter one is refused; `(node/cookie)` is a generated default (links are
+encrypted — ADR-089). One
 node per OS process. Remote `spawn`/code-shipping, distributed monitors/links,
 heartbeat node-down detection, and mesh join have all shipped — full reference:
 [distribution.md](distribution.md).
@@ -2943,8 +2960,8 @@ In the `math` module: `math/mod`  `math/rem`  `math/quot`  `math/floor`  `math/m
   collapses `-0.0` and `0.0` and reports every NaN as equal to nothing:
 
   ```lisp
-  (= -0.0 0.0)                                  ; => true
-  (= (bit/float-> -0.0) (bit/float-> 0.0))      ; => false
+  (= -0.0 0.0)                                  ;=> true
+  (= (bit/float-> -0.0) (bit/float-> 0.0))      ;=> false
   ```
 
 - An `int` argument is taken as its float value, so `(bit/float-> 1)` and
@@ -3119,7 +3136,7 @@ machinery with the stages exposed, for when the pipeline is **computed, reused, 
 your own**:
 
 ```clojure
-(seq/transduce (range 10) (comp (seq/xfilter math/odd?) (seq/xmap (fn (x) (* x x)))) + 0)   ;=> 165, one pass
+(seq/transduce (range 10) (comp (seq/xfilter math/odd?) (seq/xmap (fn (x) (* x x)))) + 0)   ;=> 165   ; one pass
 (seq/transduce (list 1 2 3) (seq/xmap inc) conj [])                      ;=> [2 3 4]
 ```
 
@@ -3143,7 +3160,7 @@ ends the run with `(seq/reduced acc)`: `transduce` returns `acc` at once, and th
 is not walked further. `seq/xtake-while` is the built-in stopping stage:
 
 ```clojure
-(seq/transduce (range 1000000) (seq/xtake-while (fn (n) (< n 3))) conj [])   ;=> [0 1 2], four stage calls
+(seq/transduce (range 1000000) (seq/xtake-while (fn (n) (< n 3))) conj [])   ;=> [0 1 2]   ; four stage calls
 (seq/transduce (range 10) (fn (rf) (fn (acc x) (if (= x 4) (seq/reduced :early) (rf acc x)))) conj [])
 ;=> :early
 ```
@@ -3210,8 +3227,8 @@ closure: put a `(sig …)` beside the `def` to give its callers a type.
 (map (list 1 2 3) inc)                      ;=> (2 3 4)
 (seq/filter (list -1 2 -3 4) math/positive?) ;=> (2 4)
 (seq/reject (list -1 2 -3 4) math/positive?) ;=> (-1 -3)
-(mapv (list 1 2 3) inc)                     ;=> [2 3 4]   (vector result)  ; `mapv` is BARE
-(seq/filterv (range 5) math/even?)          ;=> [0 2 4]   (vector result)
+(mapv (list 1 2 3) inc)                     ;=> [2 3 4]   ; vector result; `mapv` is BARE
+(seq/filterv (range 5) math/even?)          ;=> [0 2 4]   ; vector result
 (reduce (list 1 2 3 4) 0 +)                 ;=> 10
 (apply + (list 1 2 3))                      ;=> 6
 ```
@@ -3272,7 +3289,7 @@ Every operation whose **subject is a string** lives in the `string` module
 Bare in the prelude — these operate on *any* collection or bridge a string to
 another type, so they are **not** string-library ops:
 `str`  `pr-str`  `index-of`  `includes?`  `string/->number`
-`string/->symbol`  `->fixed`  `format`  `fmt`  `string/display-width`
+`string/->symbol`  `->fixed`  `string/format`  `string/interp`  `string/display-width`
 
 - `str` concatenates the *display* form of its args; `pr-str` returns the
   *readable* form of one value.
@@ -3357,24 +3374,24 @@ another type, so they are **not** string-library ops:
   `%%` (literal `%`). A width before any of them right-aligns in a field (`%8d`, `%10s`,
   `%8.2f`), `0` zero-fills (`%02x`), and `-` left-aligns (`%-10s`) — ADR-379:
   `(string/format "%-6s|%6.2f|%03d" "ab" 3.14159 7)` → `"ab    |  3.14|007"`.
-- `fmt` is **string interpolation** (a macro): `(fmt "x = {x}, y = {(math/->fixed y 2)}")`
+- `string/interp` is **string interpolation** (a macro): `(string/interp "x = {x}, y = {(math/->fixed y 2)}")`
   splices each `{expr}` hole's value between the literal text, lowering to a plain
   `(str …)` — zero runtime cost, so it is just a terser `str`. `{{`/`}}` are literal
-  braces; braces nest inside a hole (`(fmt "m={ {:a 1} }")`). Prefer it over
+  braces; braces nest inside a hole (`(string/interp "m={ {:a 1} }")`). Prefer it over
   quote-chopped `str` wherever text interleaves values, including `error` messages:
-  `(error (fmt "index out of range: {i}"))`.
+  `(error (string/interp "index out of range: {i}"))`.
   An unknown specifier or a truncated one errors; a missing arg renders as
   `nil`, extra args are ignored.
 
 ```clojure
 (string/split "a,b,c" ",")      ;=> ("a" "b" "c")
-(string/join "-" (list "x" "y" "z"))   ;=> "x-y-z"
+(string/join (list "x" "y" "z") "-")   ;=> "x-y-z"
 (string/replace "one fish two fish" "fish" "cat")  ;=> "one cat two cat"
 (string/upper (string/trim "  hi  "))         ;=> "HI"
 (string/->number "3.5")          ;=> 3.5
 ```
 
-Only `string/upper`/`string/lower` (Unicode tables), `string/->number` (strict parse-or-nil),
+Only `string/upper`/`string/lower` (Unicode tables), `string/->number` (strict parse-or-failure),
 `->fixed` (float formatting), and the O(n) char-access mechanisms
 (`string/split`, `string/->codepoints`, `string-span`/`string-span-until`,
 `%str-index-of` — one native pass each, where the pure-Brood equivalent is a
@@ -3397,9 +3414,9 @@ linear on any text.
 Three functions, and which one you want depends on the *type you need*, not on the text:
 
 ```clojure
-(string/->number "42")      ;=> 42      an int
-(string/->number "3.14")    ;=> 3.14    a float
-(decimal/of "1.50")         ;=> 1.50M   an exact decimal
+(string/->number "42")      ;=> 42      ; an int
+(string/->number "3.14")    ;=> 3.14    ; a float
+(decimal/of "1.50")         ;=> 1.50M   ; an exact decimal
 ```
 
 **Text it cannot read yields a `failure`, not `nil`** (ADR-310) — a truthy value naming
@@ -3407,10 +3424,11 @@ the offending input, so it cannot vanish into a default unnoticed. `decimal/of` 
 exception and *raises*: a parse failing is data, a constructor failing is a bug.
 
 ```clojure
-(string/->number "3abc")                 ;=> a failure — no partial parse
+(error-message (string/->number "3abc"))   ;=> "string/->number: not a number: \"3abc\""   ; no partial parse
 (failure? (string/->number "3abc"))      ;=> true
+(def s "3abc")
 (let (n (string/->number s))             ; defaulting, stated explicitly
-  (if (failure? n) 0 n))
+  (if (failure? n) 0 n))                  ;=> 0
 ```
 
 **`string/->number` decides int-vs-float from the digits**, so `"3"` gives you an `int`
@@ -3432,11 +3450,11 @@ alone, no prefix:
 (string/->number "1F" 16)     ;=> 31
 (string/->number "1010" 2)    ;=> 10
 (string/->number "-ff" 16)    ;=> -255
-(string/->number "0x1f" 16)   ;=> #failure{…}   ; the prefix is reader syntax, not digits
+(failure? (string/->number "0x1f" 16))   ;=> true   ; the prefix is reader syntax, not digits
 ```
 
-A radix outside 2–36 **raises** — that is a bug in the caller, and `nil` could not be told
-apart from text that simply did not parse.
+A radix outside 2–36 **raises** — that is a bug in the caller, and a failure could not be
+told apart from text that simply did not parse.
 
 **`decimal/of` for money and anything that must not round.** `1.50M` is the literal form,
 so reach for the function when the digits arrive as data:
@@ -3446,21 +3464,21 @@ so reach for the function when the digits arrive as data:
 (+ 0.1 0.2)                                 ;=> 0.30000000000000004
 ```
 
-**The two fail differently, on purpose.** `string/->number` answers `nil` for anything it
-cannot parse and never throws — a parse failing is data, and `(or (string/->number s) 0)`
-is the idiom. `decimal/of` **throws** on malformed input, because a constructor handed
+**The two fail differently, on purpose.** `string/->number` answers a failure for anything it
+cannot parse and never throws — a parse failing is data, and testing it with `failure?` (as
+above) is the idiom. `decimal/of` **throws** on malformed input, because a constructor handed
 something that is not a number is a bug, not an outcome. Both are strict about the *whole*
 string:
 
 ```clojure
-(string/->number "  7 ")   ;=> nil   ; trim first
-(string/->number "1/2")    ;=> nil   ; a ratio literal is not a parse
-(string/->number "")       ;=> nil
+(failure? (string/->number "  7 "))   ;=> true   ; trim first
+(failure? (string/->number "1/2"))    ;=> true   ; a ratio literal is not a parse
+(failure? (string/->number ""))       ;=> true
 ```
 
-Its signature is `(string -> number | nil)`, so handing the result straight to something
-that needs a number is what `nest check --strict` flags. The answer is the `or` default
-above or a `nil?` guard.
+Its signature is `(string &optional int -> number | failure)`, so handing the result straight
+to something that needs a number is what `nest check --strict` flags. The answer is the
+`failure?` default above.
 
 ### I/O
 `io/write`  `io/puts`  `io/inspect`  `with-out-str`  `with-err-str`
@@ -3505,7 +3523,7 @@ The byte-producing write boundaries — `tcp-send`, `proc-send`, `file/spit`,
 Describe the output as a tree and nothing is copied until the single flatten at
 the write:
 
-```lisp
+```lisp fragment
 (tcp-send sock [status-line headers "\r\n\r\n" body])   ; no (str …) accumulation
 (bytes-concat ["ab" ["cd" nil "e"] (bytes 102) 103])    ; => #b"abcdefg"
 ```
@@ -3628,9 +3646,9 @@ any `receive`, and never sees a half-loaded module.
 
 ```clojure
 (reflect/eval (reflect/read-string "(+ 40 2)"))  ;=> 42
-(reflect/read-all "(a) (b) (c)")         ;=> ((a) (b) (c))  — every form, vs reflect/read-string's first
-(reflect/eval-string "(def x 1) (+ x 1)");=> 2  — read+eval all forms, last value wins
-(reflect/load "some-file.blsp")          ; evaluate a file into the global environment
+(reflect/read-all "(a) (b) (c)")         ;=> ((a) (b) (c))  ; every form, vs reflect/read-string's first
+(reflect/eval-string "(def x 1) (+ x 1)") ;=> 2  ; read+eval all forms, last value wins
+(reflect/load "some-file.blsp")          ;~> the file's last value, its definitions now in the global environment
 ```
 
 `reflect/read-string` returns the *first* form in a string; `reflect/read-all` returns *all* of
@@ -3647,10 +3665,10 @@ that rolls a reload back and must forget what the rejected version added:
 
 ```clojure
 (reflect/eval-string "(defmodule shapes) (defn map (xs f) :mine)")
-(reflect/undef 'shapes/map)   ;=> true   — a binding went away
+(reflect/undef 'shapes/map)   ;=> true   ; a binding went away
 (bound? 'shapes/map)          ;=> false
-(reflect/undef 'shapes/map)   ;=> false  — nothing was bound
-(reflect/undef 'map)          ; error: a name Brood ships is reserved, as for `def`
+(reflect/undef 'shapes/map)   ;=> false  ; nothing was bound
+(reflect/undef 'map)          ;=> RAISED reflect/undef: `map` is a reserved name — it ships with Brood and cannot be removed
 ```
 
 The symbol is the global's **full** name taken as data — `'shapes/map`, not a bare name
@@ -3692,7 +3710,7 @@ separate namespace axis in the core: `foo/name` is just one interned symbol (`/`
 is an ordinary symbol character), so the runtime, hot reload, and `send`/copy are
 unchanged.
 
-```clojure
+```clojure fragment
 (defmodule text "buffer text ops")
 (defn insert (buf i s) …)        ; defines text/insert
 (defn append (buf s) (insert buf (len buf) s))   ; bare `insert` → text/insert
@@ -3751,7 +3769,7 @@ all — the worst failure mode for a header that governs imports *and* privacy. 
 silence also hid four std modules whose `(:doc "…")` header dropped their module
 docstring on the floor.)
 
-```clojure
+```clojure fragment
 (defmodule editor "the editor core"
   (:use editor/buffer)                 ; refer buffer's public names bare
   (:use text :only [insert]))  ; refer just text/insert as `insert`
@@ -3849,7 +3867,7 @@ redefined.
 (doc add)              ;=> "Sum the arguments."
 (arglist add)          ;=> (a b & more)        ; mirrors the source surface
 (reflect/arglists (fn ((a) a) ((a b) b)))   ;=> ((a) (a b))   ; every arm; arglist shows the last
-(bound? 'add)          ;=> true   (quote the name; bound? takes a symbol)
+(bound? 'add)          ;=> true   ; quote the name: bound? takes a symbol
 (bound? 'no-such)      ;=> false
 (includes? (reflect/global-names) 'map)  ;=> true      ; every global, for completion
 ```
@@ -3859,10 +3877,10 @@ two disagree. A builtin from a feature this binary lacks is still bound and stil
 raises when called, so ask the build instead (ADR-197):
 
 ```clojure
-(system/features)             ;=> [:gui :clipboard :jit :treesit :wasm :dev-tools]
-(system/feature? :gui)        ;=> true    ; can this binary open a window at all?
+(system/features)             ;~> [:gui :clipboard :jit :treesit :wasm :dev-tools]   ; this build's
+(system/feature? :gui)        ;~> true    ; can this binary open a window at all?
 (system/feature? :nonesuch)   ;=> false   ; unknown names are false, not an error
-(bound? 'gui-open)     ;=> true    ; …even on a build with no gui backend
+(bound? '%gui-open)    ;=> true    ; …even on a build with no gui backend
 ```
 
 `system/features` reports what was **compiled in**, not what will work right now — a `gui`
@@ -3874,10 +3892,10 @@ For **discovery** — finding what exists rather than describing a name you
 already know (the answer to "is there an RNG?" in one call):
 
 ```clojure
-(reflect/global-names)           ;=> (… sorted list of every global …)
-(apropos "rand")         ;=> (rand-float rand-int rand-seed …)  ; names containing "rand"
-(apropos :shuffle)       ;=> (shuffle shuffle--acc)             ; string/symbol/keyword pattern
-(doc-search "random")    ;=> ([rand-int "…"] [sample "…"] …)    ; matches docstrings, not names
+(reflect/global-names)           ;~> (… sorted list of every global …)
+(apropos "rand")         ;~> (crypto/random-bytes … http/random-token)  ; loaded names containing "rand"
+(apropos :shuffle)       ;~> (seq/shuffle)                      ; string/symbol/keyword pattern
+(doc-search "random")    ;~> ([seq/sample "…"] [seq/shuffle "…"] …)    ; matches docstrings, not names
 ```
 
 These three are Brood over `reflect/global-names`/`doc` (`std/prelude/tools.blsp`), and are
@@ -3947,7 +3965,7 @@ The following modules are also opt-in and live under `std/net/` and `std/tool/`.
 Load each the same way — reference it qualified (`tcp/tcp-listen`, which
 auto-loads) or `(:use name)` for bare names:
 
-```clojure
+```clojure fragment
 tcp      ; tcp-listen / tcp-connect / tcp-send / tcp-close … (thin wrapper over the net primitives)
 http     ; http-get / http-post / http-request / serve / stream-response
 sse      ; Server-Sent Events: connect (any method/headers/body, http or https) / frame / emit
@@ -3973,7 +3991,7 @@ An instrumentation seam (ADR-106), written in Brood. Code
 attached to that event run on each emit — but in an **isolated listener process**, so
 a handler can never affect the emitting process:
 
-```clojure
+```clojure fragment
 (defmodule my-app (:use telemetry) (:use log))
 
 (start-telemetry)                                  ; spawn the listener once; supervise it

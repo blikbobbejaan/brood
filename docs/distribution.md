@@ -10,7 +10,7 @@
 
 ## What you can do
 
-```lisp
+```lisp fragment
 ;; --- node A (same machine) ------------------------------------------------
 (node/start :a)                               ; local Unix-socket node, by name
 (proc/register :echo (self))                       ; expose this process by name
@@ -111,7 +111,7 @@ that arrives in that window is **dropped**, not queued: `send` is fire-and-forge
 registered name that no process holds is a silent no-op by design (the right semantics — the
 name may legitimately be gone).
 
-```brood
+```brood fragment
 ;; wrong — the listener is open before :echo exists
 (node/start :b "127.0.0.1:9001" cookie)
 (proc/register :echo (spawn (serve)))

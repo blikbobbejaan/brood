@@ -13,7 +13,7 @@ A different, independent problem from exhaustiveness (ADR-118/120):
 exhaustiveness asks "did every declared value get a clause?"; redundancy asks
 "does any clause duplicate one already handled?" — e.g.
 
-```lisp
+```lisp fragment
 (match status
   (:ok "good")
   (:ok "also good?"))   ; dead — the first :ok clause always wins
@@ -65,7 +65,7 @@ duplicate `if`.
 structural on the compiled `if`/`%eq` shape, it fires on a hand-written chain
 too:
 
-```lisp
+```lisp fragment
 (if (%eq x 5)
   :a
   (if (%eq x 5)   ; flagged — same as if this came from a match
@@ -91,7 +91,7 @@ Verifying this against the whole `std/` + `tests/` corpus surfaced exactly one
 new warning: `tests/pattern_matching_test.blsp`'s test named **"first matching
 clause wins"** —
 
-```lisp
+```lisp fragment
 (test "first matching clause wins"
   (assert= (match 1 (1 :first) (1 :second) (_ :z)) :first))
 ```

@@ -17,7 +17,7 @@ types — `(map keyword int)` says every value in the map is an `int`. Most
 config/options/record-shaped maps aren't uniform: different keys carry different
 types, and some keys are optional.
 
-```lisp
+```lisp fragment
 (sig! make-window ((record :title string :width int) -> any))
 (make-window {:title "main"})              ; missing :width — rejected
 (make-window {:title 42 :width 800})       ; :title is not a string — rejected
@@ -64,7 +64,7 @@ inference*, below, does read `{…}` directly — but that's inferring a type
 
 `std/prelude/core.blsp`, alongside the existing `map` branch:
 
-```lisp
+```lisp fragment
 ;; in the (pair? t) / (cond ...) branch of type-matches?:
 (%eq h 'record)
   (and (map? v)

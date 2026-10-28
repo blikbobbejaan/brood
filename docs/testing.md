@@ -39,7 +39,7 @@ bare `require` only *loads* a module — it imports nothing — so `describe`/`t
 `defmodule` header both loads and imports, which is what makes the macros read
 bare. Add a `(:use …)` per module under test too:
 
-```lisp
+```lisp fragment
 (defmodule parser-test (:use test) (:use parser))
 ```
 
@@ -126,7 +126,7 @@ explicit file list). The complement of `--failed`: `--failed` re-runs what *brok
 
 `:skip` on a `test` or a `describe` registers the case but never runs its body:
 
-```lisp
+```lisp fragment
 (test "needs a live database" :skip (assert= (db-ping) :pong))
 (describe "postgres integration" :skip ...)          ; skips every test in the group
 ```
@@ -139,7 +139,7 @@ modifiers (`:serial`, `:isolated`, `:tags`) in any order.
 
 Output is **plain text when captured** (a pipe, `cargo test`, CI, or an LLM
 reading the run) and **coloured only when stdout is an interactive terminal**
-(via the `stdout-tty?` primitive) — so a captured run is never littered with ANSI
+(via `os/stdout-tty?`) — so a captured run is never littered with ANSI
 escape codes. `tests/suite_failures_test_ignore.blsp` is a runnable demo of the failure
 rendering (`./bin/cli tests/suite_failures_test_ignore.blsp`) — the `_ignore` suffix keeps
 the suite from discovering a file that is *meant* to fail.
@@ -148,7 +148,7 @@ the suite from discovering a file that is *meant* to fail.
 the error it raised — a built-in error as its message string, a `(throw v)` as
 `v` — or `nil` if nothing was raised. Pair it with `assert=` to pin exact output:
 
-```lisp
+```lisp fragment
 (assert= (error-of (/ 1 0)) "runtime error: division by zero")
 (assert= (error-of (+ 1 2)) nil)            ; also a plain "did it raise?" probe
 ```
@@ -156,18 +156,18 @@ the error it raised — a built-in error as its message string, a `(throw v)` as
 ### Property-based testing
 
 `(check-property n gen pred)` runs `n` trials. Each draws a value from `gen` — a
-`seed -> [value next-seed]` function over the seedable PRNG (`rand-int`,
-`rand-float`, `shuffle`, `sample`) — and asserts `(pred value)`. It's
+`seed -> [value next-seed]` function over the seedable PRNG (`rand/int`,
+`rand/float`, `seq/shuffle`, `seq/sample`) — and asserts `(pred value)`. It's
 **deterministic** (a fixed start seed, threaded), so a failure reproduces; on the
 first counterexample it fails with the value, the trial number, and the seed that
 produced it. Sampling many inputs catches edge cases a single hand-written
 example misses.
 
-```lisp
-(test "rand-int stays in range"
-  (check-property 200 (fn (s) (rand-int s 1000)) (fn (x) (and (>= x 0) (< x 1000)))))
+```lisp fragment
+(test "rand/int stays in range"
+  (check-property 200 (fn (s) (rand/int s 1000)) (fn (x) (and (>= x 0) (< x 1000)))))
 (test "shuffle preserves length"
-  (check-property 50 (fn (s) (shuffle s [1 2 3 4 5])) (fn (sh) (= (count sh) 5))))
+  (check-property 50 (fn (s) (seq/shuffle s [1 2 3 4 5])) (fn (sh) (= (count sh) 5))))
 ```
 
 ## Execution model — parallel by default
@@ -176,7 +176,7 @@ Every test runs concurrently, **each in its own process** (`spawn`/`receive`),
 on its own OS thread. Two opt-outs, written as a keyword right after the group or
 test name:
 
-```lisp
+```lisp fragment
 (describe "fast, independent"        ...)  ; default: every test in parallel
 (describe "writes a shared file" :serial   ...)  ; its tests run one-at-a-time,
                                             ;   in one worker, but alongside
@@ -242,7 +242,7 @@ A `describe` or `test` may carry `:tags [kw …]` before its body, alongside the
 `nest test --only` / `--exclude` / `--include` select on — the ExUnit `@tag`
 analogue:
 
-```lisp
+```lisp fragment
 (describe "db writes" :serial :tags [:db :slow]
   (test "inserts" ...)                        ; inherits :db :slow
   (test "reconnects" :tags [:flaky] ...))     ; :db :slow :flaky
@@ -349,7 +349,7 @@ In a project, run the whole suite with **`nest test`** (or `make suite`, or
 `run-tests` once (`nest test` passes `:trace`). `run-tests` itself takes the flags
 below — forwarded by the runner, and usable directly if you call it yourself:
 
-```lisp
+```lisp fragment
 (run-tests)            ; run all, print failures + a summary
 (run-tests :trace)     ; print `▶ group › name` as each test STARTS (else: progress dots)
 (run-tests :slow)      ; after the summary, list the slowest 5 tests
