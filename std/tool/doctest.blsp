@@ -516,11 +516,20 @@ faults on a last line the parent reads back.
   (io/puts (str *faults-prefix* (pr-str (block-faults label start source)))))
 
 (defn- brood-beside (exe)
-  ;; A `brood` binary next to `exe` or one directory up — where cargo keeps the binaries a
-  ;; test harness in `target/<profile>/deps` was built with — or on PATH; nil if none.
-  (let (here (path/dirname exe)
-        candidates [(path/join here "brood") (path/join (path/dirname here) "brood")])
-    (or (first (seq/filter candidates file/exists?)) (os/which "brood"))))
+  ;; A `brood` binary in `exe`'s directory or one of its five nearest ancestors — cargo keeps
+  ;; the binaries in `target/<profile>/`, a harness runs from `target/<profile>/deps/`, and
+  ;; a cross-target build runs the suite from `target/<triple>/release/build/brood/<hash>/out/`
+  ;; — or on PATH; nil if none. Only a regular file counts: one of those ancestors is a
+  ;; directory called `brood`.
+  (or (brood-in-ancestors (path/dirname exe) 6) (os/which "brood")))
+
+(defn- brood-in-ancestors (dir levels)
+  (let (candidate (path/join dir "brood")
+        parent (path/dirname dir))
+    (cond
+      (file/regular? candidate) candidate
+      (or (<= levels 1) (= parent dir)) nil
+      else (brood-in-ancestors parent (dec levels)))))
 
 (defn- child-command (file)
   ;; Run `file` with the binary running now when it is `nest` or `brood`: `nest run` keeps a

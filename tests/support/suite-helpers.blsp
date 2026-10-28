@@ -57,11 +57,20 @@ shape a fontify tiler relies on."
 ;; ---- binaries ---------------------------------------------------------------------
 
 (defn sibling-binary (name)
-  "The path of the binary `name` beside the running one or one directory up (a test
-binary runs from `target/<profile>/deps/`, the binaries sit in `target/<profile>/`), or
-nil when neither exists."
-  (let (dir (path/dirname (or (os/exe-path) "")))
-    (first (seq/filter [(path/join dir name) (path/join dir ".." name)] file/exists?))))
+  "The path of the binary `name` in the running binary's directory or one of its five
+nearest ancestors, or nil. A test binary runs from `target/<profile>/deps/` with the binaries
+in `target/<profile>/`, but a cross-target build (the sanitizer's) runs the suite from
+`target/<triple>/release/build/brood/<hash>/out/`, four levels below them. Only a regular
+file counts: one of those ancestors is a directory called `brood`."
+  (binary-in-ancestors (path/dirname (or (os/exe-path) "")) name 6))
+
+(defn- binary-in-ancestors (dir name levels)
+  (let (candidate (path/join dir name)
+        parent (path/dirname dir))
+    (cond
+      (file/regular? candidate) candidate
+      (or (<= levels 1) (= parent dir)) nil
+      else (binary-in-ancestors parent name (dec levels)))))
 
 ;; ---- mailbox backpressure ---------------------------------------------------------
 
