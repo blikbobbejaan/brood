@@ -26,6 +26,18 @@
 pub const RENAMES: &[(&str, &str, &str)] = &[
     // ADR-506 — the bare namespace is the language: syntax, a measured core and the
     // built-in kinds. Everything else is qualified by its family.
+    ("cdddr", "list/cdddr", "ADR-506"),
+    ("cddar", "list/cddar", "ADR-506"),
+    ("cdadr", "list/cdadr", "ADR-506"),
+    ("cdaar", "list/cdaar", "ADR-506"),
+    ("caddr", "list/caddr", "ADR-506"),
+    ("cadar", "list/cadar", "ADR-506"),
+    ("caadr", "list/caadr", "ADR-506"),
+    ("caaar", "list/caaar", "ADR-506"),
+    ("cddr", "list/cddr", "ADR-506"),
+    ("cdar", "list/cdar", "ADR-506"),
+    ("cadr", "list/cadr", "ADR-506"),
+    ("caar", "list/caar", "ADR-506"),
     ("complement", "combinator/complement", "ADR-506"),
     ("constantly", "combinator/constantly", "ADR-506"),
     ("juxt", "combinator/juxt", "ADR-506"),

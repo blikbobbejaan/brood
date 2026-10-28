@@ -576,6 +576,8 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // fnil, memoize. Defined in the prelude under these names; this file declares the
     // module they belong to. identity, partial and comp stay bare.
     embedded_module!("combinator", "std/combinator.blsp"),
+    // The pair accessors caar … cdddr (ADR-506), defined in the prelude under these names.
+    embedded_module!("list", "std/list.blsp"),
     embedded_module!("bit", "std/bit.blsp"),
     // Exact base-10 decimals — the `bit` story again: kernel primitives registered as
     // `decimal/*`, this module declares the namespace. `decimal?` stays bare with the

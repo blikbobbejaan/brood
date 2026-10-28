@@ -168,65 +168,65 @@ itself (a type is a set of runtime tags): it does not walk the tail, so an impro
 ;; read inside out. These are Lisp's names for them, two and three deep: each `a` a
 ;; `first` and each `d` a `rest`, read right to left as they apply, so `cadr` is the first
 ;; of the rest. Over `first` and `rest`, so over every collection those take.
-(defn caar (coll)
+(defn list/caar (coll)
   "The first of the first: `(first (first coll))`.
 
-    (caar '((1 2) 3))    ;=> 1"
+    (list/caar '((1 2) 3))    ;=> 1"
   (first (first coll)))
-(defn cadr (coll)
+(defn list/cadr (coll)
   "The first of the rest, the second item: `(first (rest coll))`.
 
-    (cadr '(1 2 3))      ;=> 2"
+    (list/cadr '(1 2 3))      ;=> 2"
   (first (rest coll)))
-(defn cdar (coll)
+(defn list/cdar (coll)
   "The rest of the first: `(rest (first coll))`.
 
-    (cdar '((1 2) 3))    ;=> (2)"
+    (list/cdar '((1 2) 3))    ;=> (2)"
   (rest (first coll)))
-(defn cddr (coll)
+(defn list/cddr (coll)
   "The rest of the rest: everything from the third item on.
 
-    (cddr '(1 2 3))      ;=> (3)"
+    (list/cddr '(1 2 3))      ;=> (3)"
   (rest (rest coll)))
-(defn caaar (coll)
+(defn list/caaar (coll)
   "`(first (first (first coll)))`.
 
-    (caaar '(((1)) 2))   ;=> 1"
+    (list/caaar '(((1)) 2))   ;=> 1"
   (first (first (first coll))))
-(defn caadr (coll)
+(defn list/caadr (coll)
   "`(first (first (rest coll)))`: the first of the second item.
 
-    (caadr '(1 (2 3)))   ;=> 2"
+    (list/caadr '(1 (2 3)))   ;=> 2"
   (first (first (rest coll))))
-(defn cadar (coll)
+(defn list/cadar (coll)
   "`(first (rest (first coll)))`: the second of the first item.
 
-    (cadar '((1 2) 3))   ;=> 2"
+    (list/cadar '((1 2) 3))   ;=> 2"
   (first (rest (first coll))))
-(defn caddr (coll)
+(defn list/caddr (coll)
   "`(first (rest (rest coll)))`, the third item.
 
-    (caddr '(1 2 3))     ;=> 3"
+    (list/caddr '(1 2 3))     ;=> 3"
   (first (rest (rest coll))))
-(defn cdaar (coll)
+(defn list/cdaar (coll)
   "`(rest (first (first coll)))`.
 
-    (cdaar '(((1 2)) 3)) ;=> (2)"
+    (list/cdaar '(((1 2)) 3)) ;=> (2)"
   (rest (first (first coll))))
-(defn cdadr (coll)
+(defn list/cdadr (coll)
   "`(rest (first (rest coll)))`: the rest of the second item.
 
-    (cdadr '(1 (2 3)))   ;=> (3)"
+    (list/cdadr '(1 (2 3)))   ;=> (3)"
   (rest (first (rest coll))))
-(defn cddar (coll)
+(defn list/cddar (coll)
   "`(rest (rest (first coll)))`: the first item from its third on.
 
-    (cddar '((1 2 3) 4)) ;=> (3)"
+    (list/cddar '((1 2 3) 4)) ;=> (3)"
   (rest (rest (first coll))))
-(defn cdddr (coll)
+(defn list/cdddr (coll)
   "`(rest (rest (rest coll)))`: everything from the fourth item on.
 
-    (cdddr '(1 2 3 4))   ;=> (4)"
+    (list/cdddr '(1 2 3 4))   ;=> (4)"
   (rest (rest (rest coll))))
 
 ;; ---- sequence operations ----

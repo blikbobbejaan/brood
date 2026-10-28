@@ -1,0 +1,14 @@
+;; std/list.blsp — the classic pair accessors (ADR-506).
+;;
+;; `list/cadr` is `(first (rest x))` and so on, two and three levels deep. They are defined
+;; in the prelude under these names; this file declares the module they belong to.
+;; `(:use list)` brings them back bare. The module named `list` and the bare `list` function
+;; are separate, as the `map` module and `map` are.
+
+(defmodule list
+  "The pair accessors `list/caar` … `list/cdddr`: each `a` takes a `first`, each `d` a
+`rest`, read right to left.
+
+    (list/cadr '(1 2 3))       ;=> 2
+    (list/cddr '(1 2 3))       ;=> (3)
+    (list/caddr '(1 2 3))      ;=> 3")
