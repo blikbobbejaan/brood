@@ -244,8 +244,8 @@ forms into the eval rather than fail cleanly."
     (if (not (symbol? sym))
       (io/puts (str "\e[90m(usage: ,doc <name>)\e[0m"))
       (try
-        (let (d (reflect/eval-string (str "(doc " name ")"))
-              a (reflect/eval-string (str "(arglist " name ")")))
+        (let (d (reflect/eval-string (str "(reflect/doc " name ")"))
+              a (reflect/eval-string (str "(reflect/arglist " name ")")))
           (io/puts (str "\e[36m(" name (if a (str " " (string/join (map a str) " ")) "") ")\e[0m"))
           (io/puts (if d (str "\e[90m" d "\e[0m") "\e[90m(no documentation)\e[0m")))
         (catch e (io/puts (str "\e[90m(no such name: " name ")\e[0m")))))))
@@ -285,9 +285,11 @@ forms into the eval rather than fail cleanly."
   (if (= pattern "")
     (io/puts "\e[90m(usage: ,apropos <pattern>)\e[0m")
     (let (hits (try
-                 (apropos pattern)
+                 (reflect/apropos pattern)
                  (catch e
-                   (do (io/puts (str "\e[90m(apropos failed: " (error-message e) ")\e[0m")) nil))))
+                   (do
+                     (io/puts (str "\e[90m(reflect/apropos failed: " (error-message e) ")\e[0m"))
+                     nil))))
       (if (empty? hits)
         (io/puts (str "\e[90m(nothing matching " pattern ")\e[0m"))
         (fold hits nil (fn (_ s) (io/puts (str "\e[36m" s "\e[0m"))))))))
@@ -297,7 +299,7 @@ forms into the eval rather than fail cleanly."
   (if (= query "")
     (io/puts "\e[90m(usage: ,search <words>)\e[0m")
     (let (hits (try
-                 (doc-search query)
+                 (reflect/doc-search query)
                  (catch e
                    (do (io/puts (str "\e[90m(search failed: " (error-message e) ")\e[0m")) nil))))
       (if (empty? hits)
@@ -322,7 +324,7 @@ form that is unreadable on one line."
     (io/puts "\e[90m(usage: ,expand <form>)\e[0m")
     (try
       (let (form (reflect/read-first expr)
-            out (if all (macroexpand form) (macroexpand-1 form))
+            out (if all (reflect/macroexpand form) (reflect/macroexpand-1 form))
             ;; `format` is required lazily — pretty-printing an expansion is worth a
             ;; module load the first time you ask, but not on every REPL boot.
             text (try

@@ -14,7 +14,7 @@
     (vector? form) (fold (seq form) nil (fn (found f) (or found (receive-call f))))
     else nil))
 
-(defn- matcher-of (form) (second (receive-call (macroexpand form))))
+(defn- matcher-of (form) (second (receive-call (reflect/macroexpand form))))
 
 ;; A spec is a keyword naming the patterns, or `[key pin…]` when it pins; a closure is a
 ;; `(fn …)` form.

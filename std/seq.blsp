@@ -256,7 +256,7 @@ it throws a `%reduced` record that `transduce` catches and unwraps.
 
     (seq/reduced? (try (seq/reduced 1) (catch e e)))   ;=> true
     (seq/reduced? [:reduced 1])                         ;=> false"
-  (and (record? x) (= (record-id x) :seq/%reduced)))
+  (and (record? x) (= (reflect/record-id x) :seq/%reduced)))
 
 ;; ---- stateful stages (ADR-421) -----------------------------------------------------
 ;; A stage that counts, windows or remembers needs state across inputs, and Brood's one
@@ -356,7 +356,7 @@ raises, since it has no end. For values that cross a `send`, use `std/stream`.
     (seq/transduce (seq/iterate 1 inc) (seq/xtake-while (fn (n) (< n 4))) + 0)   ;=> 6"
   (%iterate x f))
 
-(defn- iterate? (x) (and (record? x) (= (record-id x) :seq/%iterate)))
+(defn- iterate? (x) (and (record? x) (= (reflect/record-id x) :seq/%iterate)))
 
 (impl Seqable
   seq/%iterate

@@ -24,11 +24,11 @@
     (record? {:a 1}) ;=> false"
   (if (and (map? x) (get x :__id__)) true false))
 
-(defn record-id (x)
+(defn reflect/record-id (x)
   "The nominal id (`module/name` keyword) of record `x`, or nil if `x` is not a record.
   Unlike `%identity-of`, never falls back to `type-of`.
 
-    (record-id {:a 1}) ;=> nil"
+    (reflect/record-id {:a 1}) ;=> nil"
   (if (record? x) (get x :__id__) nil))
 
 (defn fields (x)
@@ -50,37 +50,37 @@
   "True if `x` is a FIFO queue (`std/queue`) — by identity, not by shape.
 
     (queue? (list 1 2))   ;=> false"
-  (%eq (record-id x) :queue/queue))
+  (%eq (reflect/record-id x) :queue/queue))
 
 (defn pq? (x)
   "True if `x` is a min-priority queue (`std/pq`) — by identity, not by shape.
 
     (pq? [1 2 3])   ;=> false"
-  (%eq (record-id x) :pq/pq))
+  (%eq (reflect/record-id x) :pq/pq))
 
 (defn multimap? (x)
   "True if `x` is a multi-valued map (`std/multimap`) — by identity, not by shape.
 
     (multimap? {:a 1})   ;=> false"
-  (%eq (record-id x) :multimap/multimap))
+  (%eq (reflect/record-id x) :multimap/multimap))
 
 (defn datetime? (x)
   "True if `x` is a datetime — a date *and* a time-of-day (`std/datetime`) — by identity.
 
     (datetime? 42)   ;=> false"
-  (%eq (record-id x) :datetime/datetime))
+  (%eq (reflect/record-id x) :datetime/datetime))
 
 (defn date? (x)
   "True if `x` is a date with no time component (`std/datetime`) — by identity.
 
     (date? (datetime/today))   ;=> true"
-  (%eq (record-id x) :datetime/date))
+  (%eq (reflect/record-id x) :datetime/date))
 
 (defn time-of-day? (x)
   "True if `x` is a time-of-day with no date component (`std/datetime`) — by identity.
 
     (time-of-day? 42)   ;=> false"
-  (%eq (record-id x) :datetime/time-of-day))
+  (%eq (reflect/record-id x) :datetime/time-of-day))
 
 ;; ---- ability impl registration and dispatch -----------------------------------
 
@@ -134,8 +134,8 @@ resolution; `%impl-for` is what picks the winner."
 
 (defn- %impl-fn-arity (f)
   "The impl fn `f`'s shape as `[fixed-count variadic?]` — the number of fixed params (before
-  any `&`) and whether it takes a `&`-rest — read from `(arglist f)`."
-  (let (params (arglist f)
+  any `&`) and whether it takes a `&`-rest — read from `(reflect/arglist f)`."
+  (let (params (reflect/arglist f)
         fixed (count (seq/take-while params (fn (s) (not (= s '&))))))
     [fixed (includes? params '&)]))
 
@@ -536,8 +536,8 @@ which is meaningless for a rope, so falling through unconditionally would swap a
                           ; a *constant* [ability op] key — a quoted literal, built once
                           op-key (list 'quote [aname op-name])
                           ; gensym'd temporaries so an op arg named `k`/`f` can't be captured
-                          id-sym (gensym)
-                          impl-sym (gensym)
+                          id-sym (reflect/gensym)
+                          impl-sym (reflect/gensym)
                           ; the declared `:-> RET`, checked at every call when contracts are
                           ; armed — HERE, in the op, not around each impl (KI-182): an impl
                           ; stays the thin closure it was written as, so `(impl Port :native
@@ -623,7 +623,7 @@ run time from a value the checker never read. Returns `value` so it can wrap a b
 error is a `:blame :callee` contract error, like a function's own result mismatch."
   ;; The kernel first: a base type or a remembered verdict answers without the
   ;; `type-matches?` frame, which is most results (ADR-480).
-  (if (or (%eq (%type-verdict ret value) true) (type-matches? ret value))
+  (if (or (%eq (%type-verdict ret value) true) (reflect/type-matches? ret value))
     value
     (%contract-raise {:kind :contract
                       :message (str aname
@@ -789,14 +789,14 @@ error is a `:blame :callee` contract error, like a function's own result mismatc
     (%registry-update! '*multi-ret* :assoc [mname] (first more)))
   nil)
 
-(defn multi-return-type (mname)
+(defn reflect/multi-return-type (mname)
   "The declared `:-> RET` type form of multimethod `mname`, or nil when it declares none.
   The multimethod counterpart of `%op-declared-ret`, which reads an ability op's declared
   return out of its `defability` specs. The Rust checker does not call this — it reads the
   `*multi-ret*` registry from the heap directly (`types/check/protocol.rs`) — so this is the
   in-language accessor: introspection, and the way a test asserts what a `:->` recorded.
 
-      (multi-return-type 'compare-to)   ;=> int"
+      (reflect/multi-return-type 'compare-to)   ;=> int"
   (get *multi-ret* mname))
 
 (defn %multi-resolve (mname key)

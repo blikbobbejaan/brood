@@ -458,7 +458,7 @@ A name nobody holds is left alone — an untraced name, or one already restored 
   (let (ctx (%trace-context)
         dbg (get ctx :debugger)
         parent (get ctx :span)
-        id [(self) (gensym "s")])
+        id [(self) (reflect/gensym "s")])
     (when dbg (send dbg [:span-enter id parent (self) label]))
     ;; Set the whole context (new span) for the body AND bind the spy sink, so `spy`
     ;; inside this span routes to the debugger even in a child that only inherited it.

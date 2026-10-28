@@ -323,19 +323,22 @@
 ;; ─────────────────────────────────────────────────────────────────────────────
 (describe "compile-time errors"
   (test "unreachable clause after a catch-all (_)"
-    (assert-error (macroexpand '(match 1 (_ :always) (2 :dead)))))
+    (assert-error (reflect/macroexpand '(match 1 (_ :always) (2 :dead)))))
   (test "unreachable clause after a bare-symbol bind"
-    (assert-error (macroexpand '(match 1 (x :always) (2 :dead)))))
+    (assert-error (reflect/macroexpand '(match 1 (x :always) (2 :dead)))))
   (test "a guarded irrefutable clause is NOT unreachable"
-    (assert= (try (do (macroexpand '(match 1 (x :when (> x 0) :pos) (_ :np))) :ok) (catch e :err))
+    (assert= (try
+               (do (reflect/macroexpand '(match 1 (x :when (> x 0) :pos) (_ :np))) :ok)
+               (catch e :err))
       :ok))
   (test "malformed & — must be followed by exactly one tail pattern"
-    (assert-error (macroexpand '(match (list 1) ((a & b c) :x))))
-    (assert-error (macroexpand '(match (list 1) ((a &) :x)))))
-  (test ":when with no guard" (assert-error (macroexpand '(match 1 (x :when)))))
+    (assert-error (reflect/macroexpand '(match (list 1) ((a & b c) :x))))
+    (assert-error (reflect/macroexpand '(match (list 1) ((a &) :x)))))
+  (test ":when with no guard" (assert-error (reflect/macroexpand '(match 1 (x :when)))))
   (test "& is not allowed in a vector pattern"
-    (assert-error (macroexpand '(match [1 2] ([a & b] :x)))))
-  (test "a clause that isn't a (pattern body...) list" (assert-error (macroexpand '(match 1 5))))
+    (assert-error (reflect/macroexpand '(match [1 2] ([a & b] :x)))))
+  (test "a clause that isn't a (pattern body...) list"
+    (assert-error (reflect/macroexpand '(match 1 5))))
   (test "& rest still works (sanity: a valid & does not error)"
     (assert= (match (list 1 2 3) ((a & b) (list a b))) (list 1 (list 2 3))))
   ;; ADR-152: reject the shape, never reinterpret it. `(not …)` and a map `:as` are
@@ -343,11 +346,11 @@
   ;; in ADR-160 (see the groups below), but these two would still silently mean
   ;; something else.
   (test "(not …) is rejected — a negative match binds nothing, so it's a guard"
-    (assert-error (macroexpand '(match 2 ((not 1) :hit) (_ :miss))))
+    (assert-error (reflect/macroexpand '(match 2 ((not 1) :hit) (_ :miss))))
     ;; the spelling it points at
     (assert= (match 2 (x :when (not (= x 1)) :hit) (_ :miss)) :hit))
   (test "a map pattern's :as is rejected — it would test for an :as KEY"
-    (assert-error (macroexpand '(match {:a 1} ({:keys [a] :as m} a))))
+    (assert-error (reflect/macroexpand '(match {:a 1} ({:keys [a] :as m} a))))
     ;; the `and` spelling it points at
     (assert= (match {:a 1} ((and m {:keys [a]}) [a m])) [1 {:a 1}]))
   (test "the :keys / :or subset and the `{}` any-map pattern still behave"
@@ -370,7 +373,7 @@
   (test "alternatives that bind DIFFERENT names are a compile error"
     ;; else the body would reference a name only some alternatives bind, and which
     ;; it is would depend on the input (Rust rejects this for the same reason).
-    (assert-error (macroexpand '(match 1 ((or a 2) a)))))
+    (assert-error (reflect/macroexpand '(match 1 ((or a 2) a)))))
   (test "or nests inside other patterns"
     (assert= (match (list :x 2) (((or :x :y) n) n) (_ :no)) 2)
     (assert= (map [{:a 1} {:b 2} {:c 3}] (fn (m) (match m ((or {:a v} {:b v}) v) (_ :no))))

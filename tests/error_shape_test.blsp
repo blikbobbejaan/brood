@@ -65,11 +65,13 @@
   (test "catch clauses compose with finally"
     (assert= :caught (try (error "f") (catch {:kind :error} :caught) (finally nil))))
   (test "a catch before the body is rejected"
-    (is (includes? (error-message (caught (fn () (macroexpand '(try (catch e 1) 2)))))
+    (is (includes? (error-message (caught (fn () (reflect/macroexpand '(try (catch e 1) 2)))))
           "must come after the body")))
   (test "Clojure's typed catch is still rejected with a hint"
     (is (includes? (error-message (caught (fn ()
-                                            (macroexpand '(try 1 (catch Exception e (io/puts e)))))))
+                                            (reflect/macroexpand '(try
+                                                                    1
+                                                                    (catch Exception e (io/puts e)))))))
           "typed catch"))))
 
 ;; ---- across processes -------------------------------------------------------

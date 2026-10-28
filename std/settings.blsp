@@ -101,7 +101,7 @@ else must match the spec's `:type` and pass its `:valid?` predicate.
     (settings/valid? {:type '(or :block :bar)} :blockk)   ;=> false
     (settings/valid? {:type 'bool} nil)   ;=> true"
   (or (nil? value)
-    (and (or (not (contains? spec :type)) (type-matches? (:type spec) value))
+    (and (or (not (contains? spec :type)) (reflect/type-matches? (:type spec) value))
       (let (check (:valid? spec))
         (if (symbol? check) (= true (reflect/call-if-bound check true value)) true)))))
 

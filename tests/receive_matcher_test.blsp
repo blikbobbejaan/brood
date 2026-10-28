@@ -71,12 +71,12 @@
     (assert= :timeout (receive ([:never] :no) (after 5 :timeout))))
 
   (test "the matcher carries no fail thunks"
-    (let (expansion (pr-str (macroexpand '(receive
-                                            ([:a x] x)
-                                            ([:b x y] [x y])
-                                            ([:c [x y]] :when (int? x) x)
-                                            ([:d x] x)
-                                            ([:e] :e)))))
+    (let (expansion (pr-str (reflect/macroexpand '(receive
+                                                    ([:a x] x)
+                                                    ([:b x y] [x y])
+                                                    ([:c [x y]] :when (int? x) x)
+                                                    ([:d x] x)
+                                                    ([:e] :e)))))
       (do
         (is (includes? expansion "%receive"))
         ;; A thunk prints as `(fn nil …)`; the matcher itself is `(fn (msg…) …)`.

@@ -12,19 +12,19 @@
 (describe "docstrings"
   (test "a leading string is a docstring when more body follows"
     (defn squared (x) "Return x times itself." (* x x))
-    (assert= (doc squared) "Return x times itself.")
+    (assert= (reflect/doc squared) "Return x times itself.")
     ;; …and it is stripped from the body, not evaluated/returned.
     (assert= (squared 4) 16))
   (test "a lone string body is the return value, not a docstring"
     (defn greeting (who) "hello")
-    (assert= (doc greeting) nil)
+    (assert= (reflect/doc greeting) nil)
     (assert= (greeting 'x) "hello"))
   (test "macros carry docstrings too"
     (defmacro bump (x) "Add one." `(+ ~x 1))
-    (assert= (doc bump) "Add one."))
+    (assert= (reflect/doc bump) "Add one."))
   (test "a function with a destructured parameter keeps its docstring"
     (defn add-pair ([x y]) "Sum a 2-vector." (+ x y))
-    (assert= (doc add-pair) "Sum a 2-vector.")
+    (assert= (reflect/doc add-pair) "Sum a 2-vector.")
     ; was dropped by the fn-lowering path
     (assert= (add-pair [3 4]) 7))
   ; …and the doc isn't returned/evaluated
@@ -33,19 +33,21 @@
       ((0) :zero)
       ((n) :when (> n 0) :positive)
       ((n) :negative))
-    (assert= (doc sign) "Describe a number's sign.")
+    (assert= (reflect/doc sign) "Describe a number's sign.")
     (assert= (list (sign -3) (sign 0) (sign 9)) (list :negative :zero :positive)))
-  (test "doc of a non-function is nil" (assert= (doc 42) nil) (assert= (doc "a string") nil)))
+  (test "doc of a non-function is nil"
+    (assert= (reflect/doc 42) nil)
+    (assert= (reflect/doc "a string") nil)))
 
 (describe "arglist"
-  (test "required params" (defn pair (a b) (list a b)) (assert= (arglist pair) '(a b)))
+  (test "required params" (defn pair (a b) (list a b)) (assert= (reflect/arglist pair) '(a b)))
   (test "&optional params are listed after a marker"
     (defn opt (a &optional (b 10)) (+ a b))
-    (assert= (arglist opt) '(a &optional b)))
+    (assert= (reflect/arglist opt) '(a &optional b)))
   (test "& rest is reconstructed"
     (defn variadic (a b & more) a)
-    (assert= (arglist variadic) '(a b & more)))
-  (test "arglist of a non-function is nil" (assert= (arglist 42) nil)))
+    (assert= (reflect/arglist variadic) '(a b & more)))
+  (test "arglist of a non-function is nil" (assert= (reflect/arglist 42) nil)))
 
 (describe "global table introspection"
   (test "bound? reflects the global table"
@@ -97,18 +99,18 @@
 ;; doc-search matches docstrings, all-globals lists everything. Built on the
 ;; global-names/doc primitives above.
 
-(describe "discovery (apropos / all-globals / doc-search)"
+(describe "discovery (reflect/apropos / all-globals / doc-search)"
   ; 'map' has no "rand" in it
   (test "apropos finds globals by name substring"
-    (let (hits (apropos "rand"))
+    (let (hits (reflect/apropos "rand"))
       (is (includes? hits 'rand/int))
       (is (includes? hits 'rand/float))
       (refute (includes? hits 'map))))
   (test "apropos accepts a string, symbol, or keyword pattern"
-    (assert= (apropos "shuffle") (apropos 'shuffle))
-    (assert= (apropos "shuffle") (apropos :shuffle)))
+    (assert= (reflect/apropos "shuffle") (reflect/apropos 'shuffle))
+    (assert= (reflect/apropos "shuffle") (reflect/apropos :shuffle)))
   (test "apropos of a nonsense pattern is empty"
-    (assert= (apropos "zzz-no-such-thing-zzz") nil))
+    (assert= (reflect/apropos "zzz-no-such-thing-zzz") nil))
   ; it's an alias
   ;; `:isolated` — the last assertion requires two reads of the global table to agree, and
   ;; the suite runs tests in parallel against ONE runtime table, so another test's `def`
@@ -121,11 +123,11 @@
       (is (includes? g 'rand/int))
       (assert= g (reflect/global-names))))
   (test "doc-search finds globals whose docstring mentions a word"
-    (let (names (map (doc-search "uniformly random") first))
+    (let (names (map (reflect/doc-search "uniformly random") first))
       (is (includes? names 'seq/shuffle))
       (is (includes? names 'seq/sample))))
   (test "doc-search returns [name doc] pairs with real docstrings"
-    (let (hits (doc-search "xorshift"))
+    (let (hits (reflect/doc-search "xorshift"))
       (refute (empty? hits))
       (let ([nm d] (first hits))
         (is (symbol? nm))
@@ -134,15 +136,16 @@
   ;; docstring need hold the whole phrase) — the §3.3 fix. Each of these
   ;; returned nil under the old whole-query substring matcher.
   (test "doc-search ranks by multi-term overlap, not whole-phrase containment"
-    (is (includes? (map (doc-search "remote node distributed") first) 'node/connect))
-    (is (includes? (map (doc-search "remote node distributed") first) 'node/start))
-    (is (includes? (map (doc-search "node up down notification") first) 'node/monitor))
-    (is (includes? (map (doc-search "raw mode single keypress") first) 'term/raw-enter)))
+    (is (includes? (map (reflect/doc-search "remote node distributed") first) 'node/connect))
+    (is (includes? (map (reflect/doc-search "remote node distributed") first) 'node/start))
+    (is (includes? (map (reflect/doc-search "node up down notification") first) 'node/monitor))
+    (is (includes? (map (reflect/doc-search "raw mode single keypress") first) 'term/raw-enter)))
   (test "doc-search is case-insensitive"
-    (assert= (map (doc-search "XORSHIFT") first) (map (doc-search "xorshift") first)))
+    (assert= (map (reflect/doc-search "XORSHIFT") first)
+      (map (reflect/doc-search "xorshift") first)))
   (test "doc-search of a blank query is empty"
-    (assert= (doc-search "") nil)
-    (assert= (doc-search "   ") nil)))
+    (assert= (reflect/doc-search "") nil)
+    (assert= (reflect/doc-search "   ") nil)))
 
 ;; Runtime introspection: per-process GC observability (Tier-1;
 (describe "pos-stats"

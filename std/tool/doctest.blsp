@@ -115,7 +115,7 @@ An indented line still carrying the old ` → ` marker is reported, never skippe
   "The indented ` ;~> ` lines of docstring `d` — illustrations: examples that are read and
 whose callee must exist, but that are not evaluated.
 
-    (doctest/illustration-lines (doc file/slurp))   ;~> (…its illustration lines…)
+    (doctest/illustration-lines (reflect/doc file/slurp))   ;~> (…its illustration lines…)
 
     (count (doctest/illustration-lines \"x\\n    (file/slurp \\\"a\\\")   ;~> \\\"…\\\"\"))   ;=> 1"
   (seq/filter (string/split (str d) "\n") (fn (l) (marked l ";~>"))))
@@ -281,7 +281,7 @@ a line still written with the retired ` → ` marker.
 
 (defn- documented? (s)
   ;; check-allow :discarded-catch — a name whose value or docstring cannot be read is not documented
-  (let (d (check-allow :discarded-catch (try (doc (reflect/eval s)) (catch _ nil))))
+  (let (d (check-allow :discarded-catch (try (reflect/doc (reflect/eval s)) (catch _ nil))))
     (and d (any? (string/split (str d) "\n") example-or-stale?))))
 
 (defn documented-names-under (prefix)
@@ -305,7 +305,7 @@ example — `\"myapp/\"` for one package's own surface. A nil `prefix` means eve
   (documented-names-under nil))
 
 (defn- failures-of (s)
-  (let (d (doc (reflect/eval s)))
+  (let (d (reflect/doc (reflect/eval s)))
     (seq/keep (string/split (str d) "\n") (fn (l) (check (->string s) l)))))
 
 (defn failures-under (prefix)

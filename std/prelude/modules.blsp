@@ -1164,14 +1164,14 @@ not a header, or does not read: the load itself reports a malformed one."
 ;; ADR-335) — the KI-72 guard. Qualifying it, or hiding it
 ;; behind a `%` name with a `package/` face, leaves that test passing while it no longer
 ;; tests the thing it names. ADR-291 rule 4.
-(defn reserved-package-name? (nm)
+(defn reflect/reserved-package-name? (nm)
   "True if package name `nm` (a symbol or string) is reserved by the standard library —
 its first segment names a module baked into this binary, so a package taking it would
 root its own modules onto stdlib namespaces. Backs the `nest new` / `nest publish` /
 load-time (`require`) guards.
 
-    (reserved-package-name? \"json\") ;=> true
-    (reserved-package-name? \"brood\") ;=> false"
+    (reflect/reserved-package-name? \"json\") ;=> true
+    (reflect/reserved-package-name? \"brood\") ;=> false"
   (let (seg (first (string/split (->string nm) "/"))
         owned (seq/distinct (map (reflect/builtin-modules) (fn (m) (first (string/split m "/"))))))
     (includes? owned seg)))
@@ -1186,7 +1186,7 @@ load-time (`require`) guards.
     ;; Refuse a package whose name the standard library owns, BEFORE touching the
     ;; ambient context — a `:path`/`:git`/registry dep (or a root project) named after
     ;; a baked-in module would silently root its modules onto stdlib namespaces.
-    (when (reserved-package-name? prefix)
+    (when (reflect/reserved-package-name? prefix)
       (error "require: package '"
         (->string prefix)
         "' is reserved by the standard library "

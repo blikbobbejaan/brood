@@ -184,7 +184,7 @@
   (test "backend builds a line-backend with the documented defaults"
     (let (b (backend (fn-port (fn (s) s))))
       (is (record? b))
-      (assert= (record-id b) :log/line-backend)
+      (assert= (reflect/record-id b) :log/line-backend)
       (assert= (get b :min-level) :debug)
       (is (nil? (get b :filter)))))
   (test "a backend prints as itself, naming its sink"
@@ -193,7 +193,7 @@
       "#<log-backend #<port stderr> min=:warn>")
     (is (includes? (->string (backend (stdout-port) {:filter (fn (r) true)})) "filtered")))
   (test "file-backend writes through a file-port"
-    (assert= (record-id (get (file-backend "/tmp/brood-log-test.log") :sink)) :io/file-port))
+    (assert= (reflect/record-id (get (file-backend "/tmp/brood-log-test.log") :sink)) :io/file-port))
   (test "satisfies? reports whether a value can serve as a backend"
     (is (satisfies? 'LogBackend (stdout-backend)))
     (is (satisfies? 'LogBackend (raw-backend (self) :debug nil)))

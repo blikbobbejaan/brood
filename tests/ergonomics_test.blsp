@@ -110,10 +110,10 @@
     (assert= :sym (case 'foo 'foo :sym :other)))
   ;; The reason `case` earns a name next to `match`: it CANNOT silently bind.
   (test "a bare symbol test is rejected (it would bind, not compare)"
-    (assert-error (macroexpand '(case :a foo 1))))
+    (assert-error (reflect/macroexpand '(case :a foo 1))))
   (test "a destructuring test is rejected — that is what match is for"
-    (assert-error (macroexpand '(case [1 2] [a b] 1)))
-    (assert-error (macroexpand '(case {:a 1} {:keys [a]} 1)))))
+    (assert-error (reflect/macroexpand '(case [1 2] [a b] 1)))
+    (assert-error (reflect/macroexpand '(case {:a 1} {:keys [a]} 1)))))
 
 (describe "comment"
   (test "ignores its body entirely and returns nil"
@@ -254,8 +254,8 @@
     (assert= [0 1 2] (for (x [1 2] :into (vec [0])) x))
     (assert= [[1 :a] [1 :b] [2 :a] [2 :b]] (for (x [1 2] y [:a :b] :into []) [x y])))
   (test ":into anywhere but last, or without a collection, is a clear expansion error"
-    (assert-error (macroexpand '(for (x xs :into [] :when true) x)))
-    (assert-error (macroexpand '(for (x xs :into) x)))))
+    (assert-error (reflect/macroexpand '(for (x xs :into [] :when true) x)))
+    (assert-error (reflect/macroexpand '(for (x xs :into) x)))))
 
 (describe "fold-for — the body is the step"
   (test "the first pair is the accumulator; the rest are for's bindings"
@@ -273,9 +273,9 @@
   (test "an empty source is the initial value"
     (assert= :start (fold-for (acc :start x []) :never)))
   (test "a malformed head or a stray :into is a clear expansion error"
-    (assert-error (macroexpand '(fold-for (0 x xs) x)))
-    (assert-error (macroexpand '(fold-for (acc) acc)))
-    (assert-error (macroexpand '(fold-for (acc 0 x xs :into []) acc)))))
+    (assert-error (reflect/macroexpand '(fold-for (0 x xs) x)))
+    (assert-error (reflect/macroexpand '(fold-for (acc) acc)))
+    (assert-error (reflect/macroexpand '(fold-for (acc 0 x xs :into []) acc)))))
 
 ;; ---- cross-process: the new forms survive send/spawn like any Brood code ----
 (describe "ergonomics across processes"

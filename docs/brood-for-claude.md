@@ -89,7 +89,7 @@ Common macros (expanded once at the compile pass — runtime-free): `defmacro`
 (point 3 4)                                         ; => {:__id__ :<ns>/point, :x 3, :y 4}
 (point-x (point 3 4))                               ; => 3  (accessor per field; a typo is a
                                                     ;        checker-caught undefined-fn, not silent nil)
-;; update with plain assoc/merge; `(record? r)`/`(record-id r)`/`(fields r)` are the id
+;; update with plain assoc/merge; `(record? r)`/`(reflect/record-id r)`/`(fields r)` are the id
 ;; API; a record is NOT `=` to a bare map (`=` is structural and the id is an entry). Typed fields: (defrecord point ((x int) (y int)))
 ```
 
@@ -253,8 +253,8 @@ contracts are armed), `(! pid payload)` = a cast in `gen`.
 
 **Names come from whichever language named the thing best** — `seq/partition` (Clojure)
 next to `chunk-every`, `enumerate` (Python), `scan` (Haskell), `&optional`
-(CL), `letrec` (Scheme). So a name can't always be guessed: reach for `(apropos
-"part")` or `(doc-search "chunk")` instead of assuming (ADR-163).
+(CL), `letrec` (Scheme). So a name can't always be guessed: reach for `(reflect/apropos
+"part")` or `(reflect/doc-search "chunk")` instead of assuming (ADR-163).
 
 **Three or more optional parameters → take an options map**, not a pile of
 `&optional`s: `(defn make-window (title opts) (let ({:keys [width height] :or {width
@@ -284,8 +284,8 @@ recursion with an accumulator:
 ```
 
 **Docstrings** go on every public `defn` / `defmacro`. First line is a complete
-one-sentence summary (it's what `(doc name)` and the LSP show on hover — `doc` and
-`arglist` take the function VALUE, `(doc inc)`, `(arglist string/join)`; a quoted
+one-sentence summary (it's what `(reflect/doc name)` and the LSP show on hover — `doc` and
+`reflect/arglist` take the function VALUE, `(reflect/doc inc)`, `(reflect/arglist string/join)`; a quoted
 symbol gets `nil`);
 backtick code, **bold**, and `-` bullet lists are rendered, so use them. `defn-`
 privates usually skip the docstring and use a `;;` comment instead.
@@ -390,7 +390,7 @@ Other things worth knowing:
   to a bare map with the same fields (nominal), and its
   **collection view is the fields, id-free**: `seq`/`count`/`keys`/`vals`/`map`/`fold`
   over a record see its fields, never `:__id__` (via the `Seqable` ability). Use
-  `record?`/`record-id`/`fields` to test/read the identity explicitly.
+  `record?`/`reflect/record-id`/`fields` to test/read the identity explicitly.
 - **Match a record by id + fields** with `(record name {:k p …})` — the `name` fixes the
   nominal id (bare = current ns, or `mod/name`) and the optional `{…}` is a map pattern over
   its fields (`{:k p}` / `:keys` / `:or` compose); a plain map or a different record fails.
@@ -1063,7 +1063,7 @@ This is a curated tour, not the full list. For the **complete reference** —
 every builtin and prelude fn/macro with its signature and one-line summary —
 run `nest doc --all` and read it once, rather than probing names one at a time
 in the REPL. (`nest doc <module>` does the same for an opt-in module like
-`editor/display`/`editor/buffer`/`editor/ansi`; `apropos`/`doc-search` search it interactively.)
+`editor/display`/`editor/buffer`/`editor/ansi`; `reflect/apropos`/`reflect/doc-search` search it interactively.)
 
 - **list / seq**: `first` `rest` `cons` `list` `count` `empty?` `nth`
   `second` `third`, and, in `list/`, Lisp's compositions `list/caar` to `list/cdddr` (each `a` a `first`, each
@@ -1208,10 +1208,10 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
   (e.g. `(os/now)`) with `rand/seed`. Carry `next-seed` in your
   loop/process state like any other value.
 - **meta / eval**: `apply` (call a fn with a list of args — the only way to
-  splat) `reflect/eval` `reflect/read-string` `reflect/eval-string` `gensym` (fresh symbol, for macros)
-- **discovery / introspection**: `doc` `arglist` `bound?` `reflect/source-location`;
+  splat) `reflect/eval` `reflect/read-string` `reflect/eval-string` `reflect/gensym` (fresh symbol, for macros)
+- **discovery / introspection**: `doc` `reflect/arglist` `bound?` `reflect/source-location`;
   and to *find* what exists rather than guess names — `reflect/global-names`,
-  `apropos` (name substring, e.g. `(apropos "rand")`), `doc-search` (matches
+  `reflect/apropos` (name substring, e.g. `(reflect/apropos "rand")`), `reflect/doc-search` (matches
   docstrings). The same three are `nest mcp` tools (the name-list tool is called
   `all-globals` there). Reach for these instead of
   probing names one at a time.
@@ -1277,7 +1277,7 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
   — unconstrained, and the result stays INFERRED, so typing one parameter costs nothing.
   Not on a multi-clause `fn`, inside a destructuring pattern, or on a `let` binding (each is
   an error) — use `(sig …)` there.
-- **Docstring examples**: an indented `    (f 1)   ;=> 2` line is EXECUTED by the doc tests and
+- **Docstring examples**: an indented `    (f 1)   ;=> 2` line is EXECUTED by the reflect/doc tests and
   must equal the result after the marker; for a function whose result depends on the world (files,
   clock, network, pids, the image) write `    (file/slurp "a.txt")   ;~> "…text…"` — read and
   callee-checked, never run. Examples run at the top level, so write the **full namespace**
@@ -1342,7 +1342,7 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
   (the prelude). So the *same* short name in two modules is fine — `a/parse`
   and `b/parse` are distinct globals, and `nest run`/`nest test` no longer
   false-flag them. From *outside* a module (e.g. the REPL or `nest mcp` eval),
-  reach a `defn` by its qualified name: `(life/step …)`, found via `apropos`.
+  reach a `defn` by its qualified name: `(life/step …)`, found via `reflect/apropos`.
   **The one exception is a name declared with `defdyn`** — it is *ambient*
   (root, never namespaced), so `(def *print-length* 3)` from any module rebinds the
   one root binding. An earmuffed name that is *not* declared is namespaced like

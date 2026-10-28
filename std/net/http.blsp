@@ -465,7 +465,7 @@ whose body is written incrementally over the socket afterwards (see
 rather than closed after a body. An identity check on the record, not a key sniff.
 
     (http/streaming? (http/ok \"hi\"))   ;=> false"
-  (and (record? resp) (= (record-id resp) :http/stream-response)))
+  (and (record? resp) (= (reflect/record-id resp) :http/stream-response)))
 
 ;; ---- static files -----------------------------------------------------------
 (def *http-mime*
@@ -641,7 +641,7 @@ socket is registered *passive* (no reader until the worker calls
 ;; with no `Response` impl at all fails at dispatch. A `stream-response` (or a kind from
 ;; outside this module) may already have written its head.
 (defn- http-unsent? (resp)
-  (or (not (record? resp)) (= (record-id resp) :http/response)))
+  (or (not (record? resp)) (= (reflect/record-id resp) :http/response)))
 
 ;; Run `handler` on the request and send what it returns. A handler that raises, or a
 ;; response that cannot be rendered, gets the client a 500 and closes the connection

@@ -172,7 +172,7 @@
       (let (idx (%image-index p "fp-m")) (si-load-all p idx))
       ;; The property a function cannot have: the call site EXPANDS. If the round trip had
       ;; returned a plain closure, macroexpand would leave the form untouched.
-      (assert= '(do 1 1) (macroexpand '(startup-image-test/si-twice 1)))))
+      (assert= '(do 1 1) (reflect/macroexpand '(startup-image-test/si-twice 1)))))
 
   ;; A user `(sig …)` lives in `RuntimeCode::declared_sigs`, NOT in the globals table, so
   ;; an image that snapshotted only globals lost every one and the checker quietly fell

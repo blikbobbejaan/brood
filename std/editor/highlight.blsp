@@ -247,7 +247,7 @@ a `:syntax/*` face still restyles the editor on its next re-lex."
   "Walk the `scan-tokens` stream into `[start end face]` colour spans, carrying the
 form `stack` (head position, and enough shape to tell a docstring from a string).
 `:symbol` needs position — head + special form → keyword face, head → call face, else
-uncoloured — and `:string` needs it too (doc vs. value). `faces` is the pass's resolved
+uncoloured — and `:string` needs it too (reflect/doc vs. value). `faces` is the pass's resolved
 `hl-faces`. Accumulates in reverse."
   (if (empty? toks)
     (reverse acc)

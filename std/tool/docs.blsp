@@ -100,8 +100,8 @@ bare-surface (prelude) name, whose references are bare already."
 ;; below it: the note is what a reader learns after deciding to read the entry, and the
 ;; strikethrough is what tells them not to reach for the name while skimming the module.
 (defn- docs-entry (sym v)
-  (let (sig (pr-str (cons sym (arglist v)))
-        d (doc v)
+  (let (sig (pr-str (cons sym (reflect/arglist v)))
+        d (reflect/doc v)
         suffix (if (= (type-of v) :macro) "  *(macro)*" "")
         ;; The TYPE, when anything knows one — a `(sig …)` the author declared, or the
         ;; curated signature a primitive carries. `nil` for a name nothing types, which
@@ -305,8 +305,8 @@ bare-surface (prelude) name, whose references are bare already."
 (defn- docs-def-record (sym v)
   (let (bare (docs-bare sym))
     {:name bare
-     :sig (pr-str (cons (symbol bare) (arglist v)))
-     :doc (doc v)
+     :sig (pr-str (cons (symbol bare) (reflect/arglist v)))
+     :doc (reflect/doc v)
      :macro (= (type-of v) :macro)
      :meta (try (%meta-of sym) (catch _ nil))
      :type (try (reflect/type-signature sym) (catch _ nil))

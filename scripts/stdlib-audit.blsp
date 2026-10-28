@@ -81,11 +81,11 @@ parenthesised call on its own line — the shapes the stdlib actually uses."
                ;; The raise IS the answer: a name with no reachable doc is what we count.
                (fn (n)
                  (nil? (check-allow :discarded-catch
-                         (try (doc (reflect/eval (string/->symbol n))) (catch _ nil))))))
+                         (try (reflect/doc (reflect/eval (string/->symbol n))) (catch _ nil))))))
       no-example (seq/filter names
                    (fn (n)
                      (let (d (check-allow :discarded-catch
-                               (try (doc (reflect/eval (string/->symbol n))) (catch _ nil))))
+                               (try (reflect/doc (reflect/eval (string/->symbol n))) (catch _ nil))))
                        (and d (not (example? d)))))))
   (io/puts "stdlib audit — "
     (count names)

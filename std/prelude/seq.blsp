@@ -858,7 +858,7 @@ A trailing `:into coll` collects with `conj` onto `coll` instead of building a l
     (let (split (%for-split-into binds)
           binds (first split)
           into (second split)
-          acc (gensym "acc")
+          acc (reflect/gensym "acc")
           body (if (empty? (rest body)) (first body) (cons 'do body)))
       (if (nil? into)
         `(/reverse (let (~acc nil) ~(%for-fold acc binds `(cons ~body ~acc))))

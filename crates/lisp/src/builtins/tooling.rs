@@ -32,11 +32,11 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     // narrower `string` the original Sig claimed, which made the checker warn
     // on legitimate `(gensym 'foo)` calls.
     primitives.def(
-        "gensym",
+        "reflect/gensym",
         Arity::range(0, 1),
         Sig::new(vec![any], sym),
         &["prefix"],
-        "A fresh, unique symbol, with an optional name prefix.\n\n    (symbol? (gensym \"tmp\"))   ;=> true\n    (= (gensym) (gensym))      ;=> false",
+        "A fresh, unique symbol, with an optional name prefix.\n\n    (symbol? (reflect/gensym \"tmp\"))   ;=> true\n    (= (reflect/gensym) (reflect/gensym))      ;=> false",
         gensym,
     );
     // source positions (editor tooling; see docs/tooling.md)
@@ -122,19 +122,19 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     // introspection (editor tooling; see docs/lsp.md) — derive what we can from
     // the bound value (arglist, doc); enumerate the global table for completion.
     primitives.def(
-        "doc",
+        "reflect/doc",
         Arity::exact(1),
         Sig::new(vec![any], string.union(nil_ty)),
         &["f"],
-        "The docstring of a function, macro, or primitive, or nil.\n\n    (string? (doc inc))   ;=> true\n    (doc (fn (x) x))      ;=> nil",
+        "The docstring of a function, macro, or primitive, or nil.\n\n    (string? (reflect/doc inc))   ;=> true\n    (reflect/doc (fn (x) x))      ;=> nil",
         doc,
     );
     primitives.def(
-        "arglist",
+        "reflect/arglist",
         Arity::exact(1),
         Sig::new(vec![any], list_ty),
         &["f"],
-        "The parameter list of a function, macro, or primitive, or nil.\n\n    (arglist inc)                  ;=> (n)\n    (arglist (fn (a & more) a))    ;=> (a & more)",
+        "The parameter list of a function, macro, or primitive, or nil.\n\n    (reflect/arglist inc)                  ;=> (n)\n    (reflect/arglist (fn (a & more) a))    ;=> (a & more)",
         arglist,
     );
     primitives.def(

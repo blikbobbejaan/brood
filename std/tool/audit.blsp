@@ -94,7 +94,7 @@ private, and anything defined outside `std/`.
               (stdlib? name))))))
 
 (defn- docstring-of (name)
-  (let (text (doc (reflect/eval name))) (if (string? text) text "")))
+  (let (text (reflect/doc (reflect/eval name))) (if (string? text) text "")))
 
 ;; ---- 1 + 2: docs and examples ----------------------------------------------
 
@@ -154,7 +154,7 @@ convention. Judged on the declared TYPES first (an arrow parameter is a callback
 A name with no recognisable pair is vacuously true.
 
     (audit/data-first? 'map)   ;=> true"
-  (let (params (or (arglist (reflect/eval name)) [])
+  (let (params (or (reflect/arglist (reflect/eval name)) [])
         types (or (sig-params name) [])
         ;; Types are the stronger signal: they do not depend on the author's choice of
         ;; parameter spelling. `sort-by` slipped past a name-only check because its
@@ -253,7 +253,7 @@ a signature that correctly describes its 2-arity arm. Variadic and `&optional` h
 exempt too: their arity is a range no fixed list can contradict.
 
     (audit/sig-arity-ok? 'map)   ;=> true"
-  (let (params (arglist (reflect/eval name))
+  (let (params (reflect/arglist (reflect/eval name))
         declared (sig-params name))
     (cond
       (nil? declared) true

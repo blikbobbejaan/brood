@@ -82,7 +82,7 @@
     (is (not (multimap? {:k (list 1)})))
     (is (not (multimap? nil))))
   (test "it carries its record id and is never = to a look-alike map"
-    (assert= (record-id (multimap/empty)) :multimap/multimap)
+    (assert= (reflect/record-id (multimap/empty)) :multimap/multimap)
     (is (not (= (multimap/empty) {}))))
   (test "the identity never leaks into keys, size, or the map view"
     (let (mm (multimap/assoc (multimap/empty) :k 1))

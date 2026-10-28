@@ -11,11 +11,11 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     use crate::types::Sig;
     // macros
     primitives.def(
-        "macroexpand-1",
+        "reflect/macroexpand-1",
         Arity::exact(1),
         Sig::new(vec![any], any),
         &["form"],
-        "Expand form by a single macro step.\n\n    (macroexpand-1 '(when ok (go)))   ;=> (if ok (do (go)) nil)",
+        "Expand form by a single macro step.\n\n    (reflect/macroexpand-1 '(when ok (go)))   ;=> (if ok (do (go)) nil)",
         macroexpand_1,
     );
     // advisory type checker (the Ty lattice's first consumer; see docs/types.md)

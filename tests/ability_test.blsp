@@ -134,8 +134,8 @@
   (test "record? / record-id / fields are the clean, id-free API"
     (is (record? (circle 3)))
     (refute (record? {:r 3}))
-    (assert= (record-id (circle 3)) :ability-test/circle)
-    (assert= (record-id {:r 3}) nil)
+    (assert= (reflect/record-id (circle 3)) :ability-test/circle)
+    (assert= (reflect/record-id {:r 3}) nil)
     (assert= (fields (circle 3)) {:r 3}))
   (test "a record is NOT = to a bare map with the same fields (nominal identity)"
     ;; the identity intentionally distinguishes it — this is correct, not a leak

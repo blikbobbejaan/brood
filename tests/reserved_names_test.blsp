@@ -68,7 +68,7 @@
     (is (rn-refused? "(def gen/call (fn (p x) :hacked))"))
     (is (rn-refused? "(def gen/start (fn (f s) :hacked))")))
   (test "`gen` is still a reserved PACKAGE name — the namespace belongs to std"
-    (is (reserved-package-name? 'gen))
+    (is (reflect/reserved-package-name? 'gen))
     (is (includes? (reflect/builtin-modules) "gen"))))
 
 (describe "yours: everything else stays redefinable"

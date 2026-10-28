@@ -230,7 +230,7 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
 (defn subcommands ()
   "The subcommands this module implements, sorted — hidden ones (`complete`) excluded.
 
-    (nest/subcommands)   ;~> (\"add\" \"check\" \"doc\" … \"ws\")"
+    (nest/subcommands)   ;~> (\"add\" \"check\" \"reflect/doc\" … \"ws\")"
   (sort (seq/filter (keys *commands*) (fn (cmd) (not (get (get *commands* cmd) :hidden))))))
 
 (defn- command-spec (cmd)

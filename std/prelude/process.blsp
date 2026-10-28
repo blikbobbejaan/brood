@@ -436,8 +436,8 @@ A zero-arg lambda `(fn () …)` body is passed through (not re-wrapped), like `s
           real (nth parts 0)
           ms (nth parts 1)
           on-time (nth parts 2)
-          msg (gensym "msg")
-          r (gensym "rcv")
+          msg (reflect/gensym "msg")
+          r (reflect/gensym "rcv")
           ;; Walk each pattern once; both halves below read the same prep.
           preps (%receive-prep real 0)
           ;; The matcher answers "which clause, and what did it bind?" as `[idx var…]`,

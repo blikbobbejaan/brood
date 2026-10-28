@@ -24,8 +24,8 @@
 (describe "typed parameters bind as plain ones"
   (test "a fully typed definition runs and keeps its docstring"
     (assert= 6 (tp-area 2 3))
-    (assert= "The area of a w×h rectangle." (doc tp-area))
-    (assert= '(w h) (arglist tp-area)))
+    (assert= "The area of a w×h rectangle." (reflect/doc tp-area))
+    (assert= '(w h) (reflect/arglist tp-area)))
   (test "an optional with a type keeps its default"
     (assert= "hello, Ada" (tp-greet "Ada"))
     (assert= "yo, Ada" (tp-greet "Ada" "yo")))

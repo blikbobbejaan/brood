@@ -13,12 +13,12 @@
   (%filter (reflect/global-names)
     (fn (s) (and (not (string/starts-with? (->string s) "%")) (not (reflect/private? s))))))
 
-(defn apropos (pattern)
+(defn reflect/apropos (pattern)
   "Every PUBLIC global whose name contains `pattern` (a string, symbol, or keyword), as a
 sorted list of symbols. `%`-prefixed plumbing and module-private names are excluded — they
 are not callable vocabulary.
 
-    (apropos \"gensy\")   ;=> (gensym)"
+    (reflect/apropos \"gensy\")   ;=> (reflect/gensym)"
   ;; `name` (not `str`) so a keyword pattern drops its leading colon, matching
   ;; the bare global names; a string passes through unchanged.
   (let (needle (if (string? pattern) pattern (->string pattern)))
@@ -31,16 +31,16 @@ are not callable vocabulary.
   "Lowercased, whitespace-separated terms of `query`, with blanks removed."
   (%filter (string/split (string/lower query) " ") (fn (t) (not (string/blank? t)))))
 
-(defn doc-search (query)
+(defn reflect/doc-search (query)
   "Globals whose name or docstring matches `query`, ranked by how many of its
 whitespace-separated terms they contain (case-insensitive substring) — most
 matches first, ties broken by name. A list of `[name doc]` pairs. Searches
-behaviour, not just names: `(doc-search \"node up down\")` finds `monitor-node`
+behaviour, not just names: `(reflect/doc-search \"node up down\")` finds `monitor-node`
 even when no single docstring holds that exact phrase. A single-word query
 degrades to a plain case-insensitive name/docstring search, e.g.
-`(doc-search \"random\")`.
+`(reflect/doc-search \"random\")`.
 
-    (doc-search \"node up down\")   ;~> ([monitor-node \"…\"] …whatever the loaded image documents…)"
+    (reflect/doc-search \"node up down\")   ;~> ([monitor-node \"…\"] …whatever the loaded image documents…)"
   (let (terms (%doc-search-terms query))
     (when (not (empty? terms))
       (map
@@ -48,7 +48,8 @@ degrades to a plain case-insensitive name/docstring search, e.g.
           (seq/keep (%discoverable-names)
             (fn (s)
               ;; check-allow :discarded-catch — a best-effort probe (doc / parse / ls / image index): absence is the answer
-              (let (d (check-allow :discarded-catch (try (doc (reflect/eval s)) (catch _ nil))))
+              (let (d (check-allow :discarded-catch
+                        (try (reflect/doc (reflect/eval s)) (catch _ nil))))
                 (when (string? d)
                   (let (hay (string/lower (str s " " d))
                         hits (count (%filter terms (fn (t) (includes? hay t)))))
@@ -158,7 +159,7 @@ the bound for a run with `(binding (*print-string-length* nil) …)`."
 (defn- %spy-walk (form depth)
   (if (not (pair? form))
     form
-    (let (form (macroexpand form))
+    (let (form (reflect/macroexpand form))
       ; resolve the (outer) macro head
       (if (not (pair? form))
         ; a macro expanded to an atom

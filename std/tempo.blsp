@@ -122,17 +122,17 @@ time unit — nil means \"nothing coarser\", never \"no such unit\".
 
     (tempo/tempo? (tempo/parse! \"2026\"))   ;=> true
     (tempo/tempo? \"2026\")                  ;=> false"
-  (and (record? x) (= (record-id x) :tempo/tempo)))
+  (and (record? x) (= (reflect/record-id x) :tempo/tempo)))
 (defn span? (x)
   "True when `x` is a span.
 
     (tempo/span? (tempo/between (tempo/parse! \"2026-01\") (tempo/parse! \"2026-03\")))   ;=> true"
-  (and (record? x) (= (record-id x) :tempo/span)))
+  (and (record? x) (= (reflect/record-id x) :tempo/span)))
 (defn iset? (x)
   "True when `x` is an interval set.
 
     (tempo/iset? (tempo/union (tempo/parse! \"2026-01\") (tempo/parse! \"2026-03\")))   ;=> true"
-  (and (record? x) (= (record-id x) :tempo/iset)))
+  (and (record? x) (= (reflect/record-id x) :tempo/iset)))
 
 ;; ---- the Spanning ability ---------------------------------------------------
 ;;

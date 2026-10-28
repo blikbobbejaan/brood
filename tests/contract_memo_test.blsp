@@ -21,46 +21,46 @@
 
 (describe "type-matches? remembers verdicts"
   (test "an unchanged value is answered from the memo"
-    (assert (type-matches? 'memo-model memo-model-value))
+    (assert (reflect/type-matches? 'memo-model memo-model-value))
     (let (before (memo-hits))
-      (assert (type-matches? 'memo-model memo-model-value))
+      (assert (reflect/type-matches? 'memo-model memo-model-value))
       (assert= (inc before) (memo-hits))))
   (test "a new model sharing its buffers re-walks only the top"
-    (assert (type-matches? 'memo-model memo-model-value))
+    (assert (reflect/type-matches? 'memo-model memo-model-value))
     (let (moved (assoc memo-model-value :point 4)
           before (memo-hits))
-      (assert (type-matches? 'memo-model moved))
+      (assert (reflect/type-matches? 'memo-model moved))
       ;; the `:buffers` vector is the same object: one hit, not twenty walks
       (assert (< 0 (- (memo-hits) before)))))
   (test "a violation deep inside a new value is still caught"
-    (assert (type-matches? 'memo-model memo-model-value))
+    (assert (reflect/type-matches? 'memo-model memo-model-value))
     (let (broken (map/assoc-in memo-model-value [:buffers 7 :lines 1] 42))
-      (assert (not (type-matches? 'memo-model broken)))
+      (assert (not (reflect/type-matches? 'memo-model broken)))
       ;; and the old value, which shares every other buffer, still passes
-      (assert (type-matches? 'memo-model memo-model-value))))
+      (assert (reflect/type-matches? 'memo-model memo-model-value))))
   (test "a closed record still refuses an undeclared key on a new value"
-    (assert (type-matches? 'memo-buffer (memo-buffer-of 1)))
-    (assert (not (type-matches? 'memo-buffer (assoc (memo-buffer-of 1) :stray 1))))))
+    (assert (reflect/type-matches? 'memo-buffer (memo-buffer-of 1)))
+    (assert (not (reflect/type-matches? 'memo-buffer (assoc (memo-buffer-of 1) :stray 1))))))
 
 (describe "a remembered verdict does not outlive what it was reached under"
   (test "a redefined deftype changes the verdict for the very same value"
     (let (lines ["a" "b"])
       (reflect/eval '(deftype memo-shape (vector string)))
-      (assert (type-matches? 'memo-shape lines))
+      (assert (reflect/type-matches? 'memo-shape lines))
       (reflect/eval '(deftype memo-shape (vector int)))
-      (assert (not (type-matches? 'memo-shape lines)))))
+      (assert (not (reflect/type-matches? 'memo-shape lines)))))
   (test "a defrecord turns an unknown name from accepting into a record check"
     (let (plain {:a 1})
       ;; a name nothing defines accepts anything
-      (assert (type-matches? 'memo-late-record plain))
+      (assert (reflect/type-matches? 'memo-late-record plain))
       (reflect/eval '(defrecord memo-late-record (a)))
-      (assert (not (type-matches? 'memo-late-record plain)))))
+      (assert (not (reflect/type-matches? 'memo-late-record plain)))))
   (test "a collection between checks keeps every verdict right"
     (let (good [1 2 3])
-      (assert (type-matches? '(vector int) good))
+      (assert (reflect/type-matches? '(vector int) good))
       (dev/gc-collect)
-      (assert (type-matches? '(vector int) good))
-      (assert (not (type-matches? '(vector int) [1 "two" 3]))))))
+      (assert (reflect/type-matches? '(vector int) good))
+      (assert (not (reflect/type-matches? '(vector int) [1 "two" 3]))))))
 
 ;; The kernel decides some forms without the walk (ADR-480): a type variable, an arrow, an
 ;; `or` of decided alternatives, and a record or vector one level deep when every part is.
@@ -76,21 +76,21 @@
 
 (describe "forms the kernel decides agree with the walk"
   (test "a type variable accepts, an arrow is fn?"
-    (assert (type-matches? '?A 5))
-    (assert (type-matches? '(int -> int) inc))
-    (assert (not (type-matches? '(int -> int) 5))))
+    (assert (reflect/type-matches? '?A 5))
+    (assert (reflect/type-matches? '(int -> int) inc))
+    (assert (not (reflect/type-matches? '(int -> int) 5))))
   (test "an or of scalars"
-    (assert (type-matches? '(or nil int) nil))
-    (assert (type-matches? '(or string nil) "s"))
-    (assert (not (type-matches? '(or string nil) 5))))
+    (assert (reflect/type-matches? '(or nil int) nil))
+    (assert (reflect/type-matches? '(or string nil) "s"))
+    (assert (not (reflect/type-matches? '(or string nil) 5))))
   (test "a record one level deep, open and closed"
-    (assert (type-matches? 'memo-buffer {:name "a" :lines ["x"]}))
-    (assert (not (type-matches? 'memo-buffer {:name 1 :lines ["x"]})))
-    (assert (not (type-matches? 'memo-buffer {:name "a" :lines ["x"] :more 1})))
-    (assert (not (type-matches? 'memo-buffer 5))))
+    (assert (reflect/type-matches? 'memo-buffer {:name "a" :lines ["x"]}))
+    (assert (not (reflect/type-matches? 'memo-buffer {:name 1 :lines ["x"]})))
+    (assert (not (reflect/type-matches? 'memo-buffer {:name "a" :lines ["x"] :more 1})))
+    (assert (not (reflect/type-matches? 'memo-buffer 5))))
   (test "a record instance's missing field is asked through its Lookup"
     ;; `:extra` is absent from the map; `get` answers 7 through `Lookup`, an int
-    (assert (type-matches? 'memo-wants-extra (memo-defaulted 1))))
+    (assert (reflect/type-matches? 'memo-wants-extra (memo-defaulted 1))))
   (test "a contracted call over the kernel-decided forms still blames a bad argument"
     (reflect/eval '(defn memo-take-buffer (b) 1))
     (reflect/eval '(sig! memo-take-buffer (memo-buffer -> int)))

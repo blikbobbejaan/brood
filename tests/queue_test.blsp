@@ -128,8 +128,8 @@
       (is (not (pq? (list [1 :a])))))
     (is (not (= (queue/empty) {:front nil :back nil :size 0}))))
   (test "each carries its record id"
-    (assert= (record-id (queue/empty)) :queue/queue)
-    (assert= (record-id (pq/empty)) :pq/pq))
+    (assert= (reflect/record-id (queue/empty)) :queue/queue)
+    (assert= (reflect/record-id (pq/empty)) :pq/pq))
   ;; An EMPTY pq used to be `nil` (a bare list), and `()` is the one falsy collection in
   ;; Brood — so `(if pq …)` took the else branch on an empty queue. A record is truthy.
   (test "an empty pq is truthy, unlike the bare list it used to be"

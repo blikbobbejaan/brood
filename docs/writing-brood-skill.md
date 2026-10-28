@@ -167,10 +167,10 @@ Its tools:
   *old* defs until you `load` it. Reflex: edit → `load` → `eval`.
 - **`lookup`** — a global's arglist, docstring, and source location. Check a
   function's real argument order here instead of assuming (trap #3).
-- **`macroexpand`** — see what a macro expands to.
+- **`reflect/macroexpand`** — see what a macro expands to.
 - **`format`** — format a snippet/file the way `nest format` would.
 - **`callers`** — every reference to a global across the project (rename impact).
-- **`apropos`** / **`all-globals`** / **`doc-search`** — does X exist, and what is it
+- **`reflect/apropos`** / **`all-globals`** / **`reflect/doc-search`** — does X exist, and what is it
   called?
 
 ## Don't guess the standard library

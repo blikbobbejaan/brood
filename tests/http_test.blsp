@@ -262,8 +262,8 @@
 
 (describe "http: responses are records with a Response impl"
   (test "the two stock kinds have distinct identities"
-    (assert= (record-id (ok "hi")) :http/response)
-    (assert= (record-id (stream-response 200 {} (fn (sock) nil)))
+    (assert= (reflect/record-id (ok "hi")) :http/response)
+    (assert= (reflect/record-id (stream-response 200 {} (fn (sock) nil)))
       :http/stream-response))
   (test "streaming? is an identity check, not a key sniff"
     (is (streaming? (stream-response 200 {} (fn (sock) nil))))
@@ -282,7 +282,7 @@
       (assert= (get r :body) "body")))
   (test "a parsed client response is a response record"
     (let (r (parse-response "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nhi"))
-      (assert= (record-id r) :http/response)
+      (assert= (reflect/record-id r) :http/response)
       (assert= (get r :status) 200)
       (assert= (body-text r) "hi")))
   (test "a third-party response type is dispatched by the same op"

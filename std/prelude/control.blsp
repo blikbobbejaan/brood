@@ -63,7 +63,7 @@ processes `body` spawns is captured too; nested `with-out-str`s compose.
 
     (with-err-str (io/write \"oops\" :to *err*))   ;=> \"oops\"
     (with-err-str 1)                            ;=> \"\"     ; nothing written"
-  (let (sink (gensym "err-sink"))
+  (let (sink (reflect/gensym "err-sink"))
     `(let (~sink (%table))
        (try
          (do
@@ -231,7 +231,7 @@ the reason `include-str` gives.)"
           (fn (acc k) (assoc acc (%thread-fill k g) (%thread-fill (get form k) g))))
       else form)))
 (defn- %thread-slot-step (acc form)
-  (let (g (gensym "thread"))
+  (let (g (reflect/gensym "thread"))
     `(let (~g ~acc) ~(%thread-fill form g))))
 
 (defn- %thread-first-step (acc form)
@@ -286,7 +286,7 @@ The steps after a failure never run, so a pipe does not have to end in `(if (fai
 
     (ok-> \"12\" string/->number inc)   ;=> 13
     (failure? (ok-> \"q\" string/->number inc))   ;=> true   ; `inc` never runs"
-  (let (v (gensym "v")) `(let (~v ~x) ~(%ok-thread-build v forms %thread-first-step))))
+  (let (v (reflect/gensym "v")) `(let (~v ~x) ~(%ok-thread-build v forms %thread-first-step))))
 ;; check-allow: deliberately non-tail — expansion-time recursion over macro-body syntax — depth is source nesting, not runtime data.
 (check-allow :non-tail-recursion
   (defn- %cond-thread-build (place clauses step)
@@ -299,14 +299,14 @@ The steps after a failure never run, so a pipe does not have to end in `(if (fai
 
     (cond-> 1 true inc)    ;=> 2
     (cond-> 1 false inc)   ;=> 1"
-  (let (v (gensym "v")) `(let (~v ~x) ~(%cond-thread-build v clauses %thread-first-step))))
+  (let (v (reflect/gensym "v")) `(let (~v ~x) ~(%cond-thread-build v clauses %thread-first-step))))
 
 (defmacro doto (x & forms)
   "Evaluate `x` once, run each `form` with it spliced in as the *first* argument (for side effects), then return `x`.
 
     (table/get (doto (table/new) (table/put :a 1) (table/put :b 2)) :b)   ;=> 2
     (doto [1] (conj 2))   ;=> [1]   ; data is immutable — `conj`'s result is discarded"
-  (let (v (gensym "v"))
+  (let (v (reflect/gensym "v"))
     `(let (~v ~x)
        ~@(map forms (fn (form) (%thread-first-step v form)))
        ~v)))
@@ -336,13 +336,13 @@ The steps after a failure never run, so a pipe does not have to end in `(if (fai
 
     (if-let (x 1) x :none)     ;=> 1
     (if-let (x nil) x :none)   ;=> :none"
-  (let (name (first binding) expr (second binding) v (gensym "v"))
+  (let (name (first binding) expr (second binding) v (reflect/gensym "v"))
     `(let (~v ~expr) (if ~v (let (~name ~v) ~then) ~@else))))
 (defmacro when-let (binding & body)
   "Bind `(name expr)`; when `expr` is truthy, evaluate `body` (returning the last) with `name` bound to it, else `nil`. `name` may be a destructuring pattern.
 
     (when-let (x 1) x)   ;=> 1"
-  (let (name (first binding) expr (second binding) v (gensym "v"))
+  (let (name (first binding) expr (second binding) v (reflect/gensym "v"))
     `(let (~v ~expr) (when ~v (let (~name ~v) ~@body)))))
 
 ;; `if-some`/`when-some` — the same shapes testing for PRESENCE (`nil`) rather than truth,
@@ -353,14 +353,14 @@ The steps after a failure never run, so a pipe does not have to end in `(if (fai
 
     (if-some (x false) x :absent)   ;=> false
     (if-some (x nil) x :absent)     ;=> :absent"
-  (let (name (first binding) expr (second binding) v (gensym "v"))
+  (let (name (first binding) expr (second binding) v (reflect/gensym "v"))
     `(let (~v ~expr) (if (/nil? ~v) (do ~@else) (let (~name ~v) ~then)))))
 (defmacro when-some (binding & body)
   "Bind `(name expr)`; when `expr` is not `nil`, evaluate `body` with `name` bound to it, else `nil`. The presence-testing [[when-let]]: a `false` value runs the body.
 
     (when-some (x false) [:got x])   ;=> [:got false]
     (when-some (x nil) [:got x])     ;=> nil"
-  (let (name (first binding) expr (second binding) v (gensym "v"))
+  (let (name (first binding) expr (second binding) v (reflect/gensym "v"))
     `(let (~v ~expr) (if (/nil? ~v) nil (let (~name ~v) ~@body)))))
 
 ;; `condp` — `cond` with the test factored out: `(condp pred expr t1 r1 t2 r2 … [default])`
@@ -383,7 +383,7 @@ The steps after a failure never run, so a pipe does not have to end in `(if (fai
     (condp < 15 10 :small 100 :medium :large)   ;=> :medium
     (condp = :b :a 1 :b 2)                      ;=> 2
     (condp string/starts-with? \"# Title\" \"#\" :heading \"-\" :item :text)   ;=> :heading"
-  (let (e (gensym "e") p (gensym "p"))
+  (let (e (reflect/gensym "e") p (reflect/gensym "p"))
     `(let (~e ~expr ~p ~pred) ~(%condp-clauses p e clauses))))
 
 ;; ---- with: sequential match-binding with fall-through -----------------------
@@ -408,7 +408,7 @@ The steps after a failure never run, so a pipe does not have to end in `(if (fai
       (let (target (first bindings)
             expr (second bindings)
             more (rest (rest bindings))
-            v (gensym "w"))
+            v (reflect/gensym "w"))
         `(let (~v ~expr)
            (if (failure? ~v)
              ~v
@@ -500,7 +500,7 @@ otherwise return its value. Any `message` parts follow the form in the error, jo
     (assert (+ 1 2))                                      ;=> 3
     (try (assert (= 1 2)) (catch e (error-message e)))    ;=> \"assert failed: (= 1 2)\"
     (try (assert (> -1 0) \"got \" -1) (catch e (error-message e)))   ;=> \"assert failed: (> -1 0): got -1\""
-  (let (v (gensym "v"))
+  (let (v (reflect/gensym "v"))
     `(let (~v ~test)
        (if ~v
          ~v
@@ -668,7 +668,7 @@ raised again — from where it was first raised."
                   (symbol? (second only))
                   (not (= (first (rest (rest only))) :when)))
               `(%try (fn () ~@init) (fn (~(second only)) ~@(rest (rest only))))
-              (let (caught (gensym "caught")
+              (let (caught (reflect/gensym "caught")
                     clauses (map catches rest)
                     rethrow (if (%try-catch-all? (last catches)) () `((_ (throw ~caught)))))
                 `(%try (fn () ~@init) (fn (~caught) (match ~caught ~@clauses ~@rethrow))))))))))

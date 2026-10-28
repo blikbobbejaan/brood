@@ -81,11 +81,11 @@
 
 (describe "defmulti :-> RET — the declared return type"
   (test "a declared return is recorded and readable"
-    (assert= (multi-return-type 'mm-typed) 'int)
-    (assert= (multi-return-type 'mm-typed-alg) 'int))
+    (assert= (reflect/multi-return-type 'mm-typed) 'int)
+    (assert= (reflect/multi-return-type 'mm-typed-alg) 'int))
 
   (test "an undeclared multimethod records none — absent, not nil-valued"
-    (assert= (multi-return-type 'mm-combine) nil))
+    (assert= (reflect/multi-return-type 'mm-combine) nil))
 
   (test "the declaration does not disturb dispatch"
     (assert= (mm-typed "abcd") 4)
@@ -124,8 +124,8 @@
   ;; it let a dangling `:->` past whenever an algebra preceded it, silently discarding the
   ;; declaration the author was reaching for.
   (test "a dangling `:->` is an error wherever it appears"
-    (is (not (nil? (error-of (macroexpand (quote (defmulti dang :->)))))))
-    (is (not (nil? (error-of (macroexpand (quote (defmulti dang :commutative :->))))))))
+    (is (not (nil? (error-of (reflect/macroexpand (quote (defmulti dang :->)))))))
+    (is (not (nil? (error-of (reflect/macroexpand (quote (defmulti dang :commutative :->))))))))
 
   (test "`:-> nil` is a legal declaration, not a missing one"
     (assert= (checker-messages "(defmulti k :-> nil) (defmethod k [:int] (n) nil)") (list)))

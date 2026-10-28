@@ -330,7 +330,7 @@ field:
 (= (assoc p :x 9) (point 9 4))   ;=> true  ; a fresh record, id and all
 (fields p)               ;=> {:x 3 :y 4}   ; the clean, id-free view
 (record? p)              ;=> true
-(record-id p)            ;~> :<ns>/point
+(reflect/record-id p)            ;~> :<ns>/point
 (= (point 1 2) {:x 1 :y 2})   ;=> false    ; the bare map has no :__id__ entry
 (= (point 1 2) (point 1 2))   ;=> true     ; same fields, same id
 ```
@@ -343,7 +343,7 @@ and at runtime — whereas `(get p :witdh)` silently returns `nil`.
 maps entry by entry, and the `:__id__` entry is one of them. So a record is never `=` to a
 bare map with the same fields, nor to a record of another type with the same fields — the
 ids differ — while two records of one type with equal fields are `=`. The identity is
-nominal only where ability dispatch reads it (below). `record?`/`record-id`/`fields` are
+nominal only where ability dispatch reads it (below). `record?`/`reflect/record-id`/`fields` are
 the identity API. Functional update
 is plain `assoc`/`merge` (the id rides along).
 
@@ -592,7 +592,7 @@ means it can't gate); a required ability's *provided* op is satisfied by its def
 
 **Introspection and helpers.** `(satisfies? 'Shape x)` is true when every declared
 op resolves for `x` (directly or via `:default`), so a caller can branch instead of
-letting the op raise. `(record? x)` / `(record-id x)` / `(fields x)` are the clean
+letting the op raise. `(record? x)` / `(reflect/record-id x)` / `(fields x)` are the clean
 view of a record — `fields` returns the field map with the internal id omitted.
 `(ability-ops 'Shape)` exposes the declared op specs as data, the same hook the
 checker and LSP read.
@@ -1076,14 +1076,14 @@ string returns that string (the CL/Elisp rule), so it isn't documentation:
   "Return x times itself."   ; docstring (more body follows)
   (* x x))
 
-(doc square)                 ;=> "Return x times itself."
+(reflect/doc square)                 ;=> "Return x times itself."
 
 (defn greeting (who) "hello") ; lone string → return value, NOT a docstring
-(doc greeting)                ;=> nil
+(reflect/doc greeting)                ;=> nil
 (greeting 'x)                 ;=> "hello"
 ```
 
-The docstring is stored on the closure and read with `(doc f)` (below); it
+The docstring is stored on the closure and read with `(reflect/doc f)` (below); it
 powers editor hover / `describe-function` (see `docs/lsp.md`).
 
 A **module** documents itself the same way: the docstring passed to its opening
@@ -1166,14 +1166,14 @@ evaluated in its place. Templates are written with quasiquote: `` `x `` quotes,
 (unless2 false (io/puts "ran"))
 
 ;; inspect an expansion without running it:
-(macroexpand-1 '(defn f (x) x))   ;=> (def f (fn (x) x))
+(reflect/macroexpand-1 '(defn f (x) x))   ;=> (def f (fn (x) x))
 ```
 
 ### Macro hygiene — automatic
 
 Macros are **hygienic by default**. A binder a backtick template introduces is
 automatically alpha-renamed to a fresh symbol, so a plain literal binder can neither
-capture nor be captured by caller code spliced in with `~`/`~@` — no `gensym`, no `#`.
+capture nor be captured by caller code spliced in with `~`/`~@` — no `reflect/gensym`, no `#`.
 That holds at every binding site of the one pattern grammar: `let`/`letrec`/`fn` binders
 and their destructuring patterns, `match`/`receive` clauses (guards, `or` alternatives,
 pins), and the standard binding macros — `when-let`, `if-let`, `for`, `fold-for`, `doseq`,
@@ -1208,11 +1208,11 @@ write it as an unquoted quoted symbol, `~'name`, which emits the literal name:
 (aif (find x) (use it) :none)  ; the caller's `it` refers to the binding
 ```
 
-**`x#` and `gensym` still work** (now redundant): a symbol ending in `#` inside a
-template still becomes a fresh gensym (the Clojure shorthand), and `gensym`
+**`x#` and `reflect/gensym` still work** (now redundant): a symbol ending in `#` inside a
+template still becomes a fresh gensym (the Clojure shorthand), and `reflect/gensym`
 remains available for a fresh symbol outside a template. New code needs neither.
 
-**What stays literal**, so opt into `#`/`gensym` there if capture is a concern:
+**What stays literal**, so opt into `#`/`reflect/gensym` there if capture is a concern:
 
 - a binder introduced by **your own binding macro** used inside a template — the rename
   runs before the macros in a template expand, so it knows the standard library's shapes
@@ -3696,7 +3696,7 @@ iolist in memory.
   suffixes accepted).
 
 ### Metaprogramming / self-hosting
-`reflect/eval`  `reflect/read-string`  `reflect/read-all`  `reflect/eval-string`  `reflect/load`  `reflect/undef`  `macroexpand`  `macroexpand-1`  `gensym`
+`reflect/eval`  `reflect/read-string`  `reflect/read-all`  `reflect/eval-string`  `reflect/load`  `reflect/undef`  `reflect/macroexpand`  `reflect/macroexpand-1`  `reflect/gensym`
 
 There is **no user-facing `require` form** — you load an embedded standard-library
 module by *referencing* it. A qualified reference `name/foo` auto-loads `name` on
@@ -3919,7 +3919,7 @@ At the REPL the namespace tracks the last `defmodule`; `(reflect/current-ns)` re
 > time (ADR-070), enforced once the package manager lands (ADR-037).
 
 ### Introspection (editor tooling)
-`doc`  `arglist`  `reflect/arglists`  `reflect/global-names`  `bound?`  `apropos`  `doc-search`
+`doc`  `reflect/arglist`  `reflect/arglists`  `reflect/global-names`  `bound?`  `reflect/apropos`  `reflect/doc-search`
 
 For self-description — the substrate an editor (and the planned language server,
 `docs/lsp.md`) reads for hover, signature help, completion, and "is this name
@@ -3928,9 +3928,9 @@ redefined.
 
 ```clojure
 (defn add (a b & more) "Sum the arguments." (reduce + (+ a b) more))
-(doc add)              ;=> "Sum the arguments."
-(arglist add)          ;=> (a b & more)        ; mirrors the source surface
-(reflect/arglists (fn ((a) a) ((a b) b)))   ;=> ((a) (a b))   ; every arm; arglist shows the last
+(reflect/doc add)              ;=> "Sum the arguments."
+(reflect/arglist add)          ;=> (a b & more)        ; mirrors the source surface
+(reflect/arglists (fn ((a) a) ((a b) b)))   ;=> ((a) (a b))   ; every arm; reflect/arglist shows the last
 (bound? 'add)          ;=> true   ; quote the name: bound? takes a symbol
 (bound? 'no-such)      ;=> false
 (includes? (reflect/global-names) 'map)  ;=> true      ; every global, for completion
@@ -3957,13 +3957,13 @@ already know (the answer to "is there an RNG?" in one call):
 
 ```clojure
 (reflect/global-names)           ;~> (… sorted list of every global …)
-(apropos "rand")         ;~> (crypto/random-bytes … http/random-token)  ; loaded names containing "rand"
-(apropos :shuffle)       ;~> (seq/shuffle)                      ; string/symbol/keyword pattern
-(doc-search "random")    ;~> ([seq/sample "…"] [seq/shuffle "…"] …)    ; matches docstrings, not names
+(reflect/apropos "rand")         ;~> (crypto/random-bytes … http/random-token)  ; loaded names containing "rand"
+(reflect/apropos :shuffle)       ;~> (seq/shuffle)                      ; string/symbol/keyword pattern
+(reflect/doc-search "random")    ;~> ([seq/sample "…"] [seq/shuffle "…"] …)    ; matches docstrings, not names
 ```
 
 These three are Brood over `reflect/global-names`/`doc` (`std/prelude/tools.blsp`), and are
-also exposed as `nest mcp` tools (`apropos`, `all-globals`, `doc-search`) so an
+also exposed as `nest mcp` tools (`reflect/apropos`, `all-globals`, `reflect/doc-search`) so an
 agent can explore the live image — see `docs/mcp.md`.
 
 ## Prelude

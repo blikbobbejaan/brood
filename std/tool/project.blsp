@@ -234,7 +234,7 @@ identity and may override those paths. The rest of the tool is its siblings:
 
     (project/dep? (project/parse-dep '[foo :path \"../foo\"]))  ;=> true
     (project/dep? {:name 'foo})                                 ;=> false"
-  (and (record? x) (includes? *project-dep-ids* (record-id x))))
+  (and (record? x) (includes? *project-dep-ids* (reflect/record-id x))))
 
 (defn dep-path? (x)
   "True if `x` is a `:path` dependency — the one kind that loads **in place** rather
@@ -242,7 +242,7 @@ than being fetched into `_deps/<name>/`.
 
     (project/dep-path? (project/parse-dep '[foo :path \"../foo\"]))  ;=> true
     (project/dep-path? (project/parse-dep '[foo :version \"^1.0.0\"]))  ;=> false"
-  (and (record? x) (= (record-id x) :project/dep-path)))
+  (and (record? x) (= (reflect/record-id x) :project/dep-path)))
 
 ;; The keys of a flat plist (every other element from the head).
 ;; check-allow: deliberately non-tail — depth = the manifest plist's key count.

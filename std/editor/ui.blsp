@@ -802,7 +802,7 @@ itself, a vector by its leading keyword — and its second, when that is one too
   (cond
     (keyword? input) input
     (string? input) (if (> (string/length input) 16) :string input)
-    (record? input) (record-id input)
+    (record? input) (reflect/record-id input)
     (and (vector? input) (not (empty? input)) (keyword? (first input)))
       (if (and (> (count input) 1) (keyword? (second input)))
         [(first input) (second input)]

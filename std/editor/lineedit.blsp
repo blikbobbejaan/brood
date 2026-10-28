@@ -776,7 +776,7 @@ image), or nil if it isn't a bound symbol. A bare-symbol `reflect/eval` is just 
     (try
       (when (string? callee)
         (let (sym (reflect/read-string callee))
-          (if (and (symbol? sym) (bound? sym)) (arglist (reflect/eval sym)) nil)))
+          (if (and (symbol? sym) (bound? sym)) (reflect/arglist (reflect/eval sym)) nil)))
       (catch e nil))))
 
 ;; check-allow: deliberately non-tail — depth = the signature hint's argument count.

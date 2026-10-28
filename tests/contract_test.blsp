@@ -622,8 +622,8 @@
     (let (e (try (c-reloaded 1) (catch e e)))
       (assert= :callee (get e :blame))))
   (test "a shim keeps the function's arity and docstring"
-    (assert= 2 (count (arglist c-blame)))
-    (assert= "Entry: the docstring survives the shim." (doc c-documented))
+    (assert= 2 (count (reflect/arglist c-blame)))
+    (assert= "Entry: the docstring survives the shim." (reflect/doc c-documented))
     (assert= 4 (c-documented 2))))
 
 (defn c-documented (n)

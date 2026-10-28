@@ -111,20 +111,16 @@
 ;; Kernel primitives (and two `defn`s nested in a `let`), which record no definition site.
 (def *kernel-categories*
   {"apply" :functions
-   "arglist" :meta
    "bound?" :meta
    "bytes" :bytes
    "compare" :math
    "cons" :collections
    "demonitor" :processes
-   "doc" :meta
    "empty?" :predicates
    "exit" :processes
    "first" :collections
-   "gensym" :meta
    "keyword" :convert
    "link" :processes
-   "macroexpand-1" :meta
    "monitor" :processes
    "nil?" :predicates
    "pair?" :predicates
@@ -156,8 +152,7 @@
    "identity" :functions
    "last" :collections
    "inspect" :io
-   "fields" :maps
-   "record-id" :maps})
+   "fields" :maps})
 
 ;; `;; ---- title ----`; a bare `;; -----` rule under a file's opening comment is not one.
 (defn- header-line? (line)

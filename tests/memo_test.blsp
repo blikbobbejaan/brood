@@ -47,4 +47,4 @@
       (text-length edited)
       (assert= *calls* 2)))
   (test "a docstring stays the function's"
-    (is (includes? (or (doc squared) "") "squared"))))
+    (is (includes? (or (reflect/doc squared) "") "squared"))))

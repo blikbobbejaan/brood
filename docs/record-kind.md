@@ -55,8 +55,8 @@ Everything is prelude Brood. The only Rust support is the interned key (`core/ke
 (defrecord point (x y))
 (def p (point 1 2))
 (record? (into {} p))                     ;=> true   — should be a plain map of the fields
-(record-id (merge {:z 1} p))              ;=> :point — a plain map took on p's identity
-(record-id (assoc {:x 1} :__id__ :a/b))   ;=> :a/b   — identity forged by hand
+(reflect/record-id (merge {:z 1} p))              ;=> :point — a plain map took on p's identity
+(reflect/record-id (assoc {:x 1} :__id__ :a/b))   ;=> :a/b   — identity forged by hand
 ```
 
 - **`(into {} r)` returns `r`.** `into`'s "pouring a map into an empty map returns it as-is"

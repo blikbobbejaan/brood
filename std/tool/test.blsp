@@ -395,7 +395,7 @@ docs/testing.md for the full guide."
 ;; into a clickable anchor line plus its indented fields (docs/tooling.md).
 (defmacro is (expr)
   "Assert that `expr` is truthy; on failure record the source expression and its actual value."
-  (let (v (gensym "v") loc (fail-loc expr))
+  (let (v (reflect/gensym "v") loc (fail-loc expr))
     `(let (~v ~expr)
        (unless ~v
          (test-fail (quote ~loc)
@@ -403,7 +403,7 @@ docs/testing.md for the full guide."
 
 (defmacro refute (expr)
   "Assert that `expr` is falsy — the negation of `is`."
-  (let (v (gensym "v") loc (fail-loc expr))
+  (let (v (reflect/gensym "v") loc (fail-loc expr))
     `(let (~v ~expr)
        (when ~v
          (test-fail (quote ~loc)
@@ -412,7 +412,7 @@ docs/testing.md for the full guide."
 
 (defmacro assert= (actual expected)
   "Assert that `actual` is structurally equal to `expected`; on failure record both values."
-  (let (a (gensym "a") b (gensym "b") loc (fail-loc actual))
+  (let (a (reflect/gensym "a") b (reflect/gensym "b") loc (fail-loc actual))
     `(let (~a ~actual ~b ~expected)
        (unless (= ~a ~b)
          (test-fail (quote ~loc)

@@ -251,7 +251,7 @@ image stays in sync with disk.
 
 (defn lookup-tool (args)
   "`lookup` — describe a global name. Returns `{:name :arglist :doc :type
-:source-location}` (arglist a list of param symbols incl. `&optional`/`&`
+:source-location}` (reflect/arglist a list of param symbols incl. `&optional`/`&`
 markers; doc a string or nil; type the checker's arrow signature string or nil;
 source-location `[file line col]` or nil).
 Unbound names come back as `{:name :error}` rather than a thrown error, so
@@ -267,8 +267,8 @@ the agent can branch on `(get r :error)` cleanly.
       (attempt (fn ()
                  (let (value (reflect/eval sym))
                    {:name name
-                    :arglist (arglist value)
-                    :doc (doc value)
+                    :arglist (reflect/arglist value)
+                    :doc (reflect/doc value)
                     :type (reflect/type-signature sym)
                     :source-location (reflect/source-location sym)}))
         (fn (shape) {:name name :error shape})))))
@@ -287,8 +287,8 @@ text — unbalanced parens in `:form` can't break the host expression.
     (attempt (fn ()
                (let (form (reflect/read-first src)
                      expanded (if (= mode "all")
-                                (macroexpand form)
-                                (macroexpand-1 form)))
+                                (reflect/macroexpand form)
+                                (reflect/macroexpand-1 form)))
                  {:expanded (pr-str expanded)}))
       (fn (shape) {:error shape}))))
 
@@ -455,7 +455,7 @@ exist?\" without guessing names one at a time.
   (let (pattern (get args :pattern))
     (when (not (string? pattern))
       (throw "apropos: :pattern must be a string"))
-    {:matches (map (apropos pattern) ->string)}))
+    {:matches (map (reflect/apropos pattern) ->string)}))
 
 (defn all-globals-tool (args)
   "`all-globals` — every globally bound name in the image. Returns
@@ -472,7 +472,7 @@ exist?\" without guessing names one at a time.
   (let (query (get args :query))
     (when (not (string? query))
       (throw "doc-search: :query must be a string"))
-    {:results (map (doc-search query)
+    {:results (map (reflect/doc-search query)
                 (fn (pair) {:name (->string (first pair)) :doc (second pair)}))}))
 
 (defn explain-error-tool (args)

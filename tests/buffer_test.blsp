@@ -45,7 +45,7 @@
   ;; that), and a buffer is never `=` to a look-alike map.
   (test "buffer? is an identity check, not a shape check"
     (refute (buffer? {:rope (text/from-string "hello") :point 0 :mark nil}))
-    (assert= (record-id (make-buffer "x")) :editor/buffer/buffer)
+    (assert= (reflect/record-id (make-buffer "x")) :editor/buffer/buffer)
     (is (record? (make-buffer "x"))))
   (test "the identity survives every op that threads the buffer"
     (is (buffer? (insert (make-buffer "ab") "c")))

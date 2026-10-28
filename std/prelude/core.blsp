@@ -776,7 +776,7 @@ no-op; the marker is read only by the type checker (`nest check`).
     true
     (if (empty? (rest xs))
       (first xs)
-      (let (g (gensym "and")) `(let (~g ~(first xs)) (if ~g (and ~@(rest xs)) ~g))))))
+      (let (g (reflect/gensym "and")) `(let (~g ~(first xs)) (if ~g (and ~@(rest xs)) ~g))))))
 
 (defmacro or (& xs)
   "Logical OR: evaluate left-to-right, short-circuiting on the first truthy value (which it returns); `nil` if none. Each argument is evaluated at most once.
@@ -788,7 +788,7 @@ no-op; the marker is read only by the type checker (`nest check`).
     nil
     (if (empty? (rest xs))
       (first xs)
-      (let (g (gensym "or")) `(let (~g ~(first xs)) (if ~g ~g (or ~@(rest xs))))))))
+      (let (g (reflect/gensym "or")) `(let (~g ~(first xs)) (if ~g ~g (or ~@(rest xs))))))))
 
 ;; cond: flat test/expr pairs (ADR-004); a final `else` is the catch-all.
 ;;
@@ -843,13 +843,13 @@ no-op; the marker is read only by the type checker (`nest check`).
   (if (= n 0)
     (error "macroexpand: no fixpoint after "
       %macroexpand-max-rounds " rounds (a macro that expands to itself?)")
-    (let (stepped (macroexpand-1 form))
+    (let (stepped (reflect/macroexpand-1 form))
       (if (= stepped form) form (%macroexpand-loop stepped (- n 1))))))
 
-(defn macroexpand (form)
+(defn reflect/macroexpand (form)
   "Repeatedly expand `form`'s head macro until the head is no longer a macro call.
 
-    (macroexpand '(when true 1))   ;=> (if true (do 1) nil)"
+    (reflect/macroexpand '(when true 1))   ;=> (if true (do 1) nil)"
   (%macroexpand-loop form %macroexpand-max-rounds))
 
 ;; ---- signatures for the core functions defined ABOVE `sig` itself ----------
@@ -919,7 +919,7 @@ no-op; the marker is read only by the type checker (`nest check`).
       (let (slash (%str-last-index-of ts "/")
             leaf (if (%eq slash -1) t (symbol (string/substring ts (inc slash) (string/length ts))))
             members (or (%sealed-members t) (%sealed-members leaf))
-            id (record-id v))
+            id (reflect/record-id v))
         (cond
           members (if (includes? members (%identity-of v)) true false)
           (and id (%record-id-named? id t)) true
@@ -940,8 +940,8 @@ no-op; the marker is read only by the type checker (`nest check`).
     (let (field-type (second fields)
           field-value (get v (first fields)))
       (and (if (and (pair? field-type) (%eq (first field-type) 'optional))
-             (or (nil? field-value) (type-matches? (second field-type) field-value))
-             (type-matches? field-type field-value))
+             (or (nil? field-value) (reflect/type-matches? (second field-type) field-value))
+             (reflect/type-matches? field-type field-value))
         (%record-fields-match? (rest (rest fields)) v)))
     true))
 
@@ -953,12 +953,12 @@ no-op; the marker is read only by the type checker (`nest check`).
     else (%record-declares? (rest (rest fields)) k)))
 
 ; unknown base name → accept
-(defn type-matches? (t v)
+(defn reflect/type-matches? (t v)
   "True if value `v` inhabits the (sig …) type-expression `t`. Unknown type
 names accept anything, so a contract never throws on a type it can't interpret.
 
-    (type-matches? 'int 5)      ;=> true
-    (type-matches? 'string 5)   ;=> false
+    (reflect/type-matches? 'int 5)      ;=> true
+    (reflect/type-matches? 'string 5)   ;=> false
 
 A verdict about a compound value is REMEMBERED by the identity of the type and the value
 (ADR-480): a value is immutable, so an unchanged sub-value is the same object on the next
@@ -1021,13 +1021,13 @@ call therefore walks only what changed since the last check — the rest is one 
                   (< 1 (count (rest t)))
                     (and (= (count v) (count (rest t)))
                       (every? (range (count v))
-                        (fn (i) (type-matches? (nth (rest t) i) (nth v i)))))
-                  else (every? v (fn (x) (type-matches? elem x))))))
+                        (fn (i) (reflect/type-matches? (nth (rest t) i) (nth v i)))))
+                  else (every? v (fn (x) (reflect/type-matches? elem x))))))
           (%eq h 'vector)
             (and (vector? v)
               (let (elem (first (rest t)))
                 (or (nil? elem)
-                  (every? v (fn (x) (type-matches? elem x))))))
+                  (every? v (fn (x) (reflect/type-matches? elem x))))))
           ;; `(set T)` — the sibling of `(vector T)`. Every compound the grammar accepts
           ;; needs an arm: "unknown compound → accept" (the `else true` below) is right for
           ;; a type this function cannot interpret, and a lie for one it can.
@@ -1035,7 +1035,7 @@ call therefore walks only what changed since the last check — the rest is one 
             (and (set? v)
               (let (elem (first (rest t)))
                 (or (nil? elem)
-                  (every? v (fn (x) (type-matches? elem x))))))
+                  (every? v (fn (x) (reflect/type-matches? elem x))))))
           ;; `(seqable T)` — a sequence of `T` whichever shape carries it (ADR-365):
           ;; `nil | list<T> | vector<T> | set<T>`. A map and a `bytes` are in bare
           ;; `seqable` and NOT here — their elements are `[k v]` entries and octets, fixed
@@ -1045,7 +1045,7 @@ call therefore walks only what changed since the last check — the rest is one 
             (and (or (list? v) (vector? v) (set? v))
               (let (elem (first (rest t)))
                 (or (nil? elem)
-                  (every? v (fn (x) (type-matches? elem x))))))
+                  (every? v (fn (x) (reflect/type-matches? elem x))))))
           ;; A record instance is a map whose identity rides in a hidden `:__id__` entry —
           ;; hidden from `count`, `seq`, `keys` and the checker alike — so its entries here
           ;; are its FIELDS: `(point 1 2)` is a `(map keyword int)` (the identity's keyword
@@ -1057,8 +1057,8 @@ call therefore walks only what changed since the last check — the rest is one 
                 (or (and (nil? ktype) (nil? vtype))
                   (every? (%type-map-entries v)
                     (fn (kv)
-                      (and (type-matches? ktype (first kv))
-                        (type-matches? vtype (second kv))))))))
+                      (and (reflect/type-matches? ktype (first kv))
+                        (reflect/type-matches? vtype (second kv))))))))
           (%eq h 'record)
           ;; A field's type may be wrapped `(optional T)` — allowed to be absent/nil; every
           ;; other field is required (`%record-fields-match?`).
@@ -1082,7 +1082,7 @@ call therefore walks only what changed since the last check — the rest is one 
           ;; declared type.
             (and (vector? v)
               (= (count v) (count (rest t)))
-              (every? (range (count v)) (fn (i) (type-matches? (nth (rest t) i) (nth v i)))))
+              (every? (range (count v)) (fn (i) (reflect/type-matches? (nth (rest t) i) (nth v i)))))
           else true))
     ; arrow param / unknown compound → accept
     (keyword? t) (= t v)

@@ -234,7 +234,7 @@ NON-LINEAR patterns (the same name twice) work.
                      (%vector-ref spec 1) 'bytes/int
                      (%vector-ref spec 2) 'bytes/uint-le
                      else 'bytes/uint)
-            noff (gensym "off"))
+            noff (reflect/gensym "off"))
         (cond
           ;; (_ :u32) — skip the segment's width
           (%match-wildcard? s)
@@ -271,7 +271,7 @@ NON-LINEAR patterns (the same name twice) work.
     else (%match-bytes-seg (first segs) (rest segs) target off bound success fail)))
 
 (defn- %match-bytes-seg (seg more target off bound success fail)
-  (let (noff (gensym "off"))
+  (let (noff (reflect/gensym "off"))
     (cond
       ;; (sym :u16) — a typed integer segment (spec keyword in size position)
       (and (pair? seg) (keyword? (second seg)))
@@ -279,7 +279,7 @@ NON-LINEAR patterns (the same name twice) work.
           more target off bound success fail)
       ;; (sym n) — bind n bytes as a sub-bytes value; n is an int or an earlier binding
       (pair? seg)
-        (let (s (first seg) szv (gensym "sz"))
+        (let (s (first seg) szv (reflect/gensym "sz"))
           `(let (~szv ~(second seg))
              (if (and (>= ~szv 0) (<= (+ ~off ~szv) (%byte-length ~target)))
                (let (~@(if (%match-wildcard? s)
@@ -396,8 +396,8 @@ NON-LINEAR patterns (the same name twice) work.
         `(if (nil? ~target) ~success ~fail))
       ; require the list exhausted
       (let (p (first pats)
-            hd (gensym "hd")
-            tl (gensym "tl")
+            hd (reflect/gensym "hd")
+            tl (reflect/gensym "tl")
             inner (%match-compile-seq (rest pats)
                     rest-pat
                     has-rest
@@ -423,7 +423,7 @@ NON-LINEAR patterns (the same name twice) work.
     (if (empty? pats)
       success
       (let (p (first pats)
-            el (gensym "el")
+            el (reflect/gensym "el")
             inner (%match-compile-velems (rest pats)
                     target
                     (inc i)
@@ -500,7 +500,7 @@ NON-LINEAR patterns (the same name twice) work.
       (let (kv (first entries)
             k (first kv)
             sub (second kv)
-            v (gensym "mval"))
+            v (reflect/gensym "mval"))
         `(if (contains? ~target (quote ~k))
            (let (~v (get ~target (quote ~k)))
              ~(%match-compile sub
@@ -550,7 +550,7 @@ NON-LINEAR patterns (the same name twice) work.
                " pattern like {:field p} or {:keys [f]}, got "
                (pr-str mappat))))
     (let (id (%ability-id-kw name))
-      `(if (%eq (record-id ~target) ~id)
+      `(if (%eq (reflect/record-id ~target) ~id)
          ~(if mappat (%match-compile mappat target bound success fail) success)
          ~fail))))
 
@@ -733,14 +733,14 @@ refutable `let` and pattern `fn` lowers its no-match branch to.
 ;; A thunk arm could never lower anyway (`MakeClosure` is outside the JIT subset), so the
 ;; `or` only gains there.
 (defn- %match-build-clause (clause target rest-code nil-fail?)
-  (let (k (gensym "mfail")
+  (let (k (reflect/gensym "mfail")
         compiled (%match-compile-clause clause target (list k))
         uses (%match-count-sym compiled k))
     (cond
       (= uses 0) compiled
       (or (= uses 1) (%match-small? rest-code)) (%match-splice-fail compiled k rest-code)
       nil-fail?
-        (let (g (gensym "rcv"))
+        (let (g (reflect/gensym "rcv"))
           `(let (~g ~(%match-compile-clause clause target nil)) (if ~g ~g ~rest-code)))
       else `(let (~k (fn () ~rest-code)) ~compiled))))
 
@@ -773,7 +773,7 @@ refutable `let` and pattern `fn` lowers its no-match branch to.
 and `fn` forms. `context` (a keyword like `:match`/`:let`, or a function name) is embedded
 in the no-match failure so the error names the form that failed. Prefer `match` — this is
 the surface the special forms target directly when they need their own context."
-  (let (v (gensym "m")) `(let (~v ~expr) ~(%match-build clauses v context))))
+  (let (v (reflect/gensym "m")) `(let (~v ~expr) ~(%match-build clauses v context))))
 
 ;; (match expr (pattern [:when guard] body...) ...) — match `expr` against each
 ;; clause in order; the first whose pattern (and guard) matches runs its body.

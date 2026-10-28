@@ -20,7 +20,7 @@ one server that owns the language knowledge.
 > **Done:** Foundation A — the CST (`syntax::cst`) + shared lexical rules
 > (`syntax::atom`) + `error::Span`; Foundation B — the CST scope resolver
 > (`syntax::scope`); Foundation C — leading-string docstrings and the
-> introspection primitives `doc` / `arglist` / `global-names` / `bound?`.
+> introspection primitives `doc` / `reflect/arglist` / `global-names` / `bound?`.
 > **Tier 0** — the `crates/lsp` → `brood-lsp` binary: stdio lifecycle, full
 > document sync, and syntactic `publishDiagnostics` read off the CST
 > (`lsp-server` + `lsp-types`, no async runtime). `Uri`→text document store, a
@@ -31,14 +31,14 @@ one server that owns the language knowledge.
 > offers locals-in-scope (`scope::names_in_scope`) + interpreter globals
 > (`global-names`); hover renders a local note, a document def's
 > signature+docstring (read off the CST, `defs`), a prelude/builtin name's
-> `arglist`+`doc`, or — in a `defmodule` header — a `(:use …)`/`(:alias …)`
+> `reflect/arglist`+`doc`, or — in a `defmodule` header — a `(:use …)`/`(:alias …)`
 > module's docstring or a `(:implements …)` behaviour's ops (`module_ref`);
 > `documentSymbol` outlines top-level `def`/`defn`/`defmacro`;
 > goto-definition resolves through `scope::resolve_at`; signature help shows the
 > enclosing call's parameters with the active argument highlighted (params from
-> the CST def, or `arglist` for a prelude/builtin). The server holds one `Interp`
+> the CST def, or `reflect/arglist` for a prelude/builtin). The server holds one `Interp`
 > for introspection only — it still never evaluates the open buffer.
-> Hover/`doc`/`arglist` now cover **primitives** too (the `NativeFn` carries a
+> Hover/`doc`/`reflect/arglist` now cover **primitives** too (the `NativeFn` carries a
 > docstring + param names from the `PRIMITIVE_DOCS` table), and the public stdlib
 > carries leading-string docstrings — so a hover shows real documentation across
 > the surface.
@@ -112,10 +112,10 @@ one server that owns the language knowledge.
 > CST: every multi-line container (`()`/`[]`/`{}`) and every run of consecutive
 > comment lines. Pure structural walk, no eval.
 > • **`textDocument/inlayHint`** (`inlay_hints.rs`) — two kinds. **Parameter names**
-> at call sites from `arglist` (the signature-help source), conservative: only the
+> at call sites from `reflect/arglist` (the signature-help source), conservative: only the
 > **leading required** params (stops at the first `&optional`/`&` marker, since
-> `arglist` drops `(opt default)` groups); a head resolving to a **local** is
-> skipped; per-name `arglist` memoized per request; range-scoped to the visible
+> `reflect/arglist` drops `(opt default)` groups); a head resolving to a **local** is
+> skipped; per-name `reflect/arglist` memoized per request; range-scoped to the visible
 > region. And the **effective type** of each `defn`, rendered after its parameter
 > list — the question hover cannot answer, because hover reads the *loaded* image
 > and a buffer being edited is not loaded. The answer comes from
@@ -193,7 +193,7 @@ one server that owns the language knowledge.
 ## Why a server, and why not brute-force it
 
 The temptation is to bolt one feature at a time onto the existing reader:
-positions for diagnostics here, an `arglist` lookup there, a symbol scan for
+positions for diagnostics here, an `reflect/arglist` lookup there, a symbol scan for
 completion. That path duplicates a parser's worth of position bookkeeping across
 features and never quite agrees with itself. The cheaper foundation is to decide
 **once** how source text maps to *spans* and to *meaning*, then let every
@@ -228,7 +228,7 @@ changed range(s), which `apply_content_change` splices into the stored buffer
 (range→byte offset through the `LineIndex`); the *parse* stays whole-document (the
 reader is fast enough that incremental *parse* is premature — only the transport
 saves re-sending a large file on every keystroke). It owns one `Interp`
-for introspection queries (`arglist`, global names); it does **not** evaluate
+for introspection queries (`reflect/arglist`, global names); it does **not** evaluate
 document text.
 
 ## The load-bearing decision: a separate CST
@@ -360,11 +360,11 @@ symbol binds to**. Two layers:
 
 - **Globals** — enumerable from the runtime global table. Add small primitives
   (Rust *mechanism*; the policy that consumes them can be Brood):
-  - `(arglist f)` — the parameter list of a closure (`Closure` already stores
+  - `(reflect/arglist f)` — the parameter list of a closure (`Closure` already stores
     `params` / `optionals` / `rest`) or a builtin (from its `Arity`). Feeds
     signature help and hover.
   - `(global-names)` / `(bound? sym)` — for completion and workspace symbols.
-  - `(doc f)` — **implemented** (ADR-025): a docstring is an optional leading
+  - `(reflect/doc f)` — **implemented** (ADR-025): a docstring is an optional leading
     string in a `fn`/`defn`/`defmacro` body (only when more body follows it),
     stored on the closure. A module documents itself the same way — a leading
     string as the file's first top-level form. `nest doc` extracts both as
@@ -514,7 +514,7 @@ additive change behind the same feature handlers.
 | Tier | Features | Needs | Status |
 |---|---|---|---|
 | **0** | `publishDiagnostics` (syntactic), document sync, lifecycle | `cst::parse` + `LineIndex` | **done** |
-| **1** | completion (locals + globals), hover, `documentSymbol`, **goto-definition**, **signature help** | `arglist` / `global-names` primitives; CST top-level walk (`defs`) + scope walker | **done** |
+| **1** | completion (locals + globals), hover, `documentSymbol`, **goto-definition**, **signature help** | `reflect/arglist` / `global-names` primitives; CST top-level walk (`defs`) + scope walker | **done** |
 | **1+** | semantic diagnostics ("unbound" / arity / type misuse), **cross-file & stdlib goto**, `require`-target goto | located `check_file`; project bootstrap; `source-location` + prelude-cache; `require--find` | **done** |
 | **2** | **cross-file** references & rename (+prepareRename), document-highlight, semantic tokens, completion resolve | `scope::references` / `references_to_global`; `project_files`; CST token classification | **done** |
 | **2+** | formatting, workspace symbol, code actions (did-you-mean, remove-unused-require), folding ranges, inlay hints | `introspect::format_source`; `defs::top_level` + `workspace::all_sources`; `global_names`/`names_in_scope` + Levenshtein; CST container/comment walk; `arglist_tokens` | **done** |
@@ -565,7 +565,7 @@ Brood. An LSP is *mostly mechanism* — JSON-RPC transport, the document store,
 the byte↔UTF-16 map, the CST itself — legitimately Rust, the same category as
 the reader and the scheduler. But *policy* can be Brood: which findings become
 diagnostics, completion candidate ranking, what hover renders. A clean split:
-transport + CST + position mapping in Rust; expose `arglist`, `global-names`, and
+transport + CST + position mapping in Rust; expose `reflect/arglist`, `global-names`, and
 eventually an `analyze` / `completions-at` surface that is ultimately Brood
 source the server calls into. We don't owe that on day one, but designing the
 boundary this way keeps faith with why the project exists.

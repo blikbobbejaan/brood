@@ -132,7 +132,7 @@
 (io/puts "expected 50005000:" (= 50005000 (apply + huge-args)))
 
 (io/puts "--- gensym storm: generate 10000 unique symbols ---")
-(def syms (map (range 10000) (fn (_) (gensym))))
+(def syms (map (range 10000) (fn (_) (reflect/gensym))))
 (io/puts "gensym count:" (count syms))
 ;; All must be unique
 (def unique-syms (into {} (map syms (fn (s) [s true]))))

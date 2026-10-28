@@ -1185,7 +1185,7 @@ say). Advisory, like every signing check: a bad or changed signature is reported
     " — pin it explicitly in your root manifest"))
 
 (defn- package-check-compatible (existing dep)
-  (if (not (= (record-id existing) (record-id dep)))
+  (if (not (= (reflect/record-id existing) (reflect/record-id dep)))
     (package-conflict dep
       (str "required as both " (dep-kind existing) " and " (dep-kind dep)))
     (dep-check-compatible existing dep)))
@@ -1307,7 +1307,7 @@ say). Advisory, like every signing check: a bad or changed signature is reported
   (fold entries
     nil
     (fn (_ e)
-      (when (reserved-package-name? (get e :name))
+      (when (reflect/reserved-package-name? (get e :name))
         (error "package: dependency '"
           (->string (get e :name))
           "' is named after a standard-library module — the stdlib owns the '"
@@ -2068,7 +2068,7 @@ published is refused. Backs `nest publish`.
                           (let (base (registry-base-for index)
                                 token (registry-token))
                             (when (nil? *project-name*) (error "package: project has no :name"))
-                            (when (reserved-package-name? *project-name*)
+                            (when (reflect/reserved-package-name? *project-name*)
                               (error "package: cannot publish — the project name '"
                                 *project-name*
                                 "' is reserved by the standard library (it owns the '"

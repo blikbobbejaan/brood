@@ -39,7 +39,7 @@
   "Throw a `:blame :caller` contract error if any argument fails its declared type.
 Pairwise over the overlap — arity itself is the static checker's job."
   (when (and (pair? ptypes) (pair? args))
-    (unless (type-matches? (first ptypes) (first args))
+    (unless (reflect/type-matches? (first ptypes) (first args))
       (%contract-error name
         :caller (str name
           ": argument "
@@ -60,7 +60,7 @@ Pairwise over the overlap — arity itself is the static checker's job."
   "Throw a `:blame :caller` contract error if any rest argument fails its declared rest
 type; `i` is the position of the first rest argument."
   (when (pair? args)
-    (unless (type-matches? rtype (first args))
+    (unless (reflect/type-matches? rtype (first args))
       (%contract-error name
         :caller (str name
           ": rest argument "
@@ -79,7 +79,7 @@ type; `i` is the position of the first rest argument."
 
 (defn- %contract-check-ret (name rtype r)
   "`r`, or a `:blame :callee` contract error when it fails the declared result type."
-  (if (type-matches? rtype r)
+  (if (reflect/type-matches? rtype r)
     r
     (%contract-error name
       :callee (str name ": result expected " rtype ", got " (type-of r) " (" (pr-str r) ")")
@@ -290,7 +290,7 @@ type; `i` is the position of the first rest argument."
 ;; fixed-arity template (and with it `arity-of`).
 (defn- %contract-shim (name orig spec)
   (let (declared (count (first spec))
-        params (arglist orig)
+        params (reflect/arglist orig)
         fixed (count (seq/take-while params (fn (s) (not (or (= s '&) (= s '&optional))))))
         variadic (or (second spec)
                    (third spec)

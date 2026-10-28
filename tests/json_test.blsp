@@ -228,7 +228,7 @@
       (spawn (send me [:rec (usd 99)]))
       (let (r (receive ([:rec r] r) (after *test-wait-ms* :timeout)))
         (is (record? r))
-        (assert= (record-id r) :json-test/usd)
+        (assert= (reflect/record-id r) :json-test/usd)
         (assert= (encode r) "\"$99\"")))))
 
 ;; ---- surrogate escapes -------------------------------------------------------

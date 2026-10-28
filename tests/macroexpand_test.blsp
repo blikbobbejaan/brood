@@ -19,14 +19,14 @@
 ;; are defined as `macroexpand-test/mx-*`.
 (describe "macroexpand"
   (test "expands a macro head to its expansion"
-    (assert= '(if c nil b) (macroexpand '(macroexpand-test/mx-unless c b))))
+    (assert= '(if c nil b) (reflect/macroexpand '(macroexpand-test/mx-unless c b))))
 
   (test "a non-macro form is already a fixpoint"
-    (assert= '(+ 1 2) (macroexpand '(+ 1 2))))
+    (assert= '(+ 1 2) (reflect/macroexpand '(+ 1 2))))
 
   (test "a self-identical expansion terminates as a fixpoint"
     (assert= '(macroexpand-test/mx-same 1)
-      (macroexpand '(macroexpand-test/mx-same 1))))
+      (reflect/macroexpand '(macroexpand-test/mx-same 1))))
 
   (test "a forever-growing expansion errors instead of spinning"
-    (assert-error (macroexpand '(macroexpand-test/mx-grow 1)))))
+    (assert-error (reflect/macroexpand '(macroexpand-test/mx-grow 1)))))

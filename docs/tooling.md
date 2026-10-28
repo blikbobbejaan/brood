@@ -14,7 +14,7 @@ machine" mode flag.
 > - **Stage 1 (done):** parseable error output (below).
 > - **Stage 2 (done):** structured test reporter with per-assertion source
 >   locations; `form-pos` / `current-file` introspection (below).
-> - **Stage 3 (in progress):** richer introspection (`arglist`, completions) for
+> - **Stage 3 (in progress):** richer introspection (`reflect/arglist`, completions) for
 >   eldoc / completion-at-point / xref — generalised across editors by a
 >   language server (`brood-lsp`), wired into Emacs via Eglot. Design:
 >   [`lsp.md`](lsp.md) / ADR-025.
@@ -366,7 +366,7 @@ list of non-function bindings.
 Policy is Brood (`std/tool/docs.blsp`); Rust supplies only the mechanism. The tool
 **loads the module and introspects it** rather than parsing source: it snapshots
 `(reflect/global-names)`, loads the module, and the new names are what it defined — read
-back via the existing `(doc f)` / `(arglist f)`. The module docstring is read
+back via the existing `(reflect/doc f)` / `(reflect/arglist f)`. The module docstring is read
 from source with `file/slurp` + `reflect/read-string` (a leading string form is discarded on
 load, so it can't be recovered by introspection). This reuses the canonical
 docstring machinery and is one-shot, unlike the continuously-running LSP, which

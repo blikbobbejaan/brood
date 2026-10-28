@@ -34,7 +34,7 @@ contents are `=`, whatever order they were built in.")
 ;; for a miss and asks `Lookup` — whose impl below reads the tree again, forever.
 (defn- tree (coll) (%map-get coll :%tree nil))
 (defn- size (coll) (%map-get coll :%size 0))
-(defn- set-kind? (coll) (= (record-id coll) :sorted/sorted-set))
+(defn- set-kind? (coll) (= (reflect/record-id coll) :sorted/sorted-set))
 
 ;; ---- the treap ----------------------------------------------------------------------
 

@@ -134,7 +134,7 @@ Dynamic variables (`defdyn`) — earmuffed, so they cannot be mistaken for ordin
 - `*ui-slow-reports*`
 - `*units*`
 
-## predicate (40)
+## predicate (38)
 
 Predicates — `x?` type and shape tests. Bare because they read as English at a call site and are used everywhere.
 - `any?`
@@ -166,7 +166,6 @@ Predicates — `x?` type and shape tests. Bare because they read as English at a
 - `ratio?`
 - `record?`
 - `ref?`
-- `reserved-package-name?`
 - `rope?`
 - `satisfies?`
 - `seqview?`
@@ -175,10 +174,9 @@ Predicates — `x?` type and shape tests. Bare because they read as English at a
 - `symbol?`
 - `table?`
 - `time-of-day?`
-- `type-matches?`
 - `vector?`
 
-## core (141)
+## core (132)
 
 Core vocabulary — the language's own words: special-form companions, sequence and map operations, the process primitives, and the test/dev macros. **This is the group with a real budget.** Before adding here, ask whether the name belongs to a module instead: `string/`, `seq/`, `proc/`, `test/` all exist precisely so a name does not have to be bare.
 - `*e`
@@ -189,8 +187,6 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `and`
 - `append`
 - `apply`
-- `apropos`
-- `arglist`
 - `as->`
 - `assert`
 - `assoc`
@@ -225,8 +221,6 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `deftype`
 - `demonitor`
 - `dissoc`
-- `doc`
-- `doc-search`
 - `dolist`
 - `doseq`
 - `dotimes`
@@ -242,7 +236,6 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `fold`
 - `fold-for`
 - `for`
-- `gensym`
 - `get`
 - `hash-map`
 - `identity`
@@ -262,8 +255,6 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `list`
 - `lookup-get`
 - `lookup-keys`
-- `macroexpand`
-- `macroexpand-1`
 - `map`
 - `mapcat`
 - `match`
@@ -271,7 +262,6 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `merge`
 - `meta`
 - `monitor`
-- `multi-return-type`
 - `not`
 - `not=`
 - `nth`
@@ -284,7 +274,6 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `range`
 - `read-line`
 - `receive`
-- `record-id`
 - `reduce`
 - `ref`
 - `require-one`

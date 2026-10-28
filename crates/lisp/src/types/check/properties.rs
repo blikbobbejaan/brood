@@ -222,7 +222,7 @@ const EFFECTFUL_EXACT: &[&str] = &[
     "receive",
     "%receive",
     "spawn-monitor",
-    "gensym",
+    "reflect/gensym",
     "provide",
     "%registry-update!",
     "%swap-registry!",
