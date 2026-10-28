@@ -56,7 +56,7 @@ fn reactor_death_errors_instead_of_hanging() {
         "connect must error once the reactor is dead"
     );
     assert!(
-        brood::host::net::send(lid, b"x").is_err(),
+        brood::host::net::send(lid, b"x", 999_999).is_err(),
         "send must error once the reactor is dead"
     );
 
