@@ -68,7 +68,7 @@
 `parent` (default: the current directory's parent). Returns how many repo steps failed —
 `nest ws` exits non-zero when any did.
 
-    (workspace/run \"commit\" \"chore: bump deps\" \"/home/me/src\")   ;=> 0 — the number of repo steps that failed"
+    (workspace/run \"commit\" \"chore: bump deps\" \"/home/me/src\")   ;~> 0 — the number of repo steps that failed"
   (let (parent (or parent (path/dirname (file/cwd))))
     (cond
       (= action "list") (do (doseq (dir (brood-repos parent)) (io/puts (repo-name dir))) 0)

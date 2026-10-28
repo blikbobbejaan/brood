@@ -19,62 +19,62 @@ started an operating-system process while the bare `spawn` special form started 
 (defn hostname ()
   "This machine's short hostname (no domain). Used to qualify a node name as name@host.
 
-    (os/hostname)   ;=> \"workstation\""
+    (os/hostname)   ;~> \"workstation\""
   (%hostname))
 
 (defn run-process (prog:string args: (or list vector) -> int)
   "Run external program prog with an args list, inheriting stdio; returns its exit code.
 
-    (os/run-process \"true\" [])    → 0
-    (os/run-process \"false\" [])   → 1"
+    (os/run-process \"true\" [])    ;=> 0
+    (os/run-process \"false\" [])   ;=> 1"
   (%run-process prog args))
 
 (defn exe-path ()
   "The absolute path of the running executable, or nil when the platform won't say (a sandbox with no /proc/self/exe equivalent). For locating something installed ALONGSIDE this binary: a shipped app cannot assume PATH — a desktop launch inherits the session's, which routinely lacks ~/.local/bin — so \"the runtime that installed me is my sibling\" is the reliable lookup. Nil rather than an error, because asking where you live is opportunistic.
 
-    (os/exe-path)   ;=> \"/home/me/.local/bin/brood\", or nil"
+    (os/exe-path)   ;~> \"/home/me/.local/bin/brood\", or nil"
   (%exe-path))
 
 (defn canonicalize (path)
   "The real absolute path of `path` with symlinks and ./.. resolved. Works for a not-yet-existing target (the longest existing ancestor is resolved, then the remaining components appended). Relative paths are taken against the cwd. nil only if the cwd itself can't be read. Use it to make path sandboxing symlink-escape-proof.
 
-    (os/canonicalize \"/usr/../usr\")   → \"/usr\""
+    (os/canonicalize \"/usr/../usr\")   ;=> \"/usr\""
   (%canonicalize path))
 
 (defn stdin-tty? ()
   "True when stdin is an interactive terminal (false when redirected from a pipe or file). The REPL gates raw-mode line editing on this.
 
-    (os/stdin-tty?)   ;=> true at an interactive terminal, false when piped"
+    (os/stdin-tty?)   ;~> true at an interactive terminal, false when piped"
   (%stdin-tty?))
 
 (defn stdout-tty? (-> bool)
   "True when stdout is an interactive terminal (false when piped or captured).
 
-    (os/stdout-tty?)   ;=> true at an interactive terminal, false when piped"
+    (os/stdout-tty?)   ;~> true at an interactive terminal, false when piped"
   (%stdout-tty?))
 
 (defn now (-> int)
   "Wall-clock milliseconds since the Unix epoch.
 
-    (< 1700000000000 (os/now))   → true"
+    (< 1700000000000 (os/now))   ;=> true"
   (%now))
 
 (defn now-ns (-> int)
   "Wall-clock nanoseconds since the Unix epoch (finer-grained than os/now).
 
-    (< (* 1000000 1700000000000) (os/now-ns))   → true"
+    (< (* 1000000 1700000000000) (os/now-ns))   ;=> true"
   (%now-ns))
 
 (defn clipboard-get ()
   "The OS clipboard's text, or nil when empty / non-text / unavailable (no display server, or a build without the clipboard feature).
 
-    (os/clipboard-get)   ;=> \"the copied text\", or nil"
+    (os/clipboard-get)   ;~> \"the copied text\", or nil"
   (%clipboard-get))
 
 (defn clipboard-set (s)
   "Copy string s to the OS clipboard so other apps can paste it; returns s. A no-op (still returns s) when no clipboard is available or the clipboard feature is off.
 
-    (os/clipboard-set \"hello\")   ;=> \"hello\""
+    (os/clipboard-set \"hello\")   ;~> \"hello\""
   (%clipboard-set s))
 
 (defn clipboard-image "The OS clipboard's image as `{:png bytes :width w :height h}`, or nil. `:png` is the
@@ -91,7 +91,7 @@ nil. A source over 16384 px a side or 512 MB of pixels is refused as nil. Readin
 while the owning app serialises the image; call it from a worker, not a UI loop, when
 the image may be large. Platforms tried so far are listed in ADR-392.
 
-    (os/clipboard-image 0)   → nil"
+    (os/clipboard-image 0)   ;=> nil"
   (() (%clipboard-image nil))
   ((max-edge) (%clipboard-image max-edge)))
 (sig clipboard-image (and (-> (or map nil)) (int -> (or map nil))))
@@ -102,7 +102,7 @@ clipboard so other apps can paste it; returns `png`. Raises when the bytes are n
 decodable image; a silent no-op otherwise when no clipboard is available or the
 clipboard feature is off, like os/clipboard-set. Replaces whatever the clipboard held.
 
-    (try (os/clipboard-set-image (string/->bytes \"not an image\")) (catch _ :refused))   → :refused"
+    (try (os/clipboard-set-image (string/->bytes \"not an image\")) (catch _ :refused))   ;=> :refused"
   (%clipboard-set-image png))
 
 ;; ---- environment ------------------------------------------------------------
@@ -113,7 +113,7 @@ clipboard feature is off, like os/clipboard-set. Replaces whatever the clipboard
     (os/env \"PATH\")        ;; => \"/usr/bin:/bin\"
     (os/env \"NO_SUCH_VAR\")  ;; => nil
 
-    (os/env \"BROOD_SURELY_UNSET_VARIABLE\")   → nil"
+    (os/env \"BROOD_SURELY_UNSET_VARIABLE\")   ;=> nil"
   (%getenv name))
 
 (defn user-home (name:string -> (or string nil))
@@ -121,19 +121,19 @@ clipboard feature is off, like os/clipboard-set. Replaces whatever the clipboard
 from LDAP or another NSS source too), or nil when there is no such user — what a
 `~name/` path names ([[path/absolute]]). The current user's is `(os/env \"HOME\")`.
 
-    (os/user-home \"brood-surely-no-such-user\")   → nil"
+    (os/user-home \"brood-surely-no-such-user\")   ;=> nil"
   (%user-home name))
 
 (defn env-all ()
   "All environment variables as a `{string → string}` map.
 
-    (map? (os/env-all))   → true"
+    (map? (os/env-all))   ;=> true"
   (%env-all))
 
 (defn type ()
   "The current OS as a keyword: `:linux`, `:macos`, or `:windows`.
 
-    (contains? #{:linux :macos :windows} (os/type))   → true"
+    (contains? #{:linux :macos :windows} (os/type))   ;=> true"
   (%os-type))
 
 (defn- runnable? (p)
@@ -180,7 +180,7 @@ is not applied — name the extension you mean (`\"cargo.exe\"`), as a spawn wou
     (os/which \"no-such-cmd\")  ;; => nil
     (os/which \"./build.sh\")   ;; => \"./build.sh\" if it is executable, else nil
 
-    (os/which \"surely-no-such-program\")   → nil"
+    (os/which \"surely-no-such-program\")   ;=> nil"
   (if (or (includes? program "/") (and (= (type) :windows) (includes? program "\\")))
     (when (runnable? program) program)
     (which-in (string/split (or (env "PATH") "") (path-separator)) program)))
@@ -201,10 +201,10 @@ a `$` in it is one argument. `opts`:
 - `:stdin` — a string fed to the child's stdin, then EOF (else stdin is empty).
 - `:timeout-ms` — kill the child, and every process it started, after this long.
 
-    (os/cmd-out (os/cmd \"echo\" [\"a b\"]))   → \"a b\"
-    (os/cmd-out (os/cmd \"cat\" [] {:stdin \"piped\"}))   → \"piped\"
-    (os/cmd-out (os/cmd \"sh\" [\"-c\" \"echo $X\"] {:env {\"X\" \"set\"}}))   → \"set\"
-    (:timed-out (os/cmd \"sleep\" [\"5\"] {:timeout-ms 50}))   → true"
+    (os/cmd-out (os/cmd \"echo\" [\"a b\"]))   ;=> \"a b\"
+    (os/cmd-out (os/cmd \"cat\" [] {:stdin \"piped\"}))   ;=> \"piped\"
+    (os/cmd-out (os/cmd \"sh\" [\"-c\" \"echo $X\"] {:env {\"X\" \"set\"}}))   ;=> \"set\"
+    (:timed-out (os/cmd \"sleep\" [\"5\"] {:timeout-ms 50}))   ;=> true"
   (%os-cmd prog args opts))
 (sig cmd
   (string &optional (or list vector) map -> (record &open :stdout string :stderr string :exit int)))
@@ -212,8 +212,8 @@ a `$` in it is one argument. `opts`:
 (defn cmd-ok? (result:map -> bool)
   "True if the command result has exit code 0.
 
-    (os/cmd-ok? (os/cmd \"true\"))    → true
-    (os/cmd-ok? (os/cmd \"false\"))   → false"
+    (os/cmd-ok? (os/cmd \"true\"))    ;=> true
+    (os/cmd-ok? (os/cmd \"false\"))   ;=> false"
   (= (get result :exit) 0))
 
 (def- *shell-safe-chars*
@@ -229,10 +229,10 @@ file name that is data stays data. For the rare place a command line must be a s
 string (`sh -c`, a git config value git runs through the shell); everywhere else, pass an
 argument vector to `os/cmd` / `os/spawn` and there is nothing to quote.
 
-    (os/shell-quote \"test/a_test.exs:12\")   → \"test/a_test.exs:12\"
-    (os/shell-quote \"My Project/a.py\")   → \"'My Project/a.py'\"
-    (os/shell-quote \"\")   → \"''\"
-    (os/shell-quote \"it's\")   → \"'it'\\\\''s'\""
+    (os/shell-quote \"test/a_test.exs:12\")   ;=> \"test/a_test.exs:12\"
+    (os/shell-quote \"My Project/a.py\")   ;=> \"'My Project/a.py'\"
+    (os/shell-quote \"\")   ;=> \"''\"
+    (os/shell-quote \"it's\")   ;=> \"'it'\\\\''s'\""
   (if (and (not (= s "")) (every? (string/->list s) (fn (c) (contains? *shell-safe-chars* c))))
     s
     (str "'" (string/replace s "'" "'\\''") "'")))
@@ -276,16 +276,16 @@ was typed. For a command line a person types into a prompt (`! commit -m 'two wo
 is then run as an argument vector, never through a shell. An unclosed quote ends at the end
 of the text.
 
-    (os/shell-split \"commit -m 'two words'\")   → (\"commit\" \"-m\" \"two words\")
-    (os/shell-split \"  a   b \")   → (\"a\" \"b\")
-    (os/shell-split (str (os/shell-quote \"it's\") \" x\"))   → (\"it's\" \"x\")
-    (os/shell-split \"''\")   → (\"\")"
+    (os/shell-split \"commit -m 'two words'\")   ;=> (\"commit\" \"-m\" \"two words\")
+    (os/shell-split \"  a   b \")   ;=> (\"a\" \"b\")
+    (os/shell-split (str (os/shell-quote \"it's\") \" x\"))   ;=> (\"it's\" \"x\")
+    (os/shell-split \"''\")   ;=> (\"\")"
   (shell-split-walk (string/->list s) :plain "" false '()))
 
 (defn cmd-out (result)
   "The stdout string from a `cmd` result, trimmed.
 
-    (os/cmd-out (os/cmd \"echo\" [\"  hi  \"]))   → \"hi\""
+    (os/cmd-out (os/cmd \"echo\" [\"  hi  \"]))   ;=> \"hi\""
   (string/trim (get result :stdout "")))
 
 ;; ---- child processes ---------------------------------------------------------
@@ -320,7 +320,7 @@ environment, a nil value removing one. Its stdout/stderr arrive at the calling p
 
 Returns a subprocess handle. Throws if prog can't be spawned.
 
-    (let (p (os/spawn \"sh\" [\"-c\" \"sleep 5 & exit 3\"])) (receive ([:proc-exit ^p c] c)))   → 3"
+    (let (p (os/spawn \"sh\" [\"-c\" \"sleep 5 & exit 3\"])) (receive ([:proc-exit ^p c] c)))   ;=> 3"
   (%proc-spawn prog args opts))
 
 (defn spawn-pty (prog args &optional opts)
@@ -341,7 +341,7 @@ no `[:proc-err …]` stream. A caller that needs the two apart wants pipes.
 The child gets its own session and controlling terminal, so job control and ^C reach
 IT rather than the program hosting it. Unix only.
 
-    (os/spawn-pty \"bash\" [\"-i\"] {:cols 100 :rows 30})   ;=> a subprocess handle; output arrives as [:proc handle data]"
+    (os/spawn-pty \"bash\" [\"-i\"] {:cols 100 :rows 30})   ;~> a subprocess handle; output arrives as [:proc handle data]"
   (%pty-spawn prog args opts))
 
 (defn resize-pty (p cols rows)
@@ -350,7 +350,7 @@ redraws. Call it when the window showing the child changes size — a full-scree
 lays out against this and has no other way to learn. Returns nil; throws if `p` is
 unknown, closed, or was spawned with pipes.
 
-    (os/resize-pty p 120 40)   ;=> nil; the child sees SIGWINCH and redraws"
+    (os/resize-pty p 120 40)   ;~> nil; the child sees SIGWINCH and redraws"
   (%pty-resize p cols rows))
 
 (defn write (p data)
@@ -359,7 +359,7 @@ string, a bytes value, a byte int 0–255, or an arbitrarily nested list/vector 
 flattened once at the write (ADR-139); a string leaf is always its UTF-8 bytes, whatever
 the child's mode (ADR-141). Returns nil; throws if p is unknown/closed.
 
-    (os/write p \"echo hi\\n\")   ;=> nil, once the bytes reach the child's stdin"
+    (os/write p \"echo hi\\n\")   ;~> nil, once the bytes reach the child's stdin"
   (%proc-send p data))
 
 (defn close (p)
@@ -369,7 +369,7 @@ stdin and stop reading its output. Idempotent; returns nil. `[:proc-exit handle 
 owner, promptly — a descendant that escaped the kill cannot keep the handle open,
 because close stops reading.
 
-    (os/close p)   ;=> nil; [:proc-exit …] and [:proc-closed …] still arrive"
+    (os/close p)   ;~> nil; [:proc-exit …] and [:proc-closed …] still arrive"
   (%proc-close p))
 
 (defn signal (p sig)
@@ -382,7 +382,7 @@ arrives as for any exit. Until `[:proc-closed …]` the group can still be signa
 reaches descendants the child left running. Returns nil; throws if `p` is unknown or
 closed, or `sig` is not one of those. Unix only.
 
-    (os/signal (os/spawn \"sh\" [\"-c\" \"sleep 60\"]) :int)   ;=> nil; the sleep gets SIGINT"
+    (os/signal (os/spawn \"sh\" [\"-c\" \"sleep 60\"]) :int)   ;~> nil; the sleep gets SIGINT"
   (%proc-signal p sig))
 
 (defn trap (sig & pid)
@@ -395,7 +395,7 @@ previous subscriber, or nil. If the subscriber has exited when the signal arrive
 signal does what it did before the trap, so a forgotten trap never leaves the program
 unkillable. Unix only.
 
-    (os/trap :term)   ;=> nil; a later SIGTERM arrives as [:signal :term]"
+    (os/trap :term)   ;~> nil; a later SIGTERM arrives as [:signal :term]"
   (%trap-signal sig (if (nil? pid) (self) (first pid))))
 
 (defn set-binary (p on)
@@ -405,5 +405,5 @@ inbound [:proc …]/[:proc-err …] delivers data as a byte-faithful `bytes` val
 string) — for a child speaking a binary protocol over stdio. Returns nil; throws if p is
 unknown/closed.
 
-    (os/set-binary p true)   ;=> nil; later [:proc p data] messages carry bytes"
+    (os/set-binary p true)   ;~> nil; later [:proc p data] messages carry bytes"
   (%proc-set-binary p on))

@@ -21,7 +21,7 @@ view). Pure — no IO, no UI deps — so a TUI (std/observer) and a buffer edito
 (defn by-id (procs)
   "Sort `procs` ascending by `:id` (stable spawn order) — the flat view.
 
-    (proctree/by-id [{:id 3} {:id 1} {:id 2}])   → ({:id 1} {:id 2} {:id 3})"
+    (proctree/by-id [{:id 3} {:id 1} {:id 2}])   ;=> ({:id 1} {:id 2} {:id 3})"
   (sort-by procs :id))
 
 (defn tree-walk (p procs depth limit)
@@ -31,7 +31,7 @@ id. Normally terminates because a child's id exceeds its parent's (spawn order);
 cycle (impossible from `proc/info`, but a buggy remote peer could send one) is
 bounded rather than overflowing the stack.
 
-    (map (proctree/tree-walk {:id 1} [{:id 1} {:id 2 :parent 1}] 0 2) (fn (p) [(get p :id) (get p :depth)]))   → ([1 0] [2 1])"
+    (map (proctree/tree-walk {:id 1} [{:id 1} {:id 2 :parent 1}] 0 2) (fn (p) [(get p :id) (get p :depth)]))   ;=> ([1 0] [2 1])"
   (if (>= depth limit)
     [(assoc p :depth depth)]
     (let (kids (by-id (seq/filter procs (fn (c) (= (get c :parent) (get p :id))))))

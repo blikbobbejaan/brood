@@ -403,7 +403,7 @@ other, and the session is the thing that knows."
 (defn session-running? (name)
   "Whether the session process registered as `name` is alive.
 
-    (editor/evalsession/session-running? :no-such-session)   → false"
+    (editor/evalsession/session-running? :no-such-session)   ;=> false"
   (not (nil? (proc/whereis name))))
 
 (defn session-start (name spec root sink)
@@ -443,7 +443,7 @@ gave up, or never started — and **no reply for this id will ever arrive**, whi
 caller must not record as in flight: a request whose answer is already coming is never
 re-sent, so a promise recorded against a session that is gone waits forever.
 
-    (editor/evalsession/session-request :no-such-session 1 2000 nil)   → false"
+    (editor/evalsession/session-request :no-such-session 1 2000 nil)   ;=> false"
   (let (p (proc/whereis name))
     (if (nil? p) false (do (send p [:request id timeout-ms payload reply-to]) true))))
 
@@ -451,13 +451,13 @@ re-sent, so a promise recorded against a session that is gone waits forever.
   "Restart session `name`: respawn its child, fresh image and empty session, answering
 any inflight requests `{:timeout true}`. A no-op when it is not running.
 
-    (editor/evalsession/session-reset :no-such-session)   → nil"
+    (editor/evalsession/session-reset :no-such-session)   ;=> nil"
   (let (p (proc/whereis name))
     (when p (send p [:reset]))))
 
 (defn session-shutdown (name)
   "Kill the child and stop the worker. A no-op when it is not running.
 
-    (editor/evalsession/session-shutdown :no-such-session)   → nil"
+    (editor/evalsession/session-shutdown :no-such-session)   ;=> nil"
   (let (p (proc/whereis name))
     (when p (send p [:shutdown]))))

@@ -1268,9 +1268,9 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
   — unconstrained, and the result stays INFERRED, so typing one parameter costs nothing.
   Not on a multi-clause `fn`, inside a destructuring pattern, or on a `let` binding (each is
   an error) — use `(sig …)` there.
-- **Docstring examples**: an indented `    (f 1)   → 2` line is EXECUTED by the doc tests and
-  must print exactly the right side; for a function whose result depends on the world (files,
-  clock, network, pids, the image) write `    (file/slurp "a.txt")   ;=> "…text…"` — read and
+- **Docstring examples**: an indented `    (f 1)   ;=> 2` line is EXECUTED by the doc tests and
+  must equal the result after the marker; for a function whose result depends on the world (files,
+  clock, network, pids, the image) write `    (file/slurp "a.txt")   ;~> "…text…"` — read and
   callee-checked, never run.
 - **Declare low, derive high.** The checker infers most signatures from the body — std
   deleted 323 `sig`s it inferred verbatim. Write one where a *leaf* knows a fact nothing

@@ -26,7 +26,7 @@ wall-clock measurement it says whether a slow step did work or WAITED to run; 0 
 the platform has no per-thread CPU clock). nil for a remote/dead pid. The
 process-introspection snapshot the observer reads; see std/tool/observer.blsp.
 
-    (proc/info (self))   ;=> {:id 12 :status :running :mailbox 0 :name nil …}"
+    (proc/info (self))   ;~> {:id 12 :status :running :mailbox 0 :name nil …}"
   (%process-info pid))
 
 ;; `& more`, not `&optional value`: for this primitive an ABSENT value reads the flag
@@ -48,7 +48,7 @@ process through instead of parking it: for infrastructure other processes wait o
 buffer process, a registry), where a parked process freezes whoever asked it something
 and nothing could resume it.
 
-    (proc/flag :max-heap 8000000)   ;=> the previous limit, e.g. nil"
+    (proc/flag :max-heap 8000000)   ;~> the previous limit, e.g. nil"
   (if (empty? more) (%process-flag flag) (%process-flag flag (first more))))
 
 (defn list (-> (list pid))
@@ -56,14 +56,14 @@ and nothing could resume it.
 unspecified — sort if you need stability. For agents/tools enumerating spawned
 processes.
 
-    (proc/list)   ;=> every live pid, e.g. (<pid> <pid> …)"
+    (proc/list)   ;~> every live pid, e.g. (<pid> <pid> …)"
   (%list-processes))
 
 (defn mailbox-size (pid)
   "How many messages are queued in pid's mailbox (its receive backlog), or nil if pid is
 not a live local process. See std/tool/observer.blsp.
 
-    (proc/mailbox-size pid)   ;=> an int, e.g. 0, or nil for a dead pid"
+    (proc/mailbox-size pid)   ;~> an int, e.g. 0, or nil for a dead pid"
   (%mailbox-size pid))
 
 (defn hibernate ()
@@ -76,7 +76,7 @@ for a substantially smaller idle footprint. Do NOT use it in a request loop: dro
 caches per park costs message-heavy code 12-26%, which is exactly why this is an explicit
 call and not automatic.
 
-    (proc/hibernate)   ;=> the bytes of slab capacity released, e.g. 65536"
+    (proc/hibernate)   ;~> the bytes of slab capacity released, e.g. 65536"
   (%hibernate))
 
 ;; `offload` stays a BARE prelude wrapper (core dirty-native concurrency, used

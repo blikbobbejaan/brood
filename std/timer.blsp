@@ -19,7 +19,7 @@ no worker thread and its handle is an ordinary pid.")
 stops it if it hasn't fired. One-shot; fires even if `pid` is already dead (the send is
 then a silent no-op, like any send to a dead process).
 
-    (timer/send-after 500 (self) :tick)   ;=> a timer handle; `:tick` arrives in ~500 ms"
+    (timer/send-after 500 (self) :tick)   ;~> a timer handle; `:tick` arrives in ~500 ms"
   (spawn (do (sleep ms) (send pid msg))))
 
 (defn send-interval (ms pid msg)
@@ -27,7 +27,7 @@ then a silent no-op, like any send to a dead process).
 `(timer/cancel h)`. Self-cleaning: the timer monitors `pid` and exits when it dies, so a
 forgotten interval can't tick against a dead process forever.
 
-    (timer/send-interval 1000 (self) :poll)   ;=> a timer handle; `:poll` arrives every second"
+    (timer/send-interval 1000 (self) :poll)   ;~> a timer handle; `:poll` arrives every second"
   (spawn
     (let (target pid interval ms payload msg)
       (monitor target)
@@ -43,6 +43,6 @@ forgotten interval can't tick against a dead process forever.
 fired or already-cancelled timer is a dead process; the exit is a no-op). Returns nil.
 Cancellation races an in-flight fire — a message already sent stays sent.
 
-    (timer/cancel t)   ;=> nil — `t` will not fire if it had not already"
+    (timer/cancel t)   ;~> nil — `t` will not fire if it had not already"
   (exit timer :kill)
   nil)

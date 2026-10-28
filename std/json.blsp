@@ -330,8 +330,8 @@ on malformed input or trailing content. Pure. The one key that stays a string is
 `\"__id__\"`: as the keyword `:__id__` it would make the object a record, so decoded JSON
 could pass for one.
 
-    (json/decode \"[1,2]\")   → [1 2]
-    (record? (json/decode \"{\\\"__id__\\\":\\\"x\\\"}\"))   → false"
+    (json/decode \"[1,2]\")   ;=> [1 2]
+    (record? (json/decode \"{\\\"__id__\\\":\\\"x\\\"}\"))   ;=> false"
   (let (
         ; int code points: O(1) nth, one native pass
         s (string/->codepoints s)
@@ -428,7 +428,7 @@ the named escapes + every C0 control) that would each find nothing."
   keyword / map / vector / list). The seam `encode` consults for a record with a
   custom wire shape, and for any kind JSON has no built-in rule for.
 
-    (json/->json (point 1 2))   ;=> …the encodable value `point`'s own impl returns, e.g. {:x 1, :y 2}…"
+    (json/->json (point 1 2))   ;~> …the encodable value `point`'s own impl returns, e.g. {:x 1, :y 2}…"
   (->json [self] :-> any))
 
 (defn- custom (v)
@@ -487,7 +487,7 @@ value encodes as its **fields** (its internal id never reaches the wire) unless 
 has a `JsonEncode` impl, which then decides the wire shape. Any other kind (a pid, a fn)
 errors unless it has a `JsonEncode` impl. Pure.
 
-    (json/encode [1 2])   → \"[1,2]\""
+    (json/encode [1 2])   ;=> \"[1,2]\""
   ;; Plain data — almost every call — encodes natively; the rest takes the Brood path below,
   ;; which is the definition (a record, a JsonEncode impl, the refusals).
   (or (%json-encode-plain v) (apply str (reverse (emit v nil)))))

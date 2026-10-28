@@ -3,18 +3,18 @@
 ;; An example in a docstring is a promise about behaviour, and a wrong one is worse than
 ;; none: it is read as authoritative and it is invisible to every other gate — the checker
 ;; does not evaluate docstrings, and no test covers prose. Two of the first batch written
-;; were already wrong (`(keys {:a 1 :b 2}) → (:a :b)` — map order is the trie's, not
+;; were already wrong (`(keys {:a 1 :b 2}) ;=> (:a :b)` — map order is the trie's, not
 ;; insertion order), which is the whole argument for this file.
 ;;
 ;; The convention it enforces, and the one to write new examples in:
 ;;
 ;;     "…prose…
 ;;
-;;         (count [1 2 3])   → 3
-;;         (get {:a 1} :zz)  → nil"
+;;         (count [1 2 3])   ;=> 3
+;;         (get {:a 1} :zz)  ;=> nil"
 ;;
-;; An indented line containing ` → ` is a case: the left side is evaluated and its
-;; `pr-str` must equal the right side. A trailing `; comment` on the line is ignored.
+;; An indented line with a form before ` ;=> ` is a case: the form is evaluated and its
+;; value must equal the result after the marker. A `; comment` after the result is ignored.
 ;;
 ;; Only INDENTED lines count. Inline `e.g. …` prose is left alone deliberately: much of it
 ;; predates this convention and names values that do not exist outside the sentence.
@@ -26,7 +26,7 @@
 
 (describe "documented examples evaluate as written"
 
-  (test "every indented `form → result` example in a docstring holds"
+  (test "every indented `form ;=> result` example in a docstring holds"
     ;; Load the whole library so the examples of every module are in scope, not just
     ;; whatever the test runner happened to pull in.
     ;; check-allow :discarded-catch — builtin modules with no file behind them are expected to fail to load
@@ -38,10 +38,10 @@
   (test "the harness itself detects a wrong example"
     ;; Sabotage check: without this, a parser that silently matched nothing would make
     ;; the case above pass vacuously and the whole file would be decoration.
-    (is (not (nil? (doctest/check "probe" "    (+ 1 1)  → 3"))))
-    (is (nil? (doctest/check "probe" "    (+ 1 1)  → 2"))))
+    (is (not (nil? (doctest/check "probe" "    (+ 1 1)  ;=> 3"))))
+    (is (nil? (doctest/check "probe" "    (+ 1 1)  ;=> 2"))))
 
   (test "an unindented line is prose, not a case"
     ;; The indent is the whole discriminator between an example and a sentence.
-    (assert= [] (apply vector (doctest/example-lines "see (+ 1 1) → 2 for why")))
-    (assert= 1 (count (doctest/example-lines "x\n    (+ 1 1)   → 2")))))
+    (assert= [] (apply vector (doctest/example-lines "see (+ 1 1) ;=> 2 for why")))
+    (assert= 1 (count (doctest/example-lines "x\n    (+ 1 1)   ;=> 2")))))

@@ -28,7 +28,7 @@ primitives. The kernel also provides the always-available file primitives
 (defn read-lines (path)
   "The lines of the file at `path` as a list of strings, without their newlines. A trailing newline does not yield an empty final line; an empty file yields nil.
 
-    (file/read-lines \"notes.txt\")   ;=> (\"first line\" \"second line\"), or nil for an empty file"
+    (file/read-lines \"notes.txt\")   ;~> (\"first line\" \"second line\"), or nil for an empty file"
   (let (text (file/slurp path))
     (cond
       (= text "") nil
@@ -39,7 +39,7 @@ primitives. The kernel also provides the always-available file primitives
 (defn write-lines (path:string lines:seqable -> nil)
   "Write `lines` (a sequence of strings) to `path`, one per line, each terminated by a newline.
 
-    (file/write-lines \"out.txt\" [\"a\" \"b\"])   ;=> nil; out.txt now holds the two lines"
+    (file/write-lines \"out.txt\" [\"a\" \"b\"])   ;~> nil; out.txt now holds the two lines"
   ;; One `join` pass (native `%string-join` — walks `lines` once into one buffer) plus the
   ;; final newline. This was a `(fold (fn (acc l) (str acc l "\n")) "" lines)`, which recopies
   ;; the whole accumulator per line, so writing a file was O(total²): 2000 lines 37 ms,
@@ -54,7 +54,7 @@ then renamed over `path` (a rename within one directory is atomic). Concurrent w
 interleave either — the last rename wins whole. For a file other processes read while it is
 rewritten: a cache, a record beside an image, a config another tool polls.
 
-    (file/spit-atomic \"state.edn\" (pr-str {:n 1}))   ;=> nil; state.edn holds the whole map"
+    (file/spit-atomic \"state.edn\" (pr-str {:n 1}))   ;~> nil; state.edn holds the whole map"
   ;; The suffix comes from the kernel's OS RNG directly, not `rand/token`: `file` is loaded by
   ;; nearly everything (the test framework among them), and a module dependency here would ride
   ;; along into each of their load closures.
@@ -77,26 +77,26 @@ rewritten: a cache, a record beside an image, a config another tool polls.
 (defn regular? (path)
   "True if `path` exists and is a regular file (not a directory).
 
-    (file/regular? \"/\")   → false"
+    (file/regular? \"/\")   ;=> false"
   (and (file/exists? path) (not (file/dir? path))))
 
 ;; --- directory listing ------------------------------------------------------
 (defn list-files (dir)
   "The names of regular files directly under `dir` (excluding subdirectories), sorted.
 
-    (file/list-files \"src\")   ;=> (\"lib.rs\" \"main.rs\") -- regular files only, sorted"
+    (file/list-files \"src\")   ;~> (\"lib.rs\" \"main.rs\") -- regular files only, sorted"
   (seq/filter (file/ls dir) (fn (e) (not (file/dir? (path/join dir e))))))
 
 (defn list-dirs (dir)
   "The names of subdirectories directly under `dir`, sorted.
 
-    (file/list-dirs \".\")   ;=> (\"crates\" \"docs\" \"std\") -- subdirectories only, sorted"
+    (file/list-dirs \".\")   ;~> (\"crates\" \"docs\" \"std\") -- subdirectories only, sorted"
   (seq/filter (file/ls dir) (fn (e) (file/dir? (path/join dir e)))))
 
 (defn walk-files (dir)
   "Every file path under `dir`, recursively (full paths, depth-first). nil if `dir` is not a directory.
 
-    (file/walk-files \"std\")   ;=> (\"std/net/http.blsp\" \"std/io.blsp\" …) -- full paths"
+    (file/walk-files \"std\")   ;~> (\"std/net/http.blsp\" \"std/io.blsp\" …) -- full paths"
   (if (not (file/dir? dir))
     nil
     ;; `(append subdir acc)` copies only the subdir's list and SHARES `acc`, so the walk

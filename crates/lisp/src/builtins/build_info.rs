@@ -15,14 +15,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(0),
         Sig::nullary(seq),
         &[],
-        "The optional build features this runtime was compiled with, as a vector of keywords (e.g. [:jit :treesit :gui]). A *bound* builtin does not imply a working one — with the `gui` feature off, `gui-open` is still bound and raises at call time — so an app that degrades rather than fails must ask the build, not `bound?`. `system/feature?` is the predicate over this.\n\n    (system/features)   ;=> [:jit :treesit :gui]",
+        "The optional build features this runtime was compiled with, as a vector of keywords (e.g. [:jit :treesit :gui]). A *bound* builtin does not imply a working one — with the `gui` feature off, `gui-open` is still bound and raises at call time — so an app that degrades rather than fails must ask the build, not `bound?`. `system/feature?` is the predicate over this.\n\n    (system/features)   ;~> [:jit :treesit :gui]",
         features);
     primitives.def(
         "system/build-id",
         Arity::exact(0),
         Sig::nullary(string),
         &[],
-        "This brood build's identity as \"<version>+<git-sha>+<binary-stamp>\" (e.g. \"0.1.0+dcab7ca+18f2e1a9b3c4d5e6\") — the correct staleness stamp for an on-disk cache of anything the kernel computes. Changes on any rebuild, committed or not: the binary-stamp half is this executable's own mtime, read at runtime, so it can't go stale the way a git-sha-only stamp would across an uncommitted local rebuild.\n\n    (system/build-id)   ;=> \"0.1.0+dcab7ca+18f2e1a9b3c4d5e6\"",
+        "This brood build's identity as \"<version>+<git-sha>+<binary-stamp>\" (e.g. \"0.1.0+dcab7ca+18f2e1a9b3c4d5e6\") — the correct staleness stamp for an on-disk cache of anything the kernel computes. Changes on any rebuild, committed or not: the binary-stamp half is this executable's own mtime, read at runtime, so it can't go stale the way a git-sha-only stamp would across an uncommitted local rebuild.\n\n    (system/build-id)   ;~> \"0.1.0+dcab7ca+18f2e1a9b3c4d5e6\"",
         build_id);
     primitives.def(
         "%build-stdimage?",
@@ -43,21 +43,21 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(0),
         Sig::nullary(string),
         &[],
-        "This build's STANDARD LIBRARY identity as \"<version>+<git-sha>+<content-hash>\" — like system/build-id, but hashing what is baked in rather than this executable's mtime. Every binary built from one tree (brood, nest, brood-lsp) reports the SAME system/stdlib-id, so they can share one cache of anything derived from std/ — the stdlib startup image is keyed on it. Use system/build-id for a cache of something binary-specific, and this for a cache of something the standard library determines. It changes on any edit to any `.blsp`, committed or not.\n\n    (system/stdlib-id)   ;=> \"0.1.0+dcab7ca+…\"",
+        "This build's STANDARD LIBRARY identity as \"<version>+<git-sha>+<content-hash>\" — like system/build-id, but hashing what is baked in rather than this executable's mtime. Every binary built from one tree (brood, nest, brood-lsp) reports the SAME system/stdlib-id, so they can share one cache of anything derived from std/ — the stdlib startup image is keyed on it. Use system/build-id for a cache of something binary-specific, and this for a cache of something the standard library determines. It changes on any edit to any `.blsp`, committed or not.\n\n    (system/stdlib-id)   ;~> \"0.1.0+dcab7ca+…\"",
         stdlib_id);
     primitives.def(
         "system/brood-version",
         Arity::exact(0),
         Sig::nullary(string),
         &[],
-        "This runtime's semantic version as a string (e.g. \"0.1.0\") — just the semver, without the git-sha/binary-stamp that `system/build-id` carries. What a project's `:brood` manifest constraint is checked against (a project can require `:brood \">= 0.2\"` and `nest` refuses an older runtime with a clear message).\n\n    (system/brood-version)   ;=> \"0.1.0\"",
+        "This runtime's semantic version as a string (e.g. \"0.1.0\") — just the semver, without the git-sha/binary-stamp that `system/build-id` carries. What a project's `:brood` manifest constraint is checked against (a project can require `:brood \">= 0.2\"` and `nest` refuses an older runtime with a clear message).\n\n    (system/brood-version)   ;~> \"0.1.0\"",
         brood_version);
     primitives.def(
         "system/build-time",
         Arity::exact(0),
         Sig::nullary(int.union(nil_ty)),
         &[],
-        "When THIS executable was built, as Unix epoch milliseconds (the unit os/now speaks, so datetime/epoch-ms-> formats it directly); nil when the platform won't say. It is the binary's own mtime — the fact system/build-id's third field encodes as an opaque hex stamp, in a unit a human can read — so it changes on any rebuild, unlike a baked-in build-script constant. This is the RUNTIME's build time; a `nest release` bundle's own is a different fact, stamped at release and read via project/build-info.\n\n    (system/build-time)   ;=> 1761213600000",
+        "When THIS executable was built, as Unix epoch milliseconds (the unit os/now speaks, so datetime/epoch-ms-> formats it directly); nil when the platform won't say. It is the binary's own mtime — the fact system/build-id's third field encodes as an opaque hex stamp, in a unit a human can read — so it changes on any rebuild, unlike a baked-in build-script constant. This is the RUNTIME's build time; a `nest release` bundle's own is a different fact, stamped at release and read via project/build-info.\n\n    (system/build-time)   ;~> 1761213600000",
         build_time);
 }
 

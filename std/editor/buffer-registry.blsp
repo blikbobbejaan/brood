@@ -42,8 +42,8 @@ its own copy to the same process."
   "The identity a buffer is shared under: its file (`:file` in `meta`) when it has one,
 else its `name`. Two buffers with the same name and different files are two documents.
 
-    (editor/buffer-registry/registry-key \"README.md\" {:file \"/a/README.md\"})   → \"/a/README.md\"
-    (editor/buffer-registry/registry-key \"*scratch*\" {})   → \"*scratch*\""
+    (editor/buffer-registry/registry-key \"README.md\" {:file \"/a/README.md\"})   ;=> \"/a/README.md\"
+    (editor/buffer-registry/registry-key \"*scratch*\" {})   ;=> \"*scratch*\""
   (let (file (get meta :file)) (if (string? file) file name)))
 
 ;; ---- the loop ---------------------------------------------------------------
@@ -185,7 +185,7 @@ that dies from it, under the same key, instead of dropping the entry — for a r
 must outlive its holders' copies (a daemon serving sessions that come and go). Without it
 the holders are the copies, and the first to re-share a died buffer brings the text.
 
-    (let (r (editor/buffer-registry/registry-start)) (editor/buffer-registry/registry-stop r) (pid? r))   → true"
+    (let (r (editor/buffer-registry/registry-start)) (editor/buffer-registry/registry-stop r) (pid? r))   ;=> true"
   ;; every frame asks the registry synchronously: a breakpoint must never park it
   (let (mirror? (= true (get opts :mirror)))
     (spawn (do (%process-flag :no-break true) (registry-loop {} '() mirror?)))))
@@ -204,7 +204,7 @@ from `text` and `meta` (`{:file :type :dir}` — what a holder needs to build it
 in the registry, so two askers at once get the same process. `:no-reply` when the registry
 does not answer within `timeout` ms.
 
-    (let (r (editor/buffer-registry/registry-start)) (let (p (editor/buffer-registry/registry-share r \"notes\" \"hello\" {})) (editor/buffer-registry/registry-stop r) (pid? p)))   → true"
+    (let (r (editor/buffer-registry/registry-start)) (let (p (editor/buffer-registry/registry-share r \"notes\" \"hello\" {})) (editor/buffer-registry/registry-stop r) (pid? p)))   ;=> true"
   (registry-call reg (fn (me r) [:share name text meta me r]) timeout))
 
 (defn registry-rekey
@@ -214,14 +214,14 @@ written to another file (`C-x C-w`) or renamed — keeping its process. Watchers
 `[:registry-renamed old-key new-key name meta]`. Answers the new key, nil when `old-key` is
 not registered, or `:taken` when another live document already has that identity.
 
-    (let (r (editor/buffer-registry/registry-start)) (let (_ (editor/buffer-registry/registry-share r \"a\" \"\" {:file \"/a\"}) k (editor/buffer-registry/registry-rekey r \"/a\" \"b\" {:file \"/b\"})) (editor/buffer-registry/registry-stop r) k))   → \"/b\""
+    (let (r (editor/buffer-registry/registry-start)) (let (_ (editor/buffer-registry/registry-share r \"a\" \"\" {:file \"/a\"}) k (editor/buffer-registry/registry-rekey r \"/a\" \"b\" {:file \"/b\"})) (editor/buffer-registry/registry-stop r) k))   ;=> \"/b\""
   (registry-call reg (fn (me r) [:rekey old-key name meta me r]) timeout))
 
 (defn registry-entries (reg:pid &optional (timeout:int 2000) -> any)
   "Every registered buffer as `{:key :name :proc :meta}`, a vector; `:no-reply` when the
 registry does not answer.
 
-    (let (r (editor/buffer-registry/registry-start)) (let (es (editor/buffer-registry/registry-entries r)) (editor/buffer-registry/registry-stop r) es))   → []"
+    (let (r (editor/buffer-registry/registry-start)) (let (es (editor/buffer-registry/registry-entries r)) (editor/buffer-registry/registry-stop r) es))   ;=> []"
   (registry-call reg (fn (me r) [:entries me r]) timeout))
 
 (defn registry-remove (reg:pid key:string &optional (timeout:int 2000) -> any)
@@ -229,7 +229,7 @@ registry does not answer.
 and drop the entry; watchers are told `[:registry-removed key :killed]`. The pid stopped,
 nil when there was none.
 
-    (let (r (editor/buffer-registry/registry-start)) (let (v (editor/buffer-registry/registry-remove r \"nope\")) (editor/buffer-registry/registry-stop r) v))   → nil"
+    (let (r (editor/buffer-registry/registry-start)) (let (v (editor/buffer-registry/registry-remove r \"nope\")) (editor/buffer-registry/registry-stop r) v))   ;=> nil"
   (registry-call reg (fn (me r) [:remove key me r]) timeout))
 
 (defn registry-watch (reg:pid pid:pid -> nil)
@@ -238,17 +238,17 @@ on, `[:registry-renamed old-key new-key name meta]` for every rekey, and
 `[:registry-removed key reason]` for every one removed (`:killed`) or died (`:died`).
 Idempotent. Asynchronous.
 
-    (let (r (editor/buffer-registry/registry-start)) (editor/buffer-registry/registry-watch r (self)) (editor/buffer-registry/registry-share r \"a\" \"\" {}) (editor/buffer-registry/registry-stop r) (receive ([:registry-added k _ _ _] k) (after 1000 :none)))   → \"a\""
+    (let (r (editor/buffer-registry/registry-start)) (editor/buffer-registry/registry-watch r (self)) (editor/buffer-registry/registry-share r \"a\" \"\" {}) (editor/buffer-registry/registry-stop r) (receive ([:registry-added k _ _ _] k) (after 1000 :none)))   ;=> \"a\""
   (send reg [:watch pid]))
 
 (defn registry-unwatch (reg:pid pid:pid -> nil)
   "Stop the notifications to `pid`. Asynchronous.
 
-    (let (r (editor/buffer-registry/registry-start)) (editor/buffer-registry/registry-watch r (self)) (editor/buffer-registry/registry-unwatch r (self)) (editor/buffer-registry/registry-share r \"a\" \"\" {}) (editor/buffer-registry/registry-stop r) (receive ([:registry-added k _ _ _] k) (after 0 :none)))   → :none"
+    (let (r (editor/buffer-registry/registry-start)) (editor/buffer-registry/registry-watch r (self)) (editor/buffer-registry/registry-unwatch r (self)) (editor/buffer-registry/registry-share r \"a\" \"\" {}) (editor/buffer-registry/registry-stop r) (receive ([:registry-added k _ _ _] k) (after 0 :none)))   ;=> :none"
   (send reg [:unwatch pid]))
 
 (defn registry-stop (reg:pid &optional (timeout:int 2000) -> any)
   "End every registered process and the registry; the count stopped, or `:no-reply`.
 
-    (editor/buffer-registry/registry-stop (editor/buffer-registry/registry-start))   → 0"
+    (editor/buffer-registry/registry-stop (editor/buffer-registry/registry-start))   ;=> 0"
   (registry-call reg (fn (me r) [:stop me r]) timeout))

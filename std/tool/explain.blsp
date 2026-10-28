@@ -99,9 +99,9 @@ the `nest mcp` tools of the same names.")
 when there's no entry — the code it looked up, or `:unknown` when none could be derived
 from `what`. Pure — reads the curated `*error-explanations*` table.
 
-    (get (explain/error \"E0030\") :code)  → \"E0030\"
-    (get (explain/error \"E9999\") :code)  → \"E9999\"
-    (get (explain/error 42) :code)        → :unknown"
+    (get (explain/error \"E0030\") :code)  ;=> \"E0030\"
+    (get (explain/error \"E9999\") :code)  ;=> \"E9999\"
+    (get (explain/error 42) :code)        ;=> :unknown"
   (let (code (cond
                (string? what) what
                (keyword? what) (get *kind->code* what)
@@ -214,6 +214,6 @@ insensitive substring) against each cookbook entry's intent + keywords. Returns
 the result — they're the search index, not content). Empty matches suggests
 `apropos`/`doc-search` for a name-based search instead.
 
-    (get (explain/find-pattern \"zzqqxx\") :matches)  → nil"
+    (get (explain/find-pattern \"zzqqxx\") :matches)  ;=> nil"
   {:matches (map (seq/filter *idiom-cookbook* (fn (e) (explain-matches? query e)))
               (fn (e) (dissoc e :keywords)))})

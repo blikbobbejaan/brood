@@ -43,7 +43,7 @@
 string (`\"\"` if it printed nothing), discarding `body`'s own value. Output from
 processes `body` spawns is captured too; nested `with-out-str`s compose.
 
-    (with-out-str (io/write \"a\"))   → \"a\""
+    (with-out-str (io/write \"a\"))   ;=> \"a\""
   `(do
      (%capture-begin)
      (try
@@ -61,8 +61,8 @@ processes `body` spawns is captured too; nested `with-out-str`s compose.
 (defmacro with-err-str (& body)
   "Evaluate `body` with the `*err*` port captured, returning everything written to it as a string (`\"\"` if nothing was), discarding `body`'s own value. For asserting on a warning — and for keeping an expected warning out of a test run's output. Only intercepts writes through `*err*` (an `io/` writer with `:to *err*`), not stderr written by the kernel itself.
 
-    (with-err-str (io/write \"oops\" :to *err*))   → \"oops\"
-    (with-err-str 1)                            → \"\"     ; nothing written"
+    (with-err-str (io/write \"oops\" :to *err*))   ;=> \"oops\"
+    (with-err-str 1)                            ;=> \"\"     ; nothing written"
   (let (sink (gensym "err-sink"))
     `(let (~sink (%table))
        (try
@@ -107,7 +107,7 @@ consumer's `priv/` in development and its own in a release.
 but does not go through `project/setup` and so has no `*project-root*` bound. Without it a
 release run from a subdirectory resolved every embedded file against the wrong place.
 
-    (%include-str-path \"/etc/hostname\")   → \"/etc/hostname\""
+    (%include-str-path \"/etc/hostname\")   ;=> \"/etc/hostname\""
   (cond
     (string/starts-with? rel "/") rel
     else
@@ -122,7 +122,7 @@ release run from a subdirectory resolved every embedded file against the wrong p
 above it that holds a `project.blsp` — or nil when nothing is being loaded from a file (a
 REPL form, an `eval`) or the file is in no project.
 
-    (%include-package-root)   ;=> \"/home/me/app\" while loading /home/me/app/src/x.blsp"
+    (%include-package-root)   ;~> \"/home/me/app\" while loading /home/me/app/src/x.blsp"
   (let (file (%current-file))
     (when (string? file)
       (%include-root-above (%include-dirname (if (string/starts-with? file "/")
@@ -242,8 +242,8 @@ the reason `include-str` gives.)"
 (defmacro -> (x & forms)
   "Thread `x` through the forms as each one's *first* argument: `(-> x (f a) (g b))` is `(g (f x a) b)`. A form naming the placeholder `$` receives `x` at that position instead, any number of times, evaluated once.
 
-    (-> 1 inc inc)        → 3
-    (-> 1 (- 10 $))       → 9"
+    (-> 1 inc inc)        ;=> 3
+    (-> 1 (- 10 $))       ;=> 9"
   (reduce forms x %thread-first-step))
 
 ;; (as-> x name (f a name) (g name b)) — thread `x` as `name`, in ANY position.
@@ -252,7 +252,7 @@ the reason `include-str` gives.)"
 (defmacro as-> (expr name & forms)
   "Thread `expr` through `forms`, re-binding it to `name` at each step so it can sit in *any* argument position: `(as-> 5 $ (+ $ 1) (* $ 2))` is `12`.
 
-    (as-> 1 x (+ x 2))   → 3"
+    (as-> 1 x (+ x 2))   ;=> 3"
   (let (steps (reduce forms (list name expr) (fn (acc form) (append acc (list name form)))))
     `(let ~steps ~name)))
 
@@ -284,8 +284,8 @@ the reason `include-str` gives.)"
 
 The steps after a failure never run, so a pipe does not have to end in `(if (failure? $) $ (step $))` to keep a bad value out of the last call. `nil` is not a sentinel here — absence and failure are separate channels (ADR-310), so `ok->` threads straight through a nil.
 
-    (ok-> \"12\" string/->number inc)   → 13
-    (failure? (ok-> \"q\" string/->number inc))   → true   ; `inc` never runs"
+    (ok-> \"12\" string/->number inc)   ;=> 13
+    (failure? (ok-> \"q\" string/->number inc))   ;=> true   ; `inc` never runs"
   (let (v (gensym "v")) `(let (~v ~x) ~(%ok-thread-build v forms %thread-first-step))))
 ;; check-allow: deliberately non-tail — expansion-time recursion over macro-body syntax — depth is source nesting, not runtime data.
 (check-allow :non-tail-recursion
@@ -297,15 +297,15 @@ The steps after a failure never run, so a pipe does not have to end in `(if (fai
 (defmacro cond-> (x & clauses)
   "Thread `x` through the `test form` clause pairs, applying each `form` (as its *first* argument, like `->`) only when its `test` is truthy: `(cond-> {} add-a? (assoc :a 1))`.
 
-    (cond-> 1 true inc)    → 2
-    (cond-> 1 false inc)   → 1"
+    (cond-> 1 true inc)    ;=> 2
+    (cond-> 1 false inc)   ;=> 1"
   (let (v (gensym "v")) `(let (~v ~x) ~(%cond-thread-build v clauses %thread-first-step))))
 
 (defmacro doto (x & forms)
   "Evaluate `x` once, run each `form` with it spliced in as the *first* argument (for side effects), then return `x`.
 
-    (table/get (doto (table/new) (table/put :a 1) (table/put :b 2)) :b)   → 2
-    (doto [1] (conj 2))   → [1]   ; data is immutable — `conj`'s result is discarded"
+    (table/get (doto (table/new) (table/put :a 1) (table/put :b 2)) :b)   ;=> 2
+    (doto [1] (conj 2))   ;=> [1]   ; data is immutable — `conj`'s result is discarded"
   (let (v (gensym "v"))
     `(let (~v ~x)
        ~@(map forms (fn (form) (%thread-first-step v form)))
@@ -317,13 +317,13 @@ The steps after a failure never run, so a pipe does not have to end in `(if (fai
 (defn tap (x f)
   "Call `(f x)` for its side effects and return `x` unchanged — a pass-through probe for a `->` pipeline: `(-> v (tap log) (process))` logs `v` and keeps threading it.
 
-    (with-out-str (tap 5 io/write))   → \"5\"
-    (tap 5 (fn (n) nil))              → 5     ; the value passes through unchanged"
+    (with-out-str (tap 5 io/write))   ;=> \"5\"
+    (tap 5 (fn (n) nil))              ;=> 5     ; the value passes through unchanged"
   (do (f x) x))
 (defn then (x f)
   "Return `(f x)` — apply `f` to `x`. Lets a `->` pipeline step call an arbitrary function on the threaded value, not only splice it as a first argument: `(-> v (then (fn (n) (g n other))))`.
 
-    (then 5 (fn (n) (* n 3)))   → 15"
+    (then 5 (fn (n) (* n 3)))   ;=> 15"
   (f x))
 
 ;; ---- binding-conditionals: bind, test the *source* value, branch -------------
@@ -334,14 +334,14 @@ The steps after a failure never run, so a pipe does not have to end in `(if (fai
 (defmacro if-let (binding then & else)
   "Bind `(name expr)`; if `expr` is truthy, evaluate `then` with `name` bound to it, else evaluate `else` (or `nil`). `name` may be a destructuring pattern.
 
-    (if-let (x 1) x :none)     → 1
-    (if-let (x nil) x :none)   → :none"
+    (if-let (x 1) x :none)     ;=> 1
+    (if-let (x nil) x :none)   ;=> :none"
   (let (name (first binding) expr (second binding) v (gensym "v"))
     `(let (~v ~expr) (if ~v (let (~name ~v) ~then) ~@else))))
 (defmacro when-let (binding & body)
   "Bind `(name expr)`; when `expr` is truthy, evaluate `body` (returning the last) with `name` bound to it, else `nil`. `name` may be a destructuring pattern.
 
-    (when-let (x 1) x)   → 1"
+    (when-let (x 1) x)   ;=> 1"
   (let (name (first binding) expr (second binding) v (gensym "v"))
     `(let (~v ~expr) (when ~v (let (~name ~v) ~@body)))))
 
@@ -351,15 +351,15 @@ The steps after a failure never run, so a pipe does not have to end in `(if (fai
 (defmacro if-some (binding then & else)
   "Bind `(name expr)`; if `expr` is not `nil`, evaluate `then` with `name` bound to it, else `else` (or `nil`). Unlike [[if-let]], a `false` value is PRESENT and takes the then-branch.
 
-    (if-some (x false) x :absent)   → false
-    (if-some (x nil) x :absent)     → :absent"
+    (if-some (x false) x :absent)   ;=> false
+    (if-some (x nil) x :absent)     ;=> :absent"
   (let (name (first binding) expr (second binding) v (gensym "v"))
     `(let (~v ~expr) (if (/nil? ~v) (do ~@else) (let (~name ~v) ~then)))))
 (defmacro when-some (binding & body)
   "Bind `(name expr)`; when `expr` is not `nil`, evaluate `body` with `name` bound to it, else `nil`. The presence-testing [[when-let]]: a `false` value runs the body.
 
-    (when-some (x false) [:got x])   → [:got false]
-    (when-some (x nil) [:got x])     → nil"
+    (when-some (x false) [:got x])   ;=> [:got false]
+    (when-some (x nil) [:got x])     ;=> nil"
   (let (name (first binding) expr (second binding) v (gensym "v"))
     `(let (~v ~expr) (if (/nil? ~v) nil (let (~name ~v) ~@body)))))
 
@@ -380,9 +380,9 @@ The steps after a failure never run, so a pipe does not have to end in `(if (fai
 (defmacro condp (pred expr & clauses)
   "Evaluate `expr` once, then take the first `test result` pair whose `(pred expr test)` is truthy — the value FIRST, as every data-first predicate reads (`(string/starts-with? line \"#\")`), which is the opposite of Clojure's `(pred test expr)`; a lone trailing form is the default, and with none a miss raises. `cond` with the predicate factored out — `case` compares literals, this asks a function.
 
-    (condp < 15 10 :small 100 :medium :large)   → :medium
-    (condp = :b :a 1 :b 2)                      → 2
-    (condp string/starts-with? \"# Title\" \"#\" :heading \"-\" :item :text)   → :heading"
+    (condp < 15 10 :small 100 :medium :large)   ;=> :medium
+    (condp = :b :a 1 :b 2)                      ;=> 2
+    (condp string/starts-with? \"# Title\" \"#\" :heading \"-\" :item :text)   ;=> :heading"
   (let (e (gensym "e") p (gensym "p"))
     `(let (~e ~expr ~p ~pred) ~(%condp-clauses p e clauses))))
 
@@ -421,9 +421,9 @@ Where `ok->` is the failure pipe for steps with nothing to name, `with` is the f
 
 Bindings are ONE flat list, exactly like `let`'s — not a list per pair. `(with (a e1) (b e2) body)` binds only `a`, and `(b e2)` becomes a body form that calls `b`, which is the confusing `unbound symbol: b` that shape produces.
 
-    (with (n (string/->number \"12\")) (inc n))   → 13
-    (with (n (string/->number \"4\") d (* n 2)) d)   → 8   ; two bindings, ONE list
-    (failure? (with (n (string/->number \"q\")) (inc n)))   → true   ; `inc` never runs"
+    (with (n (string/->number \"12\")) (inc n))   ;=> 13
+    (with (n (string/->number \"4\") d (* n 2)) d)   ;=> 8   ; two bindings, ONE list
+    (failure? (with (n (string/->number \"q\")) (inc n)))   ;=> true   ; `inc` never runs"
   (%with-build bindings body))
 ;; ---- local loops: just use `letrec` -----------------------------------------
 ;; Brood has no `loop`/`recur` macro. A self-contained *local* loop is a `letrec`-
@@ -440,8 +440,8 @@ Bindings are ONE flat list, exactly like `let`'s — not a list per pair. `(with
 (defn each (coll f)
   "Apply `f` to each item of `coll` for its side effects, returning `nil`. The function-valued counterpart of `doseq`: `(each io/puts xs)`.
 
-    (with-out-str (each [1 2 3] io/write))   → \"123\"
-    (each [1 2 3] (fn (n) nil))              → nil   ; the results are discarded"
+    (with-out-str (each [1 2 3] io/write))   ;=> \"123\"
+    (each [1 2 3] (fn (n) nil))              ;=> nil   ; the results are discarded"
   (fold coll nil (fn (acc x) (f x) acc))
   nil)
 
@@ -451,8 +451,8 @@ Bindings are ONE flat list, exactly like `let`'s — not a list per pair. `(with
 (defn last (xs:seqable -> any)
   "The last item of `xs`.
 
-    (last [1 2 3])   → 3
-    (last nil)       → nil"
+    (last [1 2 3])   ;=> 3
+    (last nil)       ;=> nil"
   ;; A vector answers by index; anything else is walked to its end. Both skip the
   ;; `reverse` that used to build a whole list just to read its head. The `seqable`
   ;; domain is declared, because the checker used to derive it from that `reverse` call
@@ -465,7 +465,7 @@ Bindings are ONE flat list, exactly like `let`'s — not a list per pair. `(with
 (defn error (& parts)
   "Raise an error whose message is the concatenated display forms of `parts`.
 
-    (try (error \"bad \" 42) (catch e (error-message e)))   → \"bad 42\""
+    (try (error \"bad \" 42) (catch e (error-message e)))   ;=> \"bad 42\""
   (throw (apply str parts)))
 
 (defn failure (& parts)
@@ -483,8 +483,8 @@ failure rather than quietly defaulting — test it with `failure?`; it is not `n
 absence and failure stay distinct; and `error-message` reads it.
 
     (failure \"not a range: \" (pr-str s))
-    (failure? (failure \"nope\"))            → true
-    (if (failure \"nope\") :yes :no)         → :yes   ; truthy — never silently absent"
+    (failure? (failure \"nope\"))            ;=> true
+    (if (failure \"nope\") :yes :no)         ;=> :yes   ; truthy — never silently absent"
   (%failure (apply str parts)))
 
 ;; The form's printed text is baked into the expansion, so a failure names what was
@@ -494,9 +494,9 @@ absence and failure stay distinct; and `error-message` reads it.
   "Raise an error naming `test` when it is falsy; otherwise return its value. Any
 `message` parts follow the form in the error, joined like `error`'s.
 
-    (assert (+ 1 2))                                      → 3
-    (try (assert (= 1 2)) (catch e (error-message e)))    → \"assert failed: (= 1 2)\"
-    (try (assert (> -1 0) \"got \" -1) (catch e (error-message e)))   → \"assert failed: (> -1 0): got -1\""
+    (assert (+ 1 2))                                      ;=> 3
+    (try (assert (= 1 2)) (catch e (error-message e)))    ;=> \"assert failed: (= 1 2)\"
+    (try (assert (> -1 0) \"got \" -1) (catch e (error-message e)))   ;=> \"assert failed: (> -1 0): got -1\""
   (let (v (gensym "v"))
     `(let (~v ~test)
        (if ~v
@@ -558,12 +558,12 @@ clause, else `[body nil]`. A `finally` anywhere but last is an error."
 (defmacro try (& body)
   "Evaluate `body`; if a `(catch e handler...)` clause is present, run it with the raised value bound to `e` when `body` throws; if a final `(finally cleanup...)` clause is present, run `cleanup` afterwards whether or not anything threw, then yield the try's value or rethrow what escaped.
 
-    (try (risky) (catch e :failed))                    → :failed
-    (try 41 (finally nil))                             → 41       ; cleanup ran, value survives
-    (try (throw :x) (catch e :failed) (finally nil))   → :failed   ; cleanup ran after the handler
+    (try (risky) (catch e :failed))                    ;=> :failed
+    (try 41 (finally nil))                             ;=> 41       ; cleanup ran, value survives
+    (try (throw :x) (catch e :failed) (finally nil))   ;=> :failed   ; cleanup ran after the handler
 
 `cleanup`'s own value is discarded; write the release there — `(finally (release r))` — and
-it runs on both paths. The examples above keep it `nil` because an indented `form → result`
+it runs on both paths. The examples above keep it `nil` because an indented `form ;=> result`
 line is EXECUTED by `doctest` (tests/doc_examples_test.blsp), so it has to be runnable."
   (let ([body cleanup] (%try-finally-split body))
     (if cleanup
@@ -622,8 +622,8 @@ value a strict function returns when it cannot interpret its input. A raised str
 comes back as-is, a structured error map yields its `:message`, a failure yields the
 message it carries, and anything else its printed form.
 
-    (error-message (try (error \"b\") (catch e e)))   → \"b\"
-    (error-message (string/->number \"abc\"))         → \"string/->number: not a number: \\\"abc\\\"\""
+    (error-message (try (error \"b\") (catch e e)))   ;=> \"b\"
+    (error-message (string/->number \"abc\"))         ;=> \"string/->number: not a number: \\\"abc\\\"\""
   (cond
     (string? e) e
     (failure? e) (%failure-message e)
@@ -668,7 +668,7 @@ message it carries, and anything else its printed form.
 (defmacro binding (bindings & body)
   "Rebind the dynamic variables in `bindings` (a flat `name value ...` list) for the dynamic extent of `body`, restoring them on exit (even on error).
 
-    (with-out-str (binding (*err* *out*) (io/puts \"oops\" :to *err*)))   → \"oops\\n\""
+    (with-out-str (binding (*err* *out*) (io/puts \"oops\" :to *err*)))   ;=> \"oops\\n\""
   (if (vector? bindings)
     (error "binding: bindings must be a list, not a vector: write (binding (*a* 1 *b* 2) …)."
       " Brood is lists-for-code, vectors-for-data (unlike Clojure).")

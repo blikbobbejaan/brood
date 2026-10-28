@@ -6,85 +6,85 @@
 (defn open (&optional title width height opts)
   "Open a new native window and return its integer id (needs the runtime built with --features gui; errors otherwise). An optional `title` string sets the OS title-bar text (default `Brood`); change it later with gui/title. Optional `width` `height` (logical pixels, both required together) set the initial window size (default 840x560). Optional `opts` map, the attributes fixed when the window is built: `{:decorations false}` opens a **borderless** window — no OS title bar or frame — for an app that draws its own chrome (a browser's tab strip and toolbar) and would otherwise sit under a redundant second title; `{:input :pixels}` delivers the window's mouse input in PHYSICAL PIXELS instead of cells — the row/col slots of a `[:mouse …]` message carry the pointer's y and x in pixels, `:move`/`:drag` fire on every pixel of motion, and `[:resize w h]` reports the pixel size — the grain a game drawing with the pixel-space ops needs (gui/size-px is the same size on demand); `:vsync` picks how the GPU render target presents (the CPU target presents synchronously regardless): by default MAILBOX where the platform offers it, else FIFO — the newest frame at the next refresh, one frame in flight, never tearing; `{:vsync true}` is FIFO, every frame in step with the monitor refresh; `{:vsync false}` asks for the work-bound rate with tearing allowed (IMMEDIATE where available) — what a sim measuring its own frame rate wants; `{:app-id \"my-app\"}` sets the desktop application id (Wayland `app_id`, X11 `WM_CLASS`), which the desktop matches against the installed `my-app.desktop` entry to give the window its real icon and name in the dash / alt-tab — without one it is unidentifiable and draws the desktop's generic fallback icon (on Wayland a client cannot supply icon pixels at all, so this, not gui/icon, is how a window gets an icon there). Its key/mouse input is delivered to the CALLING process's mailbox as messages — a key as a 1-char string / keyword (`:up`, `:ctrl-c`), the mouse as `[:mouse action button row col mods]` (action `:press`/`:release`/`:drag`/`:move`/`:scroll-up`/`:scroll-down` — `:drag` is motion with a button held and `:move` is bare motion with none (button nil), both delivered once per cell crossed (so mouse-look / hover need no click); `mods` a vector of held modifier keywords in `:ctrl :alt :shift` order, `[]` when none, so Ctrl+wheel / Ctrl+drag are bindable; a `:press` carries a trailing 7th element, its click-chain count `[… mods n]` — 1 single, 2 double, 3 triple, … for repeated presses of the same button in the same cell within the double-click window, so double-click-to-select-word and triple-click-to-select-line are bindable; the terminal reports 1; a scroll carries its delta in LINE units in the same 7th slot), and a cell-grid window appends the pointer's EXACT position after those, `{:at [row col]}` in FRACTIONAL cells — the 7th slot is nil when the event has no count or delta, so the positional slots keep their meaning — which is what a consumer painting a `cell-region` at another cell size needs to hit-test inside it, since the whole cell was rounded before it could divide by the ratio (the terminal and a `{:input :pixels}` window send none), a resize as `[:resize cols rows]` (the new cell grid, so the loop re-renders at the new size) — so the consumer parks in `(receive)` instead of polling (ADR-059). Clicking the window's close button delivers a dedicated `:close` message — distinct from the Escape *key* (`:escape`), so an app can quit on the X without conflating it with Escape (which an editor binds to cancel/normal-mode); `ui-run` quits on `:close` automatically. The keyboard (ADR-086, ADR-441): a key is a 1-char string or a keyword spelling its modifiers in Emacs order, `[ctrl-meta-|ctrl-|alt-][shift-][super-]<name>` — `:ctrl-x`, `:alt-O`, `:super-s`, `:ctrl-super-x`, `:shift-left`, `:ctrl-f5`, `:super-f12`; the named keys are the arrows, `:enter` `:backspace` `:delete` `:insert` `:home` `:end` `:page-up` `:page-down`, `:f1`…`:f24`, `:menu` `:pause` `:scroll-lock` `:help` `:find` `:undo` `:redo` `:copy` `:cut` `:paste`, the browser and media keys, plus `:tab` `:back-tab` `:escape`; a shifted chord takes the glyph the keyboard layout gives (Alt+Shift+`.` is `:alt->` on a US layout, `:alt-:` on a German one). A release is `[:key-up press]`, `press` the value that key's press delivered — `[:key-up \"(\"]` though Shift came up first, `[:key-up [:text \"…\"]]` for a compose sequence. By default the OS auto-repeat is dropped, so a held key is one press and one `[:key-up …]` and the app repeats it itself (gui/held-key); `{:key-repeat :os}` delivers each OS repeat as another press of the held key at the user's system delay and rate, never more than one of them undelivered at a time, and that one taken back when the key comes up, so the app stops with the key. Text an input method composes arrives as `[:preedit text range]` while it is being composed (shown at point, not inserted; `range` the IME cursor as `[from to]` character offsets, or nil; an empty `text` clears it) and `[:text text]` when committed — also what a keystroke that typed several characters (a compose sequence) delivers; a single character an IME merely passed through is the plain 1-char key. The IME is on unless `{:ime false}`, and its candidate window is placed at the frame's `[:cursor …]`. Focus is `:focus-in` on gain and `:blur` on loss. A mouse-wheel notch scrolls three lines at once in one scroll message (`{:wheel :lines}`, the default; notches the app has not drawn yet are summed into the next), or glides there over half a second with `{:wheel :glide}`; a trackpad tracks the finger and coasts either way. Starts the GUI thread on the first call; each call is an independent window, so several observers can run at once. Pass the id to the other gui/* functions; pair with gui/close.
 
-    (gui/open \"Notes\" 1024 768)   ;=> the new window's integer id"
+    (gui/open \"Notes\" 1024 768)   ;~> the new window's integer id"
   (%gui-open title width height opts))
 
 (defn available? ()
   "True when this runtime was built with the GUI backend, so `gui/open` and the other `gui/*` calls can succeed. The question to ask BEFORE a GUI side effect an app is happy to skip headlessly — `(when (gui/available?) (gui/font spec))` — rather than calling and catching: a `(try (gui/font …) (catch e nil))` also swallows an unbound symbol, and that is how a rename wave ran unnoticed for hours (ADR-304). Does not say whether a display is reachable; `gui/open` still errors for that.
 
-    (gui/available?)   ;=> true in a --features gui build, false otherwise"
+    (gui/available?)   ;~> true in a --features gui build, false otherwise"
   (%gui-compiled?))
 
 (defn close (id)
   "Close window id (the teardown for gui/open). Idempotent; an unknown id is a no-op.
 
-    (gui/close id)   ;=> the window closed; closing again is a no-op"
+    (gui/close id)   ;~> the window closed; closing again is a no-op"
   (%gui-close id))
 
 (defn title (id text)
   "Set window id's OS title-bar text to the string text at runtime (the title gui/open gave it, or the default, otherwise). Needs --features gui; a no-op if the GUI thread never started or id isn't a live window. Returns nil.
 
-    (gui/title id \"Notes (draft)\")   ;=> nil"
+    (gui/title id \"Notes (draft)\")   ;~> nil"
   (%gui-title! id text))
 
 (defn icon (id rgba w h)
   "Set window id's taskbar / title-bar icon from raw RGBA pixels: rgba is a vector of w*h*4 byte ints (0-255), row-major, 4 per pixel (red, green, blue, alpha). Needs --features gui; a silent no-op if the GUI thread never started, id isn't a live window, or the data length isn't w*h*4. Where the OS shows it depends on the platform (X11/Windows use it directly; Wayland prefers a .desktop file). Returns nil.
 
-    (gui/icon id pixels 32 32)   ;=> nil; pixels is a vector of 32*32*4 byte ints"
+    (gui/icon id pixels 32 32)   ;~> nil; pixels is a vector of 32*32*4 byte ints"
   (%gui-icon! id rgba w h))
 
 (defn focus (id)
   "Raise window id to the front and give it OS keyboard focus, un-minimising it first. Lets an app surface an already-open (singleton) window instead of opening a duplicate — e.g. `(observe)` focuses its existing window rather than spawning a second. Errors only if id isn't a live window. Needs --features gui. Returns nil.
 
-    (gui/focus id)   ;=> nil; the window is raised and focused"
+    (gui/focus id)   ;~> nil; the window is raised and focused"
   (%gui-focus id))
 
 (defn grab-cursor (id on)
   "Confine the pointer to window id while `on` is truthy, release it otherwise — for mouse-look that shouldn't let the cursor slip out of the window and click another app. Uses the platform's `Confined` grab (cursor stays inside but keeps moving, so an absolute position-based look maps edge-to-edge), falling back to `Locked` where that's all the platform offers. Off by default; an app opts in. Errors only if id isn't a live window. Needs --features gui. Returns nil.
 
-    (gui/grab-cursor id true)   ;=> nil; the pointer stays inside the window"
+    (gui/grab-cursor id true)   ;~> nil; the pointer stays inside the window"
   (%gui-grab-cursor id on))
 
 (defn fullscreen (id on)
   "Make window id borderless-fullscreen while `on` is truthy (covering the whole monitor it's on, NO title bar / decorations — distraction-free), or restore it to a normal window otherwise. For a big-but-normal window that keeps its title bar, use gui/maximize instead. The fullscreen/restore triggers a resize, so the consumer gets the usual [:resize cols rows] message and re-renders at the new size. Errors only if id isn't a live window. Needs --features gui. Returns nil.
 
-    (gui/fullscreen id true)   ;=> nil; a [:resize cols rows] message follows"
+    (gui/fullscreen id true)   ;~> nil; a [:resize cols rows] message follows"
   (%gui-fullscreen! id on))
 
 (defn maximize (id on)
   "Maximise window id while `on` is truthy (fill the screen's work area, KEEPING the title bar / decorations), or restore it to its previous size otherwise — e.g. an editor's init file opening big without going true-fullscreen. The maximise/restore triggers a resize, so the consumer gets the usual [:resize cols rows] message and re-renders at the new size. Errors only if id isn't a live window. Needs --features gui. Returns nil.
 
-    (gui/maximize id true)   ;=> nil; a [:resize cols rows] message follows"
+    (gui/maximize id true)   ;~> nil; a [:resize cols rows] message follows"
   (%gui-maximize! id on))
 
 (defn minimize (id)
   "Iconify window `id`. The counterpart of gui/maximize for an app that draws its own window controls, which a borderless window (gui/open with {:decorations false}) must.
 
-    (gui/minimize id)   ;=> the window iconified"
+    (gui/minimize id)   ;~> the window iconified"
   (%gui-minimize! id))
 
 (defn drag-move (id)
   "Hand window `id` to the window manager for an interactive move, for the rest of the currently-held press. What a borderless window needs to stay movable: with no OS title bar there is nothing to grab, so the app nominates a region of its own chrome (a browser's tab strip) and calls this when a press lands there. A platform that declines the gesture is a no-op, not an error.
 
-    (gui/drag-move id)   ;=> the window manager moves the window for the held press"
+    (gui/drag-move id)   ;~> the window manager moves the window for the held press"
   (%gui-drag-move id))
 
 (defn drag-resize (id dir)
   "Hand window `id` to the window manager for an interactive resize from `dir` — :north :south :east :west :north-east :north-west :south-east :south-west. The window-frame counterpart of gui/drag-move, for a borderless window that draws its own edges. A platform that declines the gesture is a no-op, not an error.
 
-    (gui/drag-resize id :south-east)   ;=> the window manager resizes from the bottom-right corner"
+    (gui/drag-resize id :south-east)   ;~> the window manager resizes from the bottom-right corner"
   (%gui-drag-resize id dir))
 
 (defn size (id)
   "Window id's size as [cols rows] in character cells (tracks resize / HiDPI), same shape as term/size.
 
-    (gui/size id)   ;=> [105 35] -- columns and rows in cells"
+    (gui/size id)   ;~> [105 35] -- columns and rows in cells"
   (%gui-size id))
 
 (defn cell-size (id &optional px)
   "Window id's cell size as [cell-w cell-h] in PHYSICAL pixels — for the font size the window is using, or, given px (a logical font size), for the size a `cell-region` of that px would paint with. The question an app must answer before laying a region out at another size: how many of THAT size's cells fit the rect it has. It is not derivable from px — a cell is whatever shaping the reference glyph produces, rounded to whole pixels — so it is measured (on the GUI thread, memoised there). Errors when the window is not open, when this brood has no gui feature, and headless (no font engine to measure with), so a caller that also runs headless falls back to the size ratio.
 
-    (try (gui/cell-size 0) (catch e :no-window))   → :no-window   ; no window 0 is open"
+    (try (gui/cell-size 0) (catch e :no-window))   ;=> :no-window   ; no window 0 is open"
   (if (nil? px)
     (%gui-cell-size id)
     (%gui-cell-size id px)))
@@ -92,39 +92,39 @@
 (defn held-key (id)
   "The key window id currently sees as physically held — the same value its press delivered (a 1-char string, a keyword like :ctrl-n / :up, or `[:text \"…\"]` for a keystroke that typed several characters, a compose sequence) — or nil when none is held. Tracked from press/release transitions in the event loop (NOT winit's ke.repeat, unreliable on Wayland), so it's the source of truth for a held key: a consumer-paced auto-repeat polls it each tick and stops the instant it no longer matches, so a missed key-up (e.g. lost on focus change) can't cause runaway repeat.
 
-    (gui/held-key id)   ;=> :up while the up arrow is held, nil when no key is"
+    (gui/held-key id)   ;~> :up while the up arrow is held, nil when no key is"
   (%gui-held-key id))
 
 (defn latency (id)
   "Window id's recent input-to-present samples, oldest first (at most 64), each a map of milliseconds: `:total` — from the GUI thread receiving an input (a key press, a mouse button, a wheel step) to the paint of the first frame that arrived after it returning from its present — and `:paint`, that paint's share; a frame the GPU render target drew adds its phases `:encode` `:upload` `:acquire` `:submit` `:present`. Which frame answers an input cannot be known across the app's mailbox, so the next frame drawn is taken as its answer; a present returning means the compositor has the frame, not that the panel shows it (up to one refresh more). Empty headless. `BROOD_GUI_TRACE=1` prints each sample as it is taken (ADR-440).
 
-    (gui/latency id)   ;=> [{:total 6.1 :paint 1.2 :encode 0.3 …} …]
-    (fn? gui/latency)   → true"
+    (gui/latency id)   ;~> [{:total 6.1 :paint 1.2 :encode 0.3 …} …]
+    (fn? gui/latency)   ;=> true"
   (%gui-latency id))
 
 (defn key-repeats (id)
   "How window id's held keys have repeated since it opened, as a map: `:delivered`, the OS repeats delivered to the app; `:dropped`, those dropped because one was still waiting — the app fell behind the repeat rate, so a held key moved slower than the desktop asked; and, from the last key that repeated, the desktop's `:delay` before its first repeat and the `:interval` between its last two, in milliseconds (nil before any key has repeated). Set against `gui/latency`, it says whether the app answers a repeat before the next one comes. Counts under `{:key-repeat :os}`; all zero headless (ADR-441).
 
-    (gui/key-repeats id)   ;=> {:delivered 412 :dropped 3 :delay 500.1 :interval 33.3}
-    (fn? gui/key-repeats)   → true"
+    (gui/key-repeats id)   ;~> {:delivered 412 :dropped 3 :delay 500.1 :interval 33.3}
+    (fn? gui/key-repeats)   ;=> true"
   (%gui-key-repeats id))
 
 (defn settle (id)
   "Tell window id the app finished a turn with nothing new to draw; returns nil. What a `gui/draw` would have told the window about the app's progress, without a frame: the next wheel-glide step may fire, and the input the turn answered is dropped from `gui/latency` instead of being pinned on the next unrelated frame. `ui-run` sends it on every turn it skips (ADR-444), through the display's `:settle`. No-op headless.
 
-    (gui/settle id)   ;=> nil"
+    (gui/settle id)   ;~> nil"
   (%gui-settle id))
 
 (defn draw (id frame)
   "Paint a frame (the same render-op vector term/draw takes) to window id; returns nil. Unknown ops are skipped (forward-compatible). A text op's face may carry :scale n (GUI only, integer >=1, capped at 16): the text is drawn n× larger in an n×n block of cells anchored at its row/col — the per-pane/per-buffer font knob; the terminal frontend renders scale 1. A `[:cursor row col]` op may carry an optional `style` keyword (`[:cursor row col style]`) — :block (default, a 50% overlay), :bar (a thin caret on the cell's left edge), :underline (a rule along the cell bottom), or :hollow (an outline box, the cursor of an unfocused window) — and an optional colour after it (`[:cursor row col style colour]`, a face colour; `style` may be nil), the caret's colour: a block washes its cell in it at 50% and rims it solid, the other shapes are solid in it. A `[:rect row col w h face]` op fills a w×h cell block with the face's background colour — a solid panel painted directly (no glyphs), the multi-row generalisation of a status bar. A `[:cursor-zone x y w h shape]` op marks a hover hot-zone: while the pointer is over it the window shows the resize cursor `shape` (:col-resize ↔ / :row-resize ↕), hit-tested on the GUI thread (ADR-080); it draws nothing and the terminal ignores it. A `[:vspans row0 col0 cols]` op is the column-renderer fast path (raycasters, spectrum bars): `cols` is a vector with one entry per cell-column (`col0`, `col0+1`, …), each a top-to-bottom stack of `[height colour]` segments painted from `row0` down — `colour` a face keyword (`:red`), an `[r g b]` triple (0..255), or nil (transparent). The per-cell fill happens natively here, so a wide scene costs the Brood side O(columns), not O(cells); GUI-only (the terminal ignores it). Two ops live in PIXEL space rather than cells — physical pixels from the window's top-left, drawn by both window painters — instanced on the GPU render target (a `--with-gui-gpu` build, which draws on the GPU unless BROOD_GUI_GPU=0), in software by the CPU painter, so a game draws on any GUI build; the terminal skips them: `[:quad x y w h color]` / `[:quad x y w h color rot]` fills a w×h rect with color (a face colour, or an [r g b a] vector for a translucent one) turned `rot` radians about its centre, and `[:sprite tex x y w h]` / `[:sprite tex x y w h uv tint rot]` draws texture `tex` (a handle from gui/texture) there, sampling `uv` (`[u0 v0 du dv]`, texture space, a negative extent mirrors; the whole texture by default) multiplied by `tint` (opaque white by default). Build them with gui/sprite and gui/line rather than by hand — the runtime knows only the quad; a sheet frame, a flip, a line are Brood over it. Text joins them with `[:text-px x y s face]`: the run shaped as a `:text` op would be (the same face keys), its top at y and its left edge at x in physical pixels — or its centre / right edge, with `:align :center` / `:align :right` in the face — so a HUD caption or a title sits where a game wants it, not on a cell row; both window painters draw it, the terminal skips it. And a frame can carry SOUND: `[:sound snd]` / `[:sound snd vol]` plays the sound gui/sound (or editor/ui/display-sound) kept under handle snd, once, when the frame is drawn — on whichever window draws it, so it crosses the wire to a thin client and a browser tab with the frame, and a headless test sees it in the frame; `vol` is the peak amplitude 0..1 (default ~0.18). MUSIC is state rather than an event: `[:music snd]` / `[:music snd vol]` keeps that sound LOOPING for as long as the frames drawn carry the op — the same handle again keeps the track going (a new vol fades to it), another handle switches tracks, and a frame without one fades it out, so a thin client or a late joiner hears the game's music from the next frame it draws; the first music op of a frame wins. A frame can also ask for EFFECTS, painted by both window painters (on the GPU in shaders, by the CPU painter in software) and skipped by the terminal: `[:ambient color]` turns lighting on — what is drawn before the frame's `[:overlay]` (all of it, without one) is multiplied by a light map starting at that colour, to which every `[:light x y radius color]` / `[:light x y radius color intensity]` adds its colour falling smoothly to nothing at its radius; ops after `[:overlay]` are the unlit layer (a HUD, or something that glows). `[:bloom threshold intensity radius]` adds back, blurred `radius` pixels wide, what is brighter than `threshold` (0..1); `[:crt scanlines curvature vignette]` dims every other row, bulges the picture and darkens its corners — both over the finished frame. PARTICLES are state like music: `[:emitter id x y opts]` keeps emitter `id` alive at (x, y) while frames carry it — `opts` a map of `:rate` (per second), `:life [min max]` seconds, `:speed [min max]` px/s, `:angle` and `:spread` radians (0 points right, y down), `:gravity [gx gy]`, `:drag`, `:size [birth death]` px, `:color` / `:color-end`, `:blend :add`, `:shape :square`, `:max` (live particles, default 1024) — simulated in the window (a compute shader on the GPU) and drawn where the op sits, so a frame carries one op per emitter, never one per particle; a frame without it stops the emission and lets its particles live out their lives. `[:burst id n]` emits n at once from the frame's emitter `id`, once, when the frame is drawn.
 
-    (gui/draw id [[:clear] [:text 0 0 \"hello\" {:fg :red}]])   ;=> nil"
+    (gui/draw id [[:clear] [:text 0 0 \"hello\" {:fg :red}]])   ;~> nil"
   (%gui-draw id frame))
 
 (defn font (id-or-spec &optional spec)
   "Set a cell font from spec, a map {:family <keyword> :height <px>} (both keys optional): :family picks a registered font family (bundled :mono, or one added by gui/font-register), :height the cell pixel size. (gui/font spec) sets the global default — every open window and ones opened later; (gui/font id spec) retunes just window id, leaving the global default and other windows alone, so two windows can run different fonts. Per-section fonts within a window come from a face's :family/:scale. Needs --features gui. Returns nil.
 
-    (gui/font {:family :mono :height 18})   ;=> nil; every window now uses an 18 px mono cell"
+    (gui/font {:family :mono :height 18})   ;~> nil; every window now uses an 18 px mono cell"
   (if (nil? spec)
     (%gui-font! id-or-spec)
     (%gui-font! id-or-spec spec)))
@@ -132,57 +132,57 @@
 (defn font-register (name styles)
   "Register font family name (a keyword) from styles: either an INSTALLED family by its name, {:family-name \"JetBrains Mono\"} — looked up (case-insensitively) in the system fonts, which are scanned the first time one is asked for and never at startup, with the bold / italic / bold-italic faces picked by weight and slant, and the bundled DejaVu Sans Mono standing in when nothing by that name is installed (gui/font-info says which file each style got, or :not-found) — or a map of style → TTF file path {:regular \"…\" :bold \"…\" :italic \"…\" :bold-italic \"…\"}, where only :regular is required and a missing style reuses the regular file. :family-name wins when both are given. Afterwards a face's :family <name> (or gui/font) selects it; re-registering a family a window already uses re-measures its cell. Needs --features gui. Returns name.
 
-    (gui/font-register :code {:family-name \"JetBrains Mono\"})   ;=> :code"
+    (gui/font-register :code {:family-name \"JetBrains Mono\"})   ;~> :code"
   (%gui-font-register name styles))
 
 (defn font-info (&optional family)
   "Where font family `family` (a keyword; the window default when omitted) got its faces, as a map: :name (the family shaping uses), :requested (the installed name a :family-name registration asked for, or nil), :origin (:bundled, :files, :system, or :not-found — asked for by name, not installed, the bundled DejaVu standing in), :regular / :bold / :italic / :bold-italic (the file each style resolved to), :fallbacks (a vector of {:name :file} — the installed fonts loaded so far to draw glyphs the primary font lacks, CJK or symbols, in the order first needed), :system-scanned (whether the installed fonts have been scanned yet: only on demand) and :ligatures. The diagnostic for \"I asked for Iosevka, why does it look like DejaVu\". Answered on the GUI thread after every registration sent before it. Errors headless and without --features gui.
 
-    (gui/font-info :code)   ;=> {:name \"JetBrains Mono\" :origin :system :regular \"/usr/share/fonts/…\" :fallbacks [] …}
-    (fn? gui/font-info)   → true"
+    (gui/font-info :code)   ;~> {:name \"JetBrains Mono\" :origin :system :regular \"/usr/share/fonts/…\" :fallbacks [] …}
+    (fn? gui/font-info)   ;=> true"
   (%gui-font-info family))
 
 (defn inset (px)
   "Set the window content inset to px logical pixels: a blank margin before the cell grid on every window edge, so a GUI app's text breathes instead of sitting flush against the frame. Applies to every open window and the default for ones opened later; the grid loses 2*px per axis (fewer cells) and re-renders. The inset is shared by the renderer and mouse hit-testing, so clicks stay aligned. Needs --features gui. Returns nil.
 
-    (gui/inset 12)   ;=> nil; a 12 px margin around every window's cell grid"
+    (gui/inset 12)   ;~> nil; a 12 px margin around every window's cell grid"
   (%gui-inset! px))
 
 (defn bg (color)
   "Set the window background colour: the fill for :clear, the per-frame pre-clear, and — being outside every cell — the gui/inset margin and the cell-grid snap remainder. So a GUI app's padding matches its own theme background instead of the hardcoded default. color is a keyword named colour, an [r g b] vector (0..255 per channel), or a \"#rrggbb\"/\"#rgb\" hex string; nil restores the default. Applies to every open window and the default for ones opened later (a pure repaint — no grid change). Needs --features gui. Returns nil.
 
-    (gui/bg \"#1e1e2e\")   ;=> nil; the background fill of every window"
+    (gui/bg \"#1e1e2e\")   ;~> nil; the background fill of every window"
   (%gui-bg! color))
 
 (defn line-height (mult)
   "Set the cell height as a multiple of the font pixel size (the line height): 1.4 by default — an editor's vertical breathing room — clamped to 0.8..3.0. A metric change like gui/font: the row count moves, so every open window is told its new (cols, rows) and re-renders; also the default for windows opened later. Needs --features gui. Returns nil.
 
-    (gui/line-height 1.2)   ;=> nil; every window re-renders at its new row count"
+    (gui/line-height 1.2)   ;~> nil; every window re-renders at its new row count"
   (%gui-line-height! mult))
 
 (defn ligatures (on)
   "Turn programming ligatures on (any truthy value) or off (nil / false, the default): with them on, a run of two or more punctuation chars in a :text op (-> != === <=> |> :: /* &&) is shaped as one unit so the font's ligatures form, still occupying exactly one cell per char — the grid never moves. A font without ligatures (the bundled DejaVu) draws the same either way; register one that has them (gui/font-register with :family-name \"JetBrains Mono\", \"Fira Code\", \"Iosevka\"). Every open window and the default for ones opened later; a pure repaint. Needs --features gui. Returns nil.
 
-    (gui/ligatures true)   ;=> nil; -> and != form ligatures in a font that has them
-    (fn? gui/ligatures)   → true"
+    (gui/ligatures true)   ;~> nil; -> and != form ligatures in a font that has them
+    (fn? gui/ligatures)   ;=> true"
   (%gui-ligatures! on))
 
 (defn text-aa (mode)
   "Set how monochrome text is anti-aliased: :gray (one coverage value per pixel), :subpixel (one per colour channel, each a third of a pixel apart — LCD text, three times the horizontal resolution of every stem, for a panel whose subpixels run red-green-blue), :bgr (the same for a blue-first panel), or :auto (the default: subpixel at a 1× scale where text has the fewest pixels to spend, gray on HiDPI where grayscale is already sharp and a scaled or rotated surface would turn subpixel fringes into colour noise). Applies to every open window and the default for ones opened later; a pure repaint. The GPU painter draws subpixel text in one pass on an adapter with dual-source blending and in three (one per colour channel) on one without; either way the same pixels as the CPU painter. Needs --features gui. Returns nil.
 
-    (gui/text-aa :gray)   ;=> nil; grayscale anti-aliasing in every window"
+    (gui/text-aa :gray)   ;~> nil; grayscale anti-aliasing in every window"
   (%gui-text-aa! mode))
 
 (defn text-contrast (gamma)
   "Set the text contrast exponent γ: 1.0 by default (the plain linear-light blend), clamped to 0.5..3.0. A monochrome glyph's partial coverage is lifted to cov^(1/γ) where the text is lighter than the pixel it lands on — light text on a dark ground, which a linear-light blend renders with thin stems, reads fuller; a glyph's interior and exterior, dark-on-light text and colour emoji are untouched. 1.4–1.8 is the range other linear-light renderers ship. Applies to every open window and the default for ones opened later; a pure repaint. Needs --features gui. Returns nil.
 
-    (gui/text-contrast 1.6)   ;=> nil; light-on-dark text reads fuller"
+    (gui/text-contrast 1.6)   ;~> nil; light-on-dark text reads fuller"
   (%gui-text-contrast! gamma))
 
 (defn image-thumb (bytes max-w max-h)
   "Decode an encoded image (PNG/JPEG/GIF/WebP/BMP) from a byte sequence and downscale it to fit within max-w×max-h pixels (aspect ratio preserved), returning {:width :height :rgba} where :rgba is a width*height*4 bytes value (row-major RGBA8). nil when the bytes aren't a decodable image or the dims are non-positive. Per-call decode limits bound a decompression bomb. The one image primitive; rendering (half-block cells, a GUI texture) is Brood policy over the decoded buffer.
 
-    (gui/image-thumb (file/slurp-bytes \"photo.jpg\") 64 64)   ;=> {:width 64 :height 48 :rgba …}, or nil"
+    (gui/image-thumb (file/slurp-bytes \"photo.jpg\") 64 64)   ;~> {:width 64 :height 48 :rgba …}, or nil"
   (%image-thumb bytes max-w max-h))
 
 ;; --- pixel space: the sprite / quad layer ---------------------------------------------
@@ -207,19 +207,19 @@
 (defn size-px (id)
   "Window id's inner size as [w h] in PHYSICAL pixels (tracks resize / HiDPI) — the frame a pixel-space app lays itself out in, where gui/size is the cell grid. Under `{:input :pixels}` the window's [:resize w h] message carries the same numbers.
 
-    (try (gui/size-px 0) (catch e :no-window))   → :no-window   ; no window 0 is open"
+    (try (gui/size-px 0) (catch e :no-window))   ;=> :no-window   ; no window 0 is open"
   (%gui-size-px id))
 
 (defn texture "Upload an image as a texture of window id for its [:sprite …] ops and return its handle (an int). Either `(gui/texture id image)` with the {:width :height :rgba} map gui/image-thumb decodes, or `(gui/texture id rgba w h)` with raw bytes — w*h*4 of them, row-major, straight alpha (a bytes value or a vector of 0-255 ints). The handle is allocated HERE, in Brood, and the texture's size remembered beside it, which is what lets gui/sprite turn a source rect in texture pixels into the UV rect the renderer wants without asking the GUI thread. Errors when the byte count is not w*h*4; on the CPU render target (a build without `gui-gpu`, or BROOD_GUI_GPU=0) the upload is a silent no-op and a sprite naming the handle draws nothing. Pair with gui/texture-free.
 
-    (try (gui/texture 0 {:width 1 :height 1 :rgba [1 2 3]}) (catch e :bad-size))   → :bad-size   ; 1×1 needs 4 bytes"
+    (try (gui/texture 0 {:width 1 :height 1 :rgba [1 2 3]}) (catch e :bad-size))   ;=> :bad-size   ; 1×1 needs 4 bytes"
   ((id image) (texture id (get image :rgba) (get image :width) (get image :height)))
   ((id rgba w h) (let (tex (alloc-texture w h)) (%gui-texture id tex rgba w h) tex)))
 
 (defn alloc-texture (w h)
   "Allocate a texture handle for a `w`×`h` upload and remember the size under it — the Brood half of gui/texture, on its own for an app that uploads through a DISPLAY map's `:texture` (a window it did not open, or a thin client's over the wire — `editor/ui/display-texture`) rather than a window id. The handle is process-wide and never reused, so it can name a texture in any window.
 
-    (gui/texture-size (gui/alloc-texture 4 2))   → [4 2]"
+    (gui/texture-size (gui/alloc-texture 4 2))   ;=> [4 2]"
   (let (registry *textures*
         tex (table/incr registry :next))
     (table/put registry tex [w h])
@@ -228,7 +228,7 @@
 (defn texture-size (tex)
   "The [w h] in texture pixels a handle from gui/texture was uploaded with, or nil for an unknown handle (one this process never uploaded, or already freed).
 
-    (gui/texture-size 0)   → nil"
+    (gui/texture-size 0)   ;=> nil"
   (table/get *textures* tex))
 
 ;; The sound registry — handle → seconds of audio — shared by every process, created at
@@ -241,7 +241,7 @@
 gui/sound, on its own for an app that uploads through a DISPLAY map's `:sound`
 (`editor/ui/display-sound`). Process-wide, never reused.
 
-    (gui/sound-seconds (gui/alloc-sound 0.25))   → 0.25"
+    (gui/sound-seconds (gui/alloc-sound 0.25))   ;=> 0.25"
   (let (registry *sounds*
         snd (table/incr registry :next))
     (table/put registry snd seconds)
@@ -250,7 +250,7 @@ gui/sound, on its own for an app that uploads through a DISPLAY map's `:sound`
 (defn sound-seconds (snd)
   "How long the sound under handle `snd` runs, in seconds, or nil for an unknown handle.
 
-    (gui/sound-seconds 0)   → nil"
+    (gui/sound-seconds 0)   ;=> nil"
   (table/get *sounds* snd))
 
 (defn sound (id pcm rate &optional channels)
@@ -262,7 +262,7 @@ ints) at `rate` Hz, `channels` 1 (the default) or 2. The handle is allocated in 
 rides the display seam like a texture: it plays on the window that draws the frame
 carrying its op. Errors on a bad rate, channel count or an odd byte count.
 
-    (try (gui/sound 0 [1 2 3] 22050) (catch e :odd))   → :odd   ; PCM16 is two bytes a sample"
+    (try (gui/sound 0 [1 2 3] 22050) (catch e :odd))   ;=> :odd   ; PCM16 is two bytes a sample"
   (let (ch (or channels 1)
         n (if (bytes? pcm) (bytes/length pcm) (count pcm))
         snd (alloc-sound (->float (/ (math/quot n 2) (* rate ch)))))
@@ -272,27 +272,27 @@ carrying its op. Errors on a bad rate, channel count or an odd byte count.
 (defn sound-free (id snd)
   "Forget sound snd of window id. Idempotent. Returns nil.
 
-    (try (do (gui/sound-free 0 1) (gui/sound-seconds 1)) (catch e nil))   → nil"
+    (try (do (gui/sound-free 0 1) (gui/sound-seconds 1)) (catch e nil))   ;=> nil"
   (table/delete *sounds* snd)
   (%gui-sound-free id snd))
 
 (defn input (id mode)
   "Deliver window id's mouse input in :pixels or :cells from now on — the `{:input …}` gui/open option, switchable after the window exists. The window then reports its size in that unit: a [:resize w h] in pixels follows a switch to :pixels, [:resize cols rows] a switch back. How a window a generic thin client opened (`nest attach --gui`) is told, by the app it attached to, which unit it wants.
 
-    (try (gui/input :w :pixels) (catch e :bad-id))   → :bad-id   ; a window id is an int"
+    (try (gui/input :w :pixels) (catch e :bad-id))   ;=> :bad-id   ; a window id is an int"
   (%gui-input! id mode))
 
 (defn texture-free (id tex)
   "Release texture tex of window id and forget its size; a later [:sprite …] naming it draws nothing. Idempotent. Returns nil.
 
-    (try (do (gui/texture-free 0 1) (gui/texture-size 1)) (catch e nil))   → nil   ; forgotten, whether or not a window/backend exists"
+    (try (do (gui/texture-free 0 1) (gui/texture-size 1)) (catch e nil))   ;=> nil   ; forgotten, whether or not a window/backend exists"
   (table/delete *textures* tex)
   (%gui-texture-free id tex))
 
 (defn line (x0 y0 x1 y1 color &optional width)
   "The op that draws a line segment from (x0 y0) to (x1 y1) in physical pixels, `width` pixels thick (1 by default), in color — a keyword (:red), an [r g b] triple, an [r g b a] quad for a translucent line, or a \"#rrggbb\" string. A line IS a thin quad at an angle, so this is a [:quad …] whose centre is the segment's midpoint, turned to the segment's angle: put it in a frame like any other op.
 
-    (gui/line 0 0 10 0 :red)   → [:quad 0.0 -0.5 10.0 1.0 :red 0.0]"
+    (gui/line 0 0 10 0 :red)   ;=> [:quad 0.0 -0.5 10.0 1.0 :red 0.0]"
   (let (dx (->float (- x1 x0))
         dy (->float (- y1 y0))
         len (math/sqrt (+ (* dx dx) (* dy dy)))
@@ -304,7 +304,7 @@ carrying its op. Errors on a bad rate, channel count or an odd byte count.
 (defn sprite (tex x y w h &optional opts)
   "The op that draws texture tex (a handle from gui/texture) with its top-left at (x y) physical pixels, w×h pixels large. `opts`, a map, picks the part and the look: `:src [sx sy sw sh]` the source rect in texture pixels (default the whole texture; needs the size gui/texture recorded, so an unknown handle draws the whole texture), `:flip-x` / `:flip-y` to mirror it, `:tint` a colour multiplied in (default opaque white, so [r g b 128] fades the sprite to half), `:rot` radians clockwise about the sprite's centre. Sheets and animation are one call: the frame is a `:src`. Returns the [:sprite …] op — which carries a UV rect, because that is all the renderer knows.
 
-    (gui/sprite 0 10 20 32 32)   → [:sprite 0 10 20 32 32 [0.0 0.0 1.0 1.0] [255 255 255 255] 0.0]"
+    (gui/sprite 0 10 20 32 32)   ;=> [:sprite 0 10 20 32 32 [0.0 0.0 1.0 1.0] [255 255 255 255] 0.0]"
   (let (opts (or opts {})
         src (get opts :src)
         size (texture-size tex)

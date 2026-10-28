@@ -72,7 +72,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(0),
         Sig::new(vec![], list_ty),
         &[],
-        "The names of every module baked into this binary, as a sorted list of strings — what a `name/…` reference or `(:use name)` resolves without a load-path. Backs `nest` shell completion and lets a name be validated before referencing it.\n\n    (reflect/builtin-modules)   ;=> (\"audit\" \"base64\" … \"json\" …)",
+        "The names of every module baked into this binary, as a sorted list of strings — what a `name/…` reference or `(:use name)` resolves without a load-path. Backs `nest` shell completion and lets a name be validated before referencing it.\n\n    (reflect/builtin-modules)   ;~> (\"audit\" \"base64\" … \"json\" …)",
         builtin_modules);
     // Release-bundle mechanism (ADR-038): an app produced by `nest release`
     // carries its source appended to the binary. These let `std/tool/project.blsp`
@@ -132,7 +132,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         // impossible-predicate lint (ADR-315).
         Sig::new(vec![], sym.union(Ty::of(Tag::Nil))),
         &[],
-        "The current compilation namespace as a symbol, or nil at the root namespace (top level).\n\n    (reflect/current-ns)   → nil",
+        "The current compilation namespace as a symbol, or nil at the root namespace (top level).\n\n    (reflect/current-ns)   ;=> nil",
         current_ns,
     );
     // The compile context — namespace AND `(:use …)` imports, both per process — as data,

@@ -56,7 +56,7 @@ variadic, rendering, `:to`-taking function below. The seam is the implementor's 
 the contract, invoked once per ready string, and it is the one that should yield the
 plainer name.
 
-    (io/emit (io/stdout-port) \"ready\")   ;=> nil, with ready written to stdout"
+    (io/emit (io/stdout-port) \"ready\")   ;~> nil, with ready written to stdout"
   (emit [self s] :-> nil))
 
 ;; A bare 1-arg sink fn is a port — the original representation, still first-class.
@@ -80,7 +80,7 @@ plainer name.
 or your own type). The check a function taking a port can branch on instead of letting
 `emit` raise.
 
-    (io/port? (io/stdout-port))   → true"
+    (io/port? (io/stdout-port))   ;=> true"
   (satisfies? 'Port x))
 
 ;; ---- port values ------------------------------------------------------------
@@ -94,13 +94,13 @@ or your own type). The check a function taking a port can branch on instead of l
   "The default stdout port: writes to real stdout, honouring `with-out-str`
 capture. (The prelude's default `*out*` is the bare `%write-out` fn this wraps.)
 
-    (io/stdout-port)   ;=> a standard-port record, displayed as #<port stdout>"
+    (io/stdout-port)   ;~> a standard-port record, displayed as #<port stdout>"
   (standard-port "stdout" %write-out))
 
 (defn stderr-port ()
   "The default stderr port: writes to real stderr (never captured).
 
-    (io/stderr-port)   ;=> a standard-port record, displayed as #<port stderr>"
+    (io/stderr-port)   ;~> a standard-port record, displayed as #<port stderr>"
   (standard-port "stderr" %write-err))
 
 (defn fn-port (f)
@@ -109,7 +109,7 @@ capture. (The prelude's default `*out*` is the bare `%write-out` fn this wraps.)
 kept as a name because it *documents* the intent at a call site; `f` may buffer, filter,
 count, or forward however it likes.
 
-    (io/fn-port (fn (s) (send logger [:line s])))   ;=> that same fn, usable as a port"
+    (io/fn-port (fn (s) (send logger [:line s])))   ;~> that same fn, usable as a port"
   f)
 
 (defrecord process-port (pid))
@@ -177,15 +177,15 @@ it does not."
   "Write the display forms of `xs` with NO trailing newline, to `*out*` — or to the port
 named by a trailing `:to <port>`. Returns nil.
 
-    (io/write \"working\")   ;=> nil, after writing `working` to *out*
-    (io/write \"progress: \" n :to *err*)   ;=> nil, after writing to stderr"
+    (io/write \"working\")   ;~> nil, after writing `working` to *out*
+    (io/write \"progress: \" n :to *err*)   ;~> nil, after writing to stderr"
   (send-text xs "" render-display))
 
 (defn puts (& xs)
   "Write the display forms of `xs` followed by a newline, to `*out*` — or to the port named
 by a trailing `:to <port>`. Returns nil. The everyday output function.
 
-    (io/puts \"hello\")   ;=> nil, after printing the line `hello`
+    (io/puts \"hello\")   ;~> nil, after printing the line `hello`
     (io/puts \"count = \" n)
     (io/puts \"boom\" :to *err*)
     (io/puts \"entry\" :to (io/file-port \"log.txt\"))"
@@ -201,7 +201,7 @@ The debugging counterpart of [[puts]]: `(io/puts \"a\\nb\")` prints two lines, w
 Distinct from the bare `inspect`, which is the `Inspect` ability op and returns the string
 rather than writing it — that one belongs with `pr-str`, this one with the writers.
 
-    (io/inspect \"a\\nb\" :k)   ;=> nil, after printing the line `\"a\\nb\" :k`"
+    (io/inspect \"a\\nb\" :k)   ;~> nil, after printing the line `\"a\\nb\" :k`"
   (send-text xs "\n" inspect-render))
 
 ;; ---- installing a port for a dynamic extent ---------------------------------
@@ -212,7 +212,7 @@ rather than writing it — that one belongs with `pr-str`, this one with the wri
 a plain fn so the prelude can call it directly with no dispatch, while a record
 port still reaches them through this. `with-out`/`with-err` apply it for you.
 
-    (io/port-fn (io/file-port \"log.txt\"))   ;=> a 1-arg fn appending each string to log.txt"
+    (io/port-fn (io/file-port \"log.txt\"))   ;~> a 1-arg fn appending each string to log.txt"
   (if (fn? port) port (fn (s) (emit port s))))
 
 (defmacro with-out (port & body)

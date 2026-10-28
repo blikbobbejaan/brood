@@ -41,20 +41,20 @@ Error codes the spec reserves are in `*error-codes*`.")
 UTF-8 BYTE count, which is what the header means — not its character count, which differs
 as soon as the body carries a character outside ASCII.
 
-    (jsonrpc/frame \"{}\")   → \"Content-Length: 2\\r\\n\\r\\n{}\""
+    (jsonrpc/frame \"{}\")   ;=> \"Content-Length: 2\\r\\n\\r\\n{}\""
   (str "Content-Length: " (bytes/length (string/->bytes body)) "\r\n\r\n" body))
 
 (defn request (id method params)
   "A framed request: `{\"jsonrpc\": \"2.0\", \"id\", \"method\", \"params\"}`. The peer answers
 with a response carrying the same `id`.
 
-    (:id (first (first (jsonrpc/decode (jsonrpc/request 7 \"shutdown\" nil)))))   → 7"
+    (:id (first (first (jsonrpc/decode (jsonrpc/request 7 \"shutdown\" nil)))))   ;=> 7"
   (frame (json/encode {:jsonrpc "2.0" :id id :method method :params params})))
 
 (defn notification (method params)
   "A framed notification — a request with no `id`, which the peer does not answer.
 
-    (:method (first (first (jsonrpc/decode (jsonrpc/notification \"exit\" nil)))))   → \"exit\""
+    (:method (first (first (jsonrpc/decode (jsonrpc/notification \"exit\" nil)))))   ;=> \"exit\""
   (frame (json/encode {:jsonrpc "2.0" :method method :params params})))
 
 (defn response (id result)
@@ -62,7 +62,7 @@ with a response carrying the same `id`.
 language server asks its client things too (`client/registerCapability`), and waits for
 this.
 
-    (:result (first (first (jsonrpc/decode (jsonrpc/response 3 [1 2])))))   → [1 2]"
+    (:result (first (first (jsonrpc/decode (jsonrpc/response 3 [1 2])))))   ;=> [1 2]"
   (frame (json/encode {:jsonrpc "2.0" :id id :result result})))
 
 (defn error-response (id code message)
@@ -70,7 +70,7 @@ this.
 `*error-codes*` for a protocol failure, `(:method-not-found jsonrpc/*error-codes*)` being
 the honest answer to a request the receiver does not implement.
 
-    (get-in (first (first (jsonrpc/decode (jsonrpc/error-response 3 -32601 \"no\")))) [:error :code])   → -32601"
+    (get-in (first (first (jsonrpc/decode (jsonrpc/error-response 3 -32601 \"no\")))) [:error :code])   ;=> -32601"
   (frame (json/encode {:jsonrpc "2.0" :id id :error {:code code :message message}})))
 
 (defn- content-length (header:string -> (or nil int))
@@ -115,5 +115,5 @@ kept for the next chunk. A frame whose body is not JSON is dropped with a warnin
 than stalling everything behind it; a malformed HEADER stops decoding there, since where the
 next frame starts cannot be known.
 
-    (second (jsonrpc/decode (str (jsonrpc/notification \"exit\" nil) \"Content-Len\")))   → \"Content-Len\""
+    (second (jsonrpc/decode (str (jsonrpc/notification \"exit\" nil) \"Content-Len\")))   ;=> \"Content-Len\""
   (decode-acc buf '()))

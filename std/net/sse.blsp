@@ -182,7 +182,7 @@ lower-cased. Pure."
   "Headers for an event stream: `text/event-stream`, no caching, keep-alive. Pass as
 the `headers` of a `stream-response` so a browser `EventSource` reads the open stream.
 
-    (sse/headers)   → {\"Content-Type\" \"text/event-stream\" \"Cache-Control\" \"no-cache\" \"Connection\" \"keep-alive\"}"
+    (sse/headers)   ;=> {\"Content-Type\" \"text/event-stream\" \"Cache-Control\" \"no-cache\" \"Connection\" \"keep-alive\"}"
   {"Content-Type" "text/event-stream" "Cache-Control" "no-cache" "Connection" "keep-alive"})
 
 (defn frame (data &optional (event nil))
@@ -192,7 +192,7 @@ The exact inverse of `parse-event`. A line in `data` ends at `\\r\\n`, `\\r` or 
 the three terminators a client splits on — and **raises** if `event` contains a CR or
 LF, which would end the `event:` line and inject a field of the caller's choosing.
 
-    (sse/frame \"a\\nb\" \"tick\")   → \"event: tick\\ndata: a\\ndata: b\\n\\n\""
+    (sse/frame \"a\\nb\" \"tick\")   ;=> \"event: tick\\ndata: a\\ndata: b\\n\\n\""
   ;; Splitting on `\n` alone left a bare `\r` inside a `data:` line, and a client ends
   ;; the line there — `ok\r\rdata: injected` became two events. `normalize` first.
   (when (and event (or (includes? (str event) "\r") (includes? (str event) "\n")))
@@ -205,7 +205,7 @@ LF, which would end the `event:` line and inject a field of the caller's choosin
   "Push one SSE event (`data`, with an optional `event` type) down `sock` — the live
 socket a `stream-response` handler was handed. Just `(tcp/send sock (frame …))`.
 
-    (sse/emit sock \"{\\\"n\\\": 1}\" \"tick\")   ;=> nil, once the frame is written"
+    (sse/emit sock \"{\\\"n\\\": 1}\" \"tick\")   ;~> nil, once the frame is written"
   (tcp/send sock (frame data event)))
 
 ;; ---- the reader process (IO) ------------------------------------------------
@@ -325,7 +325,7 @@ its pid; `(exit pid :kill)` disconnects, and the reader also closes the stream b
 when `subscriber` exits. A bad URL or a CR/LF in the method, target or a header raises
 here, in the caller. Sent as HTTP/1.0 (see the module notes).
 
-    (sse/connect \"https://example.com/events\" (self))   ;=> the reader's pid; [:sse-open 200], [:sse {…}]… follow"
+    (sse/connect \"https://example.com/events\" (self))   ;~> the reader's pid; [:sse-open 200], [:sse {…}]… follow"
   (let (u (http/parse-url url)
         body (bytes/concat (or (get opts :body) ""))
         headers (http/request-headers u

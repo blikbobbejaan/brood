@@ -75,7 +75,7 @@ in autumn) are resolved by `->utc`'s `prefer` (see there).")
 is not one. What `zone` does after reading the file; public for a file read elsewhere (an
 embedded copy, a bundle).
 
-    (failure? (tz/parse-tzif (string/->bytes \"not a zone\") \"x\"))   → true"
+    (failure? (tz/parse-tzif (string/->bytes \"not a zone\") \"x\"))   ;=> true"
   (if (or (< (bytes/length b) 44) (not (= (bytes/slice b 0 4) (string/->bytes "TZif"))))
     (failure (str "tz: not a TZif file: " name))
     (let (version (bytes/at b 4)
@@ -168,7 +168,7 @@ embedded copy, a bundle).
 their offsets in seconds EAST of UTC (`:std-offset`, `:dst-offset`), and the `:start` /
 `:end` of daylight time — nil fields for a zone without it. A failure when `s` is not one.
 
-    (:std-offset (tz/posix-rule \"EST5EDT,M3.2.0,M11.1.0\"))   → -18000"
+    (:std-offset (tz/posix-rule \"EST5EDT,M3.2.0,M11.1.0\"))   ;=> -18000"
   (let (at (fn (i) (if (< i (string/length s)) (string/substring s i (inc i)) "")))
     (try
       (let ([std i] (scan-name s 0)
@@ -244,7 +244,7 @@ their offsets in seconds EAST of UTC (`:std-offset`, `:dst-offset`), and the `:s
   "The zone `name` (`\"Europe/Berlin\"`, `\"America/New_York\"`, `\"UTC\"`) from the system's
 zone files, or a failure when there is no such zone. Reads the file each call — keep it.
 
-    (:name (tz/zone \"UTC\"))   ;=> \"UTC\" (where the system has zoneinfo)"
+    (:name (tz/zone \"UTC\"))   ;~> \"UTC\" (where the system has zoneinfo)"
   (if (or (string/blank? name) (includes? name ".."))
     (failure (str "tz: no such zone: " name))
     (let (file (zone-file name))
@@ -256,7 +256,7 @@ zone files, or a failure when there is no such zone. Reads the file each call �
   "A zone from a POSIX TZ rule alone (`\"EST5EDT,M3.2.0,M11.1.0\"`, `\"UTC0\"`) — no history,
 the rule applied to every year. A failure when the rule does not parse.
 
-    (:offset (tz/offset (tz/rule-zone \"UTC0\") 0))   → 0"
+    (:offset (tz/offset (tz/rule-zone \"UTC0\") 0))   ;=> 0"
   (let (rule (posix-rule rule-string))
     (if (failure? rule)
       rule
@@ -266,7 +266,7 @@ the rule applied to every year. A failure when the rule does not parse.
   "This machine's zone: `$TZ` (a zone name, `:name`, or a POSIX rule), else the zone
 `/etc/localtime` names, else UTC.
 
-    (string? (:name (tz/local-zone)))   → true"
+    (string? (:name (tz/local-zone)))   ;=> true"
   (let (env (os/env "TZ")
         name (when env
                (if (string/starts-with? env ":") (string/substring env 1 (string/length env)) env)))
@@ -295,7 +295,7 @@ the rule applied to every year. A failure when the rule does not parse.
   "What `zone` says at the instant `epoch-ms`: `{:offset :dst? :abbr}`, the offset in seconds
 east of UTC.
 
-    (tz/offset (tz/rule-zone \"EST5EDT,M3.2.0,M11.1.0\") 0)   → {:offset -18000 :dst? false :abbr \"EST\"}"
+    (tz/offset (tz/rule-zone \"EST5EDT,M3.2.0,M11.1.0\") 0)   ;=> {:offset -18000 :dst? false :abbr \"EST\"}"
   (let (seconds (math/floor (/ epoch-ms 1000))
         times (:times zone)
         i (last-at-or-before times seconds)
@@ -318,7 +318,7 @@ east of UTC.
 (defn ->local (zone dt)
   "The civil time in `zone` at the UTC datetime `dt`, as a datetime.
 
-    (datetime/format (tz/->local (tz/rule-zone \"EST5\") (datetime/epoch-ms-> 0)) \"%Y-%m-%d %H:%M\")   → \"1969-12-31 19:00\""
+    (datetime/format (tz/->local (tz/rule-zone \"EST5\") (datetime/epoch-ms-> 0)) \"%Y-%m-%d %H:%M\")   ;=> \"1969-12-31 19:00\""
   (let (ms (datetime/->epoch-ms dt))
     (datetime/epoch-ms-> (+ ms (* 1000 (offset-seconds zone ms))))))
 
@@ -329,7 +329,7 @@ exists twice (the hour repeated when clocks go back) is the `:earlier` (default)
 read with the offset before the change, landing as far past it as it was into the gap —
 Java's and Temporal's default.
 
-    (datetime/->epoch-ms (tz/->utc (tz/rule-zone \"EST5\") (datetime/parse-iso8601 \"1970-01-01T00:00:00Z\")))   → 18000000"
+    (datetime/->epoch-ms (tz/->utc (tz/rule-zone \"EST5\") (datetime/parse-iso8601 \"1970-01-01T00:00:00Z\")))   ;=> 18000000"
   (let (wall (datetime/->epoch-ms local)
         day 86400000
         offsets (seq/distinct (map [(- wall day) wall (+ wall day)]
@@ -349,7 +349,7 @@ Java's and Temporal's default.
 (defn offset->string (seconds)
   "An offset in seconds east of UTC as ISO 8601 writes it: `+02:00`, `-05:30`, `+00:00`.
 
-    (tz/offset->string -19800)   → \"-05:30\""
+    (tz/offset->string -19800)   ;=> \"-05:30\""
   (let (sign (if (< seconds 0) "-" "+")
         s (math/abs seconds))
     (string/format "%s%02d:%02d" sign (math/quot s 3600) (math/quot (math/rem s 3600) 60))))
@@ -357,7 +357,7 @@ Java's and Temporal's default.
 (defn ->iso (zone dt)
   "The UTC datetime `dt` as an ISO 8601 civil time in `zone`, with its offset.
 
-    (tz/->iso (tz/rule-zone \"EST5\") (datetime/epoch-ms-> 0))   → \"1969-12-31T19:00:00-05:00\""
+    (tz/->iso (tz/rule-zone \"EST5\") (datetime/epoch-ms-> 0))   ;=> \"1969-12-31T19:00:00-05:00\""
   (let (ms (datetime/->epoch-ms dt)
         o (offset-seconds zone ms))
     (str (datetime/format (datetime/epoch-ms-> (+ ms (* 1000 o))) "%Y-%m-%dT%H:%M:%S")

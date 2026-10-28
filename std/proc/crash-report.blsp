@@ -124,7 +124,7 @@ the reason itself. A crash loop whose message varies per iteration (`\"boom: 3\"
   "Render one crash report for `pid` exiting with `reason` as a multi-line string
 (no trailing newline). Pure — the piece a host that captures reports formats with.
 
-    (crash-report/render pid reason)   ;=> a multi-line report string naming `pid` and where it crashed"
+    (crash-report/render pid reason)   ;~> a multi-line report string naming `pid` and where it crashed"
   (let (headline (match reason
                    ([:error (and m {:keys [message]})] (str "[crash] "
                                                          (pr-str pid)
@@ -185,7 +185,7 @@ No `:stop` arm: the shim matches `:stop` itself and disarms without ever loading
 file, so a `:stop` cannot reach here — the checker says so too, and said so out loud when
 this had one.
 
-    (crash-report/take-over starter msg)   ;=> never returns — loops as the reporter"
+    (crash-report/take-over starter msg)   ;~> never returns — loops as the reporter"
   (match msg
     ([:system :exit pid reason] (crash-report-loop starter
                                   nil
@@ -200,7 +200,7 @@ receives each rendered report instead of it going to stderr (a host capturing
 reports, or a test). The calling process is never reported — its crash is the
 CLI's to print.
 
-    (crash-report/start {:sink (fn (text) (log/error text))})   ;=> the listener's pid"
+    (crash-report/start {:sink (fn (text) (log/error text))})   ;~> the listener's pid"
   (let (running (proc/whereis crash-report-name))
     (if running
       running
@@ -216,7 +216,7 @@ CLI's to print.
 listener's subscription is gone and a crash after `stop` returns is not reported.
 Returns nil.
 
-    (crash-report/stop)   ;=> nil — later crashes are not reported"
+    (crash-report/stop)   ;~> nil — later crashes are not reported"
   (let (running (proc/whereis crash-report-name))
     (when running
       (let (m (monitor running))
@@ -227,5 +227,5 @@ Returns nil.
 (defn running? ()
   "Is a crash reporter armed?
 
-    (crash-report/running?)   ;=> true while the reporter is armed"
+    (crash-report/running?)   ;~> true while the reporter is armed"
   (not (nil? (proc/whereis crash-report-name))))

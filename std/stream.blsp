@@ -59,8 +59,8 @@ additionally bounds the wait on a producer that is alive but never replies; omit
 it (the default) for an I/O stream that may legitimately be slow, where the
 monitor is the whole guard.
 
-    (stream/next (stream/singleton 7))   → [:ok 7]
-    (stream/next (stream/empty))         → :done"
+    (stream/next (stream/singleton 7))   ;=> [:ok 7]
+    (stream/next (stream/empty))         ;=> :done"
   (let (m (monitor s))
     (send s [:next (self)])
     (let (res (if (nil? timeout-ms)
@@ -83,7 +83,7 @@ monitor is the whole guard.
 (defn close (s: (or map pid) -> nil)
   "Signal stream `s` to clean up and exit. Returns nil immediately.
 
-    (stream/close (stream/range 0 10))   → nil"
+    (stream/close (stream/range 0 10))   ;=> nil"
   (send s :stream-close))
 
 ;; ---- sources ----------------------------------------------------------------
@@ -91,13 +91,13 @@ monitor is the whole guard.
 (defn empty ()
   "A stream that is immediately done.
 
-    (stream/->list (stream/empty))   → nil"
+    (stream/->list (stream/empty))   ;=> nil"
   (spawn (done-loop)))
 
 (defn singleton (x)
   "A stream that yields exactly one value `x`, then ends.
 
-    (stream/->list (stream/singleton :x))   → (:x)"
+    (stream/->list (stream/singleton :x))   ;=> (:x)"
   (spawn (singleton-loop x)))
 
 (defn- singleton-loop (x)
@@ -119,7 +119,7 @@ monitor is the whole guard.
 (defn list-> (xs)
   "A stream over the items of list or vector `xs`. Evaluated eagerly once.
 
-    (stream/->list (stream/list-> [1 2 3]))   → (1 2 3)"
+    (stream/->list (stream/list-> [1 2 3]))   ;=> (1 2 3)"
   (spawn (list-loop (seq xs))))
 
 (defn- list-loop (xs)
@@ -135,7 +135,7 @@ monitor is the whole guard.
   "A stream driven by generator `f`. Each call `(f state)` returns
 `[:yield v new-state]` to emit `v` and continue, or `:done` to end the stream.
 
-    (stream/->list (stream/fn-> (fn (n) (if (> n 3) :done [:yield n (inc n)])) 1))   → (1 2 3)"
+    (stream/->list (stream/fn-> (fn (n) (if (> n 3) :done [:yield n (inc n)])) 1))   ;=> (1 2 3)"
   (spawn (fn-loop f init)))
 
 (defn- fn-loop (f state)
@@ -151,7 +151,7 @@ monitor is the whole guard.
 (defn range (start stop)
   "A stream of integers from `start` (inclusive) to `stop` (exclusive).
 
-    (stream/->list (stream/range 0 5))   → (0 1 2 3 4)"
+    (stream/->list (stream/range 0 5))   ;=> (0 1 2 3 4)"
   (fn-> (fn (i) (if (< i stop) [:yield i (+ i 1)] :done))
     start))
 
@@ -169,7 +169,7 @@ monitor is the whole guard.
 to the stream process — the caller must not `receive` from `sock` afterwards.
 Call immediately after accept or connect, before any data has been read.
 
-    (stream/socket-> (tcp/connect \"localhost\" 8080))   ;=> a stream of the string chunks the socket receives"
+    (stream/socket-> (tcp/connect \"localhost\" 8080))   ;~> a stream of the string chunks the socket receives"
   (let (me (self)
         s (spawn (sock-init sock me)))
     (receive
@@ -262,7 +262,7 @@ Call immediately after accept or connect, before any data has been read.
 (defn map (s f)
   "A stream applying `f` to each element of `s`.
 
-    (stream/->list (stream/map (stream/range 1 4) (fn (n) (* n n))))   → (1 4 9)"
+    (stream/->list (stream/map (stream/range 1 4) (fn (n) (* n n))))   ;=> (1 4 9)"
   (spawn (map-loop f s)))
 
 (defn- map-loop (f up)
@@ -277,7 +277,7 @@ Call immediately after accept or connect, before any data has been read.
 (defn filter (s pred)
   "A stream yielding only elements of `s` for which `(pred element)` is true.
 
-    (stream/->list (stream/filter (stream/range 0 10) math/even?))   → (0 2 4 6 8)"
+    (stream/->list (stream/filter (stream/range 0 10) math/even?))   ;=> (0 2 4 6 8)"
   (spawn (filter-outer pred s)))
 
 (defn- filter-outer (pred up)
@@ -298,7 +298,7 @@ Call immediately after accept or connect, before any data has been read.
 (defn take (s n)
   "A stream yielding at most the first `n` elements of `s`.
 
-    (stream/->list (stream/take (stream/range 0 100) 3))   → (0 1 2)"
+    (stream/->list (stream/take (stream/range 0 100) 3))   ;=> (0 1 2)"
   (spawn (take-loop n s)))
 
 (defn- take-loop (n up)
@@ -328,7 +328,7 @@ Call immediately after accept or connect, before any data has been read.
 (defn drop (s n)
   "A stream skipping the first `n` elements of `s`.
 
-    (stream/->list (stream/drop (stream/range 0 6) 4))   → (4 5)"
+    (stream/->list (stream/drop (stream/range 0 6) 4))   ;=> (4 5)"
   (spawn (drop-init n s)))
 
 (defn- drop-init (n up)
@@ -363,7 +363,7 @@ Call immediately after accept or connect, before any data has been read.
   "A stream of vectors, each holding `n` consecutive elements of `s`.
 The last vector may be shorter if the source isn't a multiple of `n`.
 
-    (stream/->list (stream/chunk (stream/range 0 5) 2))   → ([0 1] [2 3] [4])"
+    (stream/->list (stream/chunk (stream/range 0 5) 2))   ;=> ([0 1] [2 3] [4])"
   (when (<= n 0) (error "chunk: n must be > 0"))
   (spawn (chunk-outer n s)))
 
@@ -392,7 +392,7 @@ The last vector may be shorter if the source isn't a multiple of `n`.
 (defn concat (s1 s2)
   "A stream yielding all elements of `s1` then all elements of `s2`.
 
-    (stream/->list (stream/concat (stream/list-> [1 2]) (stream/list-> [3])))   → (1 2 3)"
+    (stream/->list (stream/concat (stream/list-> [1 2]) (stream/list-> [3])))   ;=> (1 2 3)"
   (spawn (concat-loop s1 s2)))
 
 (defn- concat-loop (s1 s2)
@@ -418,7 +418,7 @@ The last vector may be shorter if the source isn't a multiple of `n`.
 (trailing `\\r\\n` or `\\n` stripped). The final non-empty buffer fragment
 after EOF is emitted as a last line (for streams without a trailing newline).
 
-    (stream/->list (stream/lines (stream/list-> [\"a\\nb\" \"c\\r\\nd\"])))   → (\"a\" \"bc\" \"d\")"
+    (stream/->list (stream/lines (stream/list-> [\"a\\nb\" \"c\\r\\nd\"])))   ;=> (\"a\" \"bc\" \"d\")"
   (spawn (lines-outer s "" ())))
 
 ;; `buf` is the incomplete trailing fragment; `pending` the complete lines already split
@@ -478,7 +478,7 @@ after EOF is emitted as a last line (for streams without a trailing newline).
   "Reduce stream `s` with `f` (a `(fn (acc v) → new-acc)`) starting from `init`.
 Raises on a stream error.
 
-    (stream/fold (stream/range 1 5) 0 +)   → 10"
+    (stream/fold (stream/range 1 5) 0 +)   ;=> 10"
   (%fold-loop f init s))
 
 (defn- %fold-loop (f acc s)
@@ -490,7 +490,7 @@ Raises on a stream error.
 (defn ->list (s)
   "Collect all elements of `s` into a list.
 
-    (stream/->list (stream/range 0 3))   → (0 1 2)"
+    (stream/->list (stream/range 0 3))   ;=> (0 1 2)"
   (reverse (collect-loop s nil)))
 
 (defn- collect-loop (s acc)
@@ -502,13 +502,13 @@ Raises on a stream error.
 (defn ->vector (s)
   "Collect all elements of `s` into a vector.
 
-    (stream/->vector (stream/range 0 3))   → [0 1 2]"
+    (stream/->vector (stream/range 0 3))   ;=> [0 1 2]"
   (into [] (->list s)))
 
 (defn for-each (s f)
   "Apply `f` to each element of `s` for side effects. Returns nil.
 
-    (stream/for-each (stream/range 0 3) (fn (_) nil))   → nil"
+    (stream/for-each (stream/range 0 3) (fn (_) nil))   ;=> nil"
   (match (next s)
     (:done nil)
     ([:ok v] (do (f v) (for-each s f)))
@@ -517,14 +517,14 @@ Raises on a stream error.
 (defn count (s)
   "Count the elements in `s`, consuming it.
 
-    (stream/count (stream/range 0 42))   → 42"
+    (stream/count (stream/range 0 42))   ;=> 42"
   (fold s 0 (fn (n _) (+ n 1))))
 
 (defn pipe (src sink)
   "Drain stream `src`, sending each value as `[:stream-data v]` to process `sink`,
 then `:stream-eof` when done (or `[:stream-err msg]` + `:stream-eof` on error).
 
-    (stream/pipe (stream/range 0 3) consumer-pid)   ;=> consumer-pid gets [:stream-data 0] … [:stream-data 2], then :stream-eof"
+    (stream/pipe (stream/range 0 3) consumer-pid)   ;~> consumer-pid gets [:stream-data 0] … [:stream-data 2], then :stream-eof"
   (pipe-loop src sink))
 
 (defn- pipe-loop (src sink)
@@ -536,12 +536,12 @@ then `:stream-eof` when done (or `[:stream-err msg]` + `:stream-eof` on error).
 (defn ->socket (s sock)
   "Drain stream `s`, writing each chunk to `sock` with `tcp/send`. Returns nil.
 
-    (stream/->socket (stream/socket-> upstream) sock)   ;=> nil, once every chunk is written to sock"
+    (stream/->socket (stream/socket-> upstream) sock)   ;~> nil, once every chunk is written to sock"
   (for-each s (fn (chunk) (tcp/send sock chunk))))
 
 ;; (restored: this is stream's take-while, not the sequence one)
 (defn take-while (s pred)
   "A stream yielding elements from `s` while `(pred element)` is true.
 
-    (stream/->list (stream/take-while (stream/range 0 100) (fn (n) (< n 3))))   → (0 1 2)"
+    (stream/->list (stream/take-while (stream/range 0 100) (fn (n) (< n 3))))   ;=> (0 1 2)"
   (spawn (take-while-loop pred s)))

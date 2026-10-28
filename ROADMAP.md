@@ -97,10 +97,37 @@ another Lisp has it.
   - language.md taught provided ops and `:requires` with an `Ord` ability, while the real
     `Ord` is a multimethod. The examples now use `Priority`/`Named` (not `Rank`: `std`
     ships `Ranked`).
-- ⬜ **A drift gate for argument order in docs.** This drift survived ADR-308's sweep
-  because prose examples are not executed; only `form → result` docstrings are
-  (`tests/doc_examples_test.blsp`). Decide whether language.md's fenced examples should run
-  too, or at least go through `nest check`.
+- 🟡 **A drift gate for argument order in docs.** This drift survived ADR-308's sweep
+  because prose examples are not executed; only docstring examples are
+  (`tests/doc_examples_test.blsp`). Decided 2026-10-28: fenced markdown examples are
+  **executed, opt-out** (a ```` ```clojure fragment ```` block is skipped). The docs to check
+  are configurable per project, and for Brood that is every doc except ADRs, the devlog and
+  the archive. The check runs on demand (`nest doctest`), not on every test run.
+  1. ✅ **One engine, one marker (2026-10-28).** There were two engines with opposite
+     conventions. `nest test` (via `std/tool/doctest`) treated `form → result` as a case
+     and `form ;=> result` as an unevaluated illustration. `nest doctest` (a collector in
+     `docs.blsp`) *evaluated* `;=>`, and its expected side too. Now `std/tool/doctest` is
+     the only engine:
+     - `form ;=> result` is a case: the result is a comment, so the line stays pasteable
+       Brood, the shape a markdown block needs;
+     - `form ;~> result` is an illustration;
+     - an indented `→` is reported as an old marker.
+  2. ✅ **The sweep.** Every std and Rust builtin docstring and the generated `defrecord`
+     docs, done by a one-shot converter. Doctest over the std image: 0 failures across 2,029
+     documented names.
+  3. ⬜ Markdown: each fenced block runs as one isolated session, `;=>`/`;~>` per line.
+  4. ⬜ `:doc-paths` in `project.blsp`.
+  5. ⬜ Triage Brood's docs.
+  6. ⬜ ADR, `docs/tooling.md`, devlog.
+- ⬜ **Docstring examples run outside their module.** An example is evaluated at the top
+  level, not in the namespace of the name it documents. So in a project's
+  `(defmodule lies)`, the example `(two) ;=> 2` fails as `unbound symbol: two`, and the
+  author has to write `(demo/lies/two)`. Std hides this because its examples are qualified
+  by habit (`(string/trim …)`). A reader expects the examples in a module's docs to read
+  the way code in that module does. Decide whether an example is evaluated in its owner's
+  namespace. That needs an "evaluate in module M" capability the evaluator does not have;
+  `%eval-in` takes locals, not a module. The same question applies to markdown blocks (step 3
+  above): what namespace does a block run in?
 
 #### B. Design problems — decide, then fix
 

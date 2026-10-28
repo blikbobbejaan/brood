@@ -139,7 +139,7 @@ dropped, so the result stays non-overlapping."
   "The spans for one `line` at offset `base`, ascending and non-overlapping: the
 tokens (structured and classified words, one scan) and the line rules, merged.
 
-    (editor/lexer/lexer-line-spans (editor/lexer/lexer-grammar {:structured [[\"#.*\" :comment]]}) \"x # y\" 10 {:comment {:fg :grey}})   → ([12 15 {:fg :grey}])"
+    (editor/lexer/lexer-line-spans (editor/lexer/lexer-grammar {:structured [[\"#.*\" :comment]]}) \"x # y\" 10 {:comment {:fg :grey}})   ;=> ([12 15 {:fg :grey}])"
   (let (tokens (lexer-tokens grammar line faces)
         rules (lexer-line-rules grammar line faces)
         merged (reverse (lexer-merge tokens rules '())))
@@ -161,7 +161,7 @@ newline, `base` its character offset in `src`. The walk every line-oriented mode
 `line-spans` returns that line's `[start end face]` spans already offset by `base`, and
 the result is the whole source's spans in order.
 
-    (editor/lexer/lexer-walk-lines \"ab\\ncd\" (fn (line base) (list [base (+ base 1) :x])))   → ([0 1 :x] [3 4 :x])"
+    (editor/lexer/lexer-walk-lines \"ab\\ncd\" (fn (line base) (list [base (+ base 1) :x])))   ;=> ([0 1 :x] [3 4 :x])"
   (lexer-walk src 0 (string/length src) line-spans '()))
 
 (defn lexer-spans (grammar:map src:string -> any)
@@ -169,7 +169,7 @@ the result is the whole source's spans in order.
 colour spans — character offsets, end-exclusive, ascending, non-overlapping — the
 `highlight-spans` shape an editor's `:fontify` service returns.
 
-    (map (editor/lexer/lexer-spans (editor/lexer/lexer-grammar {:structured [[\"#.*\" :comment]]}) \"x # y\") (fn ([s e _]) [s e]))   → ([2 5])"
+    (map (editor/lexer/lexer-spans (editor/lexer/lexer-grammar {:structured [[\"#.*\" :comment]]}) \"x # y\") (fn ([s e _]) [s e]))   ;=> ([2 5])"
   (let (faces (lexer-faces))
     (lexer-walk-lines src (fn (line base) (lexer-line-spans grammar line base faces)))))
 
@@ -180,6 +180,6 @@ them as a memo on the line's text, and a pane lexes only the lines that changed.
 are resolved when this is built, so build it again (and start a fresh `line-cache`) when
 the theme changes.
 
-    (:stateless? (editor/lexer/lexer-line-lexer (editor/lexer/lexer-grammar {:structured [[\"#.*\" :comment]]})))   → true"
+    (:stateless? (editor/lexer/lexer-line-lexer (editor/lexer/lexer-grammar {:structured [[\"#.*\" :comment]]})))   ;=> true"
   (let (faces (lexer-faces))
     (editor/highlight/stateless-lexer (fn (line) (lexer-line-spans grammar line 0 faces)))))

@@ -48,14 +48,14 @@ columns are 0-based character cells.")
 (defn clear ()
   "A render op that clears the whole screen.
 
-    (editor/display/clear)   → [:clear]"
+    (editor/display/clear)   ;=> [:clear]"
   [:clear])
 
 (defn text (row col s &optional (face nil))
   "A render op drawing string `s` at (`row`, `col`) (0-based cells), optionally
 styled by `face` (a map like `{:fg :red :bold true}`).
 
-    (editor/display/text 0 0 \"hi\")   → [:text 0 0 \"hi\"]"
+    (editor/display/text 0 0 \"hi\")   ;=> [:text 0 0 \"hi\"]"
   (if (nil? face)
     [:text row col s]
     [:text row col s face]))
@@ -73,10 +73,10 @@ it. With `blink` (a `cursor-blink` map) the GUI window blinks the caret ITSELF, 
 frames: the app draws it once and no turn of its loop runs per toggle (ADR-469). With
 none it's `[:cursor row col]`, unchanged (a block caret).
 
-    (editor/display/cursor 1 2)   → [:cursor 1 2]
-    (editor/display/cursor 1 2 :hollow)   → [:cursor 1 2 :hollow]
-    (editor/display/cursor 1 2 nil :red)   → [:cursor 1 2 nil :red]
-    (editor/display/cursor 1 2 :bar nil {:interval 530 :blinks 10})   → [:cursor 1 2 :bar nil {:interval 530 :blinks 10}]"
+    (editor/display/cursor 1 2)   ;=> [:cursor 1 2]
+    (editor/display/cursor 1 2 :hollow)   ;=> [:cursor 1 2 :hollow]
+    (editor/display/cursor 1 2 nil :red)   ;=> [:cursor 1 2 nil :red]
+    (editor/display/cursor 1 2 :bar nil {:interval 530 :blinks 10})   ;=> [:cursor 1 2 :bar nil {:interval 530 :blinks 10}]"
   (cond
     (not (nil? blink)) [:cursor row col style color blink]
     (not (nil? color)) [:cursor row col style color]
@@ -91,7 +91,7 @@ blink, shown, on every key, click and wheel step it sees and on every frame that
 caret, and holds it shown while it lacks focus; a toggle repaints the caret's row, not the
 window. The terminal ignores it.
 
-    (editor/display/cursor-blink 530 10)   → {:interval 530 :blinks 10}"
+    (editor/display/cursor-blink 530 10)   ;=> {:interval 530 :blinks 10}"
   {:interval interval :blinks blinks})
 
 (defn cursor-zone (x y w h shape)
@@ -106,7 +106,7 @@ region's cells (a zone in a zoomed pane is sized and placed at the pane's px), a
 inside a `scroll-region` the zone slides with the ops around it. The frontend resolves
 each zone to pixels once per frame, so a zone means the same thing wherever it sits.
 
-    (editor/display/cursor-zone 0 0 1 10 :col-resize)   → [:cursor-zone 0 0 1 10 :col-resize]"
+    (editor/display/cursor-zone 0 0 1 10 :col-resize)   ;=> [:cursor-zone 0 0 1 10 :col-resize]"
   [:cursor-zone x y w h shape])
 
 (defn rect (row col w h face &optional (radius 0.0))
@@ -126,8 +126,8 @@ rather than an `frect` for the window plus a `rect` inside it for the terminal.
 Use `(/ h 2)`-ish for a pill. A zero radius emits the 5-element op unchanged, so
 existing frames are byte-identical.
 
-    (editor/display/rect 1 2 3 4 {:bg :blue})   → [:rect 1 2 3 4 {:bg :blue}]
-    (editor/display/rect 1 2 3 4 nil 0.5)       → [:rect 1 2 3 4 nil 0.5]"
+    (editor/display/rect 1 2 3 4 {:bg :blue})   ;=> [:rect 1 2 3 4 {:bg :blue}]
+    (editor/display/rect 1 2 3 4 nil 0.5)       ;=> [:rect 1 2 3 4 nil 0.5]"
   (if (= radius 0.0)
     [:rect row col w h face]
     [:rect row col w h face radius]))
@@ -139,7 +139,7 @@ this region are not affected and no reset sentinel is needed. `ops` is a flat ve
 render ops (built with `into []`). Regions may be nested (inner overrides outer). GUI-only —
 the terminal frontend flattens the inner ops and ignores the offset. ADR-114.
 
-    (editor/display/scroll-region 0.5 [])   → [:scroll-region 0.5 []]"
+    (editor/display/scroll-region 0.5 [])   ;=> [:scroll-region 0.5 []]"
   [:scroll-region dy-frac ops])
 
 (defn cell-region (x y w h px ops)
@@ -159,7 +159,7 @@ and self-restoring like `scroll-region`, and regions nest (an inner one wins). G
 terminal frontend SKIPS it (like `frect` and `vspans`): a terminal cell is whatever the
 terminal says it is, and flattening the ops would paint them in the wrong place.
 
-    (editor/display/cell-region 0 4 40 6 21 [[:text 0 0 \"big\"]])   → [:cell-region 0 4 40 6 21 [[:text 0 0 \"big\"]]]"
+    (editor/display/cell-region 0 4 40 6 21 [[:text 0 0 \"big\"]])   ;=> [:cell-region 0 4 40 6 21 [[:text 0 0 \"big\"]]]"
   [:cell-region x y w h px ops])
 
 (defn frect (x y w h face &optional (opacity 1.0) (radius 0.0))
@@ -172,7 +172,7 @@ rounds the corners. `face`'s `:bg` (or `:fg` under `:reverse`) is the fill colou
 The primitive a smooth scrollbar thumb / slider / progress bar wants. GUI-only — the
 terminal frontend skips it (like `vspans`).
 
-    (editor/display/frect 0.5 1.0 2.0 1.0 nil)   → [:frect 0.5 1.0 2.0 1.0 nil 1.0 0.0]"
+    (editor/display/frect 0.5 1.0 2.0 1.0 nil)   ;=> [:frect 0.5 1.0 2.0 1.0 nil 1.0 0.0]"
   [:frect x y w h face opacity radius])
 
 (defn bar (row width s &optional (opts {}))
@@ -192,8 +192,8 @@ shape `std/observer` draws by hand. Returns one `text` op.
     (bar 0 cols \" file.blsp        UTF-8  L1\" {:face (face :ui/header)})
     (bar (dec rows) cols msg {:face {:bg :blue :fg :white} :align :center})
 
-    (editor/display/bar 0 6 \"ab\")                   → [:text 0 0 \"ab    \"]
-    (editor/display/bar 0 6 \"ab\" {:align :right})   → [:text 0 0 \"    ab\"]"
+    (editor/display/bar 0 6 \"ab\")                   ;=> [:text 0 0 \"ab    \"]
+    (editor/display/bar 0 6 \"ab\" {:align :right})   ;=> [:text 0 0 \"    ab\"]"
   (let (scale (math/max 1 (get opts :scale 1))
         cells (math/max 1 (math/quot width scale)))
     (text row
@@ -221,7 +221,7 @@ shape `std/observer` draws by hand. Returns one `text` op.
   "Collect render ops into a frame (a vector), dropping any `nil` ops so callers
 can splice in conditional ops inline. Pass the result to a frontend (`term/draw`).
 
-    (count (editor/display/frame (editor/display/clear)))   → 1"
+    (count (editor/display/frame (editor/display/clear)))   ;=> 1"
   (into [] (seq/filter ops (fn (o) (not (nil? o))))))
 
 ;; The ops a window acts on ONCE, when the frame carrying them arrives, rather than
@@ -237,8 +237,8 @@ frame to paint a newer one (a thin client behind its daemon, ADR-492) carries th
 the frame it paints, so skipping it costs a paint and never a sound; `[:music …]` and
 `[:emitter …]` are state the newer frame restates, and are not here.
 
-    (editor/display/frame-one-shots [[:clear] [:sound 3 0.5] [:text 0 0 \"x\"]])   → [[:sound 3 0.5]]
-    (editor/display/frame-one-shots [[:scroll-region 0 0 [[:burst 1 10]]] [:music 2]])   → [[:burst 1 10]]"
+    (editor/display/frame-one-shots [[:clear] [:sound 3 0.5] [:text 0 0 \"x\"]])   ;=> [[:sound 3 0.5]]
+    (editor/display/frame-one-shots [[:scroll-region 0 0 [[:burst 1 10]]] [:music 2]])   ;=> [[:burst 1 10]]"
   (fold frame [] frame-one-shots-into))
 
 (defn- frame-one-shots-into (found op)
@@ -262,8 +262,8 @@ tagged with `id` — any value the caller keys off when the pointer hits it (a s
 command symbol, a payload map). `cursor`, when given, is the pointer shape to request while
 hovered (rendered via `zone-cursor-ops`, as a `cursor-zone`). Pure data.
 
-    (:rect (editor/display/zone [0 0 4 1] :save))              → [0 0 4 1]
-    (:cursor (editor/display/zone [0 0 4 1] :save :pointer))   → :pointer"
+    (:rect (editor/display/zone [0 0 4 1] :save))              ;=> [0 0 4 1]
+    (:cursor (editor/display/zone [0 0 4 1] :save :pointer))   ;=> :pointer"
   {:rect rect :id id :cursor cursor})
 
 (defn zone-at (zones col row)
@@ -272,8 +272,8 @@ the **last** match, so a zone painted later (visually on top) shadows an earlier
 overlaps — matching paint order. The model calls this on pointer-move (to find the hovered
 zone) and on click (to find the target).
 
-    (get (editor/display/zone-at [(editor/display/zone [0 0 10 1] :bar) (editor/display/zone [2 0 3 1] :btn)] 3 0) :id)   → :btn
-    (editor/display/zone-at [(editor/display/zone [0 0 10 1] :bar)] 3 5)   → nil"
+    (get (editor/display/zone-at [(editor/display/zone [0 0 10 1] :bar) (editor/display/zone [2 0 3 1] :btn)] 3 0) :id)   ;=> :btn
+    (editor/display/zone-at [(editor/display/zone [0 0 10 1] :bar)] 3 5)   ;=> nil"
   (fold zones
     nil
     (fn (hit z)
@@ -287,7 +287,7 @@ zone) and on click (to find the target).
 the one zone list the model hit-tests also drives the frontend's pointer shape. Zones with
 no `:cursor` contribute nothing.
 
-    (editor/display/zone-cursor-ops [(editor/display/zone [0 0 4 1] :link :pointer) (editor/display/zone [5 0 2 1] :plain)])   → ([:cursor-zone 0 0 4 1 :pointer])"
+    (editor/display/zone-cursor-ops [(editor/display/zone [0 0 4 1] :link :pointer) (editor/display/zone [5 0 2 1] :plain)])   ;=> ([:cursor-zone 0 0 4 1 :pointer])"
   (map (seq/filter zones :cursor)
     (fn (z) (let ([x y w h] (get z :rect)) (cursor-zone x y w h (get z :cursor))))))
 
@@ -316,7 +316,7 @@ non-number where a number belongs. Written as comparisons the type follows the v
 so the whole card stays on the `cols`×`rows` screen. Shared by a card's renderer and any
 click/hover hit-test, so a card near a screen edge stays interactive exactly where drawn.
 
-    (editor/display/card-rect 20 75 10 4 80 24)   → [20 70]"
+    (editor/display/card-rect 20 75 10 4 80 24)   ;=> [20 70]"
   [(clamp-cell row (- rows h)) (clamp-cell col (- cols w))])
 
 (defn card-surface (row col w h face &optional (gui? false) (opts {}))
@@ -327,7 +327,7 @@ hairline as a slightly larger border-coloured `frect` drawn behind the surface (
 edge, not a shadow). The terminal falls back to a flat `rect` (no radius, no border). Content
 is drawn by the caller on top.
 
-    (editor/display/card-surface 1 2 10 3 nil)   → ([:rect 1 2 10 3 nil])"
+    (editor/display/card-surface 1 2 10 3 nil)   ;=> ([:rect 1 2 10 3 nil])"
   (let (radius (get opts :radius 0.5)
         border (get opts :border))
     (if gui?
@@ -342,7 +342,7 @@ is drawn by the caller on top.
 `(row, col)` spanning `w` cells, inset slightly so it floats within the card's padding.
 GUI-only (the flat/terminal card highlights the selected row with a solid face instead).
 
-    (editor/display/card-pill 2 3 10 nil)   → [:frect 3.2 2.08 9.6 0.84 nil 1.0 0.35]"
+    (editor/display/card-pill 2 3 10 nil)   ;=> [:frect 3.2 2.08 9.6 0.84 nil 1.0 0.35]"
   (frect (+ 0.2 col) (+ 0.08 row) (- w 0.4) 0.84 face 1.0 (get opts :radius 0.35)))
 
 (defn tooltip (anchor-row anchor-col lines face fg cols rows &optional (gui? false) (opts {}))
@@ -353,7 +353,7 @@ widest line plus one cell of padding each side; `face` fills the surface, `fg` s
 text, and `opts` forwards `:border`/`:radius` to `card-surface`. GUI rounds the card; the
 terminal draws a flat panel.
 
-    (editor/display/tooltip 5 10 [\"hi\"] :popup :fg 80 24)   → ([:rect 4 10 4 1 :popup] [:text 4 10 \" hi \" :fg])"
+    (editor/display/tooltip 5 10 [\"hi\"] :popup :fg 80 24)   ;=> ([:rect 4 10 4 1 :popup] [:text 4 10 \" hi \" :fg])"
   (let (n (count lines)
         w (+ 2 (fold lines 0 (fn (m s) (math/max m (string/length s)))))
         [mr mc] (card-rect (- anchor-row n) anchor-col w n cols rows))

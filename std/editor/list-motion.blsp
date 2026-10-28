@@ -29,18 +29,18 @@ row index — next and previous wrap, first and last are the ends.")
   "The list motion editor `key` means — `:next`, `:previous`, `:first` or `:last` — or nil
 when it is not one.
 
-    (editor/list-motion/motion-of :ctrl-n)   → :next
-    (editor/list-motion/motion-of \"x\")     → nil"
+    (editor/list-motion/motion-of :ctrl-n)   ;=> :next
+    (editor/list-motion/motion-of \"x\")     ;=> nil"
   (get motion-keys key))
 
 (defn motion-index (index:int size:int motion:any -> int)
   "The row `motion` moves a selection at `index` to, in a list of `size` rows: `:next` and
 `:previous` wrap around, `:first` and `:last` are the ends. An empty list has only row 0.
 
-    (editor/list-motion/motion-index 2 3 :next)       → 0
-    (editor/list-motion/motion-index 0 3 :previous)   → 2
-    (editor/list-motion/motion-index 1 3 :last)       → 2
-    (editor/list-motion/motion-index 0 0 :next)       → 0"
+    (editor/list-motion/motion-index 2 3 :next)       ;=> 0
+    (editor/list-motion/motion-index 0 3 :previous)   ;=> 2
+    (editor/list-motion/motion-index 1 3 :last)       ;=> 2
+    (editor/list-motion/motion-index 0 0 :next)       ;=> 0"
   (if (<= size 0)
     0
     (case motion

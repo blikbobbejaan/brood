@@ -39,7 +39,7 @@
   `Content-Encoding: gzip` wire format. Optional `level` is 0-9 (0 = store, 9 = best; default
   6). Inverse: `gunzip`.
 
-    (bytes/at (zlib/gzip \"x\") 0)   → 31    ; 0x1f, the gzip magic byte"
+    (bytes/at (zlib/gzip \"x\") 0)   ;=> 31    ; 0x1f, the gzip magic byte"
   (if (nil? level) (%gzip (as-bytes data)) (%gzip (as-bytes data) level)))
 
 (defn gunzip (data &optional max-bytes)
@@ -48,7 +48,7 @@
   expand to gigabytes, so name a smaller cap for untrusted data or a larger one for big
   trusted payloads.
 
-    (string/bytes-> (zlib/gunzip (zlib/gzip \"hello\")))   → \"hello\""
+    (string/bytes-> (zlib/gunzip (zlib/gzip \"hello\")))   ;=> \"hello\""
   (%gunzip data max-bytes))
 
 ;; ---- zlib (RFC 1950) — 2-byte header + Adler-32 checksum ----
@@ -57,14 +57,14 @@
   "zlib-compress `data` (a string or byte sequence), returned as `bytes`. Optional `level` is
   0-9 (default 6). Inverse: `uncompress`.
 
-    (bytes/at (zlib/compress \"x\") 0)   → 120   ; 0x78, the zlib header"
+    (bytes/at (zlib/compress \"x\") 0)   ;=> 120   ; 0x78, the zlib header"
   (if (nil? level) (%zlib-compress (as-bytes data)) (%zlib-compress (as-bytes data) level)))
 
 (defn uncompress (data &optional max-bytes)
   "Decompress zlib `bytes` to a `bytes` value. Raises on invalid data, and on output past
   `max-bytes` (default 1 GiB; see `gunzip`).
 
-    (string/bytes-> (zlib/uncompress (zlib/compress \"hello\")))   → \"hello\""
+    (string/bytes-> (zlib/uncompress (zlib/compress \"hello\")))   ;=> \"hello\""
   (%zlib-uncompress data max-bytes))
 
 ;; ---- raw deflate (RFC 1951) — no header or checksum ----
@@ -73,7 +73,7 @@
   "Decompress raw-DEFLATE `bytes` to a `bytes` value. Raises on invalid data, and on output
   past `max-bytes` (default 1 GiB; see `gunzip`).
 
-    (string/bytes-> (zlib/unzip (zlib/zip \"hello\" 9)))   → \"hello\""
+    (string/bytes-> (zlib/unzip (zlib/zip \"hello\" 9)))   ;=> \"hello\""
   (%inflate data max-bytes))
 
 ;; ---- brotli (RFC 7932) — the HTTP `Content-Encoding: br` format ----
@@ -83,14 +83,14 @@
   `Content-Encoding: br` wire format, which beats gzip on text. Optional `quality` is 0-11
   (0 = fastest, 11 = best; default 5). Inverse: `unbrotli`.
 
-    (< (count (zlib/brotli (string/repeat \"ab\" 1000))) 100)   → true"
+    (< (count (zlib/brotli (string/repeat \"ab\" 1000))) 100)   ;=> true"
   (if (nil? quality) (%brotli (as-bytes data)) (%brotli (as-bytes data) quality)))
 
 (defn unbrotli (data &optional max-bytes)
   "Decompress brotli `bytes` back to a `bytes` value. Raises on data that isn't valid brotli,
   and on output past `max-bytes` (default 1 GiB; see `gunzip`).
 
-    (string/bytes-> (zlib/unbrotli (zlib/brotli \"hello\")))   → \"hello\""
+    (string/bytes-> (zlib/unbrotli (zlib/brotli \"hello\")))   ;=> \"hello\""
   (%unbrotli data max-bytes))
 
 ;; (restored: this is zlib's zip — compression, not the sequence pairing)
@@ -98,5 +98,5 @@
   "Raw-DEFLATE-compress `data` (a string or byte sequence), returned as `bytes` — no
   gzip/zlib header or checksum. Optional `level` is 0-9 (default 6). Inverse: `unzip`.
 
-    (string/bytes-> (zlib/unzip (zlib/zip \"hello\")))   → \"hello\""
+    (string/bytes-> (zlib/unzip (zlib/zip \"hello\")))   ;=> \"hello\""
   (if (nil? level) (%deflate (as-bytes data)) (%deflate (as-bytes data) level)))

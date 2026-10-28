@@ -17,32 +17,32 @@
 (defn name (-> (or symbol keyword))
   "This runtime's node name (:nonode until node/start).
 
-    (node/name)   ;=> e.g. :ed@host, or :nonode before `node/start`"
+    (node/name)   ;~> e.g. :ed@host, or :nonode before `node/start`"
   (%node-name))
 
 (defn list (-> (list (or symbol keyword)))
   "A list of currently connected peer node names.
 
-    (node/list)   ;=> the connected peers, e.g. (:ed@host), or nil"
+    (node/list)   ;~> the connected peers, e.g. (:ed@host), or nil"
   (%nodes))
 
 (defn disconnect (nm)
   "Tear down the link to peer node `nm` now, without exiting this process — fires [:nodedown nm] on both sides and prunes `nm` from (node/list). Returns true if a link existed, false otherwise. Use it to leave a node/cluster cleanly while staying alive.
 
-    (node/disconnect :ed@host)   ;=> true if a link existed"
+    (node/disconnect :ed@host)   ;~> true if a link existed"
   (%disconnect nm))
 
 (defn monitor (nm: (or symbol keyword) -> keyword)
   "Get [:nodedown nm] when the link to node `nm` goes down (heartbeat timeout or close).
   Returns the node's name, as a keyword.
 
-    (node/monitor :ed@host)   ;=> :ed@host — `[:nodedown :ed@host]` arrives if the link drops"
+    (node/monitor :ed@host)   ;~> :ed@host — `[:nodedown :ed@host]` arrives if the link drops"
   (%monitor-node nm))
 
 (defn demonitor (nm)
   "Cancel this process's node monitor for node `nm` (undo node/monitor); a no-op if none is registered. Returns nil.
 
-    (node/demonitor :ed@host)   ;=> nil"
+    (node/demonitor :ed@host)   ;~> nil"
   (%demonitor-node nm))
 
 ;; A long-lived `:remote-spawn` server: the receiver-side machinery behind the
@@ -63,7 +63,7 @@
 (defn serve-spawns ()
   "Idempotently start + register the local `:remote-spawn` server so peers can `(node/spawn this-node …)` against this node. Safe to call multiple times — only the first call spawns a server. Typically called once at startup, after `(node/start …)`.
 
-    (node/serve-spawns)   ;=> the `:remote-spawn` server's pid"
+    (node/serve-spawns)   ;~> the `:remote-spawn` server's pid"
   (when (nil? (proc/whereis :remote-spawn))
     (proc/register :remote-spawn (/spawn (remote-spawn-server))))
   nil)
@@ -173,7 +173,7 @@ same-machine case; `(node/start name \"host:port\")` listens over TCP for remote
 peers. The cookie defaults to `(node/cookie)`. Returns the qualified node name.
 Errors if this runtime is already a node.
 
-    (node/start :ed \"0.0.0.0:9001\")   ;=> the qualified node name, ed@0.0.0.0"
+    (node/start :ed \"0.0.0.0:9001\")   ;~> the qualified node name, ed@0.0.0.0"
   (%node-listen (node-qualify nm addr)
     (if (nil? addr)
       (str "unix:" (node-socket-path (node-name-part (->string nm))))
@@ -188,7 +188,7 @@ authenticated with this runtime's `(node/cookie)`. Returns the peer's authoritat
 (`{:name … :node <that>}`), not a bare literal. This runtime must already be a
 node — call `(node/start …)` first.
 
-    (node/connect \"ed@host:9001\")   ;=> the peer's qualified node name, ed@host"
+    (node/connect \"ed@host:9001\")   ;~> the peer's qualified node name, ed@host"
   (when (not (string? spec))
     (error "node/connect: expected a node name string (\"name\" or \"name@host:port\"), got "
       (pr-str spec)))
@@ -220,7 +220,7 @@ shape behind a local+remote editor daemon — e.g. `(node/start :ed@host
 locally and `(node/connect \"ed@host:9001\")` from another machine. Errors if this
 runtime isn't a node yet.
 
-    (node/also-listen \"0.0.0.0:9001\")   ;=> this node now also accepts TCP peers on port 9001"
+    (node/also-listen \"0.0.0.0:9001\")   ;~> this node now also accepts TCP peers on port 9001"
   (when (= (name) :nonode)
     (error "node/also-listen: this runtime is not a node yet — call (node/start name) first"))
   (%node-also-listen (if (nil? addr)
@@ -236,7 +236,7 @@ code — a message holding a function is dropped. `(:as opts)` names who the gue
 back with `peer-grant` (a server's answer to \"who is this?\" that the client cannot
 choose). The guest's side is an ordinary node started with `cookie`. Returns `cookie`.
 
-    (node/grant-guest \"a-long-random-session-cookie\" {:names [:docs]})   → \"a-long-random-session-cookie\""
+    (node/grant-guest \"a-long-random-session-cookie\" {:names [:docs]})   ;=> \"a-long-random-session-cookie\""
   (%node-grant-guest cookie (vec (or (:names opts) [])) (:as opts))
   cookie)
 
@@ -244,7 +244,7 @@ choose). The guest's side is an ordinary node started with `cookie`. Returns `co
   "Stop accepting `cookie` from new guests; true when it was granted. A guest already
 connected under it stays connected until `disconnect`.
 
-    (node/revoke-guest \"never-granted\")   → false"
+    (node/revoke-guest \"never-granted\")   ;=> false"
   (%node-revoke-guest cookie))
 
 (defn peer-grant (peer:any -> (or nil map))
@@ -253,5 +253,5 @@ or nil for a full peer (or none). `peer` is a node name or a pid on that node. A
 is known here by a name this node minted (`guest~…`, ADR-425), never the one it gave
 itself; `:claimed` is that one, for showing a person.
 
-    (node/peer-grant :nobody@nowhere)   → nil"
+    (node/peer-grant :nobody@nowhere)   ;=> nil"
   (%node-peer-grant peer))

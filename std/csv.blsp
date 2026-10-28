@@ -63,7 +63,7 @@ escaped quote inside a quoted field, and both `\\n` and `\\r\\n` line endings.
 An empty string returns an empty list. Malformed input — a quoted field that never
 closes, or anything but a separator after a closing quote — **raises**.
 
-    (csv/decode \"a,b\n1,2\")   → ([\"a\" \"b\"] [\"1\" \"2\"])"
+    (csv/decode \"a,b\n1,2\")   ;=> ([\"a\" \"b\"] [\"1\" \"2\"])"
   (let (chars (into [] (string/->list s)))
     (parse chars 0 (count chars) :unquoted nil [] nil)))
 
@@ -94,7 +94,7 @@ display form).
 Fields containing commas, quotes, or newlines are quoted; interior quotes are
 doubled. Rows are separated by `\\n`.
 
-    (csv/encode [[\"a\" \"b\"]])   → \"a,b\""
+    (csv/encode [[\"a\" \"b\"]])   ;=> \"a,b\""
   (string/join (map rows (fn (row) (string/join (map row emit-field) ","))) "\n"))
 
 (defn- cell (m h)
@@ -108,5 +108,5 @@ doubled. Rows are separated by `\\n`.
   "Serialize a list of maps to CSV, with the given `headers` list determining
 column order. The header row is written first. Missing keys produce empty fields.
 
-    (csv/encode-maps (list {:a 1 :b \"x\"} {:a 2}) [\"a\" \"b\"])   → \"a,b\\n1,x\\n2,\""
+    (csv/encode-maps (list {:a 1 :b \"x\"} {:a 2}) [\"a\" \"b\"])   ;=> \"a,b\\n1,x\\n2,\""
   (encode (cons headers (map maps (fn (m) (map headers (fn (h) (cell m h))))))))

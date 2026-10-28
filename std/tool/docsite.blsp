@@ -71,7 +71,7 @@
 `[[` with no `]]`, a bracketed run with a space in it (a literal vector of vectors), and a
 name `render` returns nil for are left exactly as written. Nil `text` is returned as is.
 
-    (docsite/render-refs \"see [[map]], [[x y]]\" (fn (name) (str \"<\" name \">\")))   → \"see <map>, [[x y]]\""
+    (docsite/render-refs \"see [[map]], [[x y]]\" (fn (name) (str \"<\" name \">\")))   ;=> \"see <map>, [[x y]]\""
   (let (parts (if (nil? text) nil (string/split text "[[")))
     (if (< (count parts) 2)
       text
@@ -127,8 +127,8 @@ result and the cited name stays escaped."
   `[[mod/name]]` form links (the bare one is left as written rather than pointed at an anchor
   that would not exist).
 
-    (docsite/prose \"Hello **world**\")  → \"<p>Hello <strong>world</strong></p>\"
-    (docsite/prose nil)                → \"\""
+    (docsite/prose \"Hello **world**\")  ;=> \"<p>Hello <strong>world</strong></p>\"
+    (docsite/prose nil)                ;=> \"\""
   (if (or (nil? text) (= (string/trim (str text)) ""))
     ""
     (doclinks-outside-code (markdown/->html (str text) {:code-indent 1}) module-name)))
@@ -139,7 +139,7 @@ result and the cited name stays escaped."
 (defn module-anchor (module-name)
   "The HTML anchor id for `module-name`'s section (`m-<slug>`).
 
-    (docsite/module-anchor \"string\")  → \"m-string\""
+    (docsite/module-anchor \"string\")  ;=> \"m-string\""
   (str "m-" (slug module-name)))
 ;; An anchor is built from a definition NAME, and a name is whatever the source called it —
 ;; Brood symbols admit `&`, `<` and `>`, so an anchor can contain them. Every site that puts
@@ -150,7 +150,7 @@ result and the cited name stays escaped."
 (defn def-anchor (module-name definition-name)
   "The HTML anchor id for a definition within a module (`d-<module>-<name>`).
 
-    (docsite/def-anchor \"string\" \"join\")  → \"d-string-join\""
+    (docsite/def-anchor \"string\" \"join\")  ;=> \"d-string-join\""
   (str "d-" (slug module-name) "-" (slug definition-name)))
 
 ;; ---- one definition ---------------------------------------------------------
@@ -491,7 +491,7 @@ result and the cited name stays escaped."
     fragment, for embedding inside a host page (the CSS/script are the caller's job).
   - `:title` — the `<title>`/page heading; defaults to the model's `:name`.
 
-    (docsite/render (docs/model-project) {:wrap? false :title \"myapp\"})   ;=> \"<div class=\\\"layout\\\">…</div>\""
+    (docsite/render (docs/model-project) {:wrap? false :title \"myapp\"})   ;~> \"<div class=\\\"layout\\\">…</div>\""
   (let (fragment (str "<div class=\"docsite\"><div class=\"layout\">"
                    (content-html model)
                    "</div></div>"))
@@ -535,7 +535,7 @@ result and the cited name stays escaped."
   `prefers-color-scheme` rule: that is the viewer's OS talking, and an embedded fragment
   must follow the page it sits in, not the desktop it is viewed on.
 
-      (includes? (docsite/render-css) \"--docsite-accent\") → true"
+      (includes? (docsite/render-css) \"--docsite-accent\") ;=> true"
   (str (component-vars-css) (component-css)))
 
 (defn render-css-dark ()
@@ -551,7 +551,7 @@ result and the cited name stays escaped."
   the dark styles were reachable only from the standalone page. Only the names that
   actually differ are redefined; the rest inherit from `render-css`.
 
-      (includes? (docsite/render-css-dark) \"--docsite-surface\") → true"
+      (includes? (docsite/render-css-dark) \"--docsite-surface\") ;=> true"
   (str ".docsite{" (component-dark-vars) "}"))
 
 (defn render-js ()
@@ -564,5 +564,5 @@ result and the cited name stays escaped."
   side — the page is complete, correct HTML — which is how the hosted reference came to
   ship an inert search box: `render-css` existed to be called and this had no counterpart.
 
-      (includes? (docsite/render-js) \"docsite-filter\") → true"
+      (includes? (docsite/render-js) \"docsite-filter\") ;=> true"
   (filter-script))

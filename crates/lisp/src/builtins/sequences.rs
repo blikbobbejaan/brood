@@ -20,7 +20,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![any, any], pair),
         &["x", "xs"],
-        "A new pair with head x and tail xs.\n\n    (cons 1 (list 2))   → (1 2)",
+        "A new pair with head x and tail xs.\n\n    (cons 1 (list 2))   ;=> (1 2)",
         cons,
     );
     primitives.def(
@@ -28,21 +28,21 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![seqable], any),
         &["coll"],
-        "The head of any sequence — a list, vector, bytes, set (an element) or map (a [k v] pair) — or nil if empty.\n\n    (first [1 2 3])   → 1\n    (first {:a 1})    → [:a 1]\n    (first [])        → nil",
+        "The head of any sequence — a list, vector, bytes, set (an element) or map (a [k v] pair) — or nil if empty.\n\n    (first [1 2 3])   ;=> 1\n    (first {:a 1})    ;=> [:a 1]\n    (first [])        ;=> nil",
         first);
     primitives.def(
         "rest",
         Arity::exact(1),
         Sig::new(vec![seqable], list_ty),
         &["coll"],
-        "All but the head of any sequence, as a list (a set yields its remaining elements, a map its remaining [k v] pairs). A one-element sequence yields nil, not an empty list.\n\n    (rest [1 2 3])   → (2 3)\n    (rest [1])       → nil",
+        "All but the head of any sequence, as a list (a set yields its remaining elements, a map its remaining [k v] pairs). A one-element sequence yields nil, not an empty list.\n\n    (rest [1 2 3])   ;=> (2 3)\n    (rest [1])       ;=> nil",
         rest);
     primitives.def(
         "nil?",
         Arity::exact(1),
         Sig::new(vec![any], bool_ty),
         &["x"],
-        "True if x is nil.\n\n    (nil? nil)   → true",
+        "True if x is nil.\n\n    (nil? nil)   ;=> true",
         is_nil,
     );
     primitives.def(
@@ -50,7 +50,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], bool_ty),
         &["x"],
-        "True if x is a cons pair.\n\n    (pair? (list 1))   → true",
+        "True if x is a cons pair.\n\n    (pair? (list 1))   ;=> true",
         is_pair,
     );
     primitives.def(
@@ -58,7 +58,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], bool_ty),
         &["coll"],
-        "True if coll is empty (nil, an empty string/vector/map, or a seq-view that realises to nothing).\n\n    (empty? [])   → true",
+        "True if coll is empty (nil, an empty string/vector/map, or a seq-view that realises to nothing).\n\n    (empty? [])   ;=> true",
         is_empty);
     // Lazy reducible range (ADR: reducible range). `%range` constructs it (arg
     // parsing is in the Brood `range`); the fold-family fast paths in the prelude
@@ -78,7 +78,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], bool_ty),
         &["x"],
-        "True if x is a lazy range (as produced by range). Ranges fold/reduce/sum/count without materialising; other ops treat them as the list they stand for.\n\n    (range? (range 3))   → true",
+        "True if x is a lazy range (as produced by range). Ranges fold/reduce/sum/count without materialising; other ops treat them as the list they stand for.\n\n    (range? (range 3))   ;=> true",
         range_pred);
     primitives.def(
         "%range-count",
@@ -149,7 +149,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], bool_ty),
         &["x"],
-        "True if x is a lazy sequence view — the reducible produced by range/map/filter/… before it is realized (into/count/…).\n\n    (seqview? [1 2])   → false",
+        "True if x is a lazy sequence view — the reducible produced by range/map/filter/… before it is realized (into/count/…).\n\n    (seqview? [1 2])   ;=> false",
         seqview_pred);
     // `%sort-asc` is the Rust fast path for the common `(sort coll)` case
     // (ascending by `<`, no custom comparator). Avoids per-comparison Brood
@@ -187,7 +187,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![any, any], int),
         &["a", "b"],
-        "Structural total-order comparison: -1 if a sorts before b, 0 if equal, 1 if after. Numbers numerically; strings/keywords/symbols by text; vectors/lists lexicographically; cross-kind by a stable tag rank. The binary form of `sort`'s order — `sort-by` and custom comparators build on it.\n\n    (compare 1 2)   → -1",
+        "Structural total-order comparison: -1 if a sorts before b, 0 if equal, 1 if after. Numbers numerically; strings/keywords/symbols by text; vectors/lists lexicographically; cross-kind by a stable tag rank. The binary form of `sort`'s order — `sort-by` and custom comparators build on it.\n\n    (compare 1 2)   ;=> -1",
         compare);
     // `(%hash v)` — the structural hash maps and sets key by, as an int. Equal values hash
     // equal, and a symbol or keyword hashes by its spelling, so the number does not depend
@@ -198,7 +198,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], int),
         &["v"],
-        "The structural hash of `v` as an integer: equal values hash equal, and a symbol or keyword hashes by its spelling.\n\n    (= (%hash [1 :a]) (%hash [1 :a]))   → true",
+        "The structural hash of `v` as an integer: equal values hash equal, and a symbol or keyword hashes by its spelling.\n\n    (= (%hash [1 :a]) (%hash [1 :a]))   ;=> true",
         hash);
     // vector
     primitives.def(
@@ -206,7 +206,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::any(),
         Sig::variadic(any, vec_ty),
         &["&", "items"],
-        "A vector of the given items.\n\n    (vector 1 2 3)   → [1 2 3]",
+        "A vector of the given items.\n\n    (vector 1 2 3)   ;=> [1 2 3]",
         vector,
     );
     primitives.def(
@@ -440,7 +440,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], int),
         &["s"],
-        "The number of characters in string s.\n\n    (string/length \"Hi there\")   → 8",
+        "The number of characters in string s.\n\n    (string/length \"Hi there\")   ;=> 8",
         string_length,
     );
     primitives.def(
@@ -448,7 +448,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::range(1, 3),
         Sig::with_optional(vec![string], vec![int, int], int),
         &["s", "start-col", "tab-width"],
-        "How many terminal/grid cells string s occupies (grapheme-cluster aware: an emoji / flag / CJK char counts as 2, a combining mark 0, a tab the cells to its next stop). The width-aware counterpart to string/length. The optional start-col (default 0) is the column s is laid out from — a chunk of a longer line passes its column so its tabs land on the LINE's stops — and tab-width (default 8) the distance between stops.\n\n    (string/display-width \"Hi there\")   → 8\n    (string/display-width \"a\\tb\")       → 9\n    (string/display-width \"\\tx\" 3)      → 6",
+        "How many terminal/grid cells string s occupies (grapheme-cluster aware: an emoji / flag / CJK char counts as 2, a combining mark 0, a tab the cells to its next stop). The width-aware counterpart to string/length. The optional start-col (default 0) is the column s is laid out from — a chunk of a longer line passes its column so its tabs land on the LINE's stops — and tab-width (default 8) the distance between stops.\n\n    (string/display-width \"Hi there\")   ;=> 8\n    (string/display-width \"a\\tb\")       ;=> 9\n    (string/display-width \"\\tx\" 3)      ;=> 6",
         display_width);
     // type reflection — the tag predicates (nil?/int?/string?/…) are Brood
     // (std/prelude.blsp) over this one reflective primitive.
@@ -457,7 +457,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], kw),
         &["x"],
-        "The runtime type of x as a keyword (:int, :string, :pair, ...).\n\n    (type-of :k)   → :keyword",
+        "The runtime type of x as a keyword (:int, :string, :pair, ...).\n\n    (type-of :k)   ;=> :keyword",
         type_of,
     );
 }

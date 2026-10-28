@@ -521,7 +521,7 @@ reaches the supervisor and the supervisor's death tears the remote child down. T
 caller's pid is recorded as `:parent`; when this supervisor is itself a child of
 another, the parent links it, so the parent's death tears this sub-tree down too.
 
-    (supervisor/start [{:id :worker :start (fn () (spawn-link (work)))}] {:strategy :one-for-one})   ;=> the supervisor's pid"
+    (supervisor/start [{:id :worker :start (fn () (spawn-link (work)))}] {:strategy :one-for-one})   ;~> the supervisor's pid"
   (let (opts (or (first opts) {})
         strategy (get opts :strategy :one-for-one)
         parent (self)
@@ -548,14 +548,14 @@ another, the parent links it, so the parent's death tears this sub-tree down too
 summaries. Synchronous — blocks for the reply, up to `gen/call`'s 5 s deadline;
 a dead supervisor raises instead of hanging.
 
-    (supervisor/which-children sup)   ;=> ({:id :worker :pid <pid> :restart :permanent})"
+    (supervisor/which-children sup)   ;~> ({:id :worker :pid <pid> :restart :permanent})"
   (gen/call sup :which-children))
 
 (defn count-children (sup)
   "How many children supervisor `sup` currently has. Synchronous (see
 `which-children` for the deadline / dead-server behaviour).
 
-    (supervisor/count-children sup)   ;=> an int, e.g. 2"
+    (supervisor/count-children sup)   ;~> an int, e.g. 2"
   (gen/call sup :count-children))
 
 (defn start-child (sup spec)
@@ -566,7 +566,7 @@ child is linked and supervised like any static child. Returns its pid, or a
 supervisor carries on without it). Synchronous (see
 `which-children` for the deadline / dead-server behaviour).
 
-    (supervisor/start-child sup {:id :extra :start (fn () (spawn-link (work)))})   ;=> the child's pid"
+    (supervisor/start-child sup {:id :extra :start (fn () (spawn-link (work)))})   ;~> the child's pid"
   (gen/call sup [:start-child spec]))
 
 (defn terminate-child (sup key)
@@ -574,7 +574,7 @@ supervisor carries on without it). Synchronous (see
 from supervision — it is *not* restarted. Returns `:ok`, or `:not-found`.
 Synchronous (see `which-children` for the deadline / dead-server behaviour).
 
-    (supervisor/terminate-child sup :worker)   ;=> :ok, or :not-found"
+    (supervisor/terminate-child sup :worker)   ;~> :ok, or :not-found"
   (gen/call sup [:terminate-child key]))
 
 (defn restart-child (sup key)
@@ -584,7 +584,7 @@ Returns the new pid, `:not-found`, or a `failure` if the `:start` thunk raised (
 child is then dropped from supervision).
 Synchronous (see `which-children` for the deadline / dead-server behaviour).
 
-    (supervisor/restart-child sup :worker)   ;=> the new pid, or :not-found"
+    (supervisor/restart-child sup :worker)   ;~> the new pid, or :not-found"
   (gen/call sup [:restart-child key]))
 
 ;; No `stop` here: a supervisor is an ordinary server process and answers the SAME

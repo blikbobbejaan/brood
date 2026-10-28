@@ -66,11 +66,11 @@ is the default). A **non-integer key on an integer-indexed collection**, or any
 non-collection, is a type error naming `get` — the default covers an absent key, not
 a wrong-typed one.
 
-    (get {:a 1} :a)          → 1
-    (get {:a 1} :zz)         → nil
-    (get {:a 1} :zz :none)   → :none
-    (get [10 20 30] 1)       → 20
-    (get #{:x} :x)           → :x     ; a set looks up by membership"
+    (get {:a 1} :a)          ;=> 1
+    (get {:a 1} :zz)         ;=> nil
+    (get {:a 1} :zz :none)   ;=> :none
+    (get [10 20 30] 1)       ;=> 20
+    (get #{:x} :x)           ;=> :x     ; a set looks up by membership"
   ;; Branch order is load-bearing, not stylistic: map (much the most common), then
   ;; set, then the two cheap `nil?`/`string?` prim checks, then ONE fallthrough to
   ;; `nth` for every integer-indexed kind. Factoring the kind test into a helper (type
@@ -131,9 +131,9 @@ For a map, keys are added or replaced; for a vector, integer indices in
 `[0, count)` are replaced (an out-of-range index is an error — appending is via
 `conj`, not `assoc`).
 
-    (assoc {} :a 1)            → {:a 1}
-    (assoc {:a 1} :a 9)        → {:a 9}
-    (assoc [10 20 30] 1 99)    → [10 99 30]
+    (assoc {} :a 1)            ;=> {:a 1}
+    (assoc {:a 1} :a 9)        ;=> {:a 9}
+    (assoc [10 20 30] 1 99)    ;=> [10 99 30]
 
 A multi-key result prints in the map's internal order, not the order given."
   ;; The single-pair `(assoc coll k v)` arm is the hot case (it's what `update`,
@@ -147,8 +147,8 @@ A multi-key result prints in the map's internal order, not the order given."
 (defn dissoc (m & ks)
   "A fresh map like `m` with each of the given keys removed.
 
-    (dissoc {:a 1 :b 2} :b)   → {:a 1}
-    (dissoc {:a 1} :zz)       → {:a 1}   ; absent key is a no-op"
+    (dissoc {:a 1 :b 2} :b)   ;=> {:a 1}
+    (dissoc {:a 1} :zz)       ;=> {:a 1}   ; absent key is a no-op"
   (fold ks m %map-dissoc))
 
 ;; `%map-pairs` (kernel) is the single map enumerator: the entries as a list of
@@ -160,7 +160,7 @@ A multi-key result prints in the map's internal order, not the order given."
 contents elsewhere answers for itself through the `Lookup` ability — a multimap gives its
 DISTINCT keys, not one per value.
 
-    (keys {:a 1})  → (:a)
+    (keys {:a 1})  ;=> (:a)
 
 Order is the map's internal (hash) order, NOT insertion order — sort if you need a
 stable one."
@@ -185,7 +185,7 @@ with bare `get`."
 (defn vals (m: (or nil map) -> any)
   "The values of map `m` (a record's are its fields, id-free).
 
-    (vals {:a 1})  → (1)
+    (vals {:a 1})  ;=> (1)
 
 Order matches [[keys]] — the map's internal order, not insertion order."
   (map (seq m) second))
@@ -197,9 +197,9 @@ an absent key returns each sentinel, and those differ. (One sentinel can't tell
 absence from a key whose *stored value* happens to equal it; two distinct ones
 can.)
 
-    (contains? {:a 1} :a)      → true
-    (contains? {:a nil} :a)    → true    ; a stored nil is still present
-    (contains? {:a 1} :zz)     → false"
+    (contains? {:a 1} :a)      ;=> true
+    (contains? {:a nil} :a)    ;=> true    ; a stored nil is still present
+    (contains? {:a 1} :zz)     ;=> false"
   (if (set? m)
     (%set-has? m k)
     (let (a (%map-get m k :%contains-miss-a))
@@ -220,9 +220,9 @@ can.)
 (defn merge (& maps: (or nil map) -> any)
   "A single map combining the given maps left to right; on a duplicate key the rightmost map wins. `nil` maps are skipped, so `(merge)` is `{}`.
 
-    (merge {:a 1} {:a 9})        → {:a 9}    ; rightmost wins
-    (merge {:a 1} nil)           → {:a 1}    ; nil maps are skipped
-    (merge)                      → {}
+    (merge {:a 1} {:a 9})        ;=> {:a 9}    ; rightmost wins
+    (merge {:a 1} nil)           ;=> {:a 1}    ; nil maps are skipped
+    (merge)                      ;=> {}
 
 The first map is the base, so merging into a record keeps it that record, while a record
 merged INTO a plain map contributes only its fields."
@@ -236,10 +236,10 @@ merged INTO a plain map contributes only its fields."
 `(apply f current args)`, where `current` is the existing value (`nil` if absent).
 Works on maps (by key) and vectors (by integer index, which must be in range).
 
-    (update {:n 1} :n inc)       → {:n 2}
-    (update {:n 1} :n + 10)      → {:n 11}
-    (update {} :n (fn (v) 1))    → {:n 1}   ; absent value arrives as nil
-    (update [1 2 3] 0 inc)       → [2 2 3]"
+    (update {:n 1} :n inc)       ;=> {:n 2}
+    (update {:n 1} :n + 10)      ;=> {:n 11}
+    (update {} :n (fn (v) 1))    ;=> {:n 1}   ; absent value arrives as nil
+    (update [1 2 3] 0 inc)       ;=> [2 2 3]"
   (assoc coll k (apply f (get coll k) args)))
 
 ;; Nested access along a `path` (a sequence of keys). `get-in` walks; missing
@@ -271,9 +271,9 @@ Works on maps (by key) and vectors (by integer index, which must be in range).
 (defn get-in (m path & default)
   "The value in nested collections `m` at the key sequence `path`, or `default` (else `nil`) if any key along the way is absent. Each step looks up the way `get` does — a map by key, a vector, list or string by integer position. `(get-in m ())` is `m`.
 
-    (get-in {:a {:b 1}} [:a :b])   → 1
-    (get-in {:a [10 20]} [:a 1])   → 20
-    (get-in {:a 1} [:z :y])        → nil"
+    (get-in {:a {:b 1}} [:a :b])   ;=> 1
+    (get-in {:a [10 20]} [:a 1])   ;=> 20
+    (get-in {:a 1} [:z :y])        ;=> nil"
   (%get-in-walk m path (first default)))
 
 ;; check-allow: deliberately non-tail — depth = (count path) — a few keys, never data scale.
@@ -281,9 +281,9 @@ Works on maps (by key) and vectors (by integer index, which must be in range).
   (defn assoc-in (m path v)
     "A nested copy of `m` with `v` stored at the key sequence `path`, creating intermediate maps as needed. A vector along the path with an integer key is updated in place of that index (which must be in range, as for `assoc`); any other non-map node becomes a fresh map.
 
-    (assoc-in {:a {:b 1}} [:a :b] 2)   → {:a {:b 2}}
-    (assoc-in {} [:a :b] 1)            → {:a {:b 1}}
-    (assoc-in [[1 2]] [0 1] 9)         → [[1 9]]"
+    (assoc-in {:a {:b 1}} [:a :b] 2)   ;=> {:a {:b 2}}
+    (assoc-in {} [:a :b] 1)            ;=> {:a {:b 1}}
+    (assoc-in [[1 2]] [0 1] 9)         ;=> [[1 9]]"
     (let (k (first path)
           m (if (or (map? m) (and (vector? m) (int? k))) m {})
           ks (rest path))
@@ -294,8 +294,8 @@ Works on maps (by key) and vectors (by integer index, which must be in range).
 (defn update-in (m path f & args)
   "A nested copy of `m` with the value at the key sequence `path` replaced by `(apply f current args)` (creating intermediate maps as needed; a vector along the path is updated by index, as in `assoc-in`).
 
-    (update-in {:a {:b 1}} [:a :b] inc)   → {:a {:b 2}}
-    (update-in {:a [1 2]} [:a 0] inc)     → {:a [2 2]}"
+    (update-in {:a {:b 1}} [:a :b] inc)   ;=> {:a {:b 2}}
+    (update-in {:a [1 2]} [:a 0] inc)     ;=> {:a [2 2]}"
   (assoc-in m path (apply f (get-in m path) args)))
 
 ;; The removal member of the nested-access family, so deleting a nested key is not a
@@ -307,7 +307,7 @@ Works on maps (by key) and vectors (by integer index, which must be in range).
   `assoc-in`). A path that doesn't exist is a no-op, and intermediate maps are left in
   place even when they end up empty — removing a leaf never prunes its branch.
 
-    (dissoc-in {:a {:b 1 :c 2}} [:a :b])   → {:a {:c 2}}"
+    (dissoc-in {:a {:b 1 :c 2}} [:a :b])   ;=> {:a {:c 2}}"
     (let (k (first path) ks (rest path))
       (cond
         (not (map? m)) m
@@ -318,7 +318,7 @@ Works on maps (by key) and vectors (by integer index, which must be in range).
 (defn identity (x)
   "Return `x` unchanged.
 
-    (identity 5)   → 5"
+    (identity 5)   ;=> 5"
   x)
 ;; `zero?` lives in abilities.blsp now, beside `defability` — it dispatches on TYPE, and the
 ;; ability machinery does not exist this early in the prelude. See the `Zero` ability.
@@ -331,7 +331,7 @@ Works on maps (by key) and vectors (by integer index, which must be in range).
 (defn hash-map (& more)
   "A map from alternating key/value arguments (last wins on duplicate keys).
 
-    (hash-map :a 1)   → {:a 1}"
+    (hash-map :a 1)   ;=> {:a 1}"
   (apply %hash-map more))
 
 ;; `%zipmap` stays core: `defrecord`'s expansion builds its ctor body with it, and

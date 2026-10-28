@@ -24,7 +24,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], any),
         &["form"],
-        "Evaluate a form in the global environment. A lone symbol naming a bound global is read directly, without the compile pass, so a name kept for late binding (a keymap command, a layer, a hook) costs a table read.\n\n    (reflect/eval '(+ 1 2))   → 3\n    ((reflect/eval 'inc) 41)   → 42",
+        "Evaluate a form in the global environment. A lone symbol naming a bound global is read directly, without the compile pass, so a name kept for late binding (a keymap command, a layer, a hook) costs a table read.\n\n    (reflect/eval '(+ 1 2))   ;=> 3\n    ((reflect/eval 'inc) 41)   ;=> 42",
         eval_builtin,
     );
     primitives.def(
@@ -32,7 +32,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], any),
         &["s"],
-        "Read and evaluate every form in string s (the string analogue of load), in the CALLER'S namespace — and a `(defmodule …)` in s moves the caller there for good, as it does at the REPL. To evaluate a module source without that side effect, `%load-string` brackets the namespace.\n\n    (reflect/eval-string \"(+ 1 2)\")   → 3",
+        "Read and evaluate every form in string s (the string analogue of load), in the CALLER'S namespace — and a `(defmodule …)` in s moves the caller there for good, as it does at the REPL. To evaluate a module source without that side effect, `%load-string` brackets the namespace.\n\n    (reflect/eval-string \"(+ 1 2)\")   ;=> 3",
         eval_string,
     );
     primitives.def(
@@ -68,7 +68,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], any),
         &["path"],
-        "Read and evaluate every form in the file at path.\n\n    (reflect/load \"scratch.blsp\")   ;=> the value of the file's last form",
+        "Read and evaluate every form in the file at path.\n\n    (reflect/load \"scratch.blsp\")   ;~> the value of the file's last form",
         load,
     );
     primitives.def(
@@ -83,7 +83,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![string], nil_ty),
         &["path"],
-        "Re-evaluate only the def-style top-level forms in `path` (def, defn, defmacro, defmodule, defdyn, …) — skipping other top-level calls. Used by file watchers to refresh code without re-running side-effecting top-level calls like a `(main-loop)`. Returns nil.\n\n    (system/reload-defs \"src/app.blsp\")   ;=> nil",
+        "Re-evaluate only the def-style top-level forms in `path` (def, defn, defmacro, defmodule, defdyn, …) — skipping other top-level calls. Used by file watchers to refresh code without re-running side-effecting top-level calls like a `(main-loop)`. Returns nil.\n\n    (system/reload-defs \"src/app.blsp\")   ;~> nil",
         reload_defs);
     // `apply`'s last positional arg must be a sequence (it's spliced); the
     // intermediate args can be anything. The `Sig` algebra can express
@@ -98,7 +98,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::at_least(2),
         Sig::with_rest(vec![callable], any, any),
         &["f", "&", "args"],
-        "Call f with the leading args plus the final list argument spliced in as trailing args.\n\n    (apply + (list 1 2 3))   → 6",
+        "Call f with the leading args plus the final list argument spliced in as trailing args.\n\n    (apply + (list 1 2 3))   ;=> 6",
         apply_builtin,
     );
     primitives.def(

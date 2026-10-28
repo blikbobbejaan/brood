@@ -26,21 +26,21 @@ host port data]`, so a server is a `receive` loop.
 `\"127.0.0.1\"` for this machine only, port 0 for one the OS picks — owned by the calling
 process, which receives its datagrams.
 
-    (udp/socket? (udp/open \"127.0.0.1\" 0))   → true"
+    (udp/socket? (udp/open \"127.0.0.1\" 0))   ;=> true"
   (%udp-open host port))
 
 (defn send (sock:socket host:string port:int data:any -> nil)
   "Send one datagram, `data` (a string, bytes, or a nested list of them), from `sock` to
 `host`:`port`. Returns at once; there is no delivery report.
 
-    (udp/send (udp/open \"127.0.0.1\" 0) \"127.0.0.1\" 9 \"discarded\")   → nil"
+    (udp/send (udp/open \"127.0.0.1\" 0) \"127.0.0.1\" 9 \"discarded\")   ;=> nil"
   (%udp-send sock host port data))
 
 (defn recv (sock &optional (timeout-ms 5000))
   "The next datagram on `sock` as `{:host :port :data}`, or a failure when none arrives
 within `timeout-ms`. Only the caller's own socket is taken; other messages stay queued.
 
-    (failure? (udp/recv (udp/open \"127.0.0.1\" 0) 10))   → true"
+    (failure? (udp/recv (udp/open \"127.0.0.1\" 0) 10))   ;=> true"
   (receive
     ([:udp ^sock host port data] {:host host :port port :data data})
     (after timeout-ms (failure (str "udp/recv: nothing within " timeout-ms " ms")))))
@@ -48,17 +48,17 @@ within `timeout-ms`. Only the caller's own socket is taken; other messages stay 
 (defn close (sock:socket -> nil)
   "Close `sock`: no datagram for it reaches any mailbox after this returns.
 
-    (udp/close (udp/open \"127.0.0.1\" 0))   → nil"
+    (udp/close (udp/open \"127.0.0.1\" 0))   ;=> nil"
   (%tcp-close sock))
 
 (defn local-port (sock:socket -> (or int nil))
   "The port `sock` is bound to — the one the OS picked for port 0.
 
-    (> (udp/local-port (udp/open \"127.0.0.1\" 0)) 0)   → true"
+    (> (udp/local-port (udp/open \"127.0.0.1\" 0)) 0)   ;=> true"
   (%tcp-local-port sock))
 
 (defn socket? (x)
   "True for a socket handle (UDP and TCP sockets are one kind of handle).
 
-    (udp/socket? 42)   → false"
+    (udp/socket? 42)   ;=> false"
   (%eq (type-of x) :socket))

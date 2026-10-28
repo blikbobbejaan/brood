@@ -20,8 +20,8 @@
   "HTML-escape `&`, `<`, `>` and `\"` in `raw` (coerced to a string), so the result is safe
 both as element text and inside a double-quoted attribute.
 
-    (markdown/escape \"<a href=\\\"x\\\">&</a>\")   → \"&lt;a href=&quot;x&quot;&gt;&amp;&lt;/a&gt;\"
-    (markdown/escape 42)                       → \"42\""
+    (markdown/escape \"<a href=\\\"x\\\">&</a>\")   ;=> \"&lt;a href=&quot;x&quot;&gt;&amp;&lt;/a&gt;\"
+    (markdown/escape 42)                       ;=> \"42\""
   (-> (str raw)
     (string/replace "&" "&amp;")
     (string/replace "<" "&lt;")
@@ -302,7 +302,7 @@ both as element text and inside a double-quoted attribute.
   indented code block: 4 by default, as CommonMark; a docstring passes 1, since its examples
   are indented by whatever their author chose and its prose is never indented at all.
 
-    (markdown/->html \"# hi\")   → \"<h1>hi</h1>\""
+    (markdown/->html \"# hi\")   ;=> \"<h1>hi</h1>\""
     (get (md-flush (fold (string/split md "\n")
                      {:out "" :mode :none :buf nil :start 1 :code-indent (get opts :code-indent 4)}
                      md-line))

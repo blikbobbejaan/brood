@@ -65,7 +65,7 @@ program. `:native-runs` (tiered arms that ran to completion natively) is in the 
 see whether that is the situation, and `:native-deopts` beside it because a high deopt count
 against a low run count is the separate `compiles but keeps falling off native` signal.
 
-    (get (perf/ratios {} {}) :allocations)   → 0"
+    (get (perf/ratios {} {}) :allocations)   ;=> 0"
   (let (applies (at vm :vm-apply)
         defers (at vm :tw-defer)
         activations (+ applies defers)
@@ -106,7 +106,7 @@ which is what actually distinguishes GC-frequency-bound from allocation-volume-b
 read is in the report beside them, so a reader can disagree with the label without having to
 re-derive the inputs.
 
-    (first (perf/verdict {}))   → :no-data"
+    (first (perf/verdict {}))   ;=> :no-data"
   (let (n (or (get rs :samples) {})
         ;; `(or … {})` and `(or … 0)`: this is a public function documented as taking a `ratios`
         ;; map, and a caller who hands it something else should get a verdict rather than
@@ -148,7 +148,7 @@ verdict is `:no-data`, never a claim.
 `:debug-build?` true means the timings in `:gc` are from a debug binary and are not
 representative; the *counts* still are.
 
-    (perf/report)   ;=> {:enabled? true :verdict :dispatch-bound :why \"…\" …}"
+    (perf/report)   ;~> {:enabled? true :verdict :dispatch-bound :why \"…\" …}"
   (let (vm (dev/vm-stats)
         gc (dev/gc-stats)
         on? (= (get vm :enabled) true)
@@ -186,7 +186,7 @@ are the whole runtime's. And the **GC figures are not resettable**: there is no 
 `(vm-stats-reset)` for `(gc-stats)`, so `:gc-collections` stays cumulative from process start
 even inside a `measure`. Read it as a ceiling on the region, not a count of it.
 
-    (perf/measure (fn () (build-index docs)))   ;=> {:value <the index> :report {:verdict :balanced …}}"
+    (perf/measure (fn () (build-index docs)))   ;~> {:value <the index> :report {:verdict :balanced …}}"
   (dev/vm-stats-reset)
   (let (v (thunk))
     {:value v :report (report)}))
@@ -201,7 +201,7 @@ The shape a terminal reader wants: the verdict first, the numbers that produced 
 next, then the raw snapshots' headline counters. Returns the map so it is still usable
 from a script.
 
-    (perf/summary)   ;=> the `perf/report` map, after printing it"
+    (perf/summary)   ;~> the `perf/report` map, after printing it"
   (let (r (report))
     (io/puts (string/interp "perf: {(get r :verdict)} — {(get r :why)}"))
     (when (get r :debug-build?)

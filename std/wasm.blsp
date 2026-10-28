@@ -54,8 +54,8 @@ its stdout and stderr through. Clocks and randomness come with any grants map,
 `{}` included; the network never does. Without `grants` a component that
 imports WASI fails to load.
 
-    (wasm/load \"codec.wasm\")   ;=> an int instance handle, for wasm/call
-    (wasm/load \"sqlite.wasm\" {:dirs [[\"data\" \"/data\" :write]]})   ;=> a handle whose guest sees ./data as /data"
+    (wasm/load \"codec.wasm\")   ;~> an int instance handle, for wasm/call
+    (wasm/load \"sqlite.wasm\" {:dirs [[\"data\" \"/data\" :write]]})   ;~> a handle whose guest sees ./data as /data"
   (%wasm-load (file/slurp-bytes path) grants))
 
 (defn instantiate (source &optional grants)
@@ -63,7 +63,7 @@ imports WASI fails to load.
 compiled component) or a string of WAT text — the REPL/testing path. `grants`
 as for `load`.
 
-    (wasm/instantiate (file/slurp-bytes \"codec.wasm\"))   ;=> an int instance handle"
+    (wasm/instantiate (file/slurp-bytes \"codec.wasm\"))   ;~> an int instance handle"
   (%wasm-load source grants))
 
 (defn exports (inst:int -> any)
@@ -71,7 +71,7 @@ as for `load`.
 function of an exported interface is named `interface#function`
 (`\"brood:sqlite/db#[method]connection.query\"`).
 
-    (wasm/exports inst)   ;=> [[\"add\" 2] [\"greet\" 1]]"
+    (wasm/exports inst)   ;~> [[\"add\" 2] [\"greet\" 1]]"
   (%wasm-exports inst))
 
 (defn call (inst name & args)
@@ -81,7 +81,7 @@ function's bare name (`\"[method]connection.query\"`) when no other export
 shares it. A resource argument is its token. Runs inline, fuel-capped — for
 short compute. A trap (including out-of-fuel) raises a catchable error.
 
-    (wasm/call inst \"add\" 2 3)   ;=> 5, for an export that adds its two ints"
+    (wasm/call inst \"add\" 2 3)   ;~> 5, for an export that adds its two ints"
   (%wasm-call inst name (into [] args)))
 
 (defn call-blocking (inst name & args)
@@ -89,7 +89,7 @@ short compute. A trap (including out-of-fuel) raises a catchable error.
 process waits, never a scheduler worker. For long-running guest calls — and
 for any call that reaches the disk through WASI.
 
-    (wasm/call-blocking inst \"compress\" data)   ;=> the export's result, computed off the scheduler"
+    (wasm/call-blocking inst \"compress\" data)   ;~> the export's result, computed off the scheduler"
   (offload %wasm-call inst name (into [] args)))
 
 (defn release (inst:int resource:int -> bool)
@@ -98,13 +98,13 @@ guest's destructor. True if `inst` held it; false if it was already released or
 moved into the guest by an `own<T>` argument. Every resource also goes when its
 instance closes.
 
-    (wasm/release inst connection)   ;=> true"
+    (wasm/release inst connection)   ;~> true"
   (%wasm-release inst resource))
 
 (defn close (inst:int -> nil)
   "Drop `inst`: the sandbox and everything the guest owns is freed. Idempotent.
 
-    (wasm/close inst)   ;=> nil"
+    (wasm/close inst)   ;~> nil"
   (%wasm-close inst))
 
 (defn native-name (export:string)
@@ -112,9 +112,9 @@ instance closes.
 dropped, and a resource's functions spelled as `type-function` — `[constructor]T`
 is `T-new`, `[method]T.f` and `[static]T.f` are `T-f`.
 
-    (wasm/native-name \"add\")                                  → \"add\"
-    (wasm/native-name \"brood:sqlite/db#[method]connection.query\")   → \"connection-query\"
-    (wasm/native-name \"db#[constructor]connection\")            → \"connection-new\""
+    (wasm/native-name \"add\")                                  ;=> \"add\"
+    (wasm/native-name \"brood:sqlite/db#[method]connection.query\")   ;=> \"connection-query\"
+    (wasm/native-name \"db#[constructor]connection\")            ;=> \"connection-new\""
   (let (at (index-of export "#")
         bare (if (< at 0) export (string/substring export (inc at) (string/length export))))
     (cond
@@ -133,7 +133,7 @@ taking the resource token first. Returns the list of names bound. The bindings
 are ordinary `def`s (hot-reloadable); each calls the export inline — wrap with
 `call-blocking` yourself for exports that run long.
 
-    (wasm/use-native inst)   ;=> (add greet) -- now callable as (add 2 3)"
+    (wasm/use-native inst)   ;~> (add greet) -- now callable as (add 2 3)"
   (map (exports inst)
     (fn (e)
       (let (name (str (first e))

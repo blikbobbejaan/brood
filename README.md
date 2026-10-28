@@ -38,7 +38,7 @@ applications on top.
 (+ 1 2)                          ;=> 3
 
 (defn square (x) (* x x))        ; params are a LIST (x) — code is lists, data is vectors
-(map square (list 1 2 3 4))      ;=> (1 4 9 16)
+(map (list 1 2 3 4) square)      ;=> (1 4 9 16)
 
 (defn greet (name &optional (greeting "hello"))   ; optional arg with a default
   (str greeting ", " name))

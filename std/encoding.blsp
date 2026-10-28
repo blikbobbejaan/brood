@@ -38,7 +38,7 @@ For pure ASCII input the string and byte forms agree.")
 (defn hex-encode (s:string -> string)
   "Encode string `s` as lowercase hexadecimal (each UTF-8 byte → 2 hex chars).
 
-    (encoding/hex-encode \"hi\")         → \"6869\""
+    (encoding/hex-encode \"hi\")         ;=> \"6869\""
   (encoding-hex-encode-codes (string/->bytes s) encoding-hex-lower-codes))
 ;; The codec sigs marked `kept for cost` are ones the checker infers verbatim — they declare
 ;; no fact it cannot derive (KI-150). `brood file` type-checks a program before running it,
@@ -50,7 +50,7 @@ For pure ASCII input the string and byte forms agree.")
 (defn hex-encode-upper (s:string -> string)
   "Encode string `s` as uppercase hexadecimal (each UTF-8 byte → 2 hex chars).
 
-    (encoding/hex-encode-upper \"~\")    → \"7E\""
+    (encoding/hex-encode-upper \"~\")    ;=> \"7E\""
   (encoding-hex-encode-codes (string/->bytes s) encoding-hex-upper-codes))
 ;; kept for cost (KI-150)
 
@@ -59,13 +59,13 @@ For pure ASCII input the string and byte forms agree.")
 lowercase hexadecimal. The byte-faithful counterpart of `hex-encode`, which first
 UTF-8-encodes a string.
 
-    (encoding/hex-encode-bytes #b\"hi\")   → \"6869\""
+    (encoding/hex-encode-bytes #b\"hi\")   ;=> \"6869\""
   (encoding-hex-encode-codes bytes encoding-hex-lower-codes))
 
 (defn hex-encode-bytes-upper (bytes: (or bytes (vector (int 0 255)) (list (int 0 255))) -> string)
   "Encode a byte sequence (a `bytes` value, vector, or list of ints 0–255) as uppercase hexadecimal.
 
-    (encoding/hex-encode-bytes-upper [222 173 190 239])   → \"DEADBEEF\""
+    (encoding/hex-encode-bytes-upper [222 173 190 239])   ;=> \"DEADBEEF\""
   (encoding-hex-encode-codes bytes encoding-hex-upper-codes))
 
 ;; Codepoint → nibble value (int keys — the decode loop walks a `string->codepoints`
@@ -103,8 +103,8 @@ UTF-8-encodes a string.
 (defn hex-decode (s:string -> (or string failure))
   "Decode a hexadecimal string → original string, or a `failure` naming the input.
 
-    (encoding/hex-decode \"6869\")       → \"hi\"
-    (failure? (encoding/hex-decode \"zz\"))   → true"
+    (encoding/hex-decode \"6869\")       ;=> \"hi\"
+    (failure? (encoding/hex-decode \"zz\"))   ;=> true"
   (let (bs (encoding-hex-decode-bytelist s))
     (if (= bs :invalid)
       (failure "encoding/hex-decode: not hexadecimal: " (pr-str s))
@@ -136,13 +136,13 @@ binary payload (digests, salts, wire bytes)."
 (defn base64-encode (s:string -> string)
   "Encode string `s` as standard Base64 (RFC 4648, `+/` alphabet, `=` padding).
 
-    (encoding/base64-encode \"hi\")      → \"aGk=\""
+    (encoding/base64-encode \"hi\")      ;=> \"aGk=\""
   (%base64-encode (string/->bytes s) false))
 
 (defn base64-url-encode (s:string -> string)
   "Encode string `s` as URL-safe Base64 (RFC 4648 §5, `-_` alphabet, `=` padding).
 
-    (encoding/base64-url-encode \"~~~\") → \"fn5-\""
+    (encoding/base64-url-encode \"~~~\") ;=> \"fn5-\""
   (%base64-encode (string/->bytes s) true))
 
 (defn base64-encode-bytes (bytes: (or bytes (vector (int 0 255)) (list (int 0 255))) -> string)
@@ -151,19 +151,19 @@ standard Base64. The byte-faithful counterpart of `base64-encode`, which first
 UTF-8-encodes a string — so a byte ≥ 0x80 encodes as one byte, not its two-byte
 UTF-8 form.
 
-    (encoding/base64-encode-bytes [255 0 1])   → \"/wAB\""
+    (encoding/base64-encode-bytes [255 0 1])   ;=> \"/wAB\""
   (%base64-encode bytes false))
 
 (defn base64-url-encode-bytes (bytes: (or bytes (vector (int 0 255)) (list (int 0 255))) -> string)
   "Encode a byte sequence (a `bytes` value, vector, or list of ints 0–255) as URL-safe Base64.
 
-    (encoding/base64-url-encode-bytes [251 255])   → \"-_8=\""
+    (encoding/base64-url-encode-bytes [251 255])   ;=> \"-_8=\""
   (%base64-encode bytes true))
 
 (defn base64-decode (s:string -> (or string failure))
   "Decode a standard Base64 string → original string, or a `failure` naming the input.
 
-    (encoding/base64-decode \"aGk=\")    → \"hi\""
+    (encoding/base64-decode \"aGk=\")    ;=> \"hi\""
   (let (bs (encoding-b64-decode s false))
     (if (= bs :invalid)
       (failure "encoding/base64-decode: not standard Base64: " (pr-str s))

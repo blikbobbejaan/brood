@@ -20,35 +20,35 @@ separate flush step. The ESC byte is the `\\e` string escape.")
 (defn ansi-clear-screen ()
   "The escape that erases the whole screen (cursor position unchanged).
 
-    (editor/ansi/ansi-clear-screen)   → \"\\e[2J\""
+    (editor/ansi/ansi-clear-screen)   ;=> \"\\e[2J\""
   "\e[2J")
 
 (defn ansi-home ()
   "The escape that moves the cursor to the top-left (row 1, column 1).
 
-    (editor/ansi/ansi-home)   → \"\\e[H\""
+    (editor/ansi/ansi-home)   ;=> \"\\e[H\""
   "\e[H")
 
 (defn ansi-clear ()
   "Erase the screen and move the cursor home — the per-frame reset for an animation loop. `(io/write (ansi-clear) frame)` redraws cleanly without scrolling.
 
-    (editor/ansi/ansi-clear)   → \"\\e[2J\\e[H\""
+    (editor/ansi/ansi-clear)   ;=> \"\\e[2J\\e[H\""
   (str (ansi-clear-screen) (ansi-home)))
 
 (defn ansi-cursor (row col)
   "The escape that moves the cursor to 1-based (`row`, `col`).
 
-    (editor/ansi/ansi-cursor 3 7)   → \"\\e[3;7H\""
+    (editor/ansi/ansi-cursor 3 7)   ;=> \"\\e[3;7H\""
   (str "\e[" row ";" col "H"))
 
 (defn ansi-hide-cursor ()
   "The escape that hides the cursor — call once before an animation loop to stop it flickering.
 
-    (editor/ansi/ansi-hide-cursor)   → \"\\e[?25l\""
+    (editor/ansi/ansi-hide-cursor)   ;=> \"\\e[?25l\""
   "\e[?25l")
 
 (defn ansi-show-cursor ()
   "The escape that shows the cursor again — call on the way out to restore it.
 
-    (editor/ansi/ansi-show-cursor)   → \"\\e[?25h\""
+    (editor/ansi/ansi-show-cursor)   ;=> \"\\e[?25h\""
   "\e[?25h")

@@ -57,7 +57,7 @@ enables multi-line editing:
 predicate — when set, Enter inserts a newline while the form is incomplete instead of
 submitting).
 
-    (get (editor/lineedit/lineedit-init \"> \" [\"(+ 1 2)\"]) :point)   → 0"
+    (get (editor/lineedit/lineedit-init \"> \" [\"(+ 1 2)\"]) :point)   ;=> 0"
   (let (options (or opts {}))
     {:text ""
      :point 0
@@ -179,7 +179,7 @@ is how a HOST pastes into the line: an editor's `C-y` in its minibuffer yanks th
 editor's kill ring (and the OS clipboard), which the line editor cannot know — the
 line's own `C-y` (`lineedit-yank`) inserts only what `C-k`/`C-w` cut from the line.
 
-    (get (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") :text)   → \"foo bar\""
+    (get (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") :text)   ;=> \"foo bar\""
   (let (text (get state :text) p (get state :point))
     (assoc state
       :text (str (string/substring text 0 p) s (string/substring text p (string/length text)))
@@ -281,8 +281,8 @@ internal newlines collapsed to spaces (so a multi-line form recalls as one line)
 trimmed, dropping blanks and consecutive duplicates. Shared by the REPL and the
 observer's eval minibuffer (the `:hist` list `lineedit-init` is seeded with).
 
-    (editor/lineedit/lineedit-remember (list \"(a)\") \"(b)\")   → (\"(b)\" \"(a)\")
-    (editor/lineedit/lineedit-remember (list \"(a)\") \"(a)\")   → (\"(a)\")"
+    (editor/lineedit/lineedit-remember (list \"(a)\") \"(b)\")   ;=> (\"(b)\" \"(a)\")
+    (editor/lineedit/lineedit-remember (list \"(a)\") \"(a)\")   ;=> (\"(a)\")"
   (let (entry (string/trim (string/replace src "\n" " ")))
     (if (or (= entry "") (and (not (empty? history)) (= (first history) entry)))
       history
@@ -381,7 +381,7 @@ can restore it, and selecting the newest match (empty query → newest entry)."
 Reads the live image (`reflect/global-names`), so globals + macros (defn/when/cond/…) are
 all in (and a new project's own globals, since it's the live runtime).
 
-    (editor/lineedit/*lineedit-candidates* \"string/jo\")   ;=> (\"string/join\" …every live global with that prefix…)"
+    (editor/lineedit/*lineedit-candidates* \"string/jo\")   ;~> (\"string/join\" …every live global with that prefix…)"
   (sort (seq/filter (map (reflect/global-names) str) (fn (s) (string/starts-with? s pfx)))))
 
 ;; The completion source: a `(fn pfx -> sorted-candidate-strings)`. Defaults to the
@@ -474,38 +474,38 @@ globals by default; a project can rebind it to complete its own vocabulary)."
 (defn lineedit-self-insert (state key)
   "Insert the typed character `key`.
 
-    (get (editor/lineedit/lineedit-self-insert (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") \"!\") :text)   → \"foo bar!\""
+    (get (editor/lineedit/lineedit-self-insert (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") \"!\") :text)   ;=> \"foo bar!\""
   (lineedit-insert state key))
 (defn lineedit-beginning-of-line (state _)
   "Move point to the start of the current line (C-a) — line-aware for multi-line forms.
 
-    (get (editor/lineedit/lineedit-beginning-of-line (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :point)   → 0"
+    (get (editor/lineedit/lineedit-beginning-of-line (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :point)   ;=> 0"
   (lineedit-move state (lineedit-line-start (get state :text) (get state :point))))
 (defn lineedit-end-of-line (state _)
   "Move point to the end of the current line (C-e) — line-aware for multi-line forms.
 
-    (get (editor/lineedit/lineedit-end-of-line (editor/lineedit/lineedit-beginning-of-line (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil) :point)   → 7"
+    (get (editor/lineedit/lineedit-end-of-line (editor/lineedit/lineedit-beginning-of-line (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil) :point)   ;=> 7"
   (lineedit-move state (lineedit-line-end (get state :text) (get state :point))))
 (defn lineedit-forward-char (state _)
   "Move point one user-perceived character right (C-f) — a whole grapheme cluster.
 
-    (get (editor/lineedit/lineedit-forward-char (editor/lineedit/lineedit-beginning-of-line (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil) :point)   → 1"
+    (get (editor/lineedit/lineedit-forward-char (editor/lineedit/lineedit-beginning-of-line (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil) :point)   ;=> 1"
   (lineedit-move state (string/next-grapheme (get state :text) (get state :point))))
 (defn lineedit-backward-char (state _)
   "Move point one user-perceived character left (C-b) — a whole grapheme cluster.
 
-    (get (editor/lineedit/lineedit-backward-char (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :point)   → 6"
+    (get (editor/lineedit/lineedit-backward-char (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :point)   ;=> 6"
   (lineedit-move state (string/prev-grapheme (get state :text) (get state :point))))
 (defn lineedit-forward-word (state _)
   "Move point to the end of the next word (M-f) — by path component in `:path` mode.
 
-    (get (editor/lineedit/lineedit-forward-word (editor/lineedit/lineedit-beginning-of-line (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil) :point)   → 3"
+    (get (editor/lineedit/lineedit-forward-word (editor/lineedit/lineedit-beginning-of-line (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil) :point)   ;=> 3"
   (lineedit-move state
     (lineedit-fwd-word (get state :text) (get state :point) (lineedit-word-pred state))))
 (defn lineedit-backward-word (state _)
   "Move point to the start of the previous word (M-b) — by path component in `:path` mode.
 
-    (get (editor/lineedit/lineedit-backward-word (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :point)   → 4"
+    (get (editor/lineedit/lineedit-backward-word (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :point)   ;=> 4"
   (lineedit-move state
     (lineedit-bwd-word (get state :text) (get state :point) (lineedit-word-pred state))))
 (defn- lineedit-component-start (text:string p:int -> int)
@@ -519,9 +519,9 @@ before it, or 0."
 line right after a `/`, the whole last component goes instead — `foo/`, `~/` — as Emacs's
 vertico-directory has it: a directory is one step back, and `~` alone names nothing.
 
-    (get (editor/lineedit/lineedit-delete-backward (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :text)   → \"foo ba\"
-    (get (editor/lineedit/lineedit-delete-backward (assoc (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"~/src/foo/\") :word-mode :path) nil) :text)   → \"~/src/\"
-    (get (editor/lineedit/lineedit-delete-backward (assoc (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"~/\") :word-mode :path) nil) :text)   → \"\""
+    (get (editor/lineedit/lineedit-delete-backward (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :text)   ;=> \"foo ba\"
+    (get (editor/lineedit/lineedit-delete-backward (assoc (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"~/src/foo/\") :word-mode :path) nil) :text)   ;=> \"~/src/\"
+    (get (editor/lineedit/lineedit-delete-backward (assoc (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"~/\") :word-mode :path) nil) :text)   ;=> \"\""
   (let (text (get state :text)
         p (get state :point))
     (if (and (= (get state :word-mode) :path)
@@ -534,61 +534,61 @@ vertico-directory has it: a directory is one step back, and `~` alone names noth
 (defn lineedit-delete-forward (state _)
   "Delete the character at point (Delete).
 
-    (get (editor/lineedit/lineedit-delete-forward (editor/lineedit/lineedit-beginning-of-line (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil) :text)   → \"oo bar\""
+    (get (editor/lineedit/lineedit-delete-forward (editor/lineedit/lineedit-beginning-of-line (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil) :text)   ;=> \"oo bar\""
   (lineedit-del-fwd state))
 (defn lineedit-kill-line (state _)
   "Kill from point to end of line (C-k).
 
-    (let (s (editor/lineedit/lineedit-kill-line (editor/lineedit/lineedit-backward-word (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil)) [(get s :text) (get s :kill)])   → [\"foo \" \"bar\"]"
+    (let (s (editor/lineedit/lineedit-kill-line (editor/lineedit/lineedit-backward-word (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil)) [(get s :text) (get s :kill)])   ;=> [\"foo \" \"bar\"]"
   (lineedit-kill-end state))
 (defn lineedit-kill-to-start (state _)
   "Kill from start of line to point (C-u).
 
-    (let (s (editor/lineedit/lineedit-kill-to-start (editor/lineedit/lineedit-backward-word (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil)) [(get s :text) (get s :kill)])   → [\"bar\" \"foo \"]"
+    (let (s (editor/lineedit/lineedit-kill-to-start (editor/lineedit/lineedit-backward-word (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil)) [(get s :text) (get s :kill)])   ;=> [\"bar\" \"foo \"]"
   (lineedit-kill-begin state))
 (defn lineedit-kill-word-backward (state _)
   "Kill the word before point (C-w).
 
-    (get (editor/lineedit/lineedit-kill-word-backward (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :text)   → \"foo \""
+    (get (editor/lineedit/lineedit-kill-word-backward (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :text)   ;=> \"foo \""
   (lineedit-kill-word state))
 (defn lineedit-kill-word-forward (state _)
   "Kill the word after point (M-d).
 
-    (get (editor/lineedit/lineedit-kill-word-forward (editor/lineedit/lineedit-beginning-of-line (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil) :text)   → \" bar\""
+    (get (editor/lineedit/lineedit-kill-word-forward (editor/lineedit/lineedit-beginning-of-line (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil) :text)   ;=> \" bar\""
   (lineedit-kill-word-fwd state))
 (defn lineedit-yank (state _)
   "Insert the last-killed text at point (C-y).
 
-    (get (editor/lineedit/lineedit-yank (editor/lineedit/lineedit-kill-word-backward (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil) :text)   → \"foo bar\""
+    (get (editor/lineedit/lineedit-yank (editor/lineedit/lineedit-kill-word-backward (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) nil) :text)   ;=> \"foo bar\""
   (lineedit-yank-impl state))
 (defn lineedit-transpose-chars (state _)
   "Swap the two characters around point (C-t).
 
-    (get (editor/lineedit/lineedit-transpose-chars (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :text)   → \"foo bra\""
+    (get (editor/lineedit/lineedit-transpose-chars (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :text)   ;=> \"foo bra\""
   (lineedit-transpose state))
 (defn lineedit-history-prev (state _)
   "Move to the previous line of a multi-line form if there is one above, else recall
 the previous (older) history entry (↑ / C-p).
 
-    (get (editor/lineedit/lineedit-history-prev (editor/lineedit/lineedit-init \"\" [\"(b)\" \"(a)\"]) nil) :text)   → \"(b)\""
+    (get (editor/lineedit/lineedit-history-prev (editor/lineedit/lineedit-init \"\" [\"(b)\" \"(a)\"]) nil) :text)   ;=> \"(b)\""
   (let (up (lineedit-up-point (get state :text) (get state :point)))
     (if (nil? up) (lineedit-hist-prev state) (lineedit-move state up))))
 (defn lineedit-history-next (state _)
   "Move to the next line of a multi-line form if there is one below, else recall the
 next (newer) history entry (↓ / C-n).
 
-    (get (editor/lineedit/lineedit-history-next (editor/lineedit/lineedit-history-prev (editor/lineedit/lineedit-history-prev (editor/lineedit/lineedit-init \"\" [\"(b)\" \"(a)\"]) nil) nil) nil) :text)   → \"(b)\""
+    (get (editor/lineedit/lineedit-history-next (editor/lineedit/lineedit-history-prev (editor/lineedit/lineedit-history-prev (editor/lineedit/lineedit-init \"\" [\"(b)\" \"(a)\"]) nil) nil) nil) :text)   ;=> \"(b)\""
   (let (down (lineedit-down-point (get state :text) (get state :point)))
     (if (nil? down) (lineedit-hist-next state) (lineedit-move state down))))
 (defn lineedit-complete (state _)
   "Complete the symbol under point (Tab).
 
-    (editor/lineedit/lineedit-complete state nil)   ;=> state, its symbol completed from the live globals"
+    (editor/lineedit/lineedit-complete state nil)   ;~> state, its symbol completed from the live globals"
   (lineedit-complete-impl state))
 (defn lineedit-clear-screen (state _)
   "Request a screen clear + redraw (C-l).
 
-    (get (editor/lineedit/lineedit-clear-screen (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :clear)   → true"
+    (get (editor/lineedit/lineedit-clear-screen (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :clear)   ;=> true"
   (assoc state :clear true))
 ;; ---- auto-indent (pure) -----------------------------------------------------
 ;; A continuation line starts at the column `nest format` would give it, so typing never
@@ -618,7 +618,7 @@ the column of the innermost unclosed `(`/`[`, one past a `{`, and 0 at top level
 (defn lineedit-newline-and-indent (state)
   "Insert a newline and indent the new line to its structural column.
 
-    (get (editor/lineedit/lineedit-newline-and-indent (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"(let (x 1)\")) :text)   → \"(let (x 1)\\n  \""
+    (get (editor/lineedit/lineedit-newline-and-indent (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"(let (x 1)\")) :text)   ;=> \"(let (x 1)\\n  \""
   (lineedit-insert state
     (str "\n" (string/repeat " " (lineedit-indent-for (get state :text) (get state :point))))))
 
@@ -643,7 +643,7 @@ exactly as typed. Reformatting must never eat what you typed.
 `format` is required lazily: the editor shouldn't drag the formatter into every REPL
 boot (or into a lean bundle) for a key most sessions never press.
 
-    (get (editor/lineedit/lineedit-reformat (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"(+   1    2)\") nil) :text)   → \"(+ 1 2)\""
+    (get (editor/lineedit/lineedit-reformat (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"(+   1    2)\") nil) :text)   ;=> \"(+ 1 2)\""
   (let (text (get state :text)
         ;; check-allow :discarded-catch — a parse failure on half-typed input is the expected answer (not equivalent / nothing to format / no hint)
         formatted (check-allow :discarded-catch
@@ -664,7 +664,7 @@ state) when the text isn't yet a complete form, insert an *indented* newline ins
 the form keeps growing — so a `(defn …` opens a fresh continuation line, already at the
 column the formatter would put it, rather than submitting.
 
-    (get (editor/lineedit/lineedit-submit (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :done)   → :submit"
+    (get (editor/lineedit/lineedit-submit (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :done)   ;=> :submit"
   (let (complete? (get state :complete?))
     (if (and complete? (not (complete? (get state :text))))
       (lineedit-newline-and-indent state)
@@ -672,12 +672,12 @@ column the formatter would put it, rather than submitting.
 (defn lineedit-cancel (state _)
   "Abandon the line, re-prompt (C-c).
 
-    (get (editor/lineedit/lineedit-cancel (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :done)   → :cancel"
+    (get (editor/lineedit/lineedit-cancel (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") nil) :done)   ;=> :cancel"
   (assoc state :done :cancel))
 (defn lineedit-eof-or-delete (state _)
   "Signal EOF on an empty line, else delete forward (C-d) — readline semantics.
 
-    (get (editor/lineedit/lineedit-eof-or-delete (editor/lineedit/lineedit-init \"\" []) nil) :done)   → :eof"
+    (get (editor/lineedit/lineedit-eof-or-delete (editor/lineedit/lineedit-init \"\" []) nil) :done)   ;=> :eof"
   (if (= (get state :text) "") (assoc state :done :eof) (lineedit-del-fwd state)))
 
 ;; ---- the keymap -------------------------------------------------------------
@@ -737,7 +737,7 @@ column the formatter would put it, rather than submitting.
 in the editor keymap, taking effect on the next keystroke. The ergonomic way to
 customise the REPL from the REPL: `(lineedit-bind :ctrl-x 'lineedit-clear-screen)`.
 
-    (editor/lineedit/lineedit-bind :ctrl-x 'editor/lineedit/lineedit-clear-screen)   ;=> …the keymap rebound: Ctrl-X now clears the screen…"
+    (editor/lineedit/lineedit-bind :ctrl-x 'editor/lineedit/lineedit-clear-screen)   ;~> …the keymap rebound: Ctrl-X now clears the screen…"
   (def *lineedit-keymap* (assoc *lineedit-keymap* key cmd)))
 
 (defn- lineedit-fallback (state key)
@@ -760,7 +760,7 @@ keystroke: a Tab that can't make progress re-attaches it (`lineedit-apply-comple
 and typing the next character clears it. Clearing up front rather than per-command means
 a rebound key or a user's own command can't leave a stale listing on screen.
 
-    (get (editor/lineedit/lineedit-handle (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") :ctrl-a) :point)   → 0"
+    (get (editor/lineedit/lineedit-handle (editor/lineedit/lineedit-insert (editor/lineedit/lineedit-init \"\" []) \"foo bar\") :ctrl-a) :point)   ;=> 0"
   (let (line-state (if (nil? (get state :completions)) state (assoc state :completions nil)))
     (if (not (nil? (get line-state :search)))
       (lineedit-search-key line-state key)
@@ -821,7 +821,7 @@ never wraps (which would desync the `[:up 1]` cursor restore)."
   "Bracket-match colour overrides (`[pos face]` list) for the cursor at `pos`: the
 matched pair reversed, or a lone unmatched bracket in the error face.
 
-    (editor/lineedit/lineedit-overrides \"(a)\" 3)   → ([0 {:reverse true}] [2 {:reverse true}])"
+    (editor/lineedit/lineedit-overrides \"(a)\" 3)   ;=> ([0 {:reverse true}] [2 {:reverse true}])"
   (let (m (bracket-match full pos))
     (if (nil? m)
       '()
@@ -846,7 +846,7 @@ input line rather than calling `lineedit-render` — has no other way to know wh
 the current state calls for. Two independent consumers needed it (a chat client and a
 terminal multiplexer), which is the same reason `lineedit-init` is public.
 
-    (editor/lineedit/lineedit-display-prompt (editor/lineedit/lineedit-init \"> \" []))   → \"> \""
+    (editor/lineedit/lineedit-display-prompt (editor/lineedit/lineedit-init \"> \" []))   ;=> \"> \""
   (let (s (get state :search))
     (if (nil? s)
       (get state :prompt)
@@ -1044,7 +1044,7 @@ multi-line editing: `:cont-prompt` for continuation lines and `:complete?` (a
 multi-line form is edited + repainted in place (bracket matches light up across lines).
 The terminal is restored even if rendering raises (the caller must be on a TTY).
 
-    (editor/lineedit/lineedit-read \"> \" [])   ;=> {:line \"…what the user typed…\"}"
+    (editor/lineedit/lineedit-read \"> \" [])   ;~> {:line \"…what the user typed…\"}"
   (do
     (term/raw-enter)
     (let (result (try

@@ -36,14 +36,14 @@ keymap: `forward` / `backward` / `list-forward` / `list-backward` / `up` /
 (defn container-kind? (k)
   "Kinds whose payload is a child vector (we descend into these).
 
-    (sexp/container-kind? :list)     → true
-    (sexp/container-kind? :symbol)   → false"
+    (sexp/container-kind? :list)     ;=> true
+    (sexp/container-kind? :symbol)   ;=> false"
   (or (= k :root) (= k :list) (= k :vector) (= k :map)))
 
 (defn form? (anode)
   "A real s-expression node — anything but whitespace and comments.
 
-    (count (seq/filter (get (sexp/tree \"(a) ; c\\n(b)\") :kids) sexp/form?))   → 2"
+    (count (seq/filter (get (sexp/tree \"(a) ; c\\n(b)\") :kids) sexp/form?))   ;=> 2"
   (let (k (get anode :kind))
     (and (not (= k :whitespace)) (not (= k :comment)))))
 
@@ -57,7 +57,7 @@ the structure queries below navigate the result directly. (This replaced an
 in-Brood `annotate` walk that re-derived positions by summing leaf lengths: O(n)
 interpreted and the bottleneck in structural navigation.)
 
-    (get (sexp/tree \"(a)\") :kind)   → :root"
+    (get (sexp/tree \"(a)\") :kind)   ;=> :root"
   (reflect/parse-source-positioned text))
 
 ;; ---- structure queries ------------------------------------------------------
@@ -67,7 +67,7 @@ interpreted and the bottleneck in structural navigation.)
 list/vector/map children); the root if none. Reader-macro wrappers are navigated
 as a unit — descending through them is a deferred refinement.
 
-    (get (sexp/enclosing (sexp/tree \"(a (b c))\") 5) :start)   → 3"
+    (get (sexp/enclosing (sexp/tree \"(a (b c))\") 5) :start)   ;=> 3"
   (let (hit (seq/find (or (get anode :kids) (list))
               (fn (k)
                 (and (container-kind? (get k :kind))
@@ -86,7 +86,7 @@ as a unit — descending through them is a deferred refinement.
   (defn forms-of (anode)
     "The form (non-whitespace, non-comment) children of `anode`.
 
-    (count (sexp/forms-of (sexp/tree \"(a) ; c\\n(b)\")))   → 2"
+    (count (sexp/forms-of (sexp/tree \"(a) ; c\\n(b)\")))   ;=> 2"
     (seq/filter (or (get anode :kids) (list)) form?)))
 (sig forms-of (map -> (list sexp-node)))
 
@@ -99,7 +99,7 @@ point, where each form ends — without a completeness gate; whether the text
 `:kind :error` (e.g. an unterminated string swallowing the rest of the text) —
 fine for position queries, but don't feed the returned spans to `reflect/eval` unchecked.
 
-    (count (sexp/top-level-forms \"(a)\n(b)\n\"))   → 2"
+    (count (sexp/top-level-forms \"(a)\n(b)\n\"))   ;=> 2"
   (forms-of (tree text)))
 
 ;; ---- narrowing: bound structural queries to the forms around point ----------
@@ -126,8 +126,8 @@ from `point` stays inside this window, so running the CST queries on `sub` (with
 shifted by `base`, the result shifted back) matches running them on all of `text` — at a
 cost of ~three forms, not the whole buffer.
 
-    (sexp/narrow \"(a)\\n(b)\\n(c)\\n(d)\" 9)   → [4 \"(b)\\n(c)\\n(d)\"]
-    (sexp/narrow (text/from-string \"(a)\\n(b)\\n(c)\\n(d)\") 9)   → [4 \"(b)\\n(c)\\n(d)\"]"
+    (sexp/narrow \"(a)\\n(b)\\n(c)\\n(d)\" 9)   ;=> [4 \"(b)\\n(c)\\n(d)\"]
+    (sexp/narrow (text/from-string \"(a)\\n(b)\\n(c)\\n(d)\") 9)   ;=> [4 \"(b)\\n(c)\\n(d)\"]"
   (let (n (text/length text)
         p (math/max 0 (math/min point n))
         ;; ONE lexical pass for both offsets — two `scan-form-start` calls would re-walk
@@ -211,27 +211,27 @@ The shared body of the backward motions."
   "End of the next sexp at or after `point` within the enclosing list; unchanged if
 there is none (the Emacs `forward-sexp`).
 
-    (sexp/point-forward \"(a b)\" 0)    → 5"
+    (sexp/point-forward \"(a b)\" 0)    ;=> 5"
   (sexp-sibling-forward text point sexp-anything?))
 
 (defn point-backward (text point)
   "Start of the previous sexp ending at or before `point` (Emacs `backward-sexp`).
 
-    (sexp/point-backward \"(a b)\" 5)   → 0"
+    (sexp/point-backward \"(a b)\" 5)   ;=> 0"
   (sexp-sibling-backward text point sexp-anything?))
 
 (defn point-list-forward (text point)
   "End of the next LIST at or after `point` within the enclosing list — atoms are stepped
 over, not stopped at (Emacs `forward-list`, C-M-n); unchanged if there is none.
 
-    (sexp/point-list-forward \"(a) (b)\" 0)   → 3"
+    (sexp/point-list-forward \"(a) (b)\" 0)   ;=> 3"
   (sexp-sibling-forward text point sexp-list?))
 
 (defn point-list-backward (text point)
   "Start of the previous LIST ending at or before `point` — atoms stepped over (Emacs
 `backward-list`, C-M-p); unchanged if there is none.
 
-    (sexp/point-list-backward \"(a) (b)\" 7)  → 4"
+    (sexp/point-list-backward \"(a) (b)\" 7)  ;=> 4"
   (sexp-sibling-backward text point sexp-list?))
 
 ;; The keys get these two; the pure pair above keeps Emacs' exact contract (`forward-sexp`
@@ -245,7 +245,7 @@ over, not stopped at (Emacs `forward-list`, C-M-n); unchanged if there is none.
   "`point-forward`, escaping the enclosing list when no sibling follows (paredit
 `forward`): the end of the next sexp, else just past the enclosing list's close
 delimiter, else `point`.
-    (sexp/point-forward-out \"(a b) c\" 4)   → 5"
+    (sexp/point-forward-out \"(a b) c\" 4)   ;=> 5"
   (let (q (point-forward text point))
     (if (= q point) (point-up-forward text point) q)))
 
@@ -253,7 +253,7 @@ delimiter, else `point`.
   "`point-backward`, escaping the enclosing list when no sibling precedes (paredit
 `backward`): the start of the previous sexp, else before the enclosing list's open
 delimiter, else `point`.
-    (sexp/point-backward-out \"(a b) c\" 1)   → 0"
+    (sexp/point-backward-out \"(a b) c\" 1)   ;=> 0"
   (let (q (point-backward text point))
     (if (= q point) (point-up text point) q)))
 
@@ -261,7 +261,7 @@ delimiter, else `point`.
   "Start of the enclosing list — before its opening delimiter (Emacs
 `backward-up-list`); unchanged at top level.
 
-    (sexp/point-up \"(a (b))\" 4)       → 3"
+    (sexp/point-up \"(a (b))\" 4)       ;=> 3"
   (let (site (sexp-site text point))
     (if (sexp-top-level? site) point (sexp-abs site (sexp-start (:enc site))))))
 
@@ -269,7 +269,7 @@ delimiter, else `point`.
   "Just past the enclosing list's closing delimiter — the forward counterpart of
 `point-up` (Emacs `up-list`); unchanged at top level.
 
-    (sexp/point-up-forward \"(a (b))\" 4)   → 6"
+    (sexp/point-up-forward \"(a (b))\" 4)   ;=> 6"
   (let (site (sexp-site text point))
     (if (sexp-top-level? site) point (sexp-abs site (sexp-end (:enc site))))))
 
@@ -277,7 +277,7 @@ delimiter, else `point`.
   "Just inside the next list at or after `point` (Emacs `down-list`); unchanged if
 none.
 
-    (sexp/point-down \"(a b)\" 0)       → 1"
+    (sexp/point-down \"(a b)\" 0)       ;=> 1"
   (let (site (sexp-site text point)
         rp (:rp site)
         lst (seq/find (forms-of (:enc site)) (fn (f) (and (sexp-list? f) (>= (sexp-start f) rp)))))
@@ -298,14 +298,14 @@ none.
   "Start of the top-level form containing `point` (Emacs `beginning-of-defun`);
 unchanged if `point` isn't within one.
 
-    (sexp/point-defun-start \"(a)\\n(b (c))\" 8)   → 4"
+    (sexp/point-defun-start \"(a)\\n(b (c))\" 8)   ;=> 4"
   (sexp-defun-edge text point :start))
 
 (defn point-defun-end (text point)
   "End of the top-level form containing `point` (Emacs `end-of-defun`, C-M-e);
 unchanged if `point` isn't within one.
 
-    (sexp/point-defun-end \"(defn f (x)\n  (+ x 1))\n\" 0)   → 22"
+    (sexp/point-defun-end \"(defn f (x)\n  (+ x 1))\n\" 0)   ;=> 22"
   (sexp-defun-edge text point :end))
 
 ;; ---- pure structural edits: (text point) -> [new-text new-point] ------------
@@ -334,7 +334,7 @@ edit). Wrapped in `[tr enc]` so callers reuse the one tree for parent/child look
   "Pull the sibling form *after* the enclosing list inside it — move the close
 delimiter past that form (Emacs/paredit `forward-slurp-sexp`).
 
-    (sexp/point-slurp-forward \"(a) b\" 1)   → [\"(a b)\" 1]"
+    (sexp/point-slurp-forward \"(a) b\" 1)   ;=> [\"(a b)\" 1]"
   (let (ctx (sexp-enc-of text point))
     (if (nil? ctx)
       nil
@@ -355,7 +355,7 @@ delimiter past that form (Emacs/paredit `forward-slurp-sexp`).
   "Expel the last form of the enclosing list — move the close delimiter in past the
 form before it (paredit `forward-barf-sexp`); point stays inside the list.
 
-    (sexp/point-barf-forward \"(a b)\" 1)    → [\"(a) b\" 1]"
+    (sexp/point-barf-forward \"(a b)\" 1)    ;=> [\"(a) b\" 1]"
   (let (ctx (sexp-enc-of text point))
     (if (nil? ctx)
       nil
@@ -382,7 +382,7 @@ form before it (paredit `forward-barf-sexp`); point stays inside the list.
   "Pull the sibling form *before* the enclosing list inside it — move the open
 delimiter back over that form (paredit `backward-slurp-sexp`).
 
-    (sexp/point-slurp-backward \"a (b)\" 3)  → [\"(a b)\" 3]"
+    (sexp/point-slurp-backward \"a (b)\" 3)  ;=> [\"(a b)\" 3]"
   (let (ctx (sexp-enc-of text point))
     (if (nil? ctx)
       nil
@@ -403,7 +403,7 @@ delimiter back over that form (paredit `backward-slurp-sexp`).
   "Expel the first form of the enclosing list — move the open delimiter in past the
 form after it (paredit `backward-barf-sexp`); point stays inside the list.
 
-    (sexp/point-barf-backward \"(a b)\" 1)   → [\"a (b)\" 3]"
+    (sexp/point-barf-backward \"(a b)\" 1)   ;=> [\"a (b)\" 3]"
   (let (ctx (sexp-enc-of text point))
     (if (nil? ctx)
       nil
@@ -426,7 +426,7 @@ form after it (paredit `backward-barf-sexp`); point stays inside the list.
   "Replace the enclosing list with the child form point is in/on, deleting that
 form's siblings (paredit `raise-sexp`).
 
-    (sexp/point-raise \"(a (b))\" 3)      → [\"(b)\" 0]"
+    (sexp/point-raise \"(a (b))\" 3)      ;=> [\"(b)\" 0]"
   (let (ctx (sexp-enc-of text point))
     (if (nil? ctx)
       nil
@@ -447,7 +447,7 @@ form's siblings (paredit `raise-sexp`).
   "Remove the enclosing list's delimiters, keeping its contents (paredit
 `splice-sexp`).
 
-    (sexp/point-splice \"(a (b c))\" 4)   → [\"(a b c)\" 3]"
+    (sexp/point-splice \"(a (b c))\" 4)   ;=> [\"(a b c)\" 3]"
   (let (ctx (sexp-enc-of text point))
     (if (nil? ctx)
       nil
@@ -464,7 +464,7 @@ form's siblings (paredit `raise-sexp`).
   "Wrap the form at or after `point` in a fresh `open … close`, point landing just inside
 the new open — paredit's `wrap-round` for any delimiter pair (`wrap-square`, `wrap-curly`).
 
-    (sexp/point-wrap \"a b\" 0 \"[\" \"]\")   → [\"[a] b\" 1]"
+    (sexp/point-wrap \"a b\" 0 \"[\" \"]\")   ;=> [\"[a] b\" 1]"
   (let (tr (tree text)
         enc (enclosing tr point)
         nxt (seq/find (forms-of enc) (fn (f) (>= (get f :end) point))))
@@ -482,7 +482,7 @@ the new open — paredit's `wrap-round` for any delimiter pair (`wrap-square`, `
   "Wrap the form at or after `point` in a fresh `( … )`, point landing just inside the
 new open (paredit `wrap-round`).
 
-    (sexp/point-wrap-round \"a b\" 0)     → [\"(a) b\" 1]"
+    (sexp/point-wrap-round \"a b\" 0)     ;=> [\"(a) b\" 1]"
   (point-wrap text point "(" ")"))
 
 (defn span-wrap (text:string lo:int hi:int open:string close:string -> (tuple string int))
@@ -491,7 +491,7 @@ open — what an opening bracket typed over an ACTIVE REGION does (paredit's `wr
 on a selection, Emacs's `electric-pair-mode` with a region). No structure is consulted:
 the selection IS the form the user means.
 
-    (sexp/span-wrap \"a b c\" 2 3 \"(\" \")\")   → [\"a (b) c\" 3]"
+    (sexp/span-wrap \"a b c\" 2 3 \"(\" \")\")   ;=> [\"a (b) c\" 3]"
   [(str (string/substring text 0 lo)
      open
      (string/substring text lo hi)
@@ -507,7 +507,7 @@ chord mid-symbol swaps it with its predecessor, as it does in Emacs. Only the sp
 `[prev.start, next.end)` is rearranged and its length is unchanged, so point lands exactly
 at `next.end` (the whitespace between the two forms is preserved in place).
 
-    (sexp/point-transpose \"(a b)\" 2)   → [\"(b a)\" 4]"
+    (sexp/point-transpose \"(a b)\" 2)   ;=> [\"(b a)\" 4]"
   (let (enc (enclosing (tree text) point)
         sibs (forms-of enc)
         inside (seq/find sibs (fn (f) (and (< (get f :start) point) (< point (get f :end)))))
@@ -545,8 +545,8 @@ but never past the enclosing list's closing delimiter — so a kill never breaks
 parens. At end of line, kills the newline. At least `point` (a no-op at the close). `text` is a
 string or a rope.
 
-    (sexp/point-kill-end \"(a b c)\" 3)  → 6
-    (sexp/point-kill-end (text/from-string \"(a\\n b)\") 1)  → 2"
+    (sexp/point-kill-end \"(a b c)\" 3)  ;=> 6
+    (sexp/point-kill-end (text/from-string \"(a\\n b)\") 1)  ;=> 2"
   ;; The enclosing list from the narrowed window around point ([[sexp-site]]), not a parse
   ;; of the whole text: a C-k in a 44k-line file parsed all of it, 140-230 ms a keystroke.
   (let (n (text/length text)
@@ -574,122 +574,122 @@ single undo unit), leaving point at `new-point`; `buf` unchanged when `result` i
 (defn forward (buf key)
   "Move point over the next sexp (Emacs `forward-sexp`); buffer command.
 
-    (editor/buffer/buffer-point (sexp/forward (editor/buffer/make-buffer \"(a b) c\") nil))   → 5"
+    (editor/buffer/buffer-point (sexp/forward (editor/buffer/make-buffer \"(a b) c\") nil))   ;=> 5"
   (goto-char buf (point-forward (buffer-rope buf) (get buf :point))))
 (defn backward (buf key)
   "Move point back over the previous sexp (Emacs `backward-sexp`); buffer command.
 
-    (editor/buffer/buffer-point (sexp/backward (editor/buffer/end-of-buffer (editor/buffer/make-buffer \"a (b c)\")) nil))   → 2"
+    (editor/buffer/buffer-point (sexp/backward (editor/buffer/end-of-buffer (editor/buffer/make-buffer \"a (b c)\")) nil))   ;=> 2"
   (goto-char buf (point-backward (buffer-rope buf) (get buf :point))))
 (defn forward-out (buf key)
   "`forward`, stepping out of the list when nothing follows (paredit); the motion to
 bind to C-M-f — `forward` stays the edit primitive (kill/mark).
 
-    (editor/buffer/buffer-point (sexp/forward-out (editor/buffer/goto-char (editor/buffer/make-buffer \"(a b) c\") 4) nil))   → 5"
+    (editor/buffer/buffer-point (sexp/forward-out (editor/buffer/goto-char (editor/buffer/make-buffer \"(a b) c\") 4) nil))   ;=> 5"
   (goto-char buf (point-forward-out (buffer-rope buf) (get buf :point))))
 (defn backward-out (buf key)
   "`backward`, stepping out of the list when nothing precedes (paredit); the motion to
 bind to C-M-b.
 
-    (editor/buffer/buffer-point (sexp/backward-out (editor/buffer/goto-char (editor/buffer/make-buffer \"x (a b)\") 3) nil))   → 2"
+    (editor/buffer/buffer-point (sexp/backward-out (editor/buffer/goto-char (editor/buffer/make-buffer \"x (a b)\") 3) nil))   ;=> 2"
   (goto-char buf (point-backward-out (buffer-rope buf) (get buf :point))))
 (defn up (buf key)
   "Move point out of the enclosing list, before its open delimiter (Emacs
 `backward-up-list`); buffer command.
 
-    (editor/buffer/buffer-point (sexp/up (editor/buffer/goto-char (editor/buffer/make-buffer \"x (a b)\") 5) nil))   → 2"
+    (editor/buffer/buffer-point (sexp/up (editor/buffer/goto-char (editor/buffer/make-buffer \"x (a b)\") 5) nil))   ;=> 2"
   (goto-char buf (point-up (buffer-rope buf) (get buf :point))))
 (defn down (buf key)
   "Move point into the next list, just past its open delimiter (Emacs `down-list`);
 buffer command.
 
-    (editor/buffer/buffer-point (sexp/down (editor/buffer/make-buffer \"x (a b)\") nil))   → 3"
+    (editor/buffer/buffer-point (sexp/down (editor/buffer/make-buffer \"x (a b)\") nil))   ;=> 3"
   (goto-char buf (point-down (buffer-rope buf) (get buf :point))))
 (defn list-forward (buf key)
   "Move point over the next LIST, stepping past atoms (Emacs `forward-list`); buffer
 command.
 
-    (editor/buffer/buffer-point (sexp/list-forward (editor/buffer/make-buffer \"a b (c)\") nil))   → 7"
+    (editor/buffer/buffer-point (sexp/list-forward (editor/buffer/make-buffer \"a b (c)\") nil))   ;=> 7"
   (goto-char buf (point-list-forward (buffer-rope buf) (get buf :point))))
 (defn list-backward (buf key)
   "Move point back over the previous LIST, stepping past atoms (Emacs `backward-list`);
 buffer command.
 
-    (editor/buffer/buffer-point (sexp/list-backward (editor/buffer/end-of-buffer (editor/buffer/make-buffer \"(a) b c\")) nil))   → 0"
+    (editor/buffer/buffer-point (sexp/list-backward (editor/buffer/end-of-buffer (editor/buffer/make-buffer \"(a) b c\")) nil))   ;=> 0"
   (goto-char buf (point-list-backward (buffer-rope buf) (get buf :point))))
 (defn up-forward (buf key)
   "Move point out of the enclosing list, past its close delimiter (Emacs `up-list`);
 buffer command.
 
-    (editor/buffer/buffer-point (sexp/up-forward (editor/buffer/goto-char (editor/buffer/make-buffer \"(a b) c\") 2) nil))   → 5"
+    (editor/buffer/buffer-point (sexp/up-forward (editor/buffer/goto-char (editor/buffer/make-buffer \"(a b) c\") 2) nil))   ;=> 5"
   (goto-char buf (point-up-forward (buffer-rope buf) (get buf :point))))
 (defn beginning-of-defun (buf key)
   "Move point to the start of the enclosing top-level form (Emacs `beginning-of-defun`);
 buffer command.
 
-    (editor/buffer/buffer-point (sexp/beginning-of-defun (editor/buffer/goto-char (editor/buffer/make-buffer \"(a)\\n(b c)\") 7) nil))   → 4"
+    (editor/buffer/buffer-point (sexp/beginning-of-defun (editor/buffer/goto-char (editor/buffer/make-buffer \"(a)\\n(b c)\") 7) nil))   ;=> 4"
   (goto-char buf (point-defun-start (buffer-rope buf) (get buf :point))))
 (defn end-of-defun (buf key)
   "Move point to the end of the enclosing top-level form (Emacs `end-of-defun`); buffer
 command.
 
-    (editor/buffer/buffer-point (sexp/end-of-defun (editor/buffer/goto-char (editor/buffer/make-buffer \"(a)\\n(b c)\") 5) nil))   → 9"
+    (editor/buffer/buffer-point (sexp/end-of-defun (editor/buffer/goto-char (editor/buffer/make-buffer \"(a)\\n(b c)\") 5) nil))   ;=> 9"
   (goto-char buf (point-defun-end (buffer-rope buf) (get buf :point))))
 
 (defn slurp-forward (buf key)
   "Grow the enclosing list to swallow the sibling form after it (paredit
 `forward-slurp-sexp`); buffer command, no-op when there's none.
 
-    (editor/buffer/buffer-text (sexp/slurp-forward (editor/buffer/goto-char (editor/buffer/make-buffer \"(a b) c\") 2) nil))   → \"(a b c)\""
+    (editor/buffer/buffer-text (sexp/slurp-forward (editor/buffer/goto-char (editor/buffer/make-buffer \"(a b) c\") 2) nil))   ;=> \"(a b c)\""
   (sexp-apply-edit buf (point-slurp-forward (buffer-text buf) (get buf :point))))
 (defn barf-forward (buf key)
   "Shrink the enclosing list, expelling its last form (paredit `forward-barf-sexp`);
 buffer command, no-op when it's empty.
 
-    (editor/buffer/buffer-text (sexp/barf-forward (editor/buffer/goto-char (editor/buffer/make-buffer \"(a b c)\") 2) nil))   → \"(a b) c\""
+    (editor/buffer/buffer-text (sexp/barf-forward (editor/buffer/goto-char (editor/buffer/make-buffer \"(a b c)\") 2) nil))   ;=> \"(a b) c\""
   (sexp-apply-edit buf (point-barf-forward (buffer-text buf) (get buf :point))))
 (defn slurp-backward (buf key)
   "Grow the enclosing list to swallow the sibling form before it (paredit
 `backward-slurp-sexp`); buffer command, no-op when there's none.
 
-    (editor/buffer/buffer-text (sexp/slurp-backward (editor/buffer/goto-char (editor/buffer/make-buffer \"a (b c)\") 4) nil))   → \"(a b c)\""
+    (editor/buffer/buffer-text (sexp/slurp-backward (editor/buffer/goto-char (editor/buffer/make-buffer \"a (b c)\") 4) nil))   ;=> \"(a b c)\""
   (sexp-apply-edit buf (point-slurp-backward (buffer-text buf) (get buf :point))))
 (defn barf-backward (buf key)
   "Shrink the enclosing list, expelling its first form (paredit `backward-barf-sexp`);
 buffer command, no-op when it's empty.
 
-    (editor/buffer/buffer-text (sexp/barf-backward (editor/buffer/goto-char (editor/buffer/make-buffer \"(a b c)\") 4) nil))   → \"a (b c)\""
+    (editor/buffer/buffer-text (sexp/barf-backward (editor/buffer/goto-char (editor/buffer/make-buffer \"(a b c)\") 4) nil))   ;=> \"a (b c)\""
   (sexp-apply-edit buf (point-barf-backward (buffer-text buf) (get buf :point))))
 (defn raise (buf key)
   "Replace the enclosing list with the form point is on, deleting its siblings (paredit
 `raise-sexp`); buffer command, no-op at top level.
 
-    (editor/buffer/buffer-text (sexp/raise (editor/buffer/goto-char (editor/buffer/make-buffer \"(f (g x))\") 6) nil))   → \"(f x)\""
+    (editor/buffer/buffer-text (sexp/raise (editor/buffer/goto-char (editor/buffer/make-buffer \"(f (g x))\") 6) nil))   ;=> \"(f x)\""
   (sexp-apply-edit buf (point-raise (buffer-text buf) (get buf :point))))
 (defn splice (buf key)
   "Remove the enclosing list's delimiters, splicing its contents up a level (paredit
 `splice-sexp`); buffer command, no-op at top level.
 
-    (editor/buffer/buffer-text (sexp/splice (editor/buffer/goto-char (editor/buffer/make-buffer \"(f (g x))\") 5) nil))   → \"(f g x)\""
+    (editor/buffer/buffer-text (sexp/splice (editor/buffer/goto-char (editor/buffer/make-buffer \"(f (g x))\") 5) nil))   ;=> \"(f g x)\""
   (sexp-apply-edit buf (point-splice (buffer-text buf) (get buf :point))))
 (defn wrap-round (buf key)
   "Wrap the form at or after point in a fresh `( … )` (paredit `wrap-round`); buffer
 command, no-op when there's no following form.
 
-    (editor/buffer/buffer-text (sexp/wrap-round (editor/buffer/make-buffer \"a b\") nil))   → \"(a) b\""
+    (editor/buffer/buffer-text (sexp/wrap-round (editor/buffer/make-buffer \"a b\") nil))   ;=> \"(a) b\""
   (sexp-apply-edit buf (point-wrap-round (buffer-text buf) (get buf :point))))
 (defn wrap (buf:buffer open:string close:string -> buffer)
   "Wrap the form at or after point in a fresh `open … close` (`point-wrap`); buffer
 command, no-op when there's no following form.
 
-    (editor/buffer/buffer-text (sexp/wrap (editor/buffer/make-buffer \"a b\") \"[\" \"]\"))   → \"[a] b\""
+    (editor/buffer/buffer-text (sexp/wrap (editor/buffer/make-buffer \"a b\") \"[\" \"]\"))   ;=> \"[a] b\""
   (sexp-apply-edit buf (point-wrap (buffer-text buf) (get buf :point) open close)))
 (defn wrap-region (buf:buffer open:string close:string -> buffer)
   "Wrap the buffer's active region in `open … close` (`span-wrap`), point landing just
 inside the new open and the region deactivated — what an opening bracket typed over a
 selection does. `buf` unchanged when no region is active.
 
-    (editor/buffer/buffer-text (sexp/wrap-region (editor/buffer/goto-char (editor/buffer/set-mark (editor/buffer/make-buffer \"a b c\")) 3) \"{\" \"}\"))   → \"{a b} c\""
+    (editor/buffer/buffer-text (sexp/wrap-region (editor/buffer/goto-char (editor/buffer/set-mark (editor/buffer/make-buffer \"a b c\")) 3) \"{\" \"}\"))   ;=> \"{a b} c\""
   (let (bounds (buffer-region-bounds buf))
     (if (nil? bounds)
       buf
@@ -699,5 +699,5 @@ selection does. `buf` unchanged when no region is active.
   "Swap the sexps before and after point (Emacs `transpose-sexps`); buffer command,
 no-op without a form on each side.
 
-    (editor/buffer/buffer-text (sexp/transpose (editor/buffer/goto-char (editor/buffer/make-buffer \"a b\") 1) nil))   → \"b a\""
+    (editor/buffer/buffer-text (sexp/transpose (editor/buffer/goto-char (editor/buffer/make-buffer \"a b\") 1) nil))   ;=> \"b a\""
   (sexp-apply-edit buf (point-transpose (buffer-text buf) (get buf :point))))

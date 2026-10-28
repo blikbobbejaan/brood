@@ -321,7 +321,7 @@ debugger breaks at (`debug/break-fn`); stepping is not supported.")
   "Start a DAP server on 127.0.0.1:`port` (0: one the OS picks) in a new process, each editor
 connection its own session. Returns `[pid port]`.
 
-    (second (dap/listen))   ;=> the port an editor connects to"
+    (second (dap/listen))   ;~> the port an editor connects to"
   (let (me (self)
         server (spawn (fn ()
                         (let (listener (tcp/listen "127.0.0.1" port))
@@ -332,7 +332,7 @@ connection its own session. Returns `[pid port]`.
 (defn main (&optional (port 0))
   "`nest dap`: serve DAP on 127.0.0.1:`port`, say where, and run until killed.
 
-    (dap/main 4711)   ;=> never returns; prints \"dap: listening on 127.0.0.1:4711\""
+    (dap/main 4711)   ;~> never returns; prints \"dap: listening on 127.0.0.1:4711\""
   (let ([server bound] (listen port))
     (io/puts (str "dap: listening on 127.0.0.1:" bound))
     (monitor server)

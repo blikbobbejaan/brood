@@ -4,7 +4,7 @@
 ;; so the answers cannot drift:
 ;;
 ;;   1. Does it carry a docstring?
-;;   2. Does that docstring carry a runnable `form → result` EXAMPLE? (`doctest`
+;;   2. Does that docstring carry a runnable `form ;=> result` EXAMPLE? (`doctest`
 ;;      already executes those — this reports the ones that have none to execute.)
 ;;   3. Is its argument order data-first (ADR-308) — the collection ahead of the
 ;;      callback or index?
@@ -20,7 +20,7 @@
 (defmodule audit
   "Audit the public surface: docstrings, examples, and data-first argument order.
 `(audit/report)` prints the summary; the predicates back it and can be called on their
-own. Four checks: a docstring, a `form → result` example, data-first argument order
+own. Four checks: a docstring, a `form ;=> result` example, data-first argument order
 (ADR-308), and a declared signature whose parameter count matches the function.
 Argument order is judged on declared TYPES where they exist and parameter names
 otherwise, so it does not depend on an author's choice of spelling.")
@@ -71,7 +71,7 @@ its module on demand, so `table/*` and every other un-required namespace were si
 absent from `reflect/global-names` and silently unaudited. Returns how many modules
 are known.
 
-    (> (audit/load-everything) 50)   → true"
+    (> (audit/load-everything) 50)   ;=> true"
   ;; check-allow :discarded-catch — a module this binary cannot load (a lean build has no
   ;; dev-tools; a GUI module needs a display) is simply not part of the surface to audit.
   ;; The failure IS the answer, so there is nothing in `e` to inspect.
@@ -84,7 +84,7 @@ are known.
 surface this module audits. Excludes `%internal` names, anything `defn-` made
 private, and anything defined outside `std/`.
 
-    (> (count (audit/public-names)) 100)   → true"
+    (> (count (audit/public-names)) 100)   ;=> true"
   (sort (seq/filterv (reflect/global-names)
           (fn (name)
             (and (not (internal? name))
@@ -101,26 +101,26 @@ private, and anything defined outside `std/`.
 (defn documented? (name)
   "True when `name`'s binding carries a non-empty docstring.
 
-    (audit/documented? 'audit/report)   → true"
+    (audit/documented? 'audit/report)   ;=> true"
   (not (= "" (docstring-of name))))
 
 (defn exemplified? (name)
-  "True when `name`'s docstring carries at least one `form → result` example — the shape
-`doctest` executes — or a `form ;=> result` illustration, the shape for a function whose
+  "True when `name`'s docstring carries at least one `form ;=> result` example — the shape
+`doctest` executes — or a `form ;~> result` illustration, the shape for a function whose
 result depends on the world, which `doctest` reads and checks the callee of.
 
-    (audit/exemplified? 'audit/documented?)   → true"
+    (audit/exemplified? 'audit/documented?)   ;=> true"
   (let (d (docstring-of name))
-    (or (includes? d "→") (includes? d " ;=> "))))
+    (or (includes? d " ;=> ") (includes? d " ;~> "))))
 
 (defn undocumented (-> seqable)
   "The public names carrying no docstring at all.
 
-    (audit/undocumented)   ;=> (…public names with no docstring…)"
+    (audit/undocumented)   ;~> (…public names with no docstring…)"
   (seq/filterv (public-names) (fn (name) (not (documented? name)))))
 
 (defn exampleless (-> seqable)
-  "The public names that are documented but show no `form → result` example."
+  "The public names that are documented but show no `form ;=> result` example."
   (seq/filterv (public-names)
     (fn (name) (and (documented? name) (not (exemplified? name))))))
 
@@ -153,7 +153,7 @@ convention. Judged on the declared TYPES first (an arrow parameter is a callback
 `seqable`/`countable` one is the collection) and on parameter NAMES as a fallback.
 A name with no recognisable pair is vacuously true.
 
-    (audit/data-first? 'map)   → true"
+    (audit/data-first? 'map)   ;=> true"
   (let (params (or (arglist (reflect/eval name)) [])
         types (or (sig-params name) [])
         ;; Types are the stronger signal: they do not depend on the author's choice of
@@ -209,7 +209,7 @@ A name with no recognisable pair is vacuously true.
   "The declared parameter TYPES of `name` as a list of strings, or nil when it declares
 no signature. Split at top level, so a callback's own `(any, any) -> any` stays one.
 
-    (audit/sig-params 'map)   → (\"seqable\" \"(any) -> any\")"
+    (audit/sig-params 'map)   ;=> (\"seqable\" \"(any) -> any\")"
   (let (sig (reflect/type-signature name))
     (when (string? sig)
       ;; The MATCHING close paren, not the first: `(seqable, (any) -> any) -> seqable`
@@ -252,7 +252,7 @@ so `table/get` — whose arms are `(t k)` and `(t k default)` — reads as a mis
 a signature that correctly describes its 2-arity arm. Variadic and `&optional` heads are
 exempt too: their arity is a range no fixed list can contradict.
 
-    (audit/sig-arity-ok? 'map)   → true"
+    (audit/sig-arity-ok? 'map)   ;=> true"
   (let (params (arglist (reflect/eval name))
         declared (sig-params name))
     (cond
@@ -273,14 +273,14 @@ exempt too: their arity is a range no fixed list can contradict.
   "Public names whose declared signature and actual parameter list disagree on COUNT —
 a signature that cannot be right, whatever the types say.
 
-    (audit/sig-arity-mismatches)   ;=> (…names whose sig and parameter list disagree on count…) — ideally empty"
+    (audit/sig-arity-mismatches)   ;~> (…names whose sig and parameter list disagree on count…) — ideally empty"
   (seq/filterv (public-names) (fn (name) (not (sig-arity-ok? name)))))
 
 (defn reversed-args (-> seqable)
   "The public names whose parameters put a callback or index ahead of the
 collection — ADR-308 suspects, by parameter name.
 
-    (audit/reversed-args)   ;=> (…public names whose callback or index precedes the collection…)"
+    (audit/reversed-args)   ;~> (…public names whose callback or index precedes the collection…)"
   (seq/filterv (public-names) (fn (name) (not (data-first? name)))))
 
 ;; ---- the report -------------------------------------------------------------
@@ -294,7 +294,7 @@ collection — ADR-308 suspects, by parameter name.
   "Print the surface audit — counts and names for each of the three checks —
 and return `{:total :undocumented :exampleless :reversed-args}`.
 
-    (string/starts-with? (with-out-str (audit/report)) \"surface audit — \")   → true"
+    (string/starts-with? (with-out-str (audit/report)) \"surface audit — \")   ;=> true"
   (load-everything)
   (let (total (count (public-names))
         no-doc (undocumented)

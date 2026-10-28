@@ -68,14 +68,14 @@ a module like any other — `(def call …)` in your own code is yours.")
   "Point `registry`'s name at its pid and its entries table. Internal: `names`'s registry
 calls it once, at its start.
 
-    (gen/%via-publish :sessions (self) (table/new))   ;=> the directory"
+    (gen/%via-publish :sessions (self) (table/new))   ;~> the directory"
   (table/put via-directory registry [pid entries]))
 
 (defn %via-table (registry)
   "The entries table of the running registry named `registry`, or nil. Internal: what
 `names`'s reads and `gen`'s `{:via …}` addresses read.
 
-    (gen/%via-table :no-such-registry)   → nil"
+    (gen/%via-table :no-such-registry)   ;=> nil"
   (let (published (table/get via-directory registry))
     (when (and published (proc/alive? (first published))) (second published))))
 
@@ -85,7 +85,7 @@ calls it once, at its start.
   "The raw entry under `key` in the running registry named `registry` — `[pid value]` for a
 unique key, a map pid → value for a duplicate one — or nil. Internal, for `names`.
 
-    (gen/%via-entry :no-such-registry :k)   → nil"
+    (gen/%via-entry :no-such-registry :k)   ;=> nil"
   (let (entries (%via-table registry))
     (when entries
       (check-allow :discarded-catch
@@ -113,7 +113,7 @@ unique key, a map pid → value for a duplicate one — or nil. Internal, for `n
   "Send `payload` to a server process as a cast — fire-and-forget, the asynchronous
 counterpart to `call` (no reply, the caller never blocks).
 
-    (gen/cast server [:put :k 1])   ;=> nil — the server handles it asynchronously"
+    (gen/cast server [:put :k 1])   ;~> nil — the server handles it asynchronously"
   (gen-send pid [:$cast payload]))
 
 (defn call (pid payload)
@@ -122,7 +122,7 @@ server, so a *dead* server raises at once rather than hanging; a timeout raises 
 `call-timeout` for a custom deadline. Other messages stay queued — the reply is matched by
 a fresh (ref).
 
-    (gen/call server :ping)   ;=> the server's reply, e.g. :pong"
+    (gen/call server :ping)   ;~> the server's reply, e.g. :pong"
   (call-timeout pid payload 5000))
 
 (defn call-timeout (pid payload ms)
@@ -143,7 +143,7 @@ selective receive. `(%ref-deactivate r)` closes that: the kernel drops a message
 addressed to a deactivated ref **at delivery**, so it never enters the queue at
 all (ADR-244).
 
-    (gen/call-timeout server [:get :k] 500)   ;=> the reply, or raises `call: timed out …` after 500 ms"
+    (gen/call-timeout server [:get :k] 500)   ;~> the reply, or raises `call: timed out …` after 500 ms"
   (let (target (gen-target pid))
     (when (nil? target)
       (error "call: no process holds " (pr-str pid)))
@@ -196,7 +196,7 @@ Safe to call after the caller gave up: its reply `ref` is a one-shot alias, so a
 answer is dropped at delivery rather than left unmatchable in the mailbox. Replying
 twice to one token is likewise harmless — the second is dropped.
 
-    (gen/reply reply result)   ;=> the caller blocked in `gen/call` returns `result`"
+    (gen/reply reply result)   ;~> the caller blocked in `gen/call` returns `result`"
   (send (nth token 0) [:reply (nth token 1) value]))
 
 (defn stop (pid: (or map pid) -> nil)
@@ -205,7 +205,7 @@ twice to one token is likewise harmless — the second is dropped.
 acknowledgement (the process is gone by the time the caller could check). Safe to
 send to a pid that has already exited.
 
-    (gen/stop server)   ;=> nil — the server runs its `terminate` clause and exits"
+    (gen/stop server)   ;~> nil — the server runs its `terminate` clause and exits"
   (gen-send pid [:$stop]))
 
 (defn code-change (pid: (or map pid) -> nil)
@@ -219,7 +219,7 @@ like `stop`, there is no acknowledgement; follow with a `call`/`query` if you
 need to observe the migrated state. A supervisor (or an `on-reload` hook) is the
 usual caller, once per affected child after a reload.
 
-    (gen/code-change server)   ;=> nil — the server migrates its state on its next message"
+    (gen/code-change server)   ;~> nil — the server migrates its state on its next message"
   (gen-send pid [:$code-change]))
 
 ;; One entry with options rather than a verb per combination (ADR-433): `start-link` and
@@ -236,8 +236,8 @@ optional map:
     address, which registers it in that `names` registry. A key another live process
     holds there is not taken: the new server is stopped and the answer is the failure.
 
-    (gen/start counter 0)                                 ;=> the pid of a `counter` server with state 0
-    (gen/start counter 0 {:link true :name :counter})     ;=> the pid, linked to the caller and registered as :counter"
+    (gen/start counter 0)                                 ;~> the pid of a `counter` server with state 0
+    (gen/start counter 0 {:link true :name :counter})     ;~> the pid, linked to the caller and registered as :counter"
   (let (options (or (first opts) {})
         unknown (seq/reject (keys options) (fn (k) (contains? *start-options* k))))
     (when (not (empty? unknown))
@@ -430,7 +430,7 @@ clause is dropped (so the mailbox can't leak)."
 `handler` maps `[state event data]` to an action, `terminate` is nil or a function of
 `reason` and `data`, and `initial` is `[state data]` or `[state data opts]`.
 
-    (gen/run-statem handler nil [:idle {}])   ;=> nil, once the machine stops"
+    (gen/run-statem handler nil [:idle {}])   ;~> nil, once the machine stops"
   (let (opts (if (> (count initial) 2) (nth initial 2) {}))
     (statem-loop handler
       terminate

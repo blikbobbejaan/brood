@@ -66,7 +66,7 @@ Per-language face tables + keymaps are policy in the editor. `(require
 What a registration checks before accepting a language, so an incomplete mode fails at
 load with the list rather than at the keypress that needed it.
 
-    (editor/treesit/missing-services {:ts-lang :elixir})   → (:fontify :indent)"
+    (editor/treesit/missing-services {:ts-lang :elixir})   ;=> (:fontify :indent)"
   (seq/filter (get language-contract :required) (fn (k) (nil? (get layer k)))))
 
 ;; A face table is the other half of what a language hands the seam, and it has a SHAPE
@@ -121,9 +121,9 @@ ADR-487 — a `:parent` itself a kind or a selector map, at most three maps deep
 value a face-name keyword. What a registration checks beside `missing-services`, so a
 misspelt selector fails at load rather than at the first frame drawn.
 
-    (editor/treesit/face-table-problems {:string :syntax/string {:field :function} :syntax/function})   → ()
-    (count (editor/treesit/face-table-problems {{:feild :name} :syntax/function}))   → 1
-    (editor/treesit/face-table-problems {{:kind :identifier :text #{\"def\" \"if\"} :parent {:kind :call}} :syntax/keyword})   → ()"
+    (editor/treesit/face-table-problems {:string :syntax/string {:field :function} :syntax/function})   ;=> ()
+    (count (editor/treesit/face-table-problems {{:feild :name} :syntax/function}))   ;=> 1
+    (editor/treesit/face-table-problems {{:kind :identifier :text #{\"def\" \"if\"} :parent {:kind :call}} :syntax/keyword})   ;=> ()"
   (seq/keep (%map-pairs table) (fn ([selector face-name]) (selector-problem selector face-name))))
 
 ;; An INJECTION spec (ADR-489) is the third thing a language hands the seam: which of its
@@ -194,10 +194,10 @@ name — whose first word, through `:aliases` or lowercased as it is, is the lan
 document whose language has no table in `:faces`, or no grammar, keeps the host's colours.
 What a registration checks beside `face-table-problems`.
 
-    (editor/treesit/injection-problems {:rules [{:content :heredoc :lang :bash}] :faces {:bash {:string :syntax/string}}})   → ()
-    (count (editor/treesit/injection-problems {:rules [{:content :heredoc :lang :bash :lang-from :x}] :faces {}}))   → 1
-    (count (editor/treesit/injection-problems {:rules [{:content :x :lang :sql}] :faces {}}))   → 1
-    (editor/treesit/injection-problems {:rules [{:content :shell_fragment :exclude :heredoc_marker :lang :bash}] :faces {:bash {}}})   → ()"
+    (editor/treesit/injection-problems {:rules [{:content :heredoc :lang :bash}] :faces {:bash {:string :syntax/string}}})   ;=> ()
+    (count (editor/treesit/injection-problems {:rules [{:content :heredoc :lang :bash :lang-from :x}] :faces {}}))   ;=> 1
+    (count (editor/treesit/injection-problems {:rules [{:content :x :lang :sql}] :faces {}}))   ;=> 1
+    (editor/treesit/injection-problems {:rules [{:content :shell_fragment :exclude :heredoc_marker :lang :bash}] :faces {:bash {}}})   ;=> ()"
   (cond
     (not (map? injections)) (list (str (pr-str injections) " is not an injection spec map"))
     (not (every? (keys injections) (fn (k) (contains? #{:rules :faces} k))))
@@ -273,7 +273,7 @@ Blank text is answered without parsing at all, which is why the example below ne
 grammar; `\"1 +* 2\"` in Elixir is `[:err \"unexpected `*`\"]`, and the suite's cases are in
 `tests/treesit_module_test.blsp`.
 
-    (editor/treesit/parse-state \"   \\n \" :elixir)   → :blank"
+    (editor/treesit/parse-state \"   \\n \" :elixir)   ;=> :blank"
   (cond
     (= (string/trim text) "") :blank
     else
@@ -296,7 +296,7 @@ grammar; `\"1 +* 2\"` in Elixir is `[:err \"unexpected `*`\"]`, and the suite's 
 does not need the reason. The full state is a `match` subject; this is the `first` of it
 that a keyword state has no `first` of.
 
-    (editor/treesit/parse-tag [:incomplete \"missing `end`\"])   → :incomplete"
+    (editor/treesit/parse-tag [:incomplete \"missing `end`\"])   ;=> :incomplete"
   (if (vector? state) (first state) state))
 
 ;; ---- fontify ----------------------------------------------------------------
@@ -321,8 +321,8 @@ and digits don't."
 keywords without enumerating every grammar's keyword set: keywords surface as
 anonymous tokens, operators/punctuation as anonymous non-alphabetic ones.
 
-    (editor/treesit/anonymous-keyword? {:named false :text \"def\"})   → true
-    (editor/treesit/anonymous-keyword? {:named false :text \"+\"})     → false"
+    (editor/treesit/anonymous-keyword? {:named false :text \"def\"})   ;=> true
+    (editor/treesit/anonymous-keyword? {:named false :text \"+\"})     ;=> false"
   (and (not (get node :named))
     (let (t (get node :text))
       (and (not (nil? t)) (> (string/length t) 0) (ts-alpha? (string/char-at t 0))))))
@@ -335,7 +335,7 @@ get keywords for free. The face is resolved live, so a `(face-set :syntax/…)`
 restyles the next frame drawn (under `ui-run`, the next turn that changes the model).
 
 
-    (fn? (editor/treesit/face-of-syntax {:string :syntax/string}))   → true"
+    (fn? (editor/treesit/face-of-syntax {:string :syntax/string}))   ;=> true"
   (fn (node)
     (let (name (or (get kind->face-name (get node :kind))
                  (if (anonymous-keyword? node) :syntax/keyword nil)))
@@ -456,7 +456,7 @@ parses as it reads. `()` when `lang` has no grammar: an embedded language's gram
 optional, and a caller keeps its own colours there. Bounded: past 256 ranges or 128 KB the
 rest is left uncoloured.
 
-    (editor/treesit/fontify-ranges \"# x\\n\" :no-such-grammar [[0 3]] {:string :syntax/string})   → ()"
+    (editor/treesit/fontify-ranges \"# x\\n\" :no-such-grammar [[0 3]] {:string :syntax/string})   ;=> ()"
   (let (raw (%tree-sitter-range-spans text lang ranges kind->face-name keywords?))
     (if (nil? raw) '() (table-spans->faces raw kind->face-name nil))))
 
@@ -482,8 +482,8 @@ rest is left uncoloured.
 string — parsed as the tree-sitter language `lang`. Keep it beside the text it was parsed
 from; hand it to `update-tree` after an edit and to `fontify-tree` to colour a range.
 
-    (editor/treesit/open-tree text :elixir)   ;=> a tree handle (a ref) for the document
-    (fn? editor/treesit/open-tree)   → true"
+    (editor/treesit/open-tree text :elixir)   ;~> a tree handle (a ref) for the document
+    (fn? editor/treesit/open-tree)   ;=> true"
   (%tree-sitter-tree text lang))
 
 (defn update-tree (tree text lang &optional (edits nil))
@@ -501,17 +501,17 @@ when the log cannot say) passes them instead and the reparse costs the edit alon
 kernel composes a sequence into the one range it covers, and refuses an edit whose lengths
 do not fit the two texts rather than build a wrong tree.
 
-    (editor/treesit/update-tree tree rope :elixir (map splices (fn ([lo hi repl]) [lo hi (+ lo (string/length repl))])))   ;=> a new handle, reparsed without comparing the texts
+    (editor/treesit/update-tree tree rope :elixir (map splices (fn ([lo hi repl]) [lo hi (+ lo (string/length repl))])))   ;~> a new handle, reparsed without comparing the texts
 
-    (editor/treesit/update-tree tree new-text :elixir)   ;=> a new handle; tree still answers for the old text
-    (fn? editor/treesit/update-tree)   → true"
+    (editor/treesit/update-tree tree new-text :elixir)   ;~> a new handle; tree still answers for the old text
+    (fn? editor/treesit/update-tree)   ;=> true"
   (%tree-sitter-tree-reparse tree text lang edits))
 
 (defn free-tree (tree)
   "Drop `tree`'s handle now. True when it was still held.
 
-    (editor/treesit/free-tree tree)   ;=> true, then false for the same handle again
-    (fn? editor/treesit/free-tree)   → true"
+    (editor/treesit/free-tree tree)   ;~> true, then false for the same handle again
+    (fn? editor/treesit/free-tree)   ;=> true"
   (%tree-sitter-tree-free tree))
 
 (defn give-tree (tree pid)
@@ -522,8 +522,8 @@ BEFORE replying — the task exits right after, and a tree it still owned would 
 True when `pid` holds it now; false when the handle was already gone or `pid` has died. Only
 the owner can give a tree away: anyone else's call is an error.
 
-    (editor/treesit/give-tree tree editor-pid)   ;=> true — then reply with the handle
-    (editor/treesit/give-tree (ref) (self))   → false"
+    (editor/treesit/give-tree tree editor-pid)   ;~> true — then reply with the handle
+    (editor/treesit/give-tree (ref) (self))   ;=> false"
   (%tree-sitter-tree-give tree pid))
 
 (defn owned-trees ()
@@ -533,8 +533,8 @@ by its holder or its owner's exit, so one a holder lost track of — opened by a
 then rolled back — stays until that exit. Free every owned handle you no longer reference, at
 some quiet moment, and that is the whole sweep.
 
-    (editor/treesit/owned-trees)   ;=> [] — or the handles this process holds
-    (vector? (editor/treesit/owned-trees))   → true"
+    (editor/treesit/owned-trees)   ;~> [] — or the handles this process holds
+    (vector? (editor/treesit/owned-trees))   ;=> true"
   (%tree-sitter-owned-trees))
 
 (defn tree-changes (tree &optional (injections nil))
@@ -547,9 +547,9 @@ every cached band on any edit. With `injections` (as `fontify`'s) a range reachi
 embedded document is widened over all of it: an edit inside a fence can recolour the fence
 below the edit, which the host's tree cannot know, its own syntax being unchanged.
 
-    (editor/treesit/tree-changes (editor/treesit/open-tree text :elixir))   ;=> true — a fresh parse
-    (editor/treesit/tree-changes (editor/treesit/update-tree tree text :elixir))   ;=> [] — nothing changed
-    (fn? editor/treesit/tree-changes)   → true"
+    (editor/treesit/tree-changes (editor/treesit/open-tree text :elixir))   ;~> true — a fresh parse
+    (editor/treesit/tree-changes (editor/treesit/update-tree tree text :elixir))   ;~> [] — nothing changed
+    (fn? editor/treesit/tree-changes)   ;=> true"
   (%tree-sitter-tree-changes tree injections))
 
 (defn fontify-tree (tree kind->face-name from to &optional (keywords? true) (injections nil))
@@ -562,8 +562,8 @@ so a caller can tell the two apart: open a fresh tree on nil. `injections` as `f
 embedded documents reaching the range are parsed for this call — none is held beside the
 tree — each whole up to 32 KB and cut to the range past that (ADR-489).
 
-    (editor/treesit/fontify-tree tree {:string :syntax/string} 0 40)   ;=> [[8 13 :syntax/string] …], nil once tree is freed
-    (fn? editor/treesit/fontify-tree)   → true"
+    (editor/treesit/fontify-tree tree {:string :syntax/string} 0 40)   ;~> [[8 13 :syntax/string] …], nil once tree is freed
+    (fn? editor/treesit/fontify-tree)   ;=> true"
   (let (raw (%tree-sitter-tree-spans tree kind->face-name keywords? from to injections))
     (when raw (into [] (table-spans->faces raw kind->face-name injections)))))
 
@@ -572,7 +572,7 @@ tree — each whole up to 32 KB and cut to the range past that (ADR-489).
 nothing: the check to make per event, where asking `tree-changes` would build a vector only
 to test it for nil.
 
-    (editor/treesit/tree-alive? (ref))   → false"
+    (editor/treesit/tree-alive? (ref))   ;=> false"
   (%tree-sitter-tree-alive? tree))
 
 ;; ---- the structural queries over a held tree (ADR-467) --------------------------
@@ -633,8 +633,8 @@ text. Strict containment makes a point at a node's start belong to its parent.
 HCL block's braces after its labels, bash's `name()` — sits in this list beside the named
 children, so the pair is read from it rather than found by scanning the text between them.
 
-    (editor/treesit/node-children \"f(a, b)\\n\" :elixir 2 true)   ;=> [{:kind :( …} {:kind :identifier …} {:kind :, …} {:kind :identifier …} {:kind :) …}] — with the :elixir grammar
-    (fn? editor/treesit/node-children)   → true"
+    (editor/treesit/node-children \"f(a, b)\\n\" :elixir 2 true)   ;~> [{:kind :( …} {:kind :identifier …} {:kind :, …} {:kind :identifier …} {:kind :) …}] — with the :elixir grammar
+    (fn? editor/treesit/node-children)   ;=> true"
   (or (when tree (%tree-sitter-tree-kids tree offset all?))
     (%tree-sitter-kids (ts-string text) lang offset all?)))
 
@@ -675,7 +675,7 @@ decide safety by counting paired heredoc markers, which is what `column0-restart
 cannot (its `<<~EOS` terminator is arbitrary text) and needs to scan for its own openers. Both
 want the same candidate, and neither should re-derive it.
 
-    (editor/treesit/column0-before \"a\\nb\\n  c\" 6)   → 2"
+    (editor/treesit/column0-before \"a\\nb\\n  c\" 6)   ;=> 2"
   ;; `pos` is a line start when `ed-window-src` calls this, but normalising to one anyway
   ;; makes the answer total: an offset in the middle of a line asks about that line, and the
   ;; result is always a line start, never an offset into one.
@@ -707,7 +707,7 @@ and to the lead-in it replaces. Both mis-colour there, identically. That is the 
 any windowed fontify rather than of this rule: measured against a whole-file parse, the
 restart is never wrong where the lead-in is right, and is right everywhere the lead-in is.
 
-    (editor/treesit/column0-restart \"x\\n'''\\ny\" 6 [\"'''\"])   → 0"
+    (editor/treesit/column0-restart \"x\\n'''\\ny\" 6 [\"'''\"])   ;=> 0"
   (let (candidate (column0-before src pos)
         opened (fold delimiters 0 (fn (n d) (+ n (ts-count-upto src d candidate 0 0)))))
     (if (= 0 (math/rem opened 2)) candidate 0)))
@@ -926,7 +926,7 @@ continuation rules. It answers the shape that block-structured languages share, 
 shape `nest format` answers for Brood, and it is checked line-for-line against real source in
 `tests/treesit_module_test.blsp`.
 
-    (editor/treesit/indent-column \"def f do\\nx\\nend\" :elixir 9 spec)   ;=> 2 — with the :elixir grammar installed and the spec above"
+    (editor/treesit/indent-column \"def f do\\nx\\nend\" :elixir 9 spec)   ;~> 2 — with the :elixir grammar installed and the spec above"
   (let (width (get spec :width 2)
         eol (ts-line-end text bol)
         line (ts-slice text bol eol)
@@ -1069,14 +1069,14 @@ exactly `text` (`open-tree` / `update-tree`), read instead of parsing `text`; a 
 falls back to the text. `text` may be a string or the rope an editor holds (ADR-483): with a
 held tree a rope is read only where the query needs a character, never copied whole.
 
-    (editor/treesit/point-forward \"foo(1, 2)\" :elixir 0)   ;=> 9 — with the :elixir grammar installed"
+    (editor/treesit/point-forward \"foo(1, 2)\" :elixir 0)   ;~> 9 — with the :elixir grammar installed"
   (let (nxt (seq/find (ts-siblings text lang point tree) (fn (f) (>= (get f :start) point))))
     (if (nil? nxt) point (get nxt :end))))
 
 (defn point-backward (text: (or string rope) lang:keyword point:any &optional (tree nil) -> any)
   "Start of the previous named node ending at or before `point` (`backward-sexp`).
 
-    (editor/treesit/point-backward \"foo(1, 2)\" :elixir 9)   ;=> 0 — with the :elixir grammar installed"
+    (editor/treesit/point-backward \"foo(1, 2)\" :elixir 9)   ;~> 0 — with the :elixir grammar installed"
   (let (prev (last (seq/filter (ts-siblings text lang point tree) (fn (f) (<= (get f :end) point)))))
     (if (nil? prev) point (get prev :start))))
 
@@ -1084,7 +1084,7 @@ held tree a rope is read only where the query needs a character, never copied wh
   "End of the next child CONTAINER at or after `point` — leaf nodes are stepped over, not
 stopped at (Emacs `forward-list`); unchanged if none.
 
-    (editor/treesit/point-list-forward src :elixir 0)   ;=> …the end of the next container…"
+    (editor/treesit/point-list-forward src :elixir 0)   ;~> …the end of the next container…"
   (let (nxt (seq/find (ts-siblings text lang point tree)
               (fn (f) (and (get f :container) (>= (get f :start) point)))))
     (if (nil? nxt) point (get nxt :end))))
@@ -1094,7 +1094,7 @@ stopped at (Emacs `forward-list`); unchanged if none.
   "Start of the previous child CONTAINER ending at or before `point` — leaves stepped over
 (Emacs `backward-list`); unchanged if none.
 
-    (editor/treesit/point-list-backward src :elixir 40)   ;=> …the start of the previous container…"
+    (editor/treesit/point-list-backward src :elixir 40)   ;~> …the start of the previous container…"
   (let (prev (last (seq/filter (ts-siblings text lang point tree)
                      (fn (f) (and (get f :container) (<= (get f :end) point))))))
     (if (nil? prev) point (get prev :start))))
@@ -1108,7 +1108,7 @@ container on the chain that neither begins nor ends at `point` itself."
 (defn point-up (text: (or string rope) lang:keyword point:any &optional (tree nil) -> any)
   "Start of the enclosing node (`backward-up-list`); unchanged at top level.
 
-    (editor/treesit/point-up src :elixir 30)   ;=> …the start of the node enclosing offset 30…"
+    (editor/treesit/point-up src :elixir 30)   ;~> …the start of the node enclosing offset 30…"
   (let (enc (ts-enclosing-node text lang point tree))
     (if (nil? enc) point (get enc :start))))
 
@@ -1116,7 +1116,7 @@ container on the chain that neither begins nor ends at `point` itself."
   "End of the enclosing node — the forward counterpart of `point-up` (Emacs `up-list`);
 unchanged at top level.
 
-    (editor/treesit/point-up-forward src :elixir 30)   ;=> …the end of the node enclosing offset 30…"
+    (editor/treesit/point-up-forward src :elixir 30)   ;~> …the end of the node enclosing offset 30…"
   (let (enc (ts-enclosing-node text lang point tree))
     (if (nil? enc) point (get enc :end))))
 
@@ -1156,13 +1156,13 @@ kinds that are themselves definitions; `:calls` the callees whose `call` node de
 (Elixir's `def`, `defmodule`, … are calls, not node kinds). Replaces any earlier
 declaration for `lang`; returns `definitions`.
 
-    (editor/treesit/register-definitions :doc-lang {:kinds #{:fn_item}})   → {:kinds #{:fn_item}}"
+    (editor/treesit/register-definitions :doc-lang {:kinds #{:fn_item}})   ;=> {:kinds #{:fn_item}}"
   (registry/put! :treesit/definitions lang definitions))
 
 (defn definitions (lang:keyword -> map)
   "What `lang` declared a definition to be (`register-definitions`), or `{}`.
 
-    (contains? (get (editor/treesit/definitions :ruby) :kinds) :method)   → true"
+    (contains? (get (editor/treesit/definitions :ruby) :kinds) :method)   ;=> true"
   (let (declared (registry/lookup :treesit/definitions lang))
     (if (map? declared) declared {})))
 
@@ -1212,14 +1212,14 @@ The shared body of `point-defun-start` / `point-defun-end`."
 / `module` / … containing `point` — so a `def` inside an Elixir `defmodule` or a Ruby `class`,
 not the whole enclosing module. Falls back to the top-level form, then `point`.
 
-    (editor/treesit/point-defun-start src :elixir 30)   ;=> …the offset of the enclosing `def`…"
+    (editor/treesit/point-defun-start src :elixir 30)   ;~> …the offset of the enclosing `def`…"
   (ts-defun-edge text lang point :start tree))
 
 (defn point-defun-end (text lang point &optional (tree nil))
   "End of the enclosing **definition** (`end-of-defun`, C-M-e) — the close of the same node
 `point-defun-start` finds, so the pair brackets one `def` / `class` / `module`.
 
-    (editor/treesit/point-defun-end src :elixir 30)   ;=> …the offset just past the enclosing def's `end`…"
+    (editor/treesit/point-defun-end src :elixir 30)   ;~> …the offset just past the enclosing def's `end`…"
   (ts-defun-edge text lang point :end tree))
 
 ;; ---- getting a grammar: from where it lives to a library the runtime can load ------
@@ -1234,7 +1234,7 @@ not the whole enclosing module. Falls back to the top-level form, then `point`.
 in — as a sorted vector of keywords. What to ask before offering to fetch a grammar, or
 telling someone a file's mode has none.
 
-    (vector? (editor/treesit/languages))   → true"
+    (vector? (editor/treesit/languages))   ;=> true"
   (%tree-sitter-languages))
 
 (defn declare-grammar (path:string lang:keyword -> bool)
@@ -1247,7 +1247,7 @@ already loaded reloads it from `path` at its next use: replace the library, decl
 again. A load that fails is reported by `grammar-status` and not retried until the next
 declaration.
 
-    (editor/treesit/declare-grammar \"/nonexistent/libtree-sitter-docexample.so\" :docexample)   → true"
+    (editor/treesit/declare-grammar \"/nonexistent/libtree-sitter-docexample.so\" :docexample)   ;=> true"
   (%tree-sitter-declare-grammar path lang))
 
 (defn grammar-status (lang:keyword)
@@ -1256,13 +1256,13 @@ declaration.
 did not load, or nil when the runtime has no grammar for it. What a grammar list shows
 without opening every library to ask.
 
-    (editor/treesit/grammar-status :no-grammar-has-this-name)   → nil"
+    (editor/treesit/grammar-status :no-grammar-has-this-name)   ;=> nil"
   (%tree-sitter-grammar-status lang))
 
 (defn grammar-library-name (lang)
   "The file name a grammar for `lang` is loaded from: `libtree-sitter-<lang>.so`.
 
-    (editor/treesit/grammar-library-name :elixir)   → \"libtree-sitter-elixir.so\""
+    (editor/treesit/grammar-library-name :elixir)   ;=> \"libtree-sitter-elixir.so\""
   (str "libtree-sitter-" (->string lang) ".so"))
 
 (defn- grammar-scanner (src-dir)
@@ -1278,7 +1278,7 @@ so a language costs seconds, not a history) unless `dest` already holds a checko
 which is used as it is, like a local directory. Returns `{:ok dir}` — the checkout — or
 `{:error text}`.
 
-    (editor/treesit/grammar-fetch \"nowhere\" \"unused\")   → {:error \"no grammar at nowhere (a git URL or a directory)\"}"
+    (editor/treesit/grammar-fetch \"nowhere\" \"unused\")   ;=> {:error \"no grammar at nowhere (a git URL or a directory)\"}"
   (cond
     (file/dir? source) {:ok source}
     (or (string/starts-with? source "http") (string/starts-with? source "git@"))
@@ -1299,7 +1299,7 @@ tree-sitter-typescript keeps `typescript/src` and `tsx/src`. A `src/` a grammar 
 has not produced yet (a repository shipping only `grammar.js`) is reported, not
 generated: that needs the tree-sitter CLI. Returns `{:ok path}` or `{:error text}`.
 
-    (contains? (editor/treesit/grammar-build \".\" :none \".\") :error)   → true"
+    (contains? (editor/treesit/grammar-build \".\" :none \".\") :error)   ;=> true"
   (let (root (if (nil? subdir) checkout (path/join checkout subdir))
         src (path/join root "src")
         parser (path/join src "parser.c")
@@ -1326,7 +1326,7 @@ or a directory, and `subdir` within it when the repository holds several grammar
 The one call a mode's `:grammar` declaration needs to become a loadable library.
 `{:ok path}` or `{:error text}`.
 
-    (contains? (editor/treesit/grammar-install \"nowhere\" :none \".\" \".\") :error)   → true"
+    (contains? (editor/treesit/grammar-install \"nowhere\" :none \".\" \".\") :error)   ;=> true"
   (let (fetched (grammar-fetch source (path/join work-dir (->string lang))))
     (if (:error fetched)
       fetched

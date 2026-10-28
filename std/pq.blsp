@@ -26,7 +26,7 @@ falsy collection, so `(if pq …)` used to take the else branch on an empty queu
 (defn empty ()
   "An empty min-priority queue.
 
-    (count (pq/empty))   → 0"
+    (count (pq/empty))   ;=> 0"
   (pq nil))
 
 (defn- sorted-insert (entries pri val)
@@ -45,13 +45,13 @@ falsy collection, so `(if pq …)` used to take the else branch on an empty queu
   "Return a priority queue with `[priority value]` inserted (min priority at front).
 Stable: among equal priorities, earlier inserts pop first (FIFO).
 
-    (seq (pq/insert (pq/insert (pq/empty) 2 :b) 1 :a))   → (:a :b)"
+    (seq (pq/insert (pq/insert (pq/empty) 2 :b) 1 :a))   ;=> (:a :b)"
   (pq (sorted-insert (get q :entries) priority value)))
 
 (defn pop (q)
   "Return `[min-value new-pq]`, or `:empty` if the queue is empty.
 
-    (first (pq/pop (pq/insert (pq/empty) 1 :a)))   → :a"
+    (first (pq/pop (pq/insert (pq/empty) 1 :a)))   ;=> :a"
   (if (empty? q)
     :empty (let (entries (get q :entries))
       [(second (first entries)) (pq (rest entries))])))
@@ -59,14 +59,14 @@ Stable: among equal priorities, earlier inserts pop first (FIFO).
 (defn peek (q)
   "Return the minimum-priority value without removing it, or `:empty` if empty.
 
-    (pq/peek (pq/insert (pq/insert (pq/empty) 2 :b) 1 :a))   → :a"
+    (pq/peek (pq/insert (pq/insert (pq/empty) 2 :b) 1 :a))   ;=> :a"
   (if (empty? q)
     :empty (second (first (get q :entries)))))
 
 (defn peek-priority (q)
   "Return the minimum priority (the key), or `:empty` if empty.
 
-    (pq/peek-priority (pq/insert (pq/empty) 7 :x))   → 7"
+    (pq/peek-priority (pq/insert (pq/empty) 7 :x))   ;=> 7"
   (if (empty? q)
     :empty (first (first (get q :entries)))))
 

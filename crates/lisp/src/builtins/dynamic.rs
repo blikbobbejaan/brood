@@ -40,7 +40,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], bool_ty),
         &["x"],
-        "Whether x is a symbol declared dynamic with defdyn. Quote it: (reflect/dynamic? '*foo*).\n\n    (reflect/dynamic? 'map)   → false",
+        "Whether x is a symbol declared dynamic with defdyn. Quote it: (reflect/dynamic? '*foo*).\n\n    (reflect/dynamic? 'map)   ;=> false",
         dynamic_p,
     );
 }

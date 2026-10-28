@@ -97,7 +97,7 @@ A `{:via registry :key key}` address works wherever `gen` takes a pid, including
 State is `{:name :keys :entries :held}`, `:held` mapping each holder's pid to its monitor
 ref and the keys it holds.
 
-    (gen/start names/server {:name :sessions :keys :unique})   ;=> the registry's pid (use names/start)"
+    (gen/start names/server {:name :sessions :keys :unique})   ;~> the registry's pid (use names/start)"
   (init (let (entries (table/new))
           (gen/%via-publish (get state :name) (self) entries)
           (assoc state :entries entries :held {})))
@@ -116,8 +116,8 @@ ref and the keys it holds.
 Returns once the registry is ready, so a read straight after `start` finds it. A second
 registry under the same name replaces the first's name and its directory entry.
 
-    (names/start :sessions)                      ;=> the registry's pid
-    (names/start :topics {:keys :duplicate})     ;=> a registry whose keys hold many processes"
+    (names/start :sessions)                      ;~> the registry's pid
+    (names/start :topics {:keys :duplicate})     ;~> a registry whose keys hold many processes"
   (let (options (or (first opts) {})
         unknown (seq/reject (keys options) (fn (k) (contains? *start-options* k)))
         mode (or (get options :keys) :unique))
@@ -135,20 +135,20 @@ return `pid`. In a `:unique` registry a key another live process holds is not ta
 answer is a failure naming the holder. Registering the holder again replaces its value.
 The entry goes when `pid` exits.
 
-    (names/register :sessions [:user 7] (self) {:since 0})   ;=> (self)"
+    (names/register :sessions [:user 7] (self) {:since 0})   ;~> (self)"
   (gen/call registry [:register key pid (first value)]))
 
 (defn unregister (registry:keyword key:any pid:pid)
   "Drop `pid`'s entry under `key` in `registry`; nil. A key `pid` does not hold is left alone.
 
-    (names/unregister :sessions [:user 7] (self))   ;=> nil"
+    (names/unregister :sessions [:user 7] (self))   ;~> nil"
   (gen/call registry [:unregister key pid]))
 
 (defn lookup (registry:keyword key:any -> vector)
   "Every live holder of `key` in `registry`, as a vector of `[pid value]` — at most one in
 a `:unique` registry, empty when nobody holds it. Reads the registry's table directly.
 
-    (names/lookup :sessions [:user 7])   ;=> [[pid {:since 0}]]"
+    (names/lookup :sessions [:user 7])   ;~> [[pid {:since 0}]]"
   (let (entry (gen/%via-entry registry key)
         pairs (cond
                 (nil? entry) []
@@ -160,7 +160,7 @@ a `:unique` registry, empty when nobody holds it. Reads the registry's table dir
   "The number of keys `registry` holds, read from its table directly; 0 for a registry
 that is not running. A key goes when its last holder unregisters or its death is handled.
 
-    (names/count :sessions)   ;=> 1"
+    (names/count :sessions)   ;~> 1"
   (let (entries (gen/%via-table registry))
     (if entries
       (check-allow :discarded-catch
@@ -171,5 +171,5 @@ that is not running. A key goes when its last holder unregisters or its death is
   "The live process holding `key` in `registry`, or nil — any one of them in a `:duplicate`
 registry. Reads the registry's table directly.
 
-    (names/whereis :sessions [:user 7])   ;=> the pid, or nil"
+    (names/whereis :sessions [:user 7])   ;~> the pid, or nil"
   (first (first (lookup registry key))))

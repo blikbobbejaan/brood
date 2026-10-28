@@ -42,7 +42,7 @@ byte as %XX (uppercase hex)."
 that is not an RFC 3986 unreserved character (A-Z a-z 0-9 - _ . ~) is encoded as
 %XX (uppercase hex). Multi-byte UTF-8 sequences are encoded byte-by-byte.
 
-    (url/percent-encode \"a b\")   → \"a%20b\""
+    (url/percent-encode \"a b\")   ;=> \"a%20b\""
   (encode-bytes s "%20"))
 
 ;; ---- percent-decoding -------------------------------------------------------
@@ -66,9 +66,9 @@ it literally would hand back text that looks decoded and isn't)."
 `s` contains an invalid or incomplete %XX sequence, or decodes to bytes that are not
 UTF-8.
 
-    (url/percent-decode \"a%20b\")          → \"a b\"
-    (failure? (url/percent-decode \"a%ZZ\"))   → true
-    (failure? (url/percent-decode \"%FF\"))    → true"
+    (url/percent-decode \"a%20b\")          ;=> \"a b\"
+    (failure? (url/percent-decode \"a%ZZ\"))   ;=> true
+    (failure? (url/percent-decode \"%FF\"))    ;=> true"
   (let (v (into [] (string/->list s))
         r (decode-loop v 0 (count v) nil)
         ;; `%FF` is well-formed percent-encoding of a byte that is not UTF-8, and the
@@ -95,7 +95,7 @@ UTF-8.
 with `->string` (the `Display` protocol), so a record encodes as the string its type
 defines rather than as its field map.
 
-    (url/query-encode {:a 1})    → \"a=1\""
+    (url/query-encode {:a 1})    ;=> \"a=1\""
   (let (pairs (sort (map (%map-pairs params)
                       (fn ([k v]) [(if (keyword? k) (->string k) (str k)) (->string v)]))))
     (string/join (map pairs (fn ([k v]) (str (encode-bytes k "+") "=" (encode-bytes v "+"))))
@@ -134,7 +134,7 @@ where a decoded query stops being decodable is the query, not one field."
 decoding + as space and %XX sequences — or a `failure` if any component carries an
 invalid %XX sequence (the failure propagates rather than landing in the map).
 
-    (url/query-decode \"a=1\")     → {\"a\" \"1\"}"
+    (url/query-decode \"a=1\")     ;=> {\"a\" \"1\"}"
   (if (= s "")
     {}
     (url-parse-query-pairs (string/split s "&") {})))
@@ -232,8 +232,8 @@ the `@`, or nil — it is **not** part of `:host`, so an allow-list or SSRF chec
 `//host/path`, which has a host and no scheme. A scheme is recognised only when it is
 well-formed (a letter, then letters, digits, `+`, `-`, `.`), so `/r/https://x/` is a path.
 
-    (:host (url/parse-url \"//evil.com/x\"))           → \"evil.com\"
-    (:scheme (url/parse-url \"/r/https://evil.com/\"))  → nil"
+    (:host (url/parse-url \"//evil.com/x\"))           ;=> \"evil.com\"
+    (:scheme (url/parse-url \"/r/https://evil.com/\"))  ;=> nil"
   ;; 1. strip fragment
   (let (frag-split (url-split-first s "#")
         before-frag (if frag-split (first frag-split) s)
@@ -280,8 +280,8 @@ well-formed (a letter, then letters, digits, `+`, `-`, `.`), so `/r/https://x/` 
 optional — `:userinfo` is emitted as `userinfo@` before the host, so a `parse-url`
 round-trip is lossless.
 
-    (url/build {:scheme \"https\" :host \"example.com\" :path \"/a\" :query-params {:q \"x y\"}})   → \"https://example.com/a?q=x+y\"
-    (url/build {:scheme \"http\" :host \"h\" :port 8080 :path \"/p\" :fragment \"top\"})   → \"http://h:8080/p#top\""
+    (url/build {:scheme \"https\" :host \"example.com\" :path \"/a\" :query-params {:q \"x y\"}})   ;=> \"https://example.com/a?q=x+y\"
+    (url/build {:scheme \"http\" :host \"h\" :port 8080 :path \"/p\" :fragment \"top\"})   ;=> \"http://h:8080/p#top\""
   (let (scheme (get parts :scheme)
         host (get parts :host)
         userinfo (get parts :userinfo)

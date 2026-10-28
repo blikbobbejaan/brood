@@ -31,7 +31,7 @@
   A container without resolv.conf is not an error worth raising here — the connect that
   follows will fail with something a caller can act on.
 
-    (dns/nameserver)   ;=> \"127.0.0.53\" — whatever /etc/resolv.conf names first"
+    (dns/nameserver)   ;~> \"127.0.0.53\" — whatever /etc/resolv.conf names first"
   (let (text (check-allow :discarded-catch
                (try (file/slurp "/etc/resolv.conf") (catch _e ""))))
     (or (first (seq/filter (map (string/split (or text "") "\n")
@@ -188,5 +188,5 @@
   "Every address for `host`, IPv6 first — the order a dual-stack caller should try them in, and
   on a v6-only network (Fly's private network, for one) the only ones that exist.
 
-    (dns/lookup-all \"localhost\")   ;=> (\"::1\" \"127.0.0.1\"), IPv6 addresses first"
+    (dns/lookup-all \"localhost\")   ;~> (\"::1\" \"127.0.0.1\"), IPv6 addresses first"
   (append (lookup host *aaaa* server) (lookup host *a* server)))

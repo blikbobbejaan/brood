@@ -135,7 +135,7 @@ will get wrong if you write Brood like Clojure, Scheme, or Common Lisp.
 - Tail-recursive helpers: public shell delegates to a `defn-` private
   `name-acc`/`-loop` worker that carries the accumulator.
 - Docstring (one-sentence summary, first line) on every public `defn`/`defmacro`;
-  backticks/**bold**/`-` bullets render, and an indented `form → result` line is an
+  backticks/**bold**/`-` bullets render, and an indented `form ;=> result` line is an
   executed example. Each module opens with `(defmodule name "…")`.
 - Errors: `(error "fn-name: what went wrong: " value)` — lowercase, value appended.
 - Three or more optional params → one options map destructured with `{:keys [...]}`.

@@ -30,20 +30,20 @@
   "Parse the source string `s` into a single form (the first one). Errors on malformed
 input. Text in, data out — which is what this module is for.
 
-    (reflect/read-string \"(a b)\")   → (a b)"
+    (reflect/read-string \"(a b)\")   ;=> (a b)"
   (%read-string s))
 
 (defn reflect/read-all (s)
   "Every top-level form in the source string `s`, as a list. What the module loader reads
 a file with.
 
-    (count (reflect/read-all \"(a) (b)\"))   → 2"
+    (count (reflect/read-all \"(a) (b)\"))   ;=> 2"
   (%read-all s))
 
 (defn reflect/read-first (s)
   "The first top-level form in `s`, or nil when it holds none.
 
-    (reflect/read-first \"(a) (b)\")   → (a)"
+    (reflect/read-first \"(a) (b)\")   ;=> (a)"
   (%read-first s))
 
 (defn behaviour-ops (bname)
@@ -51,7 +51,7 @@ a file with.
 claiming `(:implements bname)` must define, and at what arities. The checker and the LSP
 read the same registry.
 
-    (reflect/behaviour-ops 'No-Such-Behaviour)   → nil
+    (reflect/behaviour-ops 'No-Such-Behaviour)   ;=> nil
 
 after `(defbehaviour Renderable (render [x]))`, `(reflect/behaviour-ops 'Renderable)`
 answers `((render [x]))`."
@@ -60,44 +60,44 @@ answers `((render [x]))`."
 (defn check (form)
   "Advisory type-check a quoted form: a list of warning strings, or nil. Never raises.
 
-    (reflect/check '(+ 1 2))             → nil
-    (count (reflect/check '(+ 1 \"a\")))   → 1"
+    (reflect/check '(+ 1 2))             ;=> nil
+    (count (reflect/check '(+ 1 \"a\")))   ;=> 1"
   (%check form))
 
 (defn check-deps-fp (dep-keys)
   "Recompute the fingerprint of a file's dep-keys (from check-file-deps) against the current global image. The incremental check cache reuses a file's warnings iff this equals the stored fingerprint.
 
-    (reflect/check-deps-fp dep-keys)   ;=> the fingerprint, to compare with the one stored beside `dep-keys`"
+    (reflect/check-deps-fp dep-keys)   ;~> the fingerprint, to compare with the one stored beside `dep-keys`"
   (%check-deps-fp dep-keys))
 
 (defn strict-checking? ()
   "Is STRICT checking on for this process (`nest check --strict`, or `BROOD_CHECK_STRICT=1`)? A verdict depends on the mode that produced it, which is why the incremental check cache keys its manifest on this.
 
-    (reflect/strict-checking?)   → false"
+    (reflect/strict-checking?)   ;=> false"
   (%check-strict?))
 
 (defn check-file (path & more)
   "Advisory type-check every top-level form in the file at path: a list of `path:line:col: warning: …` strings, or nil. Does not evaluate the file. `required-mods` is the file's transitive require-closure (module-name strings) — the KI-17 reachability set that flags a qualified `mod/name` whose module the file never requires; omit it (single-file / editor) to disable that lint.
 
-    (reflect/check-file \"src/app.blsp\")   ;=> (\"src/app.blsp:3:5: warning: …\"), or nil"
+    (reflect/check-file \"src/app.blsp\")   ;~> (\"src/app.blsp:3:5: warning: …\"), or nil"
   (if (empty? more) (%check-file path) (%check-file path (first more))))
 
 (defn check-file-deps (path & more)
   "Incremental-cache check (ADR-119): returns [warnings dep-keys fingerprint] — the GNU warning strings, the set of global observations the check made, and a fingerprint of them against the current image. Store dep-keys+fingerprint; reuse warnings on a later run iff (check-deps-fp dep-keys) still matches and the file's mtime is unchanged. `required-mods`: see check-file.
 
-    (reflect/check-file-deps \"src/app.blsp\")   ;=> [warnings dep-keys fingerprint]"
+    (reflect/check-file-deps \"src/app.blsp\")   ;~> [warnings dep-keys fingerprint]"
   (if (empty? more) (%check-file-deps path) (%check-file-deps path (first more))))
 
 (defn check-file-structured (path & more)
   "Like check-file but returns a list of `{:file :line :col :message}` maps instead of GNU-format strings — for tools (the `nest mcp` `check` tool, editor diagnostics). `required-mods`: see check-file.
 
-    (reflect/check-file-structured \"src/app.blsp\")   ;=> ({:file \"src/app.blsp\" :line 3 :col 5 :message \"…\"})"
+    (reflect/check-file-structured \"src/app.blsp\")   ;~> ({:file \"src/app.blsp\" :line 3 :col 5 :message \"…\"})"
   (if (empty? more) (%check-file-structured path) (%check-file-structured path (first more))))
 
 (defn file-signatures (path)
   "The signature the checker holds for every function the file at path defines: a list of `{:name :sig :declared? :informative?}` maps, `:sig` written in source syntax (`\"(int int -> int)\"`) and ready to paste into a `(sig …)`, or nil where the type names a runtime kind the grammar cannot write. `:declared?` marks the ones a `(sig …)` already states; `:informative?` marks the ones saying something an all-`any` arrow does not. Does not evaluate the file. The bulk counterpart of the editor's declare-sig action.
 
-    (reflect/file-signatures \"src/app.blsp\")   ;=> ({:name \"twice\" :sig \"(int -> int)\" :declared? false :informative? true})"
+    (reflect/file-signatures \"src/app.blsp\")   ;~> ({:name \"twice\" :sig \"(int -> int)\" :declared? false :informative? true})"
   (%file-signatures path))
 
 (defn source-signatures (src)
@@ -113,14 +113,14 @@ the type of its value says nothing about the function — which is why a live ev
 showing `=> foo` for a definition has nothing to put beside it. Shares one checker pass
 with [[file-signatures]], so a buffer and the file it will be saved as cannot disagree.
 
-    (get (first (reflect/source-signatures \"(defn twice (x) (* 2 x))\")) :name)   → \"twice\""
+    (get (first (reflect/source-signatures \"(defn twice (x) (* 2 x))\")) :name)   ;=> \"twice\""
   (%source-signatures src))
 
 (defn check-string-structured (src)
   "Advisory type-check the source string `src`, returning a list of `{:line :col :message}` maps (1-based positions), or `()` when `src` doesn't parse (e.g. incomplete input) — the string-source counterpart of check-file-structured, for live editor-buffer diagnostics.
 
-    (reflect/check-string-structured \"(+ 1 2)\")   → nil
-    (get (first (reflect/check-string-structured \"(+ 1 \\\"a\\\")\")) :line)   → 1"
+    (reflect/check-string-structured \"(+ 1 2)\")   ;=> nil
+    (get (first (reflect/check-string-structured \"(+ 1 \\\"a\\\")\")) :line)   ;=> 1"
   (%check-string-structured src))
 
 (defn check-string-here (src)
@@ -135,7 +135,7 @@ this context resolves them the way `eval` will — checked as a standalone file,
 of them reads as unbound. Forms that open a `(defmodule …)` of their own are checked under
 it, as a file would be.
 
-    (reflect/check-string-here \"(+ 1 2)\")   → nil"
+    (reflect/check-string-here \"(+ 1 2)\")   ;=> nil"
   (%check-string-here src))
 
 (defn source-deps (src)
@@ -146,7 +146,7 @@ and which of those change the world outside the evaluation: a list of
     (reflect/source-deps \"(defn twice (n) (* 2 n))\\n(twice 4)\")
     ;=> ({:defines (\"twice\") :references (\"*\") :effects ()}
     ;    {:defines () :references (\"twice\") :effects ()})
-    (:effects (first (reflect/source-deps \"(file/spit \\\"notes.txt\\\" \\\"\\\")\")))   → (\"file/spit\")
+    (:effects (first (reflect/source-deps \"(file/spit \\\"notes.txt\\\" \\\"\\\")\")))   ;=> (\"file/spit\")
 
 `:effects` are the calls a live evaluator must not make on a half-typed form: a file
 written, moved or removed, a program run, a signal sent, the runtime halted. An electric
@@ -172,49 +172,49 @@ anything."
 (defn references-in-source (name source)
   "Occurrences of the global `name` in `source`, as a list of [line col] (1-based); locals that shadow it are excluded.
 
-    (reflect/references-in-source 'inc \"(inc 1)\\n(let (inc 2) inc)\\n(inc 3)\")   → ([1 2] [3 2])"
+    (reflect/references-in-source 'inc \"(inc 1)\\n(let (inc 2) inc)\\n(inc 3)\")   ;=> ([1 2] [3 2])"
   (%references-in-source name source))
 
 (defn parse-source (s:string -> (vector any))
   "Parse s into a lossless CST tree as nested vectors (mechanism for std/format.blsp).
 
-    (reflect/parse-source \"(a)\")   → [:root [[:list [[:symbol \"a\"]]]]]"
+    (reflect/parse-source \"(a)\")   ;=> [:root [[:list [[:symbol \"a\"]]]]]"
   (%parse-source s))
 
 (defn parse-source-positioned (s:string -> (map keyword any))
   "Parse s into a CST of maps, each `{:kind :start :end}` (leaves add :text, containers/wrappers add :kids) with half-open character offsets — for structural navigation (std/sexp).
 
-    (get (reflect/parse-source-positioned \"(a b)\") :kind)   → :root"
+    (get (reflect/parse-source-positioned \"(a b)\") :kind)   ;=> :root"
   (%parse-source-positioned s))
 
 (defn scan-form-start (s pos)
   "The greatest char offset <= pos of a top-level (bracket depth 0) open bracket in s lying OUTSIDE any string or ; comment, else 0 — depth-tracked, not the Emacs column-0 heuristic, so a mis-indented open bracket at column 0 inside an unclosed form is not a form start — the string/comment-aware beginning-of-defun behind highlight/safe-restart and tool/sexp narrowing. The required forward lexical pass (a backward scan cannot know string state) runs natively: O(pos) at native speed instead of interpreted per-char cost on every eldoc/fontify-restart in a large buffer. s may be a string or a rope (ADR-488): a rope is read in place, and its safepoint table is carried across edits from the last ropes scanned, so a query after a keystroke re-scans about one form rather than the document.
 
-    (reflect/scan-form-start \"(a)\\n(b \\\"(\\\" c)\" 12)   → 4"
+    (reflect/scan-form-start \"(a)\\n(b \\\"(\\\" c)\" 12)   ;=> 4"
   (%scan-form-start s pos))
 
 (defn scan-form-start-2 (s pos)
   "[prev start] — the greatest top-level (depth-0) form-start offset <= pos AND the one before it, from a SINGLE forward pass. What tool/sexp narrowing actually wants: computing the pair as two scan-form-start calls runs the O(pos) lexical pass twice over the same prefix. prev is 0 when there is no earlier form start, matching what the second call returned there. s may be a string or a rope, as for scan-form-start.
 
-    (reflect/scan-form-start-2 \"(a)\\n(b)\\n(c)\" 9)   → [4 8]"
+    (reflect/scan-form-start-2 \"(a)\\n(b)\\n(c)\" 9)   ;=> [4 8]"
   (%scan-form-start-2 s pos))
 
 (defn scan-form-end (s from n-forms)
   "The char offset just after n-forms top-level forms starting at char offset from, skipping strings/comments and tracking bracket depth, or the length of s if the text ends first. s may be a string or a rope, read in place from from. The forward window-end companion to scan-form-start: tool/sexp narrowing uses the pair to bound structural motion to the neighbourhood of point in ONE native pass, replacing an interpreted char-at loop that was the dominant cost of every keystroke-driven motion.
 
-    (reflect/scan-form-end \"(a) (b c) d\" 0 2)   → 9"
+    (reflect/scan-form-end \"(a) (b c) d\" 0 2)   ;=> 9"
   (%scan-form-end s from n-forms))
 
 (defn scan-source-extract (src)
   "Native per-file scan for the whole-project check (ADR-119): parse src and return [counts privs def-names] — a map of every symbol's occurrence count, this file's `defn-`/`def-` privates as [bare qual], and every top-level def's qualified name. The fast path replacing the interpreted CST walk.
 
-    (nth (reflect/scan-source-extract \"(defn f () 1)\") 2)   → (\"f\")"
+    (nth (reflect/scan-source-extract \"(defn f () 1)\") 2)   ;=> (\"f\")"
   (%scan-source-extract src))
 
 (defn scan-tokens (s)
   "Lexically tokenize Brood source s into a vector of [start end kind text] tokens (char offsets, end-exclusive; whitespace skipped). kind is :comment, :string, :number, :keyword, :symbol, :open, or :close. The lossless token stream a fontifier / structural tool walks — the per-char scan runs natively, leaving policy (faces, head-position) to the consumer over O(tokens).
 
-    (reflect/scan-tokens \"(f 1)\")   → [[0 1 :open \"(\"] [1 2 :symbol \"f\"] [3 4 :number \"1\"] [4 5 :close \")\"]]"
+    (reflect/scan-tokens \"(f 1)\")   ;=> [[0 1 :open \"(\"] [1 2 :symbol \"f\"] [3 4 :number \"1\"] [4 5 :close \")\"]]"
   (%scan-tokens s))
 
 (defn resolves? (name:symbol -> bool)
@@ -227,10 +227,10 @@ a fresh image whether or not `regex/find` exists. That makes it useless for the 
 a documentation check actually asks — \"does the name this prose cites exist?\" — which
 is why bedit's tutorial had a gate for exactly that which could not be written.
 
-    (reflect/resolves? 'regex/find)         → true
-    (reflect/resolves? 'regex/no-such)      → false
-    (reflect/resolves? 'no-such-module/x)   → false   ; a module that will not load
-    (reflect/resolves? 'map)                → true    ; bare names are just `bound?`
+    (reflect/resolves? 'regex/find)         ;=> true
+    (reflect/resolves? 'regex/no-such)      ;=> false
+    (reflect/resolves? 'no-such-module/x)   ;=> false   ; a module that will not load
+    (reflect/resolves? 'map)                ;=> true    ; bare names are just `bound?`
 
 Loading is a side effect, and deliberate: there is no way to know whether a name exists
 without the module that would define it. A module that fails to load answers false
@@ -253,14 +253,14 @@ as a symbol takes a redefinition on its next call, and one whose module has not 
 is simply absent rather than an `unbound symbol` error. It does not load the module — a
 hook in a module nobody has opened is not a hook yet (that is `resolves?`'s job).
 
-    (reflect/call-if-bound 'inc 0 41)          → 42
-    (reflect/call-if-bound 'no-such-fn :none 1) → :none"
+    (reflect/call-if-bound 'inc 0 41)          ;=> 42
+    (reflect/call-if-bound 'no-such-fn :none 1) ;=> :none"
   (if (bound? name) (apply (reflect/eval name) args) fallback))
 
 (defn source-location (name)
   "Where global name was defined, as [file line col], or nil. Quote it: (source-location 'foo).
 
-    (reflect/source-location 'no-such-global-xyz)   → nil"
+    (reflect/source-location 'no-such-global-xyz)   ;=> nil"
   (%source-location name))
 
 (defn declared-signature (name)
@@ -270,8 +270,8 @@ the checker's view (declared, curated or inferred, aliases expanded); this answe
 CONTRACT as stated, which is what an editor shows beside a command's name. Symbol or
 string arg; a `deftype` alias is a type, not a signature, and answers nil.
 
-    (do (require-one 'hash) (reflect/declared-signature 'hash/md5))   → \"(string -> string)\"
-    (reflect/declared-signature 'inc)   → nil"
+    (do (require-one 'hash) (reflect/declared-signature 'hash/md5))   ;=> \"(string -> string)\"
+    (reflect/declared-signature 'inc)   ;=> nil"
   (let (form (%declared-sig name)) (if (nil? form) nil (pr-str form))))
 
 (defn type-aliases (&optional module: (or nil string symbol) -> (or nil (list map)))
@@ -281,7 +281,7 @@ the qualified name and the type-expression as written, rendered — sorted by na
 `deftype` binds no global, so this is the only way to enumerate them; `nest doc` renders
 a module's under a Types heading.
 
-    (reflect/type-aliases 'editor/pane)   ;=> ({:name \"editor/pane/…\" :type \"…\"} …)"
+    (reflect/type-aliases 'editor/pane)   ;~> ({:name \"editor/pane/…\" :type \"…\"} …)"
   (let (prefix (if (nil? module) nil (str (->string module) "/"))
         entries (seq/filter (%type-aliases)
                   (fn (entry) (or (nil? prefix) (string/starts-with? (first entry) prefix)))))
@@ -291,7 +291,7 @@ a module's under a Types heading.
 (defn type-signature (name)
   "The checker's type signature for global `name` (declared/curated/inferred) as an arrow string like \"(int -> int)\", or nil if it can't be pinned. Symbol or string arg: (type-signature 'map).
 
-    (reflect/type-signature 'inc)   → \"(number) -> number\""
+    (reflect/type-signature 'inc)   ;=> \"(number) -> number\""
   (%type-signature name))
 
 (defn expr-type (src)
@@ -299,25 +299,25 @@ a module's under a Types heading.
 the way a `sig` is — `\"int\"`, `\"(list any)\"`, `\"(int -> int)\"` — or nil when `src`
 doesn't parse or the checker has no opinion.
 
-    (reflect/expr-type \"(+ 1 2)\")   ;=> \"int\"
+    (reflect/expr-type \"(+ 1 2)\")   ;~> \"int\"
 
 [[type-signature]] answers this for a NAMED global; this answers it for an anonymous
 expression you just typed, which is what a REPL or a scratch buffer has to work with. Nil
 rather than an error on unparsable input, like [[check-string-structured]]: both get read
 live, from a buffer that is mid-edit half the time.
 
-    (reflect/expr-type \"(+ 1 2)\")   → \"3\"
-    (reflect/expr-type \"(str 1)\")   → \"string\""
+    (reflect/expr-type \"(+ 1 2)\")   ;=> \"3\"
+    (reflect/expr-type \"(str 1)\")   ;=> \"string\""
   (%expr-type src))
 
 (defn form-pos (form)
   "A form's [line col] source position, or nil.
 
-    (reflect/form-pos 42)   → nil"
+    (reflect/form-pos 42)   ;=> nil"
   (%form-pos form))
 
 (defn current-file ()
   "The path of the file currently being loaded, or nil.
 
-    (reflect/current-file)   ;=> the path being loaded, e.g. \"src/app.blsp\", or nil"
+    (reflect/current-file)   ;~> the path being loaded, e.g. \"src/app.blsp\", or nil"
   (%current-file))

@@ -105,18 +105,24 @@ fn format_and_doctest_run_inside_a_scaffolded_project() {
     let (code, out, err) = nest_in(&proj, &["format", "--check"]);
     assert_eq!(code, 0, "a fresh scaffold is formatted:\n{out}\n{err}");
     assert!(out.contains("all clean"), "format --check reports:\n{out}");
-    // A docstring example that lies (`expr ;=> expected` is the doctest form): doctest
-    // must exit 1 and name it.
+    // A docstring example that lies beside one that holds (`form ;=> result` is the doctest
+    // form): doctest must exit 1, report the lie with both sides, and pass the other. The
+    // example is qualified because it is evaluated outside the module; asserting only on
+    // the exit code passed while every example failed as an unbound symbol.
     std::fs::write(
         proj.join("src").join("lies.blsp"),
-        "(defmodule demo/lies)\n(defn two ()\n  \"Two.\n\n    (two) ;=> 3\"\n  2)\n",
+        "(defmodule lies)\n(defn two ()\n  \"Two.\n\n    (demo/lies/two) ;=> 3\n    (demo/lies/two) ;=> 2\"\n  2)\n",
     )
     .expect("write lies");
     let (code, out, err) = nest_in(&proj, &["doctest"]);
     assert_eq!(code, 1, "a failing example exits 1:\n{out}\n{err}");
     assert!(
-        out.contains("(two)") || err.contains("(two)"),
-        "the report names the example:\n{out}\n{err}"
+        out.contains("got 2, documented 3"),
+        "the report names the lie with both sides:\n{out}\n{err}"
+    );
+    assert!(
+        !out.contains("documented 2"),
+        "the holding example is not reported:\n{out}\n{err}"
     );
 }
 

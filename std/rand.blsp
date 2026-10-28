@@ -10,22 +10,22 @@
 (defn seed (n)
   "Normalize integer `n` into a valid nonzero 32-bit PRNG seed (xorshift32 cannot start from 0).
 
-    (rand/seed 42)   → 42
-    (rand/seed 0)   → 2463534242"
+    (rand/seed 42)   ;=> 42
+    (rand/seed 0)   ;=> 2463534242"
   (%rand-seed n))
 
 (defn rng (seed)
   "Step the PRNG: returns `[value next-seed]`, where `value` is a pseudo-random non-negative
 32-bit integer and `next-seed` feeds the next call. `seed` is any integer (normalized via `rand/seed`).
 
-    (rand/rng 42)   → [11355432 11355432]"
+    (rand/rng 42)   ;=> [11355432 11355432]"
   (let (s (%rand-step (%rand-seed seed)))
     [s s]))
 
 (defn int (seed:any n:int -> (tuple int int))
   "Returns `[i next-seed]` with `i` a pseudo-random integer in `[0, n)`. `n` must be positive.
 
-    (rand/int 42 10)   → [2 11355432]"
+    (rand/int 42 10)   ;=> [2 11355432]"
   (if (<= n 0)
     (error "rand/int: bound must be positive: " n)
     (let (s (%rand-step (%rand-seed seed)))
@@ -34,7 +34,7 @@
 (defn float (seed)
   "Returns `[f next-seed]` with `f` a pseudo-random float in `[0.0, 1.0)`.
 
-    (rand/float 42)   → [0.002643892541527748 11355432]"
+    (rand/float 42)   ;=> [0.002643892541527748 11355432]"
   (let (s (%rand-step (%rand-seed seed)))
     [(/ s 4294967296.0) s]))
 
@@ -42,5 +42,5 @@
 (defn token (n:int -> string)
   "`n` cryptographically-strong random bytes from the OS RNG, hex-encoded as a 2·n-char string.
 
-    (count (rand/token 8))   → 16   ; hex, two chars per byte"
+    (count (rand/token 8))   ;=> 16   ; hex, two chars per byte"
   (encoding/hex-encode-bytes (%random-bytes n)))

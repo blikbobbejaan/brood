@@ -30,15 +30,15 @@ over `(reflect/special-forms)` + `encode`."
 `(reflect/doc-forms)`, the same list the LSP's semantic tokens and `std/editor/highlight.blsp`
 read. The shared input to every grammar's docstring rule.
 
-    (includes? (grammar/doc-heads) \"defn\")  → true"
+    (includes? (grammar/doc-heads) \"defn\")  ;=> true"
   (keys (reflect/doc-forms)))
 
 (defn fn-doc-heads ()
   "The subset of `doc-heads` that build a FUNCTION — where a lone trailing string is
 the return value rather than documentation.
 
-    (includes? (grammar/fn-doc-heads) \"defn\")  → true
-    (includes? (grammar/fn-doc-heads) \"def\")   → false"
+    (includes? (grammar/fn-doc-heads) \"defn\")  ;=> true
+    (includes? (grammar/fn-doc-heads) \"def\")   ;=> false"
   (seq/filter (doc-heads) (fn (h) (= :fn (get (reflect/doc-forms) h)))))
 
 (defn special-keywords ()
@@ -47,8 +47,8 @@ the return value rather than documentation.
 so they must not also land in the keyword alternation). The shared input to every
 grammar target.
 
-    (includes? (grammar/special-keywords) \"if\")    → true
-    (includes? (grammar/special-keywords) \"defn\")  → false"
+    (includes? (grammar/special-keywords) \"if\")    ;=> true
+    (includes? (grammar/special-keywords) \"defn\")  ;=> false"
   (seq/filter (reflect/special-forms) (fn (k) (not (string/starts-with? k "def")))))
 
 ;; ---- regex helpers (TextMate uses the Oniguruma engine) ----------------------
@@ -112,7 +112,7 @@ first form that isn't it. What a regex grammar cannot see is whether a body foll
 the one string in `(defn f (x) \"hi\")` — a return value — reads as a doc here; the
 LSP's semantic tokens (which parse) correct that wherever the server runs.
 
-    (grammar/tmlanguage-grammar)   ;=> {:name … :scopeName \"source.brood\" :patterns […] :repository {…}}"
+    (grammar/tmlanguage-grammar)   ;~> {:name … :scopeName \"source.brood\" :patterns […] :repository {…}}"
   {:name "Brood"
    :scopeName "source.brood"
    :patterns [{:include "#comment"}
@@ -187,7 +187,7 @@ LSP's semantic tokens (which parse) correct that wherever the server runs.
   "The VS Code TextMate grammar as JSON text (the `.tmLanguage.json` file body),
 generated from `(reflect/special-forms)`. Redirect `nest grammar` to the grammar file.
 
-    (grammar/tmlanguage)   ;=> \"{\\\"scopeName\\\":\\\"source.brood\\\",…}\" — the .tmLanguage.json body"
+    (grammar/tmlanguage)   ;~> \"{\\\"scopeName\\\":\\\"source.brood\\\",…}\" — the .tmLanguage.json body"
   (encode (tmlanguage-grammar)))
 
 ;; ---- tree-sitter highlight query ---------------------------------------------
@@ -238,7 +238,7 @@ approximate. Emitted last so it overrides the blanket `(string) @string` above."
   "The Emacs `brood-special-forms` defconst (elisp text) built from the same
 `special-keywords`, so `brood-mode` can generate its highlight list too.
 
-    (grammar/emacs-special-forms)   ;=> \"(defconst brood-special-forms '(…))\" — elisp text"
+    (grammar/emacs-special-forms)   ;~> \"(defconst brood-special-forms '(…))\" — elisp text"
   (str "(defconst brood-special-forms\n"
     "  '("
     (grammar-quoted (special-keywords))
@@ -252,7 +252,7 @@ docstring, as a `(HEAD . KIND)` alist where KIND is `fn` (the head builds a func
 a lone trailing string is its return value) or `head`. `brood-mode` reads it to fontify a
 docstring with `font-lock-doc-face` instead of the string face.
 
-    (grammar/emacs-doc-forms)   ;=> \"(defconst brood-doc-forms '((\\\"defmacro\\\" . fn) …))\" — elisp text"
+    (grammar/emacs-doc-forms)   ;~> \"(defconst brood-doc-forms '((\\\"defmacro\\\" . fn) …))\" — elisp text"
   (str "(defconst brood-doc-forms\n"
     "  '("
     (string/join (map (doc-heads)
@@ -269,5 +269,5 @@ docstring with `font-lock-doc-face` instead of the string face.
   "Both Emacs defconsts (`brood-special-forms` + `brood-doc-forms`) — what `nest grammar
 emacs` prints, for pasting into `brood-mode`'s `brood.el`.
 
-    (grammar/emacs)   ;=> \"(defconst brood-special-forms …)\\n…(defconst brood-doc-forms …)\" — elisp text"
+    (grammar/emacs)   ;~> \"(defconst brood-special-forms …)\\n…(defconst brood-doc-forms …)\" — elisp text"
   (str (emacs-special-forms) "\n" (emacs-doc-forms)))

@@ -15,20 +15,20 @@ terminal that speaks the kitty keyboard protocol is asked to report repeats and 
 from its repeats. Either way `term/poll` delivers `[:key-up …]` and `term/held-key` knows
 the key held. Pair with `term/leave`.
 
-    (term/enter)   ;=> the terminal taken over: raw mode, alternate screen, mouse capture"
+    (term/enter)   ;~> the terminal taken over: raw mode, alternate screen, mouse capture"
   (%term-enter))
 
 (defn leave ()
   "Restore the terminal: show the cursor, disable mouse capture, leave the alternate
 screen, disable raw mode. The normal-path teardown for `term/enter`.
 
-    (term/leave)   ;=> the terminal restored to its normal state"
+    (term/leave)   ;~> the terminal restored to its normal state"
   (%term-leave))
 
 (defn size ()
   "The terminal size as [cols rows] in character cells.
 
-    (term/size)   ;=> [120 40]"
+    (term/size)   ;~> [120 40]"
   (%term-size))
 
 (defn poll (ms)
@@ -48,7 +48,7 @@ key-up. A held key's repeat already superseded in the buffered input is dropped,
 backlog never plays on after the key is up; a press is never dropped, nor typed text, which
 a paste is made of. `term/held-key` names the key held. Always pass a finite `ms`.
 
-    (term/poll 50)   ;=> \"a\", :ctrl-c, [:mouse :press :left 3 10 []], [:key-up :ctrl-n], or nil on timeout"
+    (term/poll 50)   ;~> \"a\", :ctrl-c, [:mouse :press :left 3 10 []], [:key-up :ctrl-n], or nil on timeout"
   (%term-poll ms))
 
 (defn held-key ()
@@ -58,7 +58,7 @@ keyboard protocol (kitty, foot, WezTerm, Ghostty, Alacritty 0.13+) reports it; i
 and for the keys the protocol still sends as text, a key is held once its repeats arrive
 faster than a hand presses one key, until they stop. Always nil outside `term/enter`.
 
-    (term/held-key)   ;=> :down while the down arrow is held, nil when no key is"
+    (term/held-key)   ;~> :down while the down arrow is held, nil when no key is"
   (%term-held-key))
 
 (defn forward-input (pid)
@@ -70,7 +70,7 @@ key (`proc/set-quit-key`) sees them, so a terminal C-g interrupts a stuck `updat
 window's does. Take them with `proc/take-priority` / `proc/receive-lane`; `term/poll` sees
 nothing meanwhile. `*term-display*` turns it on for its loop.
 
-    (term/forward-input nil)   → nil"
+    (term/forward-input nil)   ;=> nil"
   (%term-forward-input pid))
 
 (defn draw (frame)
@@ -81,7 +81,7 @@ explicit [r g b] vector / \"#rrggbb\" hex string. [:rect …] fills a w×h cell 
 face's background. The optional cursor `style` is :block (default), :bar, or :underline. The
 in-process frontend for the display protocol; returns nil.
 
-    (term/draw [[:clear] [:text 0 0 \"hello\" {:fg :red}] [:cursor 0 5]])   ;=> nil"
+    (term/draw [[:clear] [:text 0 0 \"hello\" {:fg :red}] [:cursor 0 5]])   ;~> nil"
   (%term-draw frame))
 
 (defn raw-enter ()
@@ -89,13 +89,13 @@ in-process frontend for the display protocol; returns nil.
 The seam for an inline line editor (the REPL); use `term/enter` instead for a full-screen
 TUI. Pair with `term/raw-leave`.
 
-    (term/raw-enter)   ;=> raw mode on; the screen and scrollback stay in place"
+    (term/raw-enter)   ;~> raw mode on; the screen and scrollback stay in place"
   (%term-raw-enter))
 
 (defn raw-leave ()
   "Leave raw mode (the teardown for `term/raw-enter`). Idempotent with the panic-path restore.
 
-    (term/raw-leave)   ;=> raw mode off"
+    (term/raw-leave)   ;~> raw mode off"
   (%term-raw-leave))
 
 (defn emit (ops)
@@ -104,5 +104,5 @@ over the screen): [:print str], [:print str face], [:cr], [:nl], [:up n], [:down
 [:col n], [:clear-eol], [:clear-below], [:clear-screen]. A face is a map like
 {:fg :cyan :bold true}. Queues all ops then flushes once; unknown ops are skipped; returns nil.
 
-    (term/emit [[:cr] [:print \"> \" {:fg :cyan}] [:clear-eol]])   ;=> nil"
+    (term/emit [[:cr] [:print \"> \" {:fg :cyan}] [:clear-eol]])   ;~> nil"
   (%term-emit ops))

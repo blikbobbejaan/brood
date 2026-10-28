@@ -52,7 +52,7 @@ are Rust.")
 (defn connect (host:string port:int -> socket)
   "Connect to host:port; inbound data is delivered to the calling process as `[:tcp sock data]` / `[:tcp-closed sock]` messages. Returns a socket. Throws on failure. The resolve and handshake run off the scheduler, so a slow host parks only the caller.
 
-    (tcp/connect \"localhost\" 8080)   ;=> #<socket …>, or a raise when nothing listens"
+    (tcp/connect \"localhost\" 8080)   ;~> #<socket …>, or a raise when nothing listens"
   (let (sock (%tcp-connect host port))
     (receive
       ([:tcp-connected ^sock] sock)
@@ -63,31 +63,31 @@ are Rust.")
 (defn listen (host:string port:int -> socket)
   "Bind a listening socket on host:port (port 0 = OS-assigned); connections arrive as `[:tcp-accept lsock client]` messages to the calling process. Returns a socket.
 
-    (tcp/listen \"127.0.0.1\" 0)   ;=> #<socket …> bound to an OS-assigned port"
+    (tcp/listen \"127.0.0.1\" 0)   ;~> #<socket …> bound to an OS-assigned port"
   (%tcp-listen host port))
 
 (defn send (sock:socket data:any -> nil)
   "Write data to sock (blocking). data is any iolist — a string, a bytes value, a byte int 0–255, or an arbitrarily nested list/vector of those, flattened once at the write (ADR-139). A string leaf is always sent as its UTF-8 bytes, whatever the socket's mode (ADR-141); raw bytes go out as bytes values. Returns nil; throws on error.
 
-    (tcp/send sock [\"GET / HTTP/1.0\\r\\n\" \"\\r\\n\"])   ;=> nil, once the bytes are written"
+    (tcp/send sock [\"GET / HTTP/1.0\\r\\n\" \"\\r\\n\"])   ;~> nil, once the bytes are written"
   (%tcp-send sock data))
 
 (defn close (sock:socket -> nil)
   "Close sock (a stream or listener), releasing its fd / stopping its accept loop. Once this returns, no new message for sock reaches any mailbox — no data, no [:tcp-closed], no [:tcp-accept]; messages already delivered stay. A stream's queued output still flushes to the peer (bounded by a 5 s linger), so send-then-close never truncates; bytes the peer sends meanwhile are discarded. Idempotent; returns nil.
 
-    (tcp/close sock)   ;=> nil"
+    (tcp/close sock)   ;~> nil"
   (%tcp-close sock))
 
 (defn controlling-process (sock:socket pid:pid -> nil)
   "Make pid the owner of sock's inbound data: starts reading a just-accepted (passive) socket, or retargets an active one. Returns nil.
 
-    (tcp/controlling-process client worker-pid)   ;=> nil; `[:tcp …]` messages now go to worker-pid"
+    (tcp/controlling-process client worker-pid)   ;~> nil; `[:tcp …]` messages now go to worker-pid"
   (%tcp-controlling-process sock pid))
 
 (defn local-port (sock:socket -> (or int nil))
   "The local port sock is bound to, or nil.
 
-    (tcp/local-port (tcp/listen \"127.0.0.1\" 0))   ;=> the port the OS assigned, e.g. 41237"
+    (tcp/local-port (tcp/listen \"127.0.0.1\" 0))   ;~> the port the OS assigned, e.g. 41237"
   (%tcp-local-port sock))
 
 (defn set-binary (sock:socket on:bool -> nil)
@@ -99,25 +99,25 @@ are Rust.")
       (tcp/set-binary ls true)     ;; every accepted socket starts binary
       …)
 
-    (tcp/set-binary sock true)   ;=> nil; inbound [:tcp sock data] now carries `bytes`"
+    (tcp/set-binary sock true)   ;~> nil; inbound [:tcp sock data] now carries `bytes`"
   (%tcp-set-binary sock on))
 
 (defn set-idle-timeout (sock:socket ms:int -> nil)
   "Arm (or, with ms 0, disarm) an idle timeout on an established stream: the reactor drops the connection if no bytes move in EITHER direction for ms milliseconds, delivering `[:tcp-closed]` (or `[:tcp-error]` for a one-shot TLS client). Off by default — arm it on a connection accepting untrusted input as slow-loris protection the reactor applies even if the app forgets to close; leave it off for a legitimately long-idle stream (SSE, long-poll). Returns nil; throws if sock is gone or a listener.
 
-    (tcp/set-idle-timeout sock 30000)   ;=> nil; the connection drops after 30 s with no traffic"
+    (tcp/set-idle-timeout sock 30000)   ;~> nil; the connection drops after 30 s with no traffic"
   (%tcp-set-idle-timeout sock ms))
 
 (defn socket? (x)
   "True if `x` is a TCP socket.
 
-    (tcp/socket? 42)   → false"
+    (tcp/socket? 42)   ;=> false"
   (%eq (type-of x) :socket))
 
 (defn drain (sock)
   "Receive `[:tcp sock data]` messages for `sock`, concatenating the chunks, until `[:tcp-closed sock]`; return everything as one `bytes` value (byte-faithful in either socket mode — text-mode string chunks contribute their UTF-8 bytes; decode with `utf8-bytes->string` for text). For request/response protocols where the peer closes when its reply is complete (e.g. HTTP/1.0). Must be called by the socket's owning process.
 
-    (tcp/drain sock)   ;=> #b\"HTTP/1.0 200 OK\\r\\n…\" — every byte up to the peer's close"
+    (tcp/drain sock)   ;~> #b\"HTTP/1.0 200 OK\\r\\n…\" — every byte up to the peer's close"
   (drain-acc sock nil))
 
 ;; `acc` is the chunks in reverse; ONE `bytes-concat` at close (the reversed chunk
@@ -131,7 +131,7 @@ are Rust.")
 (defn drain-timeout (sock ms)
   "Like `drain`, but give up after `ms` milliseconds of silence and return whatever was collected (tagged `[:timeout acc]` vs `[:closed acc]` so the caller can tell; `acc` is a `bytes` value).
 
-    (tcp/drain-timeout sock 1000)   ;=> [:closed #b\"…\"], or [:timeout #b\"…\"] after 1 s of silence"
+    (tcp/drain-timeout sock 1000)   ;~> [:closed #b\"…\"], or [:timeout #b\"…\"] after 1 s of silence"
   (drain-to sock nil ms))
 
 (defn- drain-to (sock acc ms)
@@ -238,7 +238,7 @@ are Rust.")
 
   `:seed` is a `bytes` value the caller already holds — the surplus a previous framed read returned — treated as if it had just arrived as the first chunk. A protocol reading frame after frame off one stream needs it: without it, a delimiter sitting in (or straddling) those bytes is missed. A seed containing a whole frame returns without reading the socket at all. Must be called by the socket's owning process.
 
-    (tcp/read-until sock \"\\r\\n\\r\\n\" {:timeout-ms 5000})   ;=> [head-bytes surplus-bytes], or [:closed acc] / [:timeout acc]"
+    (tcp/read-until sock \"\\r\\n\\r\\n\" {:timeout-ms 5000})   ;~> [head-bytes surplus-bytes], or [:closed acc] / [:timeout acc]"
   (let ([ms maxb end] (read-limits opts)
         sepb (bytes/concat sep)
         seed (get opts :seed))
@@ -324,7 +324,7 @@ are Rust.")
 
   `opts` takes the same limits as `read-until`, all off by default: `:timeout-ms`, the IDLE wait for the next chunk, returning `[:timeout acc]`; `:max-bytes`, returning `[:too-large #b\"\"]` **before reading anything** when the declared `n` exceeds it — a `Content-Length: 4000000000` is refused rather than read; and `:deadline-ms`, a TOTAL budget for the whole body measured from the call, also returning `[:timeout acc]`. Prefer `:timeout-ms` alone for a large body — slowness there is usually honest — and reach for `:deadline-ms` when the protocol bounds the body small. Must be called by the socket's owning process.
 
-    (tcp/read-n sock 16)   ;=> [sixteen-bytes surplus-bytes], or [:closed acc] when the peer closes early"
+    (tcp/read-n sock 16)   ;~> [sixteen-bytes surplus-bytes], or [:closed acc] when the peer closes early"
   (let ([ms maxb end] (read-limits opts))
     (if (and maxb (> n maxb))
       ;; The length is DECLARED, so the cap is a pre-read decision: there is no

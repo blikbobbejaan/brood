@@ -430,11 +430,11 @@ matches anything (score 0, no terms).
 For ONE candidate — the rows a UI actually draws, which need `:positions` to highlight the
 matched chars. To rank a whole set use `top`.
 
-    (fuzzy/match \"abc\" \"xAxbxC\")   → {:score 12 :positions (1 3 5) :terms [(1 3 5)]}
-    (fuzzy/match \"zz\" \"abc\")   → nil
-    (:terms (fuzzy/match \"ex lim\" \"lib/limits.ex\"))   → [(11 12) (4 5 6)]
-    (:positions (fuzzy/match \"somet\" \"s-o-m/something\"))   → (6 7 8 9 10)
-    (:terms (fuzzy/match \"=it !zz lim$\" \"lib/limits.ex/lim\"))   → [(7 8) () (14 15 16)]"
+    (fuzzy/match \"abc\" \"xAxbxC\")   ;=> {:score 12 :positions (1 3 5) :terms [(1 3 5)]}
+    (fuzzy/match \"zz\" \"abc\")   ;=> nil
+    (:terms (fuzzy/match \"ex lim\" \"lib/limits.ex\"))   ;=> [(11 12) (4 5 6)]
+    (:positions (fuzzy/match \"somet\" \"s-o-m/something\"))   ;=> (6 7 8 9 10)
+    (:terms (fuzzy/match \"=it !zz lim$\" \"lib/limits.ex/lim\"))   ;=> [(7 8) () (14 15 16)]"
   (let (terms (fuzzy-terms query))
     (if (empty? terms)
       {:score 0 :positions () :terms []}
@@ -452,8 +452,8 @@ and the exact-match rule are `top`'s, applied over whatever scorer is in force).
 Curried on purpose: ranking calls the inner function tens of thousands of times per
 keystroke, so everything that depends only on the query happens out here, once.
 
-    ((fuzzy/scorer \"fb\") \"foo-bar\")   → 13
-    ((fuzzy/scorer \"fb\") \"zz\")   → nil
+    ((fuzzy/scorer \"fb\") \"foo-bar\")   ;=> 13
+    ((fuzzy/scorer \"fb\") \"zz\")   ;=> nil
 
     ; the built-in rules, plus a nudge for what you opened recently
     (binding (*fuzzy-scorer*
@@ -728,9 +728,9 @@ then lexicographic. A query with no terms keeps `cands` in their given order. Sc
 - `:boost {cand n}` — added to a candidate's score when it matches: history, frecency.
 - a candidate equal to the whole query (for a path, or its file name) ranks first.
 
-    (fuzzy/top \"ab\" [\"axb\" \"ab\" \"zz\"] 1)   → (\"ab\")
-    (fuzzy/top \"view\" [\"view/model.blsp\" \"src/view.blsp\"] 2 {:category :file})   → (\"src/view.blsp\" \"view/model.blsp\")
-    (fuzzy/top \"ab\" [\"abc\" \"axb\"] 2 {:boost {\"axb\" 50}})   → (\"axb\" \"abc\")"
+    (fuzzy/top \"ab\" [\"axb\" \"ab\" \"zz\"] 1)   ;=> (\"ab\")
+    (fuzzy/top \"view\" [\"view/model.blsp\" \"src/view.blsp\"] 2 {:category :file})   ;=> (\"src/view.blsp\" \"view/model.blsp\")
+    (fuzzy/top \"ab\" [\"abc\" \"axb\"] 2 {:boost {\"axb\" 50}})   ;=> (\"axb\" \"abc\")"
   (let (k (or limit 0)
         bounded (> k 0)
         n (if bounded (count cands) 0)
@@ -758,7 +758,7 @@ then lexicographic. A query with no terms keeps `cands` in their given order. Sc
 segments for `:category :file`, shorter candidate, then lexicographic). An empty `query`
 returns `cands` unchanged. `options` as `top`.
 
-    (fuzzy/filter \"ab\" [\"axb\" \"zz\"])   → (\"axb\")"
+    (fuzzy/filter \"ab\" [\"axb\" \"zz\"])   ;=> (\"axb\")"
   (top query cands nil options))
 ;; `cands` and the result are `seqable` (empty query returns `cands` as-is, else a ranked
 ;; list) — the domain checks the argument without false-flagging a vector caller.
@@ -867,7 +867,7 @@ not reach a spawned process, so the session captures it at creation and keeps it
       (fuzzy/rank-async r \"view\" 20)
       (receive ([:fuzzy-ranked ^r query hits] hits)))
 
-    (let (r (fuzzy/ranker [\"view.blsp\" \"model.blsp\"])) (fuzzy/rank-async r \"view\" 1) (receive ([:fuzzy-ranked ^r _ hits] (do (fuzzy/ranker-stop r) (count hits)))))   → 1"
+    (let (r (fuzzy/ranker [\"view.blsp\" \"model.blsp\"])) (fuzzy/rank-async r \"view\" 1) (receive ([:fuzzy-ranked ^r _ hits] (do (fuzzy/ranker-stop r) (count hits)))))   ;=> 1"
   (let (score-of *fuzzy-scorer*)
     (spawn (fn () (ranker-loop cands score-of options nil)))))
 (sig ranker (seqable &optional (or nil map) -> pid))
@@ -878,7 +878,7 @@ arrives in the calling process's mailbox as `[:fuzzy-ranked <session> query hits
 sent while an older one is still queued REPLACES it — only the newest is ever answered, so a
 caller that sends one per keystroke gets one reply per burst, not one per key.
 
-    (let (r (fuzzy/ranker [\"alpha\" \"beta\"])) (fuzzy/rank-async r \"bet\") (receive ([:fuzzy-ranked ^r q hits] (do (fuzzy/ranker-stop r) [q (count hits)]))))   → [\"bet\" 1]"
+    (let (r (fuzzy/ranker [\"alpha\" \"beta\"])) (fuzzy/rank-async r \"bet\") (receive ([:fuzzy-ranked ^r q hits] (do (fuzzy/ranker-stop r) [q (count hits)]))))   ;=> [\"bet\" 1]"
   (send session [:rank (self) query limit]))
 (sig rank-async (pid string &optional (or nil int) -> any))
 
@@ -887,14 +887,14 @@ caller that sends one per keystroke gets one reply per burst, not one per key.
 not the query. Queries already queued are answered against whichever set has arrived first,
 so a caller that cares should re-ask after replacing.
 
-    (let (r (fuzzy/ranker [])) (fuzzy/ranker-candidates r [\"only\"]) (fuzzy/rank-async r \"on\") (receive ([:fuzzy-ranked ^r _ hits] (do (fuzzy/ranker-stop r) (count hits)))))   → 1"
+    (let (r (fuzzy/ranker [])) (fuzzy/ranker-candidates r [\"only\"]) (fuzzy/rank-async r \"on\") (receive ([:fuzzy-ranked ^r _ hits] (do (fuzzy/ranker-stop r) (count hits)))))   ;=> 1"
   (send session [:candidates cands]))
 
 (defn ranker-stop (session:pid -> any)
   "End `session`. The process exits once it reaches the message; anything queued behind it
 is dropped with the mailbox.
 
-    (let (r (fuzzy/ranker [\"a\"]) m (monitor r)) (fuzzy/ranker-stop r) (receive ([:down ^m _ reason] reason)))   → :normal"
+    (let (r (fuzzy/ranker [\"a\"]) m (monitor r)) (fuzzy/ranker-stop r) (receive ([:down ^m _ reason] reason)))   ;=> :normal"
   (send session [:stop]))
 
 ;; ---- nearest names: "did you mean" ------------------------------------------
@@ -933,9 +933,9 @@ characters of one string into each prefix of `other-characters` (a vector)."
   "The Levenshtein distance between `a` and `b`: the fewest single-character insertions,
 deletions and substitutions turning one into the other, counted in codepoints.
 
-    (fuzzy/edit-distance \"kitten\" \"sitting\")   → 3
-    (fuzzy/edit-distance \"reduc\" \"reduce\")   → 1
-    (fuzzy/edit-distance \"\" \"abc\")   → 3"
+    (fuzzy/edit-distance \"kitten\" \"sitting\")   ;=> 3
+    (fuzzy/edit-distance \"reduc\" \"reduce\")   ;=> 1
+    (fuzzy/edit-distance \"\" \"abc\")   ;=> 3"
   (characters-distance (string/->list a) (string/->list b)))
 
 (defn nearest (name:string candidates:seqable -> list)
@@ -944,9 +944,9 @@ deletions and substitutions turning one into the other, counted in codepoints.
 are never offered, and the threshold grows with the name, so a short unrelated candidate
 (`x` for `frobnicate`) is not.
 
-    (fuzzy/nearest \"reduc\" [\"reduce\" \"reduced\" \"map\"])   → (\"reduce\")
-    (fuzzy/nearest \"cat\" [\"cot\" \"bat\" \"cat\" \"cab\" \"bat\"])   → (\"bat\" \"cab\" \"cot\")
-    (fuzzy/nearest \"zzqqxx\" [\"reduce\" \"map\"])   → ()"
+    (fuzzy/nearest \"reduc\" [\"reduce\" \"reduced\" \"map\"])   ;=> (\"reduce\")
+    (fuzzy/nearest \"cat\" [\"cot\" \"bat\" \"cat\" \"cab\" \"bat\"])   ;=> (\"bat\" \"cab\" \"cot\")
+    (fuzzy/nearest \"zzqqxx\" [\"reduce\" \"map\"])   ;=> ()"
   (let (characters (string/->list name)
         length (count characters)
         limit (math/max 1 (math/quot length 3))

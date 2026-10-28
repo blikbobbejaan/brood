@@ -31,14 +31,14 @@ last few calls, compared by `=` — for arguments like a buffer's rope, where ha
   "The `[key value]` entry of `store` whose key is `=` to `key`, or nil. The lookup half
 of `defmemo`, public only because its expansion calls it.
 
-    (memo/recent-lookup (list [[1] :one] [[2] :two]) [2])   → [[2] :two]"
+    (memo/recent-lookup (list [[1] :one] [[2] :two]) [2])   ;=> [[2] :two]"
   (seq/find store (fn (entry) (= (first entry) key))))
 
 (defn recent-remember (store key value capacity)
   "`store` with `[key value]` in front and at most `capacity` entries — the oldest go.
 The remember half of `defmemo`.
 
-    (count (memo/recent-remember (list [[1] :a] [[2] :b]) [3] :c 2))   → 2"
+    (count (memo/recent-remember (list [[1] :a] [[2] :b]) [3] :c 2))   ;=> 2"
   (take (cons [key value] store) capacity))
 
 (defmacro defmemo (name capacity params & body)

@@ -50,7 +50,7 @@ apps did before `:poll-tagged` existed) leaves the mark pointing at the old one,
 `display-poll-tagged` asks the new `:poll` rather than a `:poll-tagged` that bypasses it.
 Merge the result into the display map.
 
-    (let (d (editor/ui/display-polls (fn (ms) [\"x\" true]))) [((get d :poll) 0) ((get d :poll-tagged) 0)])   → [\"x\" [\"x\" true]]"
+    (let (d (editor/ui/display-polls (fn (ms) [\"x\" true]))) [((get d :poll) 0) ((get d :poll-tagged) 0)])   ;=> [\"x\" [\"x\" true]]"
   (let (poll (fn (ms) (display-untag (poll-tagged ms))))
     {:poll poll :poll-tagged poll-tagged :poll-tagged-of poll}))
 
@@ -155,8 +155,8 @@ delivers (`proc/receive-lane`) — with pointer motion coalesced; nil on timeout
 background message queued before it (ADR-490): its `:poll-input`. A display without one
 answers nil, so the loop folds what its `:poll` returns in arrival order, as before.
 
-    (editor/ui/display-poll-input {:poll-input (fn () \"x\")})   → \"x\"
-    (editor/ui/display-poll-input {})   → nil"
+    (editor/ui/display-poll-input {:poll-input (fn () \"x\")})   ;=> \"x\"
+    (editor/ui/display-poll-input {})   ;=> nil"
   (let (poll-input (get display :poll-input))
     (if poll-input (poll-input) nil)))
 
@@ -168,8 +168,8 @@ cannot tell input apart keeps every message holding idle timers back, as before.
 display whose `:poll` was replaced after `display-polls` made its `:poll-tagged` (its
 `:poll-tagged-of` is no longer its `:poll`): the replacement is what the app meant.
 
-    (editor/ui/display-poll-tagged {:poll (fn (ms) \"x\")} 0)   → [\"x\" true]
-    (editor/ui/display-poll-tagged {:poll (fn (ms) nil)} 0)   → nil"
+    (editor/ui/display-poll-tagged {:poll (fn (ms) \"x\")} 0)   ;=> [\"x\" true]
+    (editor/ui/display-poll-tagged {:poll (fn (ms) nil)} 0)   ;=> nil"
   (let (tagged (get display :poll-tagged)
         of (get display :poll-tagged-of))
     (if (and tagged (or (nil? of) (= of (get display :poll))))
@@ -188,7 +188,7 @@ not open needs."
 
 (defn display-texture "Upload an image as a texture through `display` — a `gui-display` (the window it owns) or the `remote-display` a served app draws to (the thin client's window, over the wire) — and return its handle, for `gui/sprite`. Either `(display-texture d image)` with the {:width :height :rgba} map `gui/image-thumb` decodes, or `(display-texture d rgba w h)` with raw bytes. The handle comes from `gui/alloc-texture`, so `gui/texture-size` knows it; a display without a `:texture` entry (the terminal) accepts and ignores the upload.
 
-    (gui/texture-size (editor/ui/display-texture {} {:width 2 :height 1 :rgba [0 0 0 0 0 0 0 0]}))   → [2 1]"
+    (gui/texture-size (editor/ui/display-texture {} {:width 2 :height 1 :rgba [0 0 0 0 0 0 0 0]}))   ;=> [2 1]"
   ((display image) (display-texture display
                      (get image :rgba)
                      (get image :width)
@@ -204,7 +204,7 @@ or `[:music snd vol]` frame op. `pcm` is interleaved PCM16 little-endian samples
 (default) or 2. The handle comes from `gui/alloc-sound`; a display without a `:sound`
 entry (the terminal) accepts and ignores the upload.
 
-    (gui/sound-seconds (editor/ui/display-sound {} [0 0 0 0] 2))   → 1.0"
+    (gui/sound-seconds (editor/ui/display-sound {} [0 0 0 0] 2))   ;=> 1.0"
   (let (ch (or channels 1)
         n (if (bytes? pcm) (bytes/length pcm) (count pcm))
         snd (gui/alloc-sound (->float (/ (math/quot n 2) (* rate ch)))))
@@ -242,7 +242,7 @@ carry no window id, one process should drive **one** window (which is why
 `(observe)` spawns a process per window) — two windows in one process would mix
 their input. Both are deferred trade-offs (ADR-059), fine for the observer.
 
-    (editor/ui/gui-display {:title \"demo\" :width 800 :height 600})   ;=> {:enter … :draw … :poll … :window id}, or an error without the gui feature"
+    (editor/ui/gui-display {:title \"demo\" :width 800 :height 600})   ;~> {:enter … :draw … :poll … :window id}, or an error without the gui feature"
   (let (id (gui/open (get opts :title) (get opts :width) (get opts :height) opts))
     (merge
       {:enter (fn () nil)
@@ -290,8 +290,8 @@ the press and release it saw (the terminal too, when it speaks the kitty keyboar
 false for a display that cannot tell. `ui-run` holds its idle timers while it is true, and a
 thin client (`editor/serve`) ships it with each key so a served app's loop does the same.
 
-    (editor/ui/display-key-held? {:key-held? (fn () true)})   → true
-    (editor/ui/display-key-held? {})   → false"
+    (editor/ui/display-key-held? {:key-held? (fn () true)})   ;=> true
+    (editor/ui/display-key-held? {})   ;=> false"
   (let (held? (get display :key-held?))
     (if held? (held?) false)))
 
@@ -336,7 +336,7 @@ together (a GUI window and the terminal today; remote frontends later — they s
 in as just another member). The frame renders at the smallest common grid so it
 fits everywhere. Pure Brood over the `term-*`/`gui-*` mechanism.
 
-    (editor/ui/display-broadcast [*term-display* (editor/ui/gui-display)])   ;=> one display map driving both frontends"
+    (editor/ui/display-broadcast [*term-display* (editor/ui/gui-display)])   ;~> one display map driving both frontends"
   (merge {:enter (fn () (doseq (d displays) ((get d :enter))))
           :leave (fn () (doseq (d displays) ((get d :leave))))
           :size (fn () (display-min-size displays))
@@ -357,7 +357,7 @@ The display's `:poll-input` passes through too, so `ui-run` still takes a queued
 ahead of a flood of pushes (ADR-490). Needs the `sse` module on the producing side
 (loaded by referencing `sse/…`).
 
-    (editor/ui/with-events *term-display*)   ;=> the display, its :poll also yielding [:sse ev] messages"
+    (editor/ui/with-events *term-display*)   ;~> the display, its :poll also yielding [:sse ev] messages"
   (let (poll-tagged (fn (ms)
                       (let (event (receive
                                     ([:sse-open s] [:sse-open s])
@@ -563,8 +563,8 @@ button) asking the app to quit, as distinct from the Escape *key* (`:escape`).
 `receive` loop (one not built on `ui-run`) so the X button closes the window
 alongside whatever quit keys you bind — e.g. `(:close :quit)` next to your own.
 
-    (editor/ui/quit-request? :close)    → true
-    (editor/ui/quit-request? :escape)   → false"
+    (editor/ui/quit-request? :close)    ;=> true
+    (editor/ui/quit-request? :escape)   ;=> false"
   (= input :close))
 
 (defn- ui-close-quits? (model input)
@@ -583,7 +583,7 @@ process's mailbox by another process) to raise this app's window to the front.
 terminal) just ignores it. The seam a singleton launcher uses to surface an
 already-open window instead of opening a duplicate (e.g. a repeated `(observe)`).
 
-    (editor/ui/focus-request? :focus)   → true"
+    (editor/ui/focus-request? :focus)   ;=> true"
   (= input :focus))
 
 (defn- ui-log-error (where e)
@@ -640,7 +640,7 @@ fragment is painted.
 that takes the markers (`:fragments?`, the GUI window) then reuses what it parsed them to
 last frame instead of parsing them again (ADR-470).
 
-    (editor/ui/ui-memo [:line 12] [\"text\"] (fn () [[:text \"text\"]]))   ;=> ([:ui/memo [:line 12] [\"text\"] ops reused?]) in a loop; the thunk's ops outside one"
+    (editor/ui/ui-memo [:line 12] [\"text\"] (fn () [[:text \"text\"]]))   ;~> ([:ui/memo [:line 12] [\"text\"] ops reused?]) in a loop; the thunk's ops outside one"
   (if (or (nil? *ui-memo*) (nil? key))
     (thunk)
     (let (prev (get *ui-memo* key))
@@ -651,8 +651,8 @@ last frame instead of parsing them again (ADR-470).
 (defn ui-memo-marker? (op)
   "True for a `[:ui/memo key deps ops reused?]` marker.
 
-    (editor/ui/ui-memo-marker? [:ui/memo :k [] [] false])   → true
-    (editor/ui/ui-memo-marker? [:text \"x\"])          → false"
+    (editor/ui/ui-memo-marker? [:ui/memo :k [] [] false])   ;=> true
+    (editor/ui/ui-memo-marker? [:text \"x\"])          ;=> false"
   (and (vector? op) (= (first op) :ui/memo)))
 
 (defn ui-harvest (frame &optional (keep-markers? false))
@@ -665,8 +665,8 @@ comes back as it went in, with an empty table. Recurses into a marker's ops and 
 `:scroll-region`'s. Native (`%ui-harvest`): it walks every op of every frame, where a
 Brood-level walk cost about a millisecond — more than the paint the memo saves.
 
-    (first (editor/ui/ui-harvest [[:ui/memo :k [] [[:clear]] false]]))   → [[:clear]]
-    (first (editor/ui/ui-harvest [[:ui/memo :k [] [] false]] true))   → [[:ui/memo :k [] [] false]]"
+    (first (editor/ui/ui-harvest [[:ui/memo :k [] [[:clear]] false]]))   ;=> [[:clear]]
+    (first (editor/ui/ui-harvest [[:ui/memo :k [] [] false]] true))   ;=> [[:ui/memo :k [] [] false]]"
   (%ui-harvest frame keep-markers?))
 
 ;; ---- per-turn tracing (BROOD_UI_TRACE=1) ------------------------------------
@@ -796,9 +796,9 @@ itself, a vector by its leading keyword — and its second, when that is one too
 :idle]`, `[:mouse :press]`) — a record by its id, anything else by its type. A long string
 (a paste) is `:string`.
 
-    (editor/ui/ui-input-tag [:timer :idle])   → [:timer :idle]
-    (editor/ui/ui-input-tag [:lsp-diagnostics \"a.rs\" [1 2 3]])   → :lsp-diagnostics
-    (editor/ui/ui-input-tag \"x\")   → \"x\""
+    (editor/ui/ui-input-tag [:timer :idle])   ;=> [:timer :idle]
+    (editor/ui/ui-input-tag [:lsp-diagnostics \"a.rs\" [1 2 3]])   ;=> :lsp-diagnostics
+    (editor/ui/ui-input-tag \"x\")   ;=> \"x\""
   (cond
     (keyword? input) input
     (string? input) (if (> (string/length input) 16) :string input)
@@ -1317,10 +1317,10 @@ while open, captures input. Implement it for a record per overlay — only the o
 overlay needs: a record that skips `overlay-owns?` captures every key, and one that
 skips `overlay-exit` needs no dismiss step (the `:default` impl supplies both).
 
-    (editor/ui/overlay-active? overlay model)   ;=> truthy while the overlay is open
-    (editor/ui/overlay-owns? overlay model input)   ;=> truthy when input is the overlay's
-    (editor/ui/overlay-handle overlay model input)   ;=> the model with input folded in
-    (editor/ui/overlay-exit overlay model)   ;=> the model with the overlay dismissed"
+    (editor/ui/overlay-active? overlay model)   ;~> truthy while the overlay is open
+    (editor/ui/overlay-owns? overlay model input)   ;~> truthy when input is the overlay's
+    (editor/ui/overlay-handle overlay model input)   ;~> the model with input folded in
+    (editor/ui/overlay-exit overlay model)   ;~> the model with the overlay dismissed"
   (overlay-active? [self model] :-> any) ; truthy while the overlay is open
   (overlay-owns? [self model input] :-> any) ; truthy when `input` is the overlay's to handle
   (overlay-handle [self model input] :-> any) ; fold an owned key into the model
@@ -1338,7 +1338,7 @@ skips `overlay-exit` needs no dismiss step (the `:default` impl supplies both).
   "The first overlay in `overlays` open for `model` (`overlay-active?`; list order =
 precedence), or nil.
 
-    (editor/ui/overlay-active [] {})   → nil"
+    (editor/ui/overlay-active [] {})   ;=> nil"
   (seq/find overlays (fn (overlay) (overlay-active? overlay model))))
 
 (defn overlay-route (overlays model input fallback)
@@ -1348,7 +1348,7 @@ when none is open. The owning overlay (`overlay-owns?`) handles the key; a key i
 `fallback` — Emacs' dismiss-and-process. Overlays are records implementing `Overlay`.
 The shared seam behind the editor's transient overlays and the observer's minibuffer.
 
-    (editor/ui/overlay-route overlays model input fallback)   ;=> the model after the overlay or the fallback handled `input`"
+    (editor/ui/overlay-route overlays model input fallback)   ;~> the model after the overlay or the fallback handled `input`"
   (let (overlay (overlay-active overlays model))
     (cond
       (nil? overlay) (fallback model input)
