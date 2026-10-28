@@ -48,6 +48,11 @@
 //! `HeapExtras`, boxed at first write; the retired code-generation list is a `LazyVec`; the
 //! checker slot is one pointer. 2 747–2 748 B. The tree
 //! before it (2 875–2 876) reds this bound.
+//!
+//! Held at 2 800 (2026-10-28): the mailbox lanes and interrupt windows (ADR-490, 491, 493) had
+//! put a parked process at 2 872 (CI) — the latest-lane index (a 48 B `HashMap`) and the
+//! interrupt's window state (64 B) inline on every mailbox. Both are boxed at first use now,
+//! the probe's `flags` word alone staying inline: 2 780 locally.
 
 use brood::Interp;
 

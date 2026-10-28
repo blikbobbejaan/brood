@@ -341,7 +341,9 @@ impl MailboxState {
             Lane::Normal => {}
             Lane::Priority => self.priority_queued += 1,
             Lane::Latest(key) => {
-                self.latest_queued.insert(key.as_str().into(), env.seq);
+                self.latest_queued
+                    .get_or_insert_with(Default::default)
+                    .insert(key.as_str().into(), env.seq);
             }
         }
     }
@@ -353,8 +355,10 @@ impl MailboxState {
             Lane::Normal => {}
             Lane::Priority => self.priority_queued -= 1,
             Lane::Latest(key) => {
-                if self.latest_queued.get(key.as_str()) == Some(&env.seq) {
-                    self.latest_queued.remove(key.as_str());
+                if let Some(index) = self.latest_queued.as_deref_mut()
+                    && index.get(key.as_str()) == Some(&env.seq)
+                {
+                    index.remove(key.as_str());
                 }
             }
         }
@@ -379,7 +383,7 @@ impl MailboxState {
     pub(super) fn clear_queue(&mut self) {
         self.queue.clear();
         self.priority_queued = 0;
-        self.latest_queued = Default::default();
+        self.latest_queued = None;
     }
 
     /// Drop the queued LATEST-lane envelope carrying `key`, which the one being pushed
@@ -394,7 +398,7 @@ impl MailboxState {
     /// indexed: the scan asks [`holds_latest`](Self::holds_latest) before handing it over,
     /// and drops it then.
     fn drop_superseded(&mut self, key: &str) {
-        let Some(&seq) = self.latest_queued.get(key) else {
+        let Some(seq) = self.latest_seq(key) else {
             return;
         };
         let index = self.queue.partition_point(|e| e.seq < seq);
@@ -410,7 +414,12 @@ impl MailboxState {
     /// took OUT of the queue: at most one envelope per key is ever queued, so one queued
     /// now arrived while the candidate was out, and supersedes it. O(1).
     fn holds_latest(&self, key: &str) -> bool {
-        self.latest_queued.contains_key(key)
+        self.latest_seq(key).is_some()
+    }
+
+    /// The seq of the queued LATEST envelope carrying `key`, if one is queued.
+    fn latest_seq(&self, key: &str) -> Option<u64> {
+        self.latest_queued.as_deref()?.get(key).copied()
     }
 }
 
@@ -497,8 +506,9 @@ pub(super) struct MailboxState {
     pub(super) priority_queued: usize,
     /// The LATEST-lane envelopes queued (ADR-490), by key: the seq of the one envelope per
     /// key, so a `proc/send-latest` finds the one it supersedes, and a receive asks whether
-    /// its candidate was superseded, without walking the backlog.
-    pub(super) latest_queued: std::collections::HashMap<Box<str>, u64>,
+    /// its candidate was superseded, without walking the backlog. Boxed at the first
+    /// LATEST envelope: few processes are ever sent one, and every process pays the field.
+    pub(super) latest_queued: Option<Box<std::collections::HashMap<Box<str>, u64>>>,
     /// The quit key (`proc/set-quit-key`, ADR-491): a PRIORITY-lane message equal to it
     /// interrupts this process when its interrupt window has been open long enough.
     /// Checked by the delivery, which holds this lock anyway; `None` (the default) costs
@@ -680,7 +690,7 @@ impl Mailbox {
                 cv_waiters: 0,
                 wake_pending: false,
                 priority_queued: 0,
-                latest_queued: Default::default(),
+                latest_queued: None,
                 quit_key: None,
             }),
             cv: Condvar::new(),
@@ -1057,6 +1067,7 @@ pub(crate) fn deliver_in_lane(pid: u64, msg: Message, lane: Lane) {
 
 /// [`deliver_credited`] on the PRIORITY lane — a window's key repeat, whose source can
 /// take it back (`CreditSource::withdrawn`).
+#[cfg(feature = "gui")]
 pub(crate) fn deliver_priority_credited(pid: u64, msg: Message, credit: DeliveryCredit) {
     let mut envelope = Envelope::plain(msg);
     envelope.credit = Some(Box::new(credit));
@@ -2704,14 +2715,15 @@ mod tests {
         // superseded: the index follows the newer one, and a consume of it clears it
         st.push(latest(5, ":a"));
         assert_eq!(
-            st.latest_queued.get(":a"),
-            Some(&st.queue.back().expect("queued").seq)
+            st.latest_seq(":a"),
+            Some(st.queue.back().expect("queued").seq)
         );
         let index = st.queue.len() - 1;
         drop(st.remove_at(index));
         assert!(!st.holds_latest(":a"));
         st.clear_queue();
-        assert_eq!((st.priority_queued, st.latest_queued.len()), (0, 0));
+        assert_eq!((st.priority_queued, st.latest_seq(":a")), (0, None));
+        assert!(st.latest_queued.is_none(), "cleared, the index is freed");
     }
 
     /// The dead-alias set allocates only while it holds something, and keeps its

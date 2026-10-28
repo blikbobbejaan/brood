@@ -38,8 +38,8 @@
 //! [`Interrupt::flags`], made only at the quantum boundary beside the existing mailbox-bound
 //! and hard-kill probes; the clock is read there only while a ceiling is armed.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 /// A window is open: requests may land.
 const OPEN: u8 = 1;
@@ -72,9 +72,22 @@ pub(super) fn monotonic_us() -> u64 {
 /// `proc/interruptible` answers `[:interrupted e]`; a window inside it lets the error pass
 /// and closes, one outside it never sees it. So an interrupt an inner window consumed does
 /// not also stop the outer one, and an outer ceiling is not swallowed by an inner window.
+///
+/// Every process carries one and almost none ever opens a window, so only `flags` — the
+/// one word the quantum-boundary probe reads — is inline. The rest is allocated by the
+/// first window the process opens (24 B a process instead of 64; the per-process floor,
+/// `tests/process_floor.rs`) and kept for the next: a UI loop opens one a turn.
 #[derive(Default)]
 pub(super) struct Interrupt {
     flags: AtomicU8,
+    /// Set by the owner's first `open`, before the `flags` store that says a window is
+    /// open, so any reader that saw a flag finds it here.
+    windows: OnceLock<Box<Windows>>,
+}
+
+/// The state of an [`Interrupt`] that only a process which has opened a window needs.
+#[derive(Default)]
+struct Windows {
     /// When the OUTERMOST window opened (`monotonic_us`): how long the process has been
     /// busy — what the quit key's busy-ms and a busy cursor measure.
     opened_us: AtomicU64,
@@ -87,21 +100,49 @@ pub(super) struct Interrupt {
     /// Each open window's ceiling (an absolute `monotonic_us`), outermost first: its length
     /// is the innermost window's depth. Only the owning process touches it — on a window's
     /// open, its close, and the raise of a request — so the lock is never contended.
-    windows: Mutex<Vec<Option<u64>>>,
+    ceilings: Mutex<Vec<Option<u64>>>,
+}
+
+impl Windows {
+    /// Store the earliest ceiling among `ceilings` (the outermost on a tie) and the window
+    /// it is; answers `DEADLINE` when there is one, 0 when no open window has a ceiling.
+    fn arm_deadline(&self, ceilings: &[Option<u64>]) -> u8 {
+        let earliest = ceilings
+            .iter()
+            .enumerate()
+            .filter_map(|(index, deadline)| deadline.map(|at| (at, index)))
+            .min();
+        match earliest {
+            Some((at, index)) => {
+                self.deadline_us.store(at, Ordering::Relaxed);
+                self.deadline_window
+                    .store(index as u32 + 1, Ordering::Relaxed);
+                DEADLINE
+            }
+            None => 0,
+        }
+    }
 }
 
 impl Interrupt {
+    /// The window state, if this process has ever opened a window. Every flag but 0 is
+    /// set after it is, so a caller that saw one may treat `None` as "nothing open".
+    fn opened(&self) -> Option<&Windows> {
+        self.windows.get().map(|windows| &**windows)
+    }
+
     /// Open a window inside any already open, optionally with a ceiling `ceiling_ms` from
     /// now; answers its depth, which [`close`](Self::close) takes. The outermost window clears
     /// anything left from an earlier one.
     pub(super) fn open(&self, ceiling_ms: Option<u64>) -> u32 {
         let now = monotonic_us();
-        let mut windows = crate::core::sync::lock(&self.windows);
-        windows.push(ceiling_ms.map(|ms| now.saturating_add(ms.saturating_mul(1000))));
-        let depth = windows.len() as u32;
-        let deadline = self.arm_deadline(&windows);
+        let state = self.windows.get_or_init(Box::default);
+        let mut ceilings = crate::core::sync::lock(&state.ceilings);
+        ceilings.push(ceiling_ms.map(|ms| now.saturating_add(ms.saturating_mul(1000))));
+        let depth = ceilings.len() as u32;
+        let deadline = state.arm_deadline(&ceilings);
         if depth == 1 {
-            self.opened_us.store(now, Ordering::Relaxed);
+            state.opened_us.store(now, Ordering::Relaxed);
             // Release: an interrupter that sees OPEN sees the stamp it measures busy-ms by.
             self.flags.store(OPEN | deadline, Ordering::Release);
         } else if deadline != 0 {
@@ -116,14 +157,17 @@ impl Interrupt {
     /// inner one leaves it for the windows still open — it is raised for whichever is
     /// innermost then, as Emacs's `quit-flag` is handled by whatever checks it next.
     pub(super) fn close(&self, depth: u32) {
-        let mut windows = crate::core::sync::lock(&self.windows);
-        windows.truncate(depth.saturating_sub(1) as usize);
-        if windows.is_empty() {
+        let Some(state) = self.opened() else {
+            return;
+        };
+        let mut ceilings = crate::core::sync::lock(&state.ceilings);
+        ceilings.truncate(depth.saturating_sub(1) as usize);
+        if ceilings.is_empty() {
             self.flags.store(0, Ordering::Relaxed);
             return;
         }
-        let deadline = self.arm_deadline(&windows);
-        let consumed = self.raised_window.load(Ordering::Relaxed) >= depth;
+        let deadline = state.arm_deadline(&ceilings);
+        let consumed = state.raised_window.load(Ordering::Relaxed) >= depth;
         let mut current = self.flags.load(Ordering::Acquire);
         loop {
             let mut next = (current & !DEADLINE) | deadline;
@@ -142,32 +186,14 @@ impl Interrupt {
         }
     }
 
-    /// Store the earliest ceiling among `windows` (the outermost on a tie) and the window it
-    /// is; answers `DEADLINE` when there is one, 0 when no open window has a ceiling.
-    fn arm_deadline(&self, windows: &[Option<u64>]) -> u8 {
-        let earliest = windows
-            .iter()
-            .enumerate()
-            .filter_map(|(index, deadline)| deadline.map(|at| (at, index)))
-            .min();
-        match earliest {
-            Some((at, index)) => {
-                self.deadline_us.store(at, Ordering::Relaxed);
-                self.deadline_window
-                    .store(index as u32 + 1, Ordering::Relaxed);
-                DEADLINE
-            }
-            None => 0,
-        }
-    }
-
     /// How long the outermost window has been open, or None when none is — what a
     /// frontend's busy cursor asks of the loop it delivers to.
     pub(super) fn open_for_us(&self) -> Option<u64> {
         if self.flags.load(Ordering::Acquire) & OPEN == 0 {
             return None;
         }
-        Some(monotonic_us().saturating_sub(self.opened_us.load(Ordering::Relaxed)))
+        let state = self.opened()?;
+        Some(monotonic_us().saturating_sub(state.opened_us.load(Ordering::Relaxed)))
     }
 
     /// Ask for an interrupt: lands only while a window is open (and the caller checked the
@@ -182,8 +208,11 @@ impl Interrupt {
             if current & RAISED != 0 {
                 return true;
             }
+            let Some(state) = self.opened() else {
+                return false;
+            };
             if busy_us > 0
-                && monotonic_us().saturating_sub(self.opened_us.load(Ordering::Relaxed)) < busy_us
+                && monotonic_us().saturating_sub(state.opened_us.load(Ordering::Relaxed)) < busy_us
             {
                 return false;
             }
@@ -209,7 +238,9 @@ impl Interrupt {
             return false;
         }
         flags & (PENDING | RAISED) != 0
-            || monotonic_us() >= self.deadline_us.load(Ordering::Relaxed)
+            || self
+                .opened()
+                .is_some_and(|state| monotonic_us() >= state.deadline_us.load(Ordering::Relaxed))
     }
 
     /// The interrupt a safepoint must raise, if any: `Some(by_ceiling)`. The first raise
@@ -228,18 +259,19 @@ impl Interrupt {
             if flags & RAISED != 0 {
                 return Some(flags & BY_CEILING != 0);
             }
+            let state = self.opened()?;
             let by_ceiling = flags & PENDING == 0;
-            if by_ceiling && monotonic_us() < self.deadline_us.load(Ordering::Relaxed) {
+            if by_ceiling && monotonic_us() < state.deadline_us.load(Ordering::Relaxed) {
                 return None;
             }
             // Only the owner raises, so the window recorded here is read back by the
             // same process when a window asks whether the interrupt is its own.
             let window = if by_ceiling {
-                self.deadline_window.load(Ordering::Relaxed)
+                state.deadline_window.load(Ordering::Relaxed)
             } else {
-                crate::core::sync::lock(&self.windows).len() as u32
+                crate::core::sync::lock(&state.ceilings).len() as u32
             };
-            self.raised_window.store(window, Ordering::Relaxed);
+            state.raised_window.store(window, Ordering::Relaxed);
             let raised =
                 (flags & DEADLINE) | OPEN | RAISED | if by_ceiling { BY_CEILING } else { 0 };
             if self
@@ -256,7 +288,9 @@ impl Interrupt {
     /// answers `[:interrupted e]` for, rather than lets pass to an outer window?
     pub(super) fn raised_for(&self, depth: u32) -> bool {
         self.flags.load(Ordering::Acquire) & RAISED != 0
-            && self.raised_window.load(Ordering::Relaxed) == depth
+            && self
+                .opened()
+                .is_some_and(|state| state.raised_window.load(Ordering::Relaxed) == depth)
     }
 }
 
