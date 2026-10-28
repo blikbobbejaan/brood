@@ -18,7 +18,7 @@ mknode() {  # idx connectport extra
 $c
 (proc/register :srv (self))
 (defn pa (ns) (when (not (empty? ns)) (do (try (send {:name :srv :node (first ns)} [:ping]) (catch e nil)) (pa (rest ns)))))
-(defn pg (k) (if (= k 0) :done (do (pa (node/list)) (sleep 20) (pg (- k 1)))))
+(defn pg (k) (if (= k 0) :done (do (pa (node/list)) (proc/sleep 20) (pg (- k 1)))))
 (spawn (pg 6000))
 (defn drain () (receive ([:ping] (drain)) (after 120000 :done)))
 (drain)
@@ -31,7 +31,7 @@ mknode 0 0; sleep 0.8
 for i in 1 2 3 4 5; do mknode $i $seed; sleep 0.1; done
 sleep 3
 # wrong-cookie attacker hammering the seed's handshake
-( for j in $(seq 1 40); do echo "(try (do (node/start :atk$j \"127.0.0.1:$((base+50+j))\" \"WRONG-cookie-16+x\") (node/connect \"x@127.0.0.1:$seed\") (sleep 50)) (catch e nil))" | $BIN /dev/stdin >/dev/null 2>&1 & done; wait ) &
+( for j in $(seq 1 40); do echo "(try (do (node/start :atk$j \"127.0.0.1:$((base+50+j))\" \"WRONG-cookie-16+x\") (node/connect \"x@127.0.0.1:$seed\") (proc/sleep 50)) (catch e nil))" | $BIN /dev/stdin >/dev/null 2>&1 & done; wait ) &
 # churn: several kill+rejoin cycles
 kill -9 ${PID[2]} ${PID[4]} 2>/dev/null; sleep 0.5
 mknode 6 $seed; sleep 0.1; mknode 7 ${PORT[3]}; sleep 1.5   # n7 joins via n3 (not seed)

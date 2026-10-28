@@ -244,10 +244,10 @@
   ;; them as it captures any Brood output. (Module names are unique per case: each warning is
   ;; printed once per definition per process.)
   (test "defining a root macro's name warns, and (:shadow …) silences it"
-    (is (includes? (with-err-str (%load-string "(defmodule capture-warn-a) (defn spy (x) x)"))
-          "`capture-warn-a/spy` shadows the prelude macro `spy`"))
+    (is (includes? (with-err-str (%load-string "(defmodule capture-warn-a) (defn doto (x) x)"))
+          "`capture-warn-a/doto` shadows the prelude macro `doto`"))
     (assert= ""
-      (with-err-str (%load-string "(defmodule capture-warn-b (:shadow spy)) (defn spy (x) x)"))))
+      (with-err-str (%load-string "(defmodule capture-warn-b (:shadow doto)) (defn doto (x) x)"))))
   (test "an import that shadows a root function warns"
     (is
       (includes?

@@ -21,7 +21,7 @@ $c
 (defn chaos-loop (k) (if (= k 0) :done (do
    (chaos-each (node/list) (fn (p) (monitor-node p)))
    (chaos-each (node/list) (fn (p) (remote-spawn p (+ k 1))))   ; ships a closure capturing k
-   (sleep 20) (chaos-loop (- k 1)))))
+   (proc/sleep 20) (chaos-loop (- k 1)))))
 (chaos-loop 6000)
 EOF
   $BIN "$D/n$i.blsp" > "$D/n$i.err" 2>&1 &

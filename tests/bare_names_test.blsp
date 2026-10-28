@@ -76,7 +76,8 @@
     ;; A parser that silently matched nothing would make every check below pass vacuously —
     ;; the same shape as a sweep pointed at a missing directory.
     (let (recorded (ledger-names))
-      (is (> (count recorded) 200))
+      ;; 187 since ADR-506 kept the bare namespace to the language; a broken parser finds 0
+      (is (> (count recorded) 150))
       (is (includes? recorded "spawn"))
       (is (includes? recorded "*out*"))
       (is (not (includes? recorded "string/join")))))

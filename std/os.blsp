@@ -204,7 +204,7 @@ a `$` in it is one argument. `opts`:
     (os/cmd-out (os/cmd \"echo\" [\"a b\"]))   ;=> \"a b\"
     (os/cmd-out (os/cmd \"cat\" [] {:stdin \"piped\"}))   ;=> \"piped\"
     (os/cmd-out (os/cmd \"sh\" [\"-c\" \"echo $X\"] {:env {\"X\" \"set\"}}))   ;=> \"set\"
-    (:timed-out (os/cmd \"proc/sleep\" [\"5\"] {:timeout-ms 50}))   ;=> true"
+    (:timed-out (os/cmd \"sleep\" [\"5\"] {:timeout-ms 50}))   ;=> true"
   (%os-cmd prog args opts))
 (sig cmd
   (string &optional (or list vector) map -> (record &open :stdout string :stderr string :exit int)))
@@ -320,7 +320,7 @@ environment, a nil value removing one. Its stdout/stderr arrive at the calling p
 
 Returns a subprocess handle. Throws if prog can't be spawned.
 
-    (let (p (os/spawn \"sh\" [\"-c\" \"proc/sleep 5 & exit 3\"])) (receive ([:proc-exit ^p c] c)))   ;=> 3"
+    (let (p (os/spawn \"sh\" [\"-c\" \"sleep 5 & exit 3\"])) (receive ([:proc-exit ^p c] c)))   ;=> 3"
   (%proc-spawn prog args opts))
 
 (defn spawn-pty (prog args &optional opts)
@@ -382,7 +382,7 @@ arrives as for any exit. Until `[:proc-closed …]` the group can still be signa
 reaches descendants the child left running. Returns nil; throws if `p` is unknown or
 closed, or `sig` is not one of those. Unix only.
 
-    (os/signal (os/spawn \"sh\" [\"-c\" \"proc/sleep 60\"]) :int)   ;~> nil; the proc/sleep gets SIGINT"
+    (os/signal (os/spawn \"sh\" [\"-c\" \"sleep 60\"]) :int)   ;~> nil; the sleep gets SIGINT"
   (%proc-signal p sig))
 
 (defn trap (sig & pid)
