@@ -607,6 +607,101 @@ fn hyg_shaped(
     }
 }
 
+/// What a standard binding macro in a template binds, read from the same shape table the
+/// rename uses: each item is a pattern, or a whole parameter list.
+pub(super) enum ShapedBinder {
+    Pattern(Value),
+    Params(Value),
+}
+
+/// The binders of `items` — a list form inside a template — when its head is a standard
+/// binding macro, else `None`. The resolver reads them so it leaves these names local:
+/// qualified, a binder would no longer be renamed here (a qualified name never is). Computed
+/// binders (`~params`) are skipped, as the rename skips them.
+pub(super) fn shaped_binders(heap: &Heap, items: &[Value]) -> Option<Vec<ShapedBinder>> {
+    let head = match items.first()?.unpack() {
+        ValueRef::Sym(h) => h,
+        _ => return None,
+    };
+    let shape = binding_shape(head)?;
+    let mut binders = Vec::new();
+    match shape {
+        Shape::Pairs | Shape::PairsThenElse => {
+            let binds_form = items.get(1).copied().unwrap_or(Value::nil());
+            if !hyg_is_unquote(heap, binds_form) {
+                let binds = heap.list_or_vector_items(binds_form).unwrap_or_default();
+                for pair in binds.chunks(2) {
+                    if !matches!(pair[0].unpack(), ValueRef::Keyword(_)) {
+                        binders.push(ShapedBinder::Pattern(pair[0]));
+                    }
+                }
+            }
+        }
+        Shape::Clauses(leading) => {
+            for &item in items.iter().skip(leading) {
+                let is_after =
+                    head_sym(heap, item).is_some_and(|h| value::symbol_name_ref(h) == "after");
+                if is_after || hyg_is_unquote(heap, item) {
+                    continue;
+                }
+                if let Some(&pattern) = heap.list_items(item).as_deref().and_then(|p| p.first()) {
+                    binders.push(ShapedBinder::Pattern(pattern));
+                }
+            }
+        }
+        Shape::Try => {
+            for &part in &items[1..] {
+                if head_sym(heap, part).is_some_and(|h| value::symbol_name_ref(h) == "catch")
+                    && let Some(&pattern) = heap.list_items(part).as_deref().and_then(|p| p.get(1))
+                {
+                    binders.push(ShapedBinder::Pattern(pattern));
+                }
+            }
+        }
+        Shape::AsArrow => {
+            if let Some(&name) = items.get(2) {
+                binders.push(ShapedBinder::Pattern(name));
+            }
+        }
+        Shape::Defn => fn_part_params(heap, items.get(2..).unwrap_or(&[]), &mut binders),
+        Shape::Defmethod => fn_part_params(heap, items.get(3..).unwrap_or(&[]), &mut binders),
+        Shape::Impl => {
+            for &method in items.get(3..).unwrap_or(&[]) {
+                if hyg_is_unquote(heap, method) {
+                    continue;
+                }
+                if let Some(parts) = heap.list_items(method).filter(|parts| parts.len() >= 2) {
+                    fn_part_params(heap, &parts[1..], &mut binders);
+                }
+            }
+        }
+    }
+    Some(binders)
+}
+
+/// The parameter lists of `fn`'s parts `doc? params body…` / `doc? (params body…)…`.
+fn fn_part_params(heap: &Heap, parts: &[Value], binders: &mut Vec<ShapedBinder>) {
+    let clause_start = match parts.first().map(|v| v.unpack()) {
+        Some(ValueRef::Str(_)) if parts.len() > 1 => 1,
+        _ => 0,
+    };
+    let clauses = &parts[clause_start..];
+    let params: Vec<Value> =
+        if !clauses.is_empty() && clauses.iter().all(|&f| is_arity_clause(heap, f)) {
+            clauses
+                .iter()
+                .filter_map(|&clause| heap.list_items(clause)?.first().copied())
+                .collect()
+        } else {
+            clauses.first().copied().into_iter().collect()
+        };
+    for params in params {
+        if !hyg_is_unquote(heap, params) {
+            binders.push(ShapedBinder::Params(params));
+        }
+    }
+}
+
 /// `(head (pattern expr … :modifier expr …) body…)`. With `then_else`, only the first body
 /// form (`then`) sees the bindings; the rest (`else`) are outside them.
 fn hyg_pairs(

@@ -1237,6 +1237,29 @@ fn resolve_list(heap: &mut Heap, form: Value, ns_name: &str, locals: &[value::Sy
             return resolve_match(heap, form, &items, ns_name, locals);
         }
     }
+    // A standard binding macro in a template has not expanded yet: its binders are local
+    // over the whole form (an over-approximation, as `resolve_match` makes). Qualified, they
+    // would escape the hygiene rename, which never renames a qualified name.
+    if TemplateDepth::inside()
+        && let Some(binders) = hygiene::shaped_binders(heap, &items)
+    {
+        let mut inner = locals.to_vec();
+        for binder in binders {
+            match binder {
+                hygiene::ShapedBinder::Pattern(pattern) => {
+                    collect_binder_syms(heap, pattern, &mut inner)
+                }
+                hygiene::ShapedBinder::Params(params) => {
+                    collect_param_syms(heap, params, &mut inner)
+                }
+            }
+        }
+        let mut out = Vec::with_capacity(items.len());
+        for it in items.iter().copied() {
+            out.push(resolve_walk(heap, it, ns_name, &inner));
+        }
+        return reuse_or_rebuild(heap, form, &items, out);
+    }
     // Generic: resolve every element (the head too — a call head resolves).
     let mut out = Vec::with_capacity(items.len());
     for it in items.iter().copied() {
