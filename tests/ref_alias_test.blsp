@@ -18,7 +18,7 @@
     (let (r (ref) before (proc/mailbox-size (self)))
       (%ref-deactivate r)
       (send (self) [:reply r :late])
-      (sleep 30)
+      (proc/sleep 30)
       (assert= (proc/mailbox-size (self)) before)))
 
   (test "an UNRELATED ref still arrives — deactivation is per-ref, not a mute switch"
@@ -35,7 +35,7 @@
     ;; delivery, and `gen/call-timeout` pairs it with an explicit flush.
     (let (r (ref))
       (send (self) [:reply r :already-here])
-      (sleep 20)
+      (proc/sleep 20)
       (%ref-deactivate r)
       (assert= (receive ([:reply ^r v] v) (after *test-wait-ms* :nothing)) :already-here)))
 
@@ -54,7 +54,7 @@
     (let (r (ref))
       (%ref-deactivate r)
       (send (self) [:reply r :first])
-      (sleep 20)
+      (proc/sleep 20)
       (send (self) [:reply r :second])
       (assert= (receive ([:reply ^r v] v) (after *test-wait-ms* :nothing)) :second)))
 
@@ -81,7 +81,7 @@
     ;; A `[:down <mref> pid reason]` is built by the KERNEL and handed to `deliver`
     ;; directly (`monitor::fire_down`), never through the local-send path — so it is
     ;; what exercises the wire-format check. The monitor ref itself is the alias here.
-    (let (p (spawn (sleep 10))
+    (let (p (spawn (proc/sleep 10))
           m (monitor p))
       (%ref-deactivate m)
       (assert= (receive ([:down ^m _ _] :arrived) (after 200 :never-arrived))
@@ -95,7 +95,7 @@
       (%ref-deactivate r)
       (%ref-deactivate r)
       (send (self) [:reply r :late])
-      (sleep 30)
+      (proc/sleep 30)
       (assert= (proc/mailbox-size (self)) before))))
 
 (describe "%ref-deactivate: the set is bounded, and overflowing it fails gracefully"
@@ -113,7 +113,7 @@
       (send (self) [:reply (nth refs 0) :evicted])
       ;; every one still in the set is dropped
       (doseq (r (rest refs)) (send (self) [:reply r :dropped]))
-      (sleep 40)
+      (proc/sleep 40)
       (assert= (proc/mailbox-size (self)) 1)
       (assert= (receive ([:reply _ v] v) (after *test-wait-ms* :nothing)) :evicted))))
 
@@ -125,7 +125,7 @@
   ;; the reply has not been sent yet — so without the alias it queues forever.
   (gen/defserver laggard
     (s)
-    (call [:slow ms] (do (sleep ms) [:late s])))
+    (call [:slow ms] (do (proc/sleep ms) [:late s])))
 
   (test "the caller's mailbox is EMPTY after the late reply is posted"
     (let (srv (gen/start laggard nil)

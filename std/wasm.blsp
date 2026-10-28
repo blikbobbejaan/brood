@@ -90,7 +90,7 @@ process waits, never a scheduler worker. For long-running guest calls — and
 for any call that reaches the disk through WASI.
 
     (wasm/call-blocking inst \"compress\" data)   ;~> the export's result, computed off the scheduler"
-  (offload %wasm-call inst name (into [] args)))
+  (proc/offload %wasm-call inst name (into [] args)))
 
 (defn release (inst:int resource:int -> bool)
   "Drop guest `resource` (a token an export returned) of `inst`, running the

@@ -819,7 +819,7 @@ kinds:
 (stop c)                                ; graceful shutdown; ends the loop
 ```
 
-Other primitives: `(sleep ms)` parks the current process without touching its
+Other primitives: `(proc/sleep ms)` parks the current process without touching its
 mailbox (it does *not* block a worker thread). `(stop pid)` (i.e. `gen/stop`)
 ends a server process's receive loop cleanly — every `gen` process automatically
 handles the stop envelope, no `:stop` clause needed. `(call pid payload)` blocks
@@ -976,7 +976,7 @@ Writing a live script: just write a normal Brood file. The
 ```lisp fragment
 ;; live.blsp — run with: nest run --watch live.blsp
 (defn my-loop (n)
-  (do (io/puts "iter:" n) (sleep 1000) (my-loop (+ n 1))))
+  (do (io/puts "iter:" n) (proc/sleep 1000) (my-loop (+ n 1))))
 
 (my-loop 0)
 ```
@@ -1451,7 +1451,7 @@ counterexample it fails with the value + seed:
 (check-property 100 (fn (s) (rand/int s 1000)) (fn (x) (and (>= x 0) (< x 1000))))
 ```
 
-Testing processes: **never `sleep` to wait for another process** — a loaded machine
+Testing processes: **never `proc/sleep` to wait for another process** — a loaded machine
 outsleeps any guess. Wait for the event: a message the other side sends, a monitor's
 `[:down …]`, or, when nothing announces it, `(eventually "what" probe)` (polls a
 zero-argument fn until truthy) / `(await-parked pid)`. Bound a wait for an expected

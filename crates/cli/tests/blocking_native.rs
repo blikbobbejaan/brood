@@ -15,7 +15,7 @@ const SCRIPT: &str = r#"
 (defn blocker () (os/cmd "sleep" ["4"]))
 (spawn (blocker))
 (spawn (blocker))
-(sleep 300)
+(proc/sleep 300)
 (spawn (send me :ran))
 (receive (:ran (io/puts "ran while both workers were in os/cmd"))
          (after 2000 (io/puts "starved behind the blocked workers")))
@@ -59,7 +59,7 @@ const SPINNERS: &str = r#"
 (def spinners
   (map (range 2)
     (fn (_) (spawn (reflect/eval-string "(defn spin (n) (spin (inc n))) (spin 0)")))))
-(sleep 300)
+(proc/sleep 300)
 (doseq (p spinners) (exit p :kill))
 (io/puts "ran while both workers looped under eval")
 "#;

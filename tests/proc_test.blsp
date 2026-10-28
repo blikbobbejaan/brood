@@ -276,7 +276,7 @@
           _ (letrec (warm (fn (n)
                             (when (> n 0)
                               (let (p (os/spawn-pty "sh" ["-c" "exit 0"]))
-                                (sleep 30)
+                                (proc/sleep 30)
                                 (os/close p)
                                 (await-closed p)
                                 (warm (dec n))))))
@@ -285,7 +285,7 @@
           _ (letrec (churn (fn (n)
                              (when (> n 0)
                                (let (p (os/spawn-pty "sh" ["-c" "exit 0"]))
-                                 (sleep 30)
+                                 (proc/sleep 30)
                                  (os/close p)
                                  (await-closed p)
                                  (churn (dec n))))))
@@ -355,7 +355,7 @@ twice — for a test whose answer arrived in milliseconds."
                          (cond
                            (not (= 0 (:exit (os/cmd "kill" ["-0" grandchild])))) true
                            (= n 0) false
-                           else (do (sleep 20) (gone? (dec n))))))
+                           else (do (proc/sleep 20) (gone? (dec n))))))
           (is (gone? 100)))))))
 
 (describe "proc: os/signal interrupts without closing"

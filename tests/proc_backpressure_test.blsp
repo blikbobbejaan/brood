@@ -50,7 +50,7 @@
   (let (now (reader-thread-count))
     (if (or (<= now target) (= tries 0))
       now
-      (do (sleep 50) (settle-threads target (dec tries))))))
+      (do (proc/sleep 50) (settle-threads target (dec tries))))))
 
 (describe "proc backpressure: an owner that does not read"
   :isolated (test "the owner's mailbox stays under the high-water mark; nothing is lost"

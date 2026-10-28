@@ -634,7 +634,7 @@ causal tree, and the hottest traced forms by hit count. The one-call overview.
   (io/puts "── watch  (Ctrl-C to exit) ──")
   (report dbg)
   (if (= frames 1)
-    :done (do (sleep 500) (debug-watch-loop dbg (dec frames)))))
+    :done (do (proc/sleep 500) (debug-watch-loop dbg (dec frames)))))
 (defn watch (dbg & frames)
   "Live, read-only terminal view of the debug session — clears the screen and
 reprints `report` every 500ms. Runs until Ctrl-C, or for a fixed frame count
@@ -750,7 +750,7 @@ under `step`/`stepping-sink` it re-parks at the next node). Note when nothing is
           (io/puts "\e[90m(nothing parked)\e[0m")
           (do
             (resume dbg (first (first entries)))
-            (sleep 30)
+            (proc/sleep 30)
             (io/puts (str "stepped [" (first (first entries)) "]"))))))))
 
 (defn pry (dbg)
@@ -829,7 +829,7 @@ no raw-terminal setup and works when piped.
                         (try (reflect/eval-string (second parts)) (catch _ nil)))))
                   (do (resume-all dbg) (io/puts "resumed all")))
                 ; let a resumed process reach its next break before redraw
-                (sleep 30)
+                (proc/sleep 30)
                 (repl-session dbg))
             else
               (do

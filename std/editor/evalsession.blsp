@@ -335,7 +335,7 @@ trips, so reaching it means the child could not stop what it was doing."
                 (spec-opt (:spec state) :fast-death-ms *default-fast-death-ms*))
             (session-strike state)
             (do
-              (sleep (spec-opt (:spec state) :respawn-pause-ms *default-respawn-pause-ms*))
+              (proc/sleep (spec-opt (:spec state) :respawn-pause-ms *default-respawn-pause-ms*))
               (session-respawn state))))
         state))
     ;; User-initiated, so the strikes are forgiven: asking for a restart is not evidence

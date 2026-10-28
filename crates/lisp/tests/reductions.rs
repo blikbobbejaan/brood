@@ -20,7 +20,7 @@ fn process_info_reports_reductions() {
           (defn work (n acc) (if (= n 0) acc (work (- n 1) (+ acc 1))))
           (work 300000 0)
           (receive (_ :ok)))))   ;; park after grinding, so it's stable to query
-        (sleep 500)
+        (proc/sleep 500)
         (get (proc/info w) :reductions)
     "#;
     let v = interp.eval_str(prog).expect("reductions program errored");

@@ -22,7 +22,7 @@
     (let (t (table/new) me (self))
       (do
         (fold (range 8) nil (fn (_ k) (spawn (hammer t me (* k 25000) (* (+ k 1) 25000)))))
-        (sleep 2)
+        (proc/sleep 2)
         (table/put t "force-migration" :now)
         (assert= (await-n 8) :ok)
         (assert= (verify-range t 0 200000 0) 0)
@@ -41,7 +41,7 @@
     (let (t (table/new) me (self))
       (do
         (fold (range 8) nil (fn (_ k) (spawn (bump t me 7 20000))))
-        (sleep 1)
+        (proc/sleep 1)
         (table/put t "migrate" :x)
         (assert= (await-n 8) :ok)
         (assert= (table/get t 7) 160000)
@@ -67,7 +67,7 @@
     (let (t (table/new) me (self))
       (do
         (fold (range 4) nil (fn (_ k) (spawn (poke t me 30000 0 0))))
-        (sleep 3)
+        (proc/sleep 3)
         (table/drop t)
         (let ([oks errs] (await-pairs 4 0 0))
           ;; whether ops land before or after the drop is a race — the sound

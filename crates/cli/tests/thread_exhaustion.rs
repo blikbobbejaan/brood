@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 /// that must still finish.
 const SCRIPT: &str = r#"
 (io/puts "started")
-(io/puts "offload" (try (count (offload file/slurp-bytes "main.blsp")) (catch e (error-message e))))
+(io/puts "offload" (try (count (proc/offload file/slurp-bytes "main.blsp")) (catch e (error-message e))))
 (io/puts "listen" (try (do (tcp/listen "127.0.0.1" 0) :listening) (catch e (error-message e))))
 (io/puts "spawn" (try (do (os/spawn "true" []) :spawned) (catch e (error-message e))))
 (defn spin (n acc) (if (= n 0) acc (spin (- n 1) (+ acc 1))))

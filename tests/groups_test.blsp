@@ -10,7 +10,7 @@
 ;; `[:down …]` it receives, after the death itself.
 (defn- eventually (ready?)
   (letrec (step (fn (tries)
-                  (cond (ready?) true (= tries 0) false else (do (sleep 5) (step (dec tries))))))
+                  (cond (ready?) true (= tries 0) false else (do (proc/sleep 5) (step (dec tries))))))
     (step 400)))
 
 (defn- ensure-server ()

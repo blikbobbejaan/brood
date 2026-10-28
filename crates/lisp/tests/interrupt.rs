@@ -356,7 +356,7 @@ fn a_request_lands_in_the_innermost_window_and_the_outer_needs_its_own() {
         (defn interrupt-until (pid tries)
           (cond (proc/interrupt pid) :landed
                 (= tries 0) :never
-                :else (do (sleep 10) (interrupt-until pid (dec tries)))))
+                :else (do (proc/sleep 10) (interrupt-until pid (dec tries)))))
         (def worker
           (spawn (send root [:outer (proc/interruptible nil
                                       (fn () (do (send root [:inner (first (proc/interruptible nil
@@ -437,7 +437,7 @@ fn a_receive_inside_a_region_parks_and_an_interrupt_lands_after_it_resumes() {
                                                            (fn () (receive (:go :went))))]))))))
         (defn release (ws) (when (not (empty? ws)) (do (send (first ws) :go) (release (rest ws)))))
         (def waiters (start 256 []))
-        (sleep 200)
+        (proc/sleep 200)
         (spawn (send root :ran))
         (def ran (receive (:ran :ran) (after 10000 :starved)))
         (release waiters)
@@ -446,16 +446,16 @@ fn a_receive_inside_a_region_parks_and_an_interrupt_lands_after_it_resumes() {
         ;; ceiling is checked once it runs, and the interrupt lands.
         (def late (spawn (send root [:late (first (proc/interruptible 50
                                                    (fn () (do (receive (:go nil)) (spin 0)))))])))
-        (sleep 150)
+        (proc/sleep 150)
         (send late :go)
         ;; Woken from a region with no ceiling, then interrupted from outside.
         (def woken (spawn (send root [:woken (first (proc/interruptible nil
                                                      (fn () (do (receive (:go nil)) (spin 0)))))])))
-        (sleep 100)
+        (proc/sleep 100)
         (defn interrupt-until (pid tries)
           (cond (proc/interrupt pid) :landed
                 (= tries 0) :never
-                :else (do (sleep 10) (interrupt-until pid (dec tries)))))
+                :else (do (proc/sleep 10) (interrupt-until pid (dec tries)))))
         (send woken :go)
         [ran
          (= answers (vec (seq/repeat 256 [:ok :went])))
@@ -615,7 +615,7 @@ fn a_hard_kill_pending_beside_an_interrupt_lands_first() {
                           (do (proc/interruptible nil
                                 (fn () (do (%run-process "sleep" ["0.3"]) (spin 0))))
                               (send root :ran-on))))
-          (do (sleep 100)
+          (do (proc/sleep 100)
               (proc/interrupt p)
               (exit p :kill)
               [(receive ([:down ^watch _ reason] reason) (after 5000 :survived))

@@ -34,7 +34,7 @@
 (def r0 (rss-kb))
 (churn 0 0)
 (dev/gc-collect)
-(sleep 300)
+(proc/sleep 300)
 (io/puts (str "iters="
            iters
            " every="

@@ -51,7 +51,7 @@ const WAVE: &str = r#"
         (collect n 0))))
 
 ;; Let the readers get scheduled (and, pre-fix, pin the pool) before the wave is queued.
-(sleep 300)
+(proc/sleep 300)
 (io/puts (str "WAVE " (wave 200)))
 "#;
 

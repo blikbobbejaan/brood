@@ -216,7 +216,7 @@ fn a_release_replaces_a_running_binary() {
         "(project :name busy :main app)",
         &[(
             "app",
-            "(defmodule app \"\")\n(defn main () (do (sleep 4000) (io/puts \"v1\")))",
+            "(defmodule app \"\")\n(defn main () (do (proc/sleep 4000) (io/puts \"v1\")))",
         )],
     );
     // the parallel-tests fork race `run_bundle` documents applies to the spawn too
@@ -308,7 +308,7 @@ fn bundled_boot_check_resolves_an_application_without_starting_it() {
              (defn- shut-down-when-running ()\n\
                (if (proc/whereis :application)\n\
                  (application/shutdown)\n\
-                 (do (sleep 10) (shut-down-when-running))))\n\
+                 (do (proc/sleep 10) (shut-down-when-running))))\n\
              (application/defapp main\n\
                {:start (fn () (io/puts \"STARTED\") (spawn (shut-down-when-running)) :root)})",
         )],

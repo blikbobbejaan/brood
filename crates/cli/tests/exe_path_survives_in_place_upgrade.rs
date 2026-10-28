@@ -39,7 +39,7 @@ fn exe_path_is_usable_after_the_binary_is_unlinked() {
     let mut f = std::fs::File::create(&program).unwrap();
     writeln!(
         f,
-        "(let (_ (sleep 1500) p (os/exe-path)) (io/puts (str p \"|\" (file/exists? p))))"
+        "(let (_ (proc/sleep 1500) p (os/exe-path)) (io/puts (str p \"|\" (file/exists? p))))"
     )
     .unwrap();
     drop(f);

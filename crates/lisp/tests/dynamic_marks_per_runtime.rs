@@ -36,7 +36,7 @@ fn await_file(path: &Path) {
 
 /// The Brood side of the handshake: park until `path` exists.
 const AWAIT_FILE: &str = "(defn ki224-await (path)
-  (if (file/exists? path) :ok (do (sleep 2) (ki224-await path))))";
+  (if (file/exists? path) :ok (do (proc/sleep 2) (ki224-await path))))";
 
 fn eval(interp: &mut Interp, source: &str) -> String {
     let value = interp

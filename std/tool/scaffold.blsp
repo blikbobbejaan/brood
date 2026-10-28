@@ -170,7 +170,7 @@ test discovery, lints, release, config)."
     ";; calls itself in tail position, so it runs in O(1) stack — no mutation, no\n"
     ";; `while`. (Brood has proper tail calls, so recursion *is* the loop; for a loop\n"
     ";; local to one function, `letrec` binds one inline instead.)\n"
-    "(defn animate (pos dir width)\n" "  (io/puts (render pos width))\n" "  (sleep 80)\n"
+    "(defn animate (pos dir width)\n" "  (io/puts (render pos width))\n" "  (proc/sleep 80)\n"
     "  (let ([p d] (step pos dir width))\n" "    (animate p d width)))\n" "\n" "(defn main ()\n"
     "  \"Entry point: animate a bouncing marker.\"\n" "  (animate 0 1 20))\n"))
 

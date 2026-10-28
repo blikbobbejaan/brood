@@ -20,7 +20,7 @@ fn a_member_is_seen_across_nodes_and_dropped_with_its_node() {
 
     let wait_for = r#"
 (defn wait-for (ready? tries)
-  (cond (ready?) true (= tries 0) false else (do (sleep 50) (wait-for ready? (dec tries)))))
+  (cond (ready?) true (= tries 0) false else (do (proc/sleep 50) (wait-for ready? (dec tries)))))
 "#;
 
     let node_a = format!(
@@ -52,7 +52,7 @@ fn a_member_is_seen_across_nodes_and_dropped_with_its_node() {
 (unless (wait-for (fn () (= 2 (count (groups/members :workers)))) 600)
   (throw "B never saw A's member"))
 (io/puts "B-SEES-A")
-(sleep 500)
+(proc/sleep 500)
 (system/halt 0)
 "#
     );

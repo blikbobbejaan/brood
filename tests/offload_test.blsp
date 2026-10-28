@@ -11,20 +11,22 @@
   (test "a pure native (%digest) gives the same answer offloaded and direct"
     (let (data (string/->bytes "the brood digs deep")
           direct (%digest :sha256 data)
-          pooled (offload %digest :sha256 data))
+          pooled (proc/offload %digest :sha256 data))
       (is (bytes? pooled))
       (assert= pooled direct)))
   (test "file IO through the pool: file/spit, file/slurp-bytes, cleanup"
     (let (path (str "/tmp/brood-offload-" (os/now-ns) ".bin")
           payload (bytes 0 255 128 65 7))
-      (offload file/spit-bytes path payload)
-      (let (back (offload file/slurp-bytes path))
+      (proc/offload file/spit-bytes path payload)
+      (let (back (proc/offload file/slurp-bytes path))
         (file/rm path)
         (assert= back payload)))))
 
 (describe "offload: errors and refusals are clean"
   (test "an error inside the offloaded native rethrows here, catchable"
-    (is (= (try (offload file/slurp "/definitely/not/a/file/brood-offload-test") (catch e :caught))
+    (is (= (try
+             (proc/offload file/slurp "/definitely/not/a/file/brood-offload-test")
+             (catch e :caught))
           :caught)))
   (test "a native outside the allow list is refused"
     (is (= (try (%offload bytes/concat [[]]) (catch e :refused)) :refused)))
@@ -34,7 +36,7 @@
 (describe "offload: concurrency & selectivity"
   (test "waiting for the pool is a selective receive — other mail stays queued"
     (send (self) [:decoy :untouched])
-    (let (r (offload %digest :sha256 (string/->bytes "x")))
+    (let (r (proc/offload %digest :sha256 (string/->bytes "x")))
       (is (bytes? r))
       ;; the decoy was not consumed by the offload wait
       (assert= (receive ([:decoy v] v) (after *test-wait-ms* :lost)) :untouched)))
@@ -45,7 +47,7 @@
         (spawn (do
                  (let (data (string/->bytes (str "worker-" i))
                        direct (%digest :sha256 data)
-                       pooled (offload %digest :sha256 data))
+                       pooled (proc/offload %digest :sha256 data))
                    (send parent [:done i (= pooled direct)])))))
       (dotimes (_ n)
         (receive

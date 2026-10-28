@@ -26,6 +26,8 @@
 pub const RENAMES: &[(&str, &str, &str)] = &[
     // ADR-506 — the bare namespace is the language: syntax, a measured core and the
     // built-in kinds. Everything else is qualified by its family.
+    ("offload", "proc/offload", "ADR-506"),
+    ("sleep", "proc/sleep", "ADR-506"),
     ("disj", "set/disj", "ADR-506"),
     ("update-in", "map/update-in", "ADR-506"),
     ("get-in", "map/get-in", "ADR-506"),

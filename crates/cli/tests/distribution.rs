@@ -102,9 +102,9 @@ fn clean_peer_exit_fires_nodedown_promptly() {
     let quitter = format!(
         r#"
 (node/start :b "127.0.0.1:{port_b}" "secret-test-cookie-16+")
-(defn wait-link () (if (empty? (node/list)) (do (sleep 25) (wait-link)) (first (node/list))))
+(defn wait-link () (if (empty? (node/list)) (do (proc/sleep 25) (wait-link)) (first (node/list))))
 (wait-link)
-(sleep 200)
+(proc/sleep 200)
 "#
     );
 
@@ -171,7 +171,7 @@ fn disconnect_drops_a_peer_link_while_both_nodes_stay_up() {
     let server = format!(
         r#"
 (node/start :b "127.0.0.1:{port_b}" "secret-test-cookie-16+")
-(defn wait-link () (if (empty? (node/list)) (do (sleep 50) (wait-link)) (first (node/list))))
+(defn wait-link () (if (empty? (node/list)) (do (proc/sleep 50) (wait-link)) (first (node/list))))
 (node/monitor (wait-link))
 (receive
   ([:nodedown p] (io/puts "B-NODEDOWN " p " " (node/list)))
@@ -187,7 +187,7 @@ fn disconnect_drops_a_peer_link_while_both_nodes_stay_up() {
 (node/start :a "127.0.0.1:{port_a}" "secret-test-cookie-16+")
 (def peer (node/connect "b@127.0.0.1:{port_b}"))
 (node/monitor peer)
-(sleep 400)
+(proc/sleep 400)
 (if (node/disconnect peer) (io/puts "RETURNED-TRUE") (io/puts "RETURNED-FALSE"))
 (receive
   ([:nodedown p] (if (empty? (node/list)) (io/puts "A-NODEDOWN-OK " p) (io/puts "A-NODES-NOT-PRUNED " (node/list))))
@@ -997,7 +997,7 @@ fn ensure_link_reconnects_across_a_node_restart() {
 (reconnect/watch "a@127.0.0.1:{port_a}" {{:min-ms 200 :max-ms 400}})
 ;; Wait for the watcher's initial connect (it is asynchronous, unlike the old
 ;; ensure-link) before the first probe.
-(defn wait-link () (if (empty? (node/list)) (do (sleep 25) (wait-link)) nil))
+(defn wait-link () (if (empty? (node/list)) (do (proc/sleep 25) (wait-link)) nil))
 (wait-link)
 ;; First probe — proves the initial link came up.
 (send {{:name :probe :node :a@127.0.0.1}} [:ping (self)])
@@ -1257,7 +1257,7 @@ fn cluster_mesh_connects_peers_transitively() {
     let hub = format!(
         r#"
 (node/start :b "127.0.0.1:{port_b}" "secret-test-cookie-16+")
-(defn idle () (do (sleep 1000) (idle)))
+(defn idle () (do (proc/sleep 1000) (idle)))
 (idle)
 "#
     );
@@ -1267,7 +1267,7 @@ fn cluster_mesh_connects_peers_transitively() {
         r#"
 (node/start :c "127.0.0.1:{port_c}" "secret-test-cookie-16+")
 (node/connect "b@127.0.0.1:{port_b}")
-(defn idle () (do (sleep 1000) (idle)))
+(defn idle () (do (proc/sleep 1000) (idle)))
 (idle)
 "#
     );
@@ -1282,7 +1282,7 @@ fn cluster_mesh_connects_peers_transitively() {
   (cond
     (includes? (node/list) :c@127.0.0.1) (io/puts (str "A-SEES-C nodes=" (node/list)))
     (<= n 0)                       (io/puts (str "A-MISSED-C nodes=" (node/list)))
-    else                           (do (sleep 100) (wait-sees (- n 1)))))
+    else                           (do (proc/sleep 100) (wait-sees (- n 1)))))
 (wait-sees 150)
 "#
     );
@@ -1323,7 +1323,7 @@ fn no_mesh_env_keeps_links_point_to_point() {
     let hub = format!(
         r#"
 (node/start :b "127.0.0.1:{port_b}" "secret-test-cookie-16+")
-(defn idle () (do (sleep 1000) (idle)))
+(defn idle () (do (proc/sleep 1000) (idle)))
 (idle)
 "#
     );
@@ -1331,7 +1331,7 @@ fn no_mesh_env_keeps_links_point_to_point() {
         r#"
 (node/start :c "127.0.0.1:{port_c}" "secret-test-cookie-16+")
 (node/connect "b@127.0.0.1:{port_b}")
-(defn idle () (do (sleep 1000) (idle)))
+(defn idle () (do (proc/sleep 1000) (idle)))
 (idle)
 "#
     );
@@ -1341,7 +1341,7 @@ fn no_mesh_env_keeps_links_point_to_point() {
         r#"
 (node/start :a "127.0.0.1:{port_a}" "secret-test-cookie-16+")
 (node/connect "b@127.0.0.1:{port_b}")
-(sleep 2000)
+(proc/sleep 2000)
 (io/puts (str "A-NODES=" (node/list)))
 "#
     );
@@ -1841,7 +1841,7 @@ fn dual_listen_serves_tcp_and_unix_at_once() {
     let client = format!(
         r#"
 (node/start :cli)
-(defn tc (f n) (try (f) (catch e (if (> n 0) (do (sleep 100) (tc f (- n 1))) (throw e)))))
+(defn tc (f n) (try (f) (catch e (if (> n 0) (do (proc/sleep 100) (tc f (- n 1))) (throw e)))))
 (def via-tcp  (tc (fn () (node/connect "ed@127.0.0.1:{port}")) 50))
 (def via-unix (tc (fn () (node/connect "ed")) 50))
 (unless (= via-tcp via-unix) (throw (str "transports gave different nodes: " via-tcp " vs " via-unix)))
@@ -1915,7 +1915,7 @@ fn monitor_node_fires_on_every_reconnect_cycle() {
 (defn retry-connect (n)
   (when (= n 0) (throw "reconnect to A2 failed after retries"))
   (try (node/connect "a@127.0.0.1:{port_a}")
-    (catch _ (do (sleep 100) (retry-connect (- n 1))))))
+    (catch _ (do (proc/sleep 100) (retry-connect (- n 1))))))
 (retry-connect 60)
 (send {{:name :probe :node :a@127.0.0.1}} [:ping (self)])
 (receive ([:pong] :ok) (after 10000 (throw "no second pong")))
@@ -2091,13 +2091,13 @@ fn cluster_mesh_late_joiner_reaches_all_hub_peers() {
 
     let hub = format!(
         "(node/start :b \"127.0.0.1:{port_b}\" \"secret-test-cookie-16+\")\n\
-         (defn idle () (do (sleep 1000) (idle))) (idle)\n"
+         (defn idle () (do (proc/sleep 1000) (idle))) (idle)\n"
     );
     let mk_spoke = |name: &str, port: u16| {
         format!(
             "(node/start :{name} \"127.0.0.1:{port}\" \"secret-test-cookie-16+\")\n\
              (node/connect \"b@127.0.0.1:{port_b}\")\n\
-             (defn idle () (do (sleep 1000) (idle))) (idle)\n"
+             (defn idle () (do (proc/sleep 1000) (idle))) (idle)\n"
         )
     };
     let spoke_c = mk_spoke("c", port_c);
@@ -2110,7 +2110,7 @@ fn cluster_mesh_late_joiner_reaches_all_hub_peers() {
             (cond (and (includes? (node/list) :c@127.0.0.1) (includes? (node/list) :d@127.0.0.1))\n\
                     (io/puts (str \"A-SEES-ALL nodes=\" (node/list)))\n\
                   (<= n 0) (io/puts (str \"A-MISSED nodes=\" (node/list)))\n\
-                  else (do (sleep 100) (wait-all (- n 1)))))\n\
+                  else (do (proc/sleep 100) (wait-all (- n 1)))))\n\
          (wait-all 200)\n"
     );
 
@@ -2163,9 +2163,9 @@ fn cluster_mesh_converges_to_full_mesh_from_a_chain() {
              (defn watch (n)\n\
                 (cond (= 3 (count (node/list))) (file/spit \"{r}\" \"FULL\")\n\
                       (<= n 0) (file/spit \"{r}\" (str \"PARTIAL \" (count (node/list))))\n\
-                      else (do (sleep 100) (watch (- n 1)))))\n\
+                      else (do (proc/sleep 100) (watch (- n 1)))))\n\
              (watch 250)\n\
-             (defn idle () (do (sleep 1000) (idle))) (idle)\n",
+             (defn idle () (do (proc/sleep 1000) (idle))) (idle)\n",
             r = res(name)
         )
     };
@@ -2233,9 +2233,9 @@ fn cluster_mesh_simultaneous_joins_converge() {
          (defn watch (n)\n\
             (cond (= 4 (count (node/list))) (file/spit \"{r}\" \"FULL\")\n\
                   (<= n 0) (file/spit \"{r}\" (str \"PARTIAL \" (count (node/list))))\n\
-                  else (do (sleep 100) (watch (- n 1)))))\n\
+                  else (do (proc/sleep 100) (watch (- n 1)))))\n\
          (watch 250)\n\
-         (defn idle () (do (sleep 1000) (idle))) (idle)\n",
+         (defn idle () (do (proc/sleep 1000) (idle))) (idle)\n",
         r = res("h")
     );
     let mut hub = spawn_brood(&dir, "h.blsp", &hub_src);
@@ -2250,9 +2250,9 @@ fn cluster_mesh_simultaneous_joins_converge() {
              (defn watch (n)\n\
                 (cond (= 4 (count (node/list))) (file/spit \"{r}\" \"FULL\")\n\
                       (<= n 0) (file/spit \"{r}\" (str \"PARTIAL \" (count (node/list))))\n\
-                      else (do (sleep 100) (watch (- n 1)))))\n\
+                      else (do (proc/sleep 100) (watch (- n 1)))))\n\
              (watch 250)\n\
-             (defn idle () (do (sleep 1000) (idle))) (idle)\n",
+             (defn idle () (do (proc/sleep 1000) (idle))) (idle)\n",
             r = res(&name)
         );
         spokes.push(spawn_brood(&dir, &format!("{name}.blsp"), &src));
@@ -2316,9 +2316,9 @@ fn reconnect_watcher_heals_a_fallen_link() {
     let b_round1 = format!(
         r#"
 (node/start :b "127.0.0.1:{port_b}" "secret-test-cookie-16+")
-(defn wait-link () (if (empty? (node/list)) (do (sleep 25) (wait-link)) (first (node/list))))
+(defn wait-link () (if (empty? (node/list)) (do (proc/sleep 25) (wait-link)) (first (node/list))))
 (wait-link)
-(sleep 300)
+(proc/sleep 300)
 "#
     );
 
@@ -2341,7 +2341,7 @@ fn reconnect_watcher_heals_a_fallen_link() {
 (let (echoer (spawn (receive ([:ping from] (send from [:pong])))))
   (proc/register :echo echoer)
   (node/start :b "127.0.0.1:{port_b}" "secret-test-cookie-16+")
-  (sleep 30000))
+  (proc/sleep 30000))
 "#
     );
 
@@ -2683,7 +2683,7 @@ fn a_restarted_peer_reconnects_without_waiting_for_the_heartbeat() {
 (node/start :p@127.0.0.1 "127.0.0.1:{port_p1}" "secret-test-cookie-16+")
 (def s (node/connect "s@127.0.0.1:{port_relay}"))
 (send {{:name :watcher :node s}} [:hello (self)])
-(defn idle () (do (sleep 1000) (idle)))
+(defn idle () (do (proc/sleep 1000) (idle)))
 (idle)
 "#
     );
@@ -2837,7 +2837,7 @@ fn a_bare_name_connect_to_a_live_peer_does_not_disturb_its_link() {
     let client = format!(
         r#"
 (node/start :cli)
-(defn tc (f n) (try (f) (catch e (if (> n 0) (do (sleep 100) (tc f (- n 1))) (throw e)))))
+(defn tc (f n) (try (f) (catch e (if (> n 0) (do (proc/sleep 100) (tc f (- n 1))) (throw e)))))
 (def ed (tc (fn () (node/connect "ed@127.0.0.1:{port}")) 50))
 (send {{:name :echo :node ed}} [:hello (self)])
 (def worker (receive ([:pid p] p) (after 30000 (throw "no worker pid"))))
@@ -3032,10 +3032,10 @@ fn a_guest_link_stops_a_turn_only_as_the_loops_own_client() {
 (def ui {{:name :ui :node :a@127.0.0.1}})
 (send ui [:hi (self)])
 (receive ([:go 1] nil) (after 30000 (throw "no first turn")))
-(sleep 300)
+(proc/sleep 300)
 (send ui [:key :ctrl-g true])
 (receive ([:go 2] nil) (after 30000 (throw "no second turn")))
-(sleep 300)
+(proc/sleep 300)
 (send ui [:key :ctrl-g true])
 (receive ([:done] (io/puts "DONE")) (after 30000 (throw "no end")))
 "#

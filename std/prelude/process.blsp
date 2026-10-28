@@ -478,10 +478,10 @@ A zero-arg lambda `(fn () …)` body is passed through (not re-wrapped), like `s
 ;; unbound symbol — defined above `receive`, every `(sleep …)` would raise `unbound
 ;; symbol: /nil?`. Defined after it, it expands at compile time where the escape
 ;; resolves (KI-73). Keep it here.
-(defn sleep (ms)
+(defn proc/sleep (ms)
   "Park the current process for `ms` milliseconds without touching its mailbox — every queued message stays queued. Parks on the scheduler timer; it does not block a worker thread.
 
-    (sleep 0) ;=> nil"
+    (proc/sleep 0) ;=> nil"
   ;; Checked here, not left to `receive`'s timeout check, so the error names `sleep` — a
   ;; form the caller actually wrote.
   (if (or (nil? ms) (and (int? ms) (>= ms 0) (<= ms 9223372036854775807)))
@@ -499,7 +499,7 @@ A zero-arg lambda `(fn () …)` body is passed through (not re-wrapped), like `s
 ;; dead captured-frame closure for the freeze to scrub (ADR-155), so the scrub branch in
 ;; `Heap::to_prelude` is not exercised at boot; the hard assert for *reachable*
 ;; env-capturing closures still runs on every closure.
-(defn offload (f & args)
+(defn proc/offload (f & args)
   "Run the blocking native `f` (e.g. `file/slurp-bytes`, `%git-clone`,
 `%pbkdf2-sha256-bytes`) with `args` on the dirty-offload OS pool and wait for
 the result — parking only this process, never a scheduler worker. An error in
@@ -507,7 +507,7 @@ the native rethrows here, catchable as usual. Only long/blocking
 data-in/data-out natives are allowed (`%offload` refuses the rest); other
 mailbox messages stay queued while waiting (selective receive).
 
-    (offload file/slurp-bytes \"big.bin\")   ;~> …the file's bytes, read off the scheduler…"
+    (proc/offload file/slurp-bytes \"big.bin\")   ;~> …the file's bytes, read off the scheduler…"
   (let (tok (%offload f (into [] args)))
     (receive
       ([:offload ^tok result] result)

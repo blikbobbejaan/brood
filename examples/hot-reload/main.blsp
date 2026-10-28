@@ -23,7 +23,7 @@
 
 (defn ticker (n)
   (greeter/greet)
-  (sleep 1000)
+  (proc/sleep 1000)
   (ticker (inc n)))
 
 (io/puts "[main] ticker starting (Ctrl-C to stop; edit greeter.blsp to swap output)")

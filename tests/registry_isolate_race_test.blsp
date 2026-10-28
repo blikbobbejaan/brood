@@ -87,7 +87,7 @@
 ;; fails — the grandchild is still alive after the isolate returns.
 
 (defn- ki89-orphan-loop (stop)
-  (if (table/get stop :stop) nil (do (sleep 5) (ki89-orphan-loop stop))))
+  (if (table/get stop :stop) nil (do (proc/sleep 5) (ki89-orphan-loop stop))))
 
 ;; Spawns the grandchild, publishes its pid, and EXITS — breaking the chain on purpose.
 (defn- ki89-orphan-middle (stop out)

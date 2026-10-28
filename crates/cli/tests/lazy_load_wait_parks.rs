@@ -27,7 +27,7 @@ const HOLD_HTTP: &str = r#"
   (spawn
     (do (%registry-update! '*features-loading* :assoc-new ["http"] (self))
       (send me :claimed)
-      (sleep 300)
+      (proc/sleep 300)
       (%registry-update! '*features-loading* :dissoc ["http"] nil)
       (%require-release! "http"))))
 (receive (:claimed nil))

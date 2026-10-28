@@ -39,7 +39,7 @@ own (`settle-queued`) and spends no round, so a slow queue reads as slow, not as
 `tries` × 10 ms."
   (let (state (get (%jit-arm-state f argc) :state))
     (if (and (= state :queued) (> tries 0))
-      (do (sleep 10) (settle-queued f argc (- tries 1)))
+      (do (proc/sleep 10) (settle-queued f argc (- tries 1)))
       state)))
 
 ;; ---- highlighter spans ------------------------------------------------------------
@@ -88,9 +88,9 @@ feeding it has reached its budget and paused. Returns the queued count."
   (eventually "the reader pausing on its budget"
     (fn ()
       (let (first-count (queued-count))
-        (sleep 25)
+        (proc/sleep 25)
         (let (second-count (queued-count))
-          (sleep 25)
+          (proc/sleep 25)
           (when (and (> first-count 0) (= first-count second-count (queued-count)))
             first-count))))))
 

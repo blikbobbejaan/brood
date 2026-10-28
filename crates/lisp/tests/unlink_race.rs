@@ -20,7 +20,7 @@ const STRESS: &str = r#"
       (receive ([:val _] nil) ([:EXIT ^t _] nil))
       (unlink t)
       (receive ([:EXIT ^t _] nil) (after 0 nil))
-      (sleep 0)
+      (proc/sleep 0)
       (round (- n 1) (+ leaks (receive ([:EXIT ^t _] 1) (after 0 0)))))))
 (defn worker (parent n)
   (proc/trap-exit true)

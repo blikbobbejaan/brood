@@ -75,7 +75,7 @@ fn an_unsupervised_crash_is_reported_through_the_lazy_arm() {
     // the report is on the pipe (see `stderr_until`), so this is a ceiling, not a cost.
     let path = script(
         "crashrep-boom",
-        "(spawn (fn () (/ 1 0)))\n(sleep 15000)\n(io/puts \"done\")\n",
+        "(spawn (fn () (/ 1 0)))\n(proc/sleep 15000)\n(io/puts \"done\")\n",
     );
     let err = stderr_until(&path, "[crash]", std::time::Duration::from_secs(15));
     assert!(
@@ -93,7 +93,7 @@ fn an_unsupervised_crash_is_reported_through_the_lazy_arm() {
 fn the_opt_out_still_suppresses_the_report() {
     let path = script(
         "crashrep-quiet",
-        "(spawn (fn () (/ 1 0)))\n(sleep 500)\n(io/puts \"done\")\n",
+        "(spawn (fn () (/ 1 0)))\n(proc/sleep 500)\n(io/puts \"done\")\n",
     );
     let output = Command::new(env!("CARGO_BIN_EXE_brood"))
         .env("BROOD_NO_CHECK", "1")

@@ -21,7 +21,7 @@ const SERVER: &str = r#"
 ;; starts: a client slow to boot (a loaded machine) otherwise left the first window empty, so
 ;; nothing was closed and the second accepted 31 and starved for good.
 (defn wait-connected ()
-  (if (file/exists? "connected.txt") nil (do (sleep 20) (wait-connected))))
+  (if (file/exists? "connected.txt") nil (do (proc/sleep 20) (wait-connected))))
 (defn drain-accepts (acc quiet-ms)
   (receive ([:tcp-accept _ client] (drain-accepts (cons client acc) quiet-ms)) (after quiet-ms acc)))
 (wait-connected)
@@ -35,11 +35,11 @@ const CLIENT: &str = r#"
 (defn wait-port ()
   (if (file/exists? "port.txt")
     (string/->number (file/slurp "port.txt"))
-    (do (sleep 20) (wait-port))))
+    (do (proc/sleep 20) (wait-port))))
 (def port (wait-port))
 (def sockets (map (range 50) (fn (_) (tcp/connect "127.0.0.1" port))))
 (file/spit "connected.txt" "50")
-(sleep 20000)
+(proc/sleep 20000)
 "#;
 
 fn brood(directory: &Path, script: &str, descriptor_limit: Option<u32>) -> std::process::Child {

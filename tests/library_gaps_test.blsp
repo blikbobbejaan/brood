@@ -117,7 +117,7 @@
     (assert= (list 2 3) (seq/pmap '(1 2) inc)))
   (test "order holds whatever the workers' timing"
     ;; the later items finish first
-    (assert= (list 30 20 10) (seq/pmap [3 2 1] (fn (n) (sleep (nth [0 20 40 60] n)) (* n 10)))))
+    (assert= (list 30 20 10) (seq/pmap [3 2 1] (fn (n) (proc/sleep (nth [0 20 40 60] n)) (* n 10)))))
   (test "each item really runs in its own process"
     (let (pids (seq/pmap [1 2 3] (fn (_) (self))))
       (assert= 3 (count (into #{} pids)))

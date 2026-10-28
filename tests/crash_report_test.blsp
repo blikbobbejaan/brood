@@ -124,7 +124,7 @@ passes. A report that does not match belongs to another test — drop it and kee
           first-pid (start {:sink (crash-report-collect me)}))
       (assert= first-pid (start {:sink (crash-report-collect me)}))
       (stop)
-      (sleep 50)
+      (proc/sleep 50)
       (is (not (running?)))
       (assert= [] (proc/system-monitor :all))
       (let (after-stop (spawn (error "unreported")))

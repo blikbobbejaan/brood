@@ -29,7 +29,7 @@ fn killing_a_monitored_process_costs_no_more_than_an_unmonitored_one() {
         ;; frame holds one index and nothing that grows.
         (defn spawn-all () (seq/mapv (range n) (fn (_) (spawn (parked)))))
         (defn live () (let (s (%sched-stats)) (- (get s :spawned) (get s :exited))))
-        (defn wait-dead (base) (if (> (live) base) (do (sleep 1) (wait-dead base)) nil))
+        (defn wait-dead (base) (if (> (live) base) (do (proc/sleep 1) (wait-dead base)) nil))
         (defn kill-all (kids) (fold kids nil (fn (_ p) (exit p :kill))))
         (defn mon-all (kids) (fold kids nil (fn (_ p) (monitor p))))
         (defn timed-kill (kids base)

@@ -52,7 +52,7 @@
 ;; Let every child actually reach its `receive` (and so allocate its `Suspended`) before
 ;; sampling — otherwise a fast sample measures processes that have not parked yet and the
 ;; floor reads low.
-(defn settle (k) (if (= k 0) :ok (do (sleep 20) (settle (- k 1)))))
+(defn settle (k) (if (= k 0) :ok (do (proc/sleep 20) (settle (- k 1)))))
 (settle 25)
 (def rss (rss-kb))
 

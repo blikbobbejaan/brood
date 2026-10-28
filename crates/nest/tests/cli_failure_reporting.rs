@@ -84,7 +84,7 @@ fn run_for_exits_nonzero_when_the_program_dies() {
 
     std::fs::write(
         dir.join("spin.blsp"),
-        "(defn spin () (sleep 20) (spin))\n(spin)\n",
+        "(defn spin () (proc/sleep 20) (spin))\n(spin)\n",
     )
     .unwrap();
     let out = nest()

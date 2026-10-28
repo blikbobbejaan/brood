@@ -38,11 +38,11 @@
 
 (describe "gen: sleep"
   :isolated (test "sleep waits roughly the requested time"
-    (let (t (os/now)) (sleep 30) (is (>= (- (os/now) t) 25))))
+    (let (t (os/now)) (proc/sleep 30) (is (>= (- (os/now) t) 25))))
   ; allow scheduler slack
   (test "sleep does not consume queued messages"
     (send (self) :keep)
-    (sleep 20)
+    (proc/sleep 20)
     (assert= (receive (:keep :present) (after 0 :eaten)) :present)))
 
 (describe "gen: concurrent servers don't cross wires"
@@ -211,7 +211,7 @@
       ;; 0 ms — give up before the server can possibly answer
       (assert= (try (call-timeout s :ping 0) (catch e :timed-out))
         :timed-out)
-      (sleep 60)
+      (proc/sleep 60)
       ;; the abandoned call's reply must not be mistaken for this one's
       (assert= (call-timeout s :ping 2000) :pong))))
 

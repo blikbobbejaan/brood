@@ -57,7 +57,7 @@
     (reg-fan *reg-writers*
       (fn (i)
         (let (old *reg-plain*)
-          (sleep 5)
+          (proc/sleep 5)
           (def *reg-plain* (assoc old i i)))))
     ;; The mechanism, deliberately left un-yielded: its CAS retry recomputes from whatever
     ;; won, so it must lose nothing under ordinary contention.

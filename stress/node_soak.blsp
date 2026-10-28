@@ -107,7 +107,7 @@
                 next-stats (if crash? (assoc counted :crashes (inc (get counted :crashes))) counted))
             (drain-laps)
             (when (= 0 (math/mod (inc lap) 500)) (io/puts "node-soak:" (pr-str next-stats)))
-            (when (not done) (sleep 200))
+            (when (not done) (proc/sleep 200))
             (hub-loop names deadline (inc lap) next-stats))))))
 
 (defn- hub-main (seconds names)

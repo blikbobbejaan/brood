@@ -103,7 +103,7 @@
       (send sender [:close])
       (letrec (slow (fn (acc)
                       (receive
-                        ([:tcp ^s d] (do (sleep 1) (slow (cons d acc))))
+                        ([:tcp ^s d] (do (proc/sleep 1) (slow (cons d acc))))
                         ([:tcp-closed ^s] (bytes/concat (reverse acc)))
                         (after 20000 :timeout))))
         (let (got (slow nil))

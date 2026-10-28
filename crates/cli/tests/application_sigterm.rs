@@ -100,7 +100,7 @@ fn sigterm_stops_an_application_in_reverse_and_exits_cleanly() {
     let source = r#"
 (defn- idle () (receive (:never nil)))
 (defn- announce-when-running ()
-  (if (proc/whereis :application) (io/puts "ready") (do (sleep 10) (announce-when-running))))
+  (if (proc/whereis :application) (io/puts "ready") (do (proc/sleep 10) (announce-when-running))))
 (application/defapp store
   {:start (fn () (spawn (idle)))
    :stop (fn (root) (io/puts "stopped store") (exit root :kill))})
@@ -132,7 +132,7 @@ fn a_dead_subscriber_leaves_sigterm_fatal() {
   (os/trap :term pid)
   (receive ([:down ^ref _ _] nil)))
 (io/puts "ready")
-(sleep 60000)
+(proc/sleep 60000)
 (io/puts "survived")
 "#;
     let (mut child, lines, path) = start("dead-subscriber", source);

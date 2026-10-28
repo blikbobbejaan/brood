@@ -551,7 +551,7 @@ transitively-closed lock file and puts each dep's source on *load-path*."
     (plist-get locked :commit)
     ;; Network-bound (git ls-remote) → the offload pool, so a fetch doesn't
     ;; pin a scheduler worker (ADR-144).
-    (or (offload %git-resolve-ref (get dep :url) (get dep :ref))
+    (or (proc/offload %git-resolve-ref (get dep :url) (get dep :ref))
       (error "package: cannot resolve git ref \""
         (get dep :ref)
         "\" for "
@@ -626,7 +626,7 @@ transitively-closed lock file and puts each dep's source on *load-path*."
                              (plist-get locked :version)))
         (if (and locked-version (version/satisfies? locked-version range))
           (assoc dep :ref (plist-get locked :ref) :resolved-version locked-version)
-          (let (tags (or (offload %git-list-tags url) nil)
+          (let (tags (or (proc/offload %git-list-tags url) nil)
                 chosen (package-select-git-version tags range))
             (if (nil? chosen)
               (error "package: no git tag of "
@@ -663,7 +663,7 @@ transitively-closed lock file and puts each dep's source on *load-path*."
         (when (file/dir? target) (%rm-rf target))
         ;; The clone (network, possibly minutes) runs on the offload pool —
         ;; parks only this process, never a scheduler worker (ADR-144).
-        (offload %git-clone url target ref commit)
+        (proc/offload %git-clone url target ref commit)
         (let (sha (tree-hash target))
           (package-write-pkg-meta target url ref commit sha)
           (assoc dep
@@ -750,7 +750,7 @@ an http(s) URL is GET'd (following up to *package-max-redirects* redirects) and 
             (file/mkdir (package-deps-dir root))
             (file/spit-bytes archive bytes)
             ;; Extraction (large archives) runs on the offload pool, like the clone.
-            (offload %untar-gz archive target 1)
+            (proc/offload %untar-gz archive target 1)
             (file/rm archive)
             (package-write-tarball-meta target url sha)
             (assoc dep
@@ -974,7 +974,7 @@ TOFU-pinned signing key, nil for an unsigned package)."
         (file/mkdir (package-deps-dir root))
         (file/spit-bytes archive bytes)
         ;; Extraction of a large archive runs on the offload pool, like a clone.
-        (offload %untar-gz archive target (if external 1 0))
+        (proc/offload %untar-gz archive target (if external 1 0))
         (file/rm archive)
         (registry-write-meta target base name version checksum)
         (registry-resolved dep target version checksum pinned)))))
@@ -1157,7 +1157,7 @@ say). Advisory, like every signing check: a bad or changed signature is reported
             (when (file/dir? target) (file/rmdir target))
             (file/mkdir dest-dir)
             (file/spit-bytes archive bytes)
-            (offload %untar-gz archive target (if external 1 0))
+            (proc/offload %untar-gz archive target (if external 1 0))
             (file/rm archive)
             (let (verdict (signature-verdict name-str
                             version

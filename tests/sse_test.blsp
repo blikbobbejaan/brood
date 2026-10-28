@@ -204,7 +204,7 @@ then close. Returns the port."
                                       (receive ([:tcp ^c _] nil) (after 5000 nil))
                                       (doseq (payload payloads)
                                         (tcp/send c payload)
-                                        (sleep 30))
+                                        (proc/sleep 30))
                                       (tcp/close c)))
                (after 5000 nil))))
     (receive ([:port p] p) (after *test-wait-ms* :timeout))))
@@ -309,7 +309,7 @@ then close. Returns the port."
                               (fn (sock)
                                 (sse/emit sock "hello")
                                 ;; hold the stream open far past the test's wait
-                                (sleep 60000)
+                                (proc/sleep 60000)
                                 (tcp/close sock)))))
           _ (spawn (do
                      (send me [:reader (connect (str "http://127.0.0.1:" port "/") (self))])

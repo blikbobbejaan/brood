@@ -24,7 +24,7 @@ const PROGRAM: &str = r#"
 (def kids (map (range 0 50) (fn (i) (spawn (send me [:r (waits :go)])))))
 ;; Every child reaches its `receive` before `:go` exists, so all fifty park: the thing under
 ;; test happens fifty times rather than whenever the scheduler happens to be slow.
-(sleep 100)
+(proc/sleep 100)
 (doseq (k kids) (send k [:go 1]))
 ;; Collected by a tail loop, not a `fold` callback: a `receive` under a native HOF is the
 ;; unparkable shape this test counts, and the collector must not be one.

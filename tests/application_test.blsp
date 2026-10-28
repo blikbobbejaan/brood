@@ -34,7 +34,7 @@
 (defapp supervised
   {:start (fn () (supervisor/start [{:id :worker :start (fn () (spawn-link (idle)))}]))})
 
-(defapp crashing {:start (fn () (spawn (do (sleep 20) (error "boom"))))})
+(defapp crashing {:start (fn () (spawn (do (proc/sleep 20) (error "boom"))))})
 
 (describe "starting and stopping"
   (test "requirements start first, and one that two applications share starts once"

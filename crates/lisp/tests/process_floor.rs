@@ -85,11 +85,11 @@ fn a_parked_process_costs_no_more_than_the_floor() {
         ;; frame holds one index and nothing that grows.
         (defn spawn-all (n) (seq/mapv (range n) (fn (_) (spawn (parked)))))
         (def warm (spawn-all 5000))
-        (sleep 200)
+        (proc/sleep 200)
         (def b0 (%mem-bytes))
         (def n 20000)
         (def kids (spawn-all n))
-        (sleep 200)
+        (proc/sleep 200)
         (def per (math/quot (- (%mem-bytes) b0) n))
         ;; Release them so the runtime tears down cleanly.
         (fold (into warm kids) nil (fn (_ p) (send p [:go])))

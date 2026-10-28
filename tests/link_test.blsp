@@ -56,7 +56,7 @@
     ;; watcher doesn't trap; it's linked to a crasher → it must die too.
     (let (watcher (spawn (do (proc/trap-exit false) (lk-park)))
           wm (monitor watcher))
-      (spawn (do (link watcher) (sleep 20) (error "crash")))
+      (spawn (do (link watcher) (proc/sleep 20) (error "crash")))
       (is (not (= :SURVIVED (receive ([:down ^wm ^watcher _] :died)))))))
 
   (test "propagation carries the ORIGINATING reason, not a blanket :kill"
@@ -65,7 +65,7 @@
     ;; the tree fell. The crash reason is the structured [:error {…}] map.
     (let (watcher (spawn (do (proc/trap-exit false) (lk-park)))
           wm (monitor watcher))
-      (spawn (do (link watcher) (sleep 20) (error "root cause")))
+      (spawn (do (link watcher) (proc/sleep 20) (error "root cause")))
       (let (reason (receive ([:down ^wm ^watcher r] r) (after *test-wait-ms* :timeout)))
         (assert= :error (first reason))
         (assert= "root cause" (get (first (rest reason)) :message)))))
@@ -107,7 +107,12 @@
   (test "unlink breaks the coupling — a later crash doesn't propagate"
     (let (watcher (spawn (do (proc/trap-exit false) (lk-park)))
           wm (monitor watcher))
-      (let (_c (spawn (do (link watcher) (sleep 20) (unlink watcher) (sleep 20) (error "crash"))))
+      (let (_c (spawn (do
+                        (link watcher)
+                        (proc/sleep 20)
+                        (unlink watcher)
+                        (proc/sleep 20)
+                        (error "crash"))))
         ;; after unlink, c's crash must NOT kill watcher
         (assert= :still-linked-free
           (receive ([:down ^wm ^watcher _] :propagated) (after 300 :still-linked-free))))

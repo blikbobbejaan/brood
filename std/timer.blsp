@@ -20,7 +20,7 @@ stops it if it hasn't fired. One-shot; fires even if `pid` is already dead (the 
 then a silent no-op, like any send to a dead process).
 
     (timer/send-after 500 (self) :tick)   ;~> a timer handle; `:tick` arrives in ~500 ms"
-  (spawn (do (sleep ms) (send pid msg))))
+  (spawn (do (proc/sleep ms) (send pid msg))))
 
 (defn send-interval (ms pid msg)
   "Send `msg` to `pid` every `ms` milliseconds until cancelled. Returns a timer handle for

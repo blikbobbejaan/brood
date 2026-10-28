@@ -127,9 +127,9 @@
 
 (describe "diagnostics that named the wrong thing"
   (test "sleep speaks for itself, not for the receive underneath it"
-    (is (string/starts-with? (message (fn () (sleep 0.5))) "sleep:"))
-    (is (string/starts-with? (message (fn () (sleep -1))) "sleep:"))
-    (is (string/starts-with? (message (fn () (sleep "soon"))) "sleep:")))
+    (is (string/starts-with? (message (fn () (proc/sleep 0.5))) "sleep:"))
+    (is (string/starts-with? (message (fn () (proc/sleep -1))) "sleep:"))
+    (is (string/starts-with? (message (fn () (proc/sleep "soon"))) "sleep:")))
   (test "a receive clause that is not a list is named as such (a bare :after keyword)"
     (is (includes? (message (fn () (reflect/eval '(receive :after 0 :t))))
           "each clause must be a (pattern body...) list"))
@@ -396,7 +396,7 @@
                       (receive ([:val _] nil) ([:down ^m _ _] nil))
                       (demonitor m)
                       (receive ([:down ^m _ _] nil) (after 0 nil))
-                      (sleep 0)
+                      (proc/sleep 0)
                       (round (- n 1) (+ leaks (receive ([:down ^m _ _] 1) (after 0 0)))))))
           worker (fn (parent n) (send parent [:leaks (round n 0)])))
       ;; Full scale on purpose: 80 000 rounds take a third of a second, and at a sixteenth of

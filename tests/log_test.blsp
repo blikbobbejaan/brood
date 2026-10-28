@@ -113,7 +113,7 @@
     (let (me (self))
       (start-logger {:level :debug :backends []})
       (add-backend (lt-collect me))
-      (sleep 40)
+      (proc/sleep 40)
       ; let the add-backend cast land first
       (info "after-add")
       (let (line (lt-line))

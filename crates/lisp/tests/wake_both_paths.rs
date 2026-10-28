@@ -211,11 +211,11 @@ fn exit_reaches_a_receiver_blocked_in_a_native_hof() {
              ;; the child blocks in a native-nested receive that nothing ever sends to
              (def victim (spawn (reduce (range 1) (list)\
                                   (fn (acc _) (receive ([:never v] (cons v acc)))))))\
-             (sleep 50)\
+             (proc/sleep 50)\
              (exit victim :kill)\
              (defn settle (n)\
                (if (or (= n 0) (not (proc/alive? victim))) (proc/alive? victim)\
-                 (do (sleep 20) (settle (dec n)))))\
+                 (do (proc/sleep 20) (settle (dec n)))))\
              (settle 100)",
         )
         .expect("killing a process blocked in a native-nested receive");

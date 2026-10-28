@@ -83,7 +83,7 @@
       ;; forces the loop to walk past everything queued before this call
       (agent/update a inc)
       (assert= 1 (agent/get a identity))
-      (sleep 30)
+      (proc/sleep 30)
       (assert= 0 (proc/mailbox-size a))
       (agent/stop a))))
 
@@ -94,7 +94,7 @@
   (test "get / update / get-and-update / stop raise on a stopped agent"
     (let (a (agent/start (fn () 1)))
       (agent/stop a)
-      (sleep 60)
+      (proc/sleep 60)
       ;; check-allow :discarded-catch — a did-it-throw assertion: the caught error is the answer
       (assert= :raised
         (try (do (agent/get a identity) :no-error) (catch e :raised)))
@@ -108,7 +108,7 @@
     (let (a (agent/start (fn () 0)))
       ;; a cast fn that throws has no caller to report to, so it kills the agent
       (agent/cast a (fn (n) (error "agent boom")))
-      (sleep 60)
+      (proc/sleep 60)
       (assert= :raised
         (try (do (agent/get a identity) :no-error) (catch e :raised))))))
 

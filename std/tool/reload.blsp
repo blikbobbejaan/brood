@@ -114,11 +114,11 @@ behind a long-lived loop has changed since it started.
       (nil? now)
         (do
           (io/puts "[reload] missing:" path)
-          (sleep *reload-poll-ms*)
+          (proc/sleep *reload-poll-ms*)
           (reload-loop path last on-reload))
       (= now last)
         (do
-          (sleep *reload-poll-ms*)
+          (proc/sleep *reload-poll-ms*)
           (reload-loop path last on-reload))
       else
         (do
@@ -137,7 +137,7 @@ behind a long-lived loop has changed since it started.
                   (catch e (io/puts "[reload] on-reload failed:" path "—" (error-message e))))))
             (catch e
               (io/puts "[reload] failed:" path "—" (error-message e))))
-          (sleep *reload-poll-ms*)
+          (proc/sleep *reload-poll-ms*)
           (reload-loop path now on-reload)))))
 
 ;; Recursive .blsp collector. Returns a flat list of paths (relative to the
@@ -187,7 +187,7 @@ behind a long-lived loop has changed since it started.
                 (catch e (io/puts "[reload] on-reload failed:" p "—" (error-message e))))))
           (catch e (io/puts "[reload] +load failed:" p "—" (error-message e))))
         (spawn (reload-loop p (file/mtime p) on-reload))))
-    (sleep *reload-scan-ms*)
+    (proc/sleep *reload-scan-ms*)
     (reload-dir-loop dir current on-reload)))
 
 (defn on-change (path &optional on-reload)

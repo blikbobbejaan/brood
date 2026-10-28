@@ -66,7 +66,7 @@
   (cond
     (= (proc/whereis name) expected) expected
     (= tries 0) (proc/whereis name)
-    else (do (sleep 5) (wait-name name expected (- tries 1)))))
+    else (do (proc/sleep 5) (wait-name name expected (- tries 1)))))
 
 (describe "supervisor: one-for-one restart"
   :isolated
@@ -447,7 +447,7 @@
     ;; so each parked the caller FOREVER — no error, no timeout, nothing to wake it.
     (let (sup (start (list)))
       (stop sup)
-      (sleep 60)
+      (proc/sleep 60)
       ;; check-allow :discarded-catch — a did-it-throw assertion: the caught error is the answer
       (assert= :raised
         (try (do (count-children sup) :no-error) (catch e :raised)))

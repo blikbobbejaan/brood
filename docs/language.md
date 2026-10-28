@@ -2778,17 +2778,17 @@ dies, so a forgotten interval can't tick forever.
 (cancel-timer t)
 ```
 
-### Blocking natives (`offload`)
+### Blocking natives (`proc/offload`)
 
 A long or blocking native — a git clone, a key derivation, big file IO — would
-pin its scheduler worker for the whole call. `(offload f & args)` runs it on
+pin its scheduler worker for the whole call. `(proc/offload f & args)` runs it on
 the **dirty-offload OS pool** instead (ADR-144): only the calling *process* waits (a selective receive under the
 hood, so other mailbox messages stay queued), and errors rethrow at the call
 site, catchable as usual.
 
 ```clojure fragment
-(offload file/slurp-bytes "big-archive.tar")     ; the worker keeps running others
-(offload %pbkdf2-sha256-bytes pw salt 600000 32)
+(proc/offload file/slurp-bytes "big-archive.tar")     ; the worker keeps running others
+(proc/offload %pbkdf2-sha256-bytes pw salt 600000 32)
 ```
 
 Only long/blocking **data-in/data-out** natives are allowed (`%git-clone`,

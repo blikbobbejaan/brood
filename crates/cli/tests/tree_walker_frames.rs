@@ -143,7 +143,7 @@ const PARKING: &str = r#"
 (def c (spawn (fn () (receive (n (send me [:end n])) (after 3000 (send me [:end :blocked]))))))
 (def b (spawn (fn () (relay c))))
 (def a (spawn (fn () (relay b))))
-(sleep 50)
+(proc/sleep 50)
 (send a 1)
 (io/puts (str "chain = " (receive ([:end n] n) (after 10000 :lost))))
 "#;

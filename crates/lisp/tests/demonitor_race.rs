@@ -22,7 +22,7 @@ const STRESS: &str = r#"
       (receive ([:val _] nil) ([:down ^m _ _] nil))
       (demonitor m)
       (receive ([:down ^m _ _] nil) (after 0 nil))
-      (sleep 0)
+      (proc/sleep 0)
       (round (- n 1) (+ leaks (receive ([:down ^m _ _] 1) (after 0 0)))))))
 (defn worker (parent n) (send parent [:leaks (round n 0)]))
 (let (me (self) w 40 n 2000)

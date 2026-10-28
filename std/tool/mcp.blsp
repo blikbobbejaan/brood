@@ -419,7 +419,7 @@ complementing the point-in-time `processes`/`node` snapshots.
     ;; it across calls. Events about the subscriber itself are never sent, so we only
     ;; ever collect OTHER processes' activity.
     (if opt (proc/system-monitor (self) opt) (proc/system-monitor (self)))
-    (sleep ms)
+    (proc/sleep ms)
     ; disarm before draining
     (proc/system-monitor nil)
     (let (events (into [] (collect-runtime '())))

@@ -12,7 +12,7 @@
   (if (< (os/now) deadline) (spin deadline) :done))
 
 (defn sleeper (parent)
-  (sleep idle-ms)
+  (proc/sleep idle-ms)
   (spin (+ (os/now) work-ms))
   (send parent [:done (os/now)]))
 

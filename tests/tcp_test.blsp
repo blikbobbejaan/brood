@@ -103,7 +103,7 @@
         ; arm while still unclaimed/passive
         (tcp/set-idle-timeout s 500)
         ; wait past the bound, passive
-        (sleep 1200)
+        (proc/sleep 1200)
         ; establish now
         (tcp/controlling-process s (self))
         (let (ev (receive ([:tcp-closed ^s] :reaped-BUG) (after 300 :alive)))
@@ -131,7 +131,7 @@
         ;; Each send resets the idle stamp; the last one leaves ~500 ms on the clock.
         (dotimes (_ 5)
           (tcp/send c "a")
-          (sleep 500))
+          (proc/sleep 500))
         (let (still (receive ([:tcp-closed ^c] :reaped-BUG) (after 100 :alive)))
           (tcp/close c)
           (tcp/close s)
@@ -421,7 +421,7 @@
   finishes its frame."
   (when (> n 0)
     (tcp/send sock "x")
-    (sleep gap)
+    (proc/sleep gap)
     (drip-bytes sock (- n 1) gap)))
 
 (describe "tcp: framed-read limits — :deadline-ms (total budget)"

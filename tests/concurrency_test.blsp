@@ -378,11 +378,11 @@
 (describe "prelude: sleep"
 
   (test "sleep waits roughly the requested time"
-    (let (t (os/now)) (sleep 30) (is (>= (- (os/now) t) 25))))
+    (let (t (os/now)) (proc/sleep 30) (is (>= (- (os/now) t) 25))))
 
   (test "sleep does not consume a queued message"
     (send (self) :marker)
-    (sleep 20)
+    (proc/sleep 20)
     (assert= (receive (:marker :still-here) (after 0 :was-consumed)) :still-here)))
 
 ;; ---- selective receive must not corrupt a skipped local message ---------------

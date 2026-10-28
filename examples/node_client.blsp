@@ -19,7 +19,7 @@
     (node/connect "server")
     (catch e
       (if (> tries 0)
-        (do (sleep 100) (connect-retry (- tries 1)))
+        (do (proc/sleep 100) (connect-retry (- tries 1)))
         (throw (str "could not reach the server — is it running? " e))))))
 
 ;; connect returns the peer's authoritative name@host identity (ADR-073) —

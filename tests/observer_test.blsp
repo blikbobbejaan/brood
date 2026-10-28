@@ -475,7 +475,7 @@
   (test "monitoring a process shows up in :monitored-by"
     (let (m (spawn (receive (_ :done))))
       (monitor m)
-      (sleep 10)
+      (proc/sleep 10)
       (is (>= (get (proc/info m) :monitored-by) 1))))
 
   (test "proc/info of self is a live, running map with an id"
@@ -487,7 +487,7 @@
 
   (test "proc/info carries the process's :pid value (for kill/exit)"
     (let (w (spawn (receive (_ :done))))
-      (sleep 10)
+      (proc/sleep 10)
       (let (info (proc/info w))
         (is (contains? (or info {}) :pid))
         (is (pid? (get info :pid)))
@@ -497,12 +497,12 @@
   (test ":parent is the spawner's id"
     (let (me (get (proc/info (self)) :id)
           kid (spawn (receive (_ :done))))
-      (sleep 10)
+      (proc/sleep 10)
       (assert= (get (proc/info kid) :parent) me)))
 
   (test "observer/observe-local-source includes this runtime's live processes"
     (let (w (spawn (receive (_ :done))))
-      (sleep 10)
+      (proc/sleep 10)
       (let (procs (observer/observe-local-source)
             ids (map procs (fn (p) (get p :id))))
         (is (every? procs map?))

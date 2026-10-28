@@ -70,7 +70,7 @@ fn an_arm_hosting_a_parked_receive_latches_and_later_parks_capture() {
         ;; reach the park), then is woken. 42 iff the park/resume round-tripped.
         (defn round ()
           (let (w (spawn (send root [:r (host 41)])))
-            (do (sleep 150)
+            (do (proc/sleep 150)
                 (send w 1)
                 (receive ([:r n] n) (after 30000 :timeout)))))
     "#;
@@ -159,7 +159,7 @@ fn a_long_lived_process_sheds_its_stale_fast_link_after_the_latch() {
         (def w (spawn (wloop)))
         (defn round ()
           (do (send w [:go])
-              (sleep 150)
+              (proc/sleep 150)
               (send w 1)
               (receive ([:r n] n) (after 30000 :timeout))))
     "#;

@@ -79,8 +79,8 @@ call and not automatic.
     (proc/hibernate)   ;~> the bytes of slab capacity released, e.g. 65536"
   (%hibernate))
 
-;; `offload` stays a BARE prelude wrapper (core dirty-native concurrency, used
-;; during `nest fetch` before any module loads) — see std/prelude/process.blsp.
+;; `proc/offload` and `proc/sleep` are defined in the prelude under these names (ADR-506): `nest
+;; fetch` needs `proc/offload` before any module loads, and a qualified name does not need one.
 
 ;; ---- timers ----------------------------------------------------------------
 ;; Cancellation is `timer/cancel`, beside the two functions that create a timer.

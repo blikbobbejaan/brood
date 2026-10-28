@@ -85,7 +85,7 @@
     (doseq (ending [:timeout :match :throw])
       (let (worker (deadline-after ending))
         (assert= (receive (:waiting :waiting) (after *test-wait-ms* :timeout)) :waiting)
-        (sleep 60)
+        (proc/sleep 60)
         (send worker :go)
         (assert= (receive ([:second outcome] [ending outcome]) (after *test-wait-ms* :timeout))
           [ending :go])))))

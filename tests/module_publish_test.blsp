@@ -26,7 +26,7 @@
 (defn- write-slow-fixture (name)
   (file/spit (path/join *dir* (str name ".blsp"))
     (str "(defmodule "
-      name ")\n" "(def early 1)\n" "(defrecord thing (n))\n" "(sleep 300)\n" "(def late 2)\n"))
+      name ")\n" "(def early 1)\n" "(defrecord thing (n))\n" "(proc/sleep 300)\n" "(def late 2)\n"))
   name)
 
 ;; Poll every 5 ms until the module is provided (or 4 s pass): how many polls saw a name of
@@ -43,8 +43,8 @@
           provided (contains? *features* name))
       (cond
         provided seen
-        any-bound (do (sleep 5) (observe name (+ n 1) (+ seen 1)))
-        else (do (sleep 5) (observe name (+ n 1) seen))))))
+        any-bound (do (proc/sleep 5) (observe name (+ n 1) (+ seen 1)))
+        else (do (proc/sleep 5) (observe name (+ n 1) seen))))))
 
 ;; A registry born in the load that swaps it. `%swap-registry!`'s write-back is LIVE (a
 ;; whole map cannot be staged: an older staged copy would publish over a nested load's or a

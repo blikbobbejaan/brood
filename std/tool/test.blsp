@@ -1092,7 +1092,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
       value value
       (> (os/now) deadline)
         (error (str "eventually: " what " did not happen within " *test-wait-ms* " ms"))
-      else (do (sleep 2) (eventually-loop what probe deadline)))))
+      else (do (proc/sleep 2) (eventually-loop what probe deadline)))))
 
 (defn eventually (what probe)
   "Poll `probe`, a zero-argument function, until it returns a truthy value, and return that value; raise naming `what` if it has not within `*test-wait-ms*`. The handshake for a condition no message announces — a process parking, a count settling — in place of a `sleep` that guesses how long the other side takes, which a loaded machine outsleeps.
@@ -1103,7 +1103,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 (defn await-parked (pid)
   "Wait until `pid` is parked (waiting in a `receive` or a `sleep`), then return `:ok`; raise if it is not within `*test-wait-ms*`. For a test whose point is a message reaching a process that is already blocked.
 
-    (test/await-parked pid)   ;~> :ok — once pid is blocked in a receive or sleep; raises after *test-wait-ms*"
+    (test/await-parked pid)   ;~> :ok — once pid is blocked in a receive or proc/sleep; raises after *test-wait-ms*"
   (eventually (str (pr-str pid) " parking")
     (fn () (when (= :waiting (get (proc/info pid) :status)) :ok))))
 
@@ -1507,7 +1507,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
     (cond
       (empty? live) nil
       (= tries 0) live
-      else (do (sleep 50) (test-await-dead live (- tries 1))))))
+      else (do (proc/sleep 50) (test-await-dead live (- tries 1))))))
 
 (defn- drain-files-scoped (loaders)
   ;; Each file's result list is `cons`ed onto a reverse-order list of lists and flattened

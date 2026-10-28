@@ -54,7 +54,7 @@ fn remote_attach_reads_snapshot_then_sees_disconnect() {
     (let (r (observer/observe-request peer))
       (if (= r :down)
         (io/puts "DOWN-OK")
-        (do (sleep 300) (poll-down (dec n)))))))
+        (do (proc/sleep 300) (poll-down (dec n)))))))
 (poll-down 40)
 "#
     );

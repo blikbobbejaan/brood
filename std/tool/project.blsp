@@ -658,7 +658,7 @@ only; `tests/` files come from [[collect-tests]].
   ;; its dependencies') registries into the user's project image. The count is 0 until the
   ;; first spawn.
   (spawn (fn () nil))
-  (sleep 1)
+  (proc/sleep 1)
   (math/max 1 (%worker-threads)))
 
 ;; One worker: ask the driver for a module, load it, report, repeat until told to stop.

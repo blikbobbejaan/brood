@@ -670,7 +670,7 @@
           step (fn (model input cols rows)
                  (cond
                    (= input :quit) (assoc model :done true)
-                   (= (lane-tag input) :sleepy) (do (sleep 30) model)
+                   (= (lane-tag input) :sleepy) (do (proc/sleep 30) model)
                    else model))
           loop (lane-start me
                  {:slow-ms 10 :on-slow (fn (report) (send me [:slow report]))}
@@ -689,7 +689,7 @@
           step (fn (model input cols rows)
                  (cond
                    (= input :quit) (assoc model :done true)
-                   (= (lane-tag input) :sleepy) (do (sleep 30) model)
+                   (= (lane-tag input) :sleepy) (do (proc/sleep 30) model)
                    (= (lane-tag input) :stuck) (quit-spin 0)
                    else model))
           loop (lane-start me
@@ -715,7 +715,7 @@
                         (:go (ui-run {:n 0
                                       :slow-ms 10
                                       :on-slow (fn (report) (send me [:slow report]))}
-                               (fn (model cols rows) (do (sleep 20) []))
+                               (fn (model cols rows) (do (proc/sleep 20) []))
                                (fn (model input cols rows)
                                  (if (= input :quit) (assoc model :done true) (update model :n inc)))
                                (lane-display))))))
@@ -1205,7 +1205,7 @@ error a catch-all sees, so the kernel keeps raising it (sticky) until the window
       ; it may not have reached its receive yet: wait until it is parked there
       (letrec (wait (fn ()
                       (when (not (= (get (proc/info parked) :status) :waiting))
-                        (do (sleep 1) (wait)))))
+                        (do (proc/sleep 1) (wait)))))
         (wait))
       (is (not (proc/interrupt parked)))
       (send parked :go)
@@ -1449,7 +1449,7 @@ error a catch-all sees, so the kernel keeps raising it (sticky) until the window
   (cond
     (file/exists? path) true
     (<= ms 0) false
-    else (do (sleep 10) (term-quit-await-file path (- ms 10)))))
+    else (do (proc/sleep 10) (term-quit-await-file path (- ms 10)))))
 
 (describe "ui-run — a terminal C-g (ADR-491)"
   :isolated (test "C-g in a terminal stops an update looping forever"

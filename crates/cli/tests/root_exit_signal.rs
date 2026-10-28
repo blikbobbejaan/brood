@@ -123,7 +123,7 @@ fn a_link_to_a_dead_pid_kills_a_sleeping_root() {
   (receive ([:down ^watch _ _] nil))
   (io/puts "before")
   (link dead)
-  (sleep 60000)
+  (proc/sleep 60000)
   (io/puts "after"))
 (io/puts "after the form")"#,
     );
@@ -141,7 +141,7 @@ fn a_link_to_a_dead_pid_kills_a_sleeping_root() {
 fn a_linked_exit_kills_a_root_in_receive_after() {
     let runs = run_on_every_tier(
         "receive",
-        r#"(let (child (spawn-link (receive (:go (sleep 200) (exit (self) :boom)))))
+        r#"(let (child (spawn-link (receive (:go (proc/sleep 200) (exit (self) :boom)))))
   (io/puts "before")
   (send child :go)
   (receive (:never nil) (after 60000 :timeout)))
@@ -154,7 +154,7 @@ fn a_linked_exit_kills_a_root_in_receive_after() {
 fn a_linked_exit_kills_a_computing_root() {
     let runs = run_on_every_tier(
         "compute",
-        r#"(let (child (spawn-link (receive (:go (sleep 200) (exit (self) :boom)))))
+        r#"(let (child (spawn-link (receive (:go (proc/sleep 200) (exit (self) :boom)))))
   (io/puts "before")
   (send child :go)
   (dotimes (i 1000000000) i))
@@ -170,7 +170,7 @@ fn an_exit_from_a_child_kills_the_root() {
         r#"(let (root (self))
   (io/puts "before")
   (spawn (exit root :boom))
-  (sleep 60000)
+  (proc/sleep 60000)
   (io/puts "after"))"#,
     );
     assert_killed(&runs, ":boom");
@@ -181,8 +181,8 @@ fn a_linked_child_crashing_kills_the_root() {
     let runs = run_on_every_tier(
         "crash",
         r#"(io/puts "before")
-(spawn-link (do (sleep 50) (error "child crash")))
-(sleep 60000)
+(spawn-link (do (proc/sleep 50) (error "child crash")))
+(proc/sleep 60000)
 (io/puts "after")"#,
     );
     assert_killed(&runs, "[:error …]");
@@ -229,7 +229,7 @@ fn an_exit_normal_ends_the_program_cleanly() {
         r#"(let (root (self))
   (io/puts "before")
   (spawn (exit root :normal))
-  (sleep 60000)
+  (proc/sleep 60000)
   (io/puts "after"))"#,
     );
     assert_clean(&runs, "before\n");
@@ -243,7 +243,7 @@ fn a_hard_kill_stops_a_computing_child() {
         "kill-child",
         r#"(let (child (spawn (do (dotimes (i 1000000000) i) (io/puts "child finished")))
       ref (monitor child))
-  (sleep 200)
+  (proc/sleep 200)
   (exit child :kill)
   (receive
     ([:down ^ref _ reason] (io/puts (str "down " reason)))

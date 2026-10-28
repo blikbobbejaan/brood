@@ -47,7 +47,7 @@ fn run(path: &std::path::Path, fault: bool) -> (String, String, bool, std::time:
 /// over-count in place the window opens on the first parked cycle and expires while the
 /// program is still asleep.
 const WORKLOAD: &str = r#"
-(sleep 4500)
+(proc/sleep 4500)
 (io/puts "AWAKE")
 "#;
 

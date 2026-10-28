@@ -69,7 +69,7 @@
     (let (me (self) pid (start worker [:x]))
       (cast pid :busy)
       (spawn (send me [:answer (call pid :done)]))
-      (sleep 20)
+      (proc/sleep 20)
       (assert= :none (receive ([:answer _] :early) (after 0 :none)))
       (cast pid :idle)
       (receive
@@ -96,7 +96,7 @@
       (cast pid [:digit 7])
       (cast pid [:open-for 30])
       (cast pid [:open-for 60000])
-      (sleep 150)
+      (proc/sleep 150)
       (assert= :open (call pid :state))
       (stop pid))))
 
