@@ -34,7 +34,9 @@
 //! thunk pushes `KontKind::Try`/`Binding` and enters the thunk; an error unwinding into a
 //! `Try` frame runs its handler as a frame (`KontKind::Callback`), and a `Binding` frame
 //! restores the dynamic stack on the way out either way. Above tier 0 they stay natives: their
-//! `apply_engine` routes the thunk to the VM.
+//! `apply_engine` routes the thunk to the VM. `proc/interruptible` is one too (ADR-494), as
+//! the VM runs it as a region (ADR-491): `KontKind::Interruptible` holds the window open
+//! while the thunk runs, so a `receive` in an interrupt window parks a capturing machine.
 //!
 //! **Capture** (ADR-416 stage 4). A green process's body, and each top-level form of a
 //! program, runs at tier 0 on a capturing machine ([`run_captured`]): a `%receive` that finds
@@ -218,14 +220,19 @@ enum KontKind {
     Binding { dynamics: usize },
     /// A callback whose value is the call's (a `%try` handler).
     Callback,
+    /// `proc/interruptible`'s thunk (ADR-494): its value is answered `[:ok v]`, an interrupt
+    /// unwinding into it `[:interrupted e]`. `owner` when this call opened the window — one
+    /// inside an open window owns nothing, and every error passes through it.
+    Interruptible { owner: bool },
 }
 
-/// The natives the tree-walker treats specially under a tier-0 ceiling: `try`/`binding` run
-/// as frames, and a capturing machine can park at a `receive`.
+/// The natives the tree-walker treats specially under a tier-0 ceiling: `try`/`binding` and
+/// `proc/interruptible` run as frames, and a capturing machine can park at a `receive`.
 #[derive(Clone, Copy)]
 enum FrameNative {
     Try { described: bool },
     Binding,
+    Interruptible,
     Receive,
 }
 
@@ -235,7 +242,12 @@ impl FrameNative {
             ("%try", 2) => Some(FrameNative::Try { described: false }),
             ("%try-described", 2) => Some(FrameNative::Try { described: true }),
             ("%binding", 3) => Some(FrameNative::Binding),
+            ("proc/interruptible", 2) => Some(FrameNative::Interruptible),
             ("%receive", 4) => Some(FrameNative::Receive),
+            // The other native that waits on the mailbox the way `%receive` does, and so
+            // suspends a capturing machine: parked unrooted, its suspend surfaced as an empty
+            // `runtime error:` (ADR-494).
+            ("proc/receive-lane", 1) => Some(FrameNative::Receive),
             _ => None,
         }
     }
@@ -742,6 +754,19 @@ impl<'e> Machine<'e> {
                                     k.marks,
                                 )
                             }
+                            // The window this frame opened closes BEFORE the interrupt is
+                            // noted as caught, so the sticky re-raise is not armed (ADR-491).
+                            KontKind::Interruptible { owner: true }
+                                if !e.is_control()
+                                    && e.kind == crate::error::ErrorKind::Interrupted =>
+                            {
+                                crate::process::set_interrupt_window(None);
+                                k.marks.restore(heap);
+                                let caught = e.caught_value(heap);
+                                Ok(Step::Value(
+                                    heap.alloc_vector2(value::kw("interrupted"), caught),
+                                ))
+                            }
                             kind => {
                                 if let Some(form_r) = k.form {
                                     let form = heap.read_root(form_r);
@@ -751,6 +776,11 @@ impl<'e> Machine<'e> {
                                     KontKind::Defaults(st) => e = st.unwound(heap, e),
                                     KontKind::Binding { dynamics } => {
                                         heap.truncate_dynamics(*dynamics)
+                                    }
+                                    // Any other error, a kill included, still ends the
+                                    // window this frame opened.
+                                    KontKind::Interruptible { owner: true } => {
+                                        crate::process::set_interrupt_window(None)
                                     }
                                     _ => {}
                                 }
@@ -908,6 +938,13 @@ impl<'e> Machine<'e> {
                 heap.truncate_dynamics(dynamics);
                 marks.restore(heap);
                 Ok(Step::Value(v))
+            }
+            KontKind::Interruptible { owner } => {
+                if owner {
+                    crate::process::set_interrupt_window(None);
+                }
+                marks.restore(heap);
+                Ok(Step::Value(heap.alloc_vector2(value::kw("ok"), v)))
             }
         }
     }
@@ -2005,6 +2042,33 @@ impl Machine<'_> {
                 (thunk, (marks, kind))
             }
             FrameNative::Receive => return None,
+            // The thunk runs on this machine, so a `receive` in it parks a capturing one
+            // where, run nested under the builtin, it blocked the worker (ADR-494). The
+            // window opens once the frame is saved, so a frame past the limit opens none.
+            FrameNative::Interruptible => {
+                let ValueRef::Fn(thunk) = argv[1].unpack() else {
+                    return None;
+                };
+                let ceiling = match crate::builtins::interrupt_ceiling(heap, argv[0]) {
+                    Ok(ceiling) => ceiling,
+                    Err(e) => return Some(Err(e.or_form_pos(heap, call_form))),
+                };
+                let owner = !crate::process::current_interrupt_window_open();
+                if !self.save(
+                    heap,
+                    Marks::take(heap),
+                    KontKind::Interruptible { owner },
+                    Some(call_form),
+                ) {
+                    return Some(Err(
+                        tw_frame_depth_error(MAX_TW_FRAMES).or_form_pos(heap, call_form)
+                    ));
+                }
+                if owner {
+                    crate::process::set_interrupt_window(Some(ceiling));
+                }
+                return Some(self.enter(heap, thunk, &[], None));
+            }
             FrameNative::Binding => {
                 let ValueRef::Fn(thunk) = argv[2].unpack() else {
                     return None;
@@ -2025,9 +2089,9 @@ impl Machine<'_> {
         Some(self.enter(heap, thunk, &[], None))
     }
 
-    /// A capturing machine's `%receive`: the call is rooted across the native, so when the
-    /// mailbox has nothing it matches (`Control::Suspend`) the machine parks, to redo the call
-    /// on resume.
+    /// A capturing machine's `%receive` (or `proc/receive-lane`): the call is rooted across
+    /// the native, so when the mailbox has nothing it matches (`Control::Suspend`) the machine
+    /// parks, to redo the call on resume.
     fn receive(
         &mut self,
         heap: &mut Heap,

@@ -4430,3 +4430,22 @@ engines have no step API and cannot be resumed across windows. Checked against `
 every slot over twenty-two patterns × ten texts at every start. Run here: `cargo test -p
 brood --lib regex_native`, `--test interrupt`, `doc_examples`, `audit`, `regex`; clippy;
 cargo fmt. Nothing was measured.
+2026-10-28 (ADR-494, a `receive` in an interrupt window parks on the tree-walker and through
+`apply`): ADR-491's region covered a VM thunk only. The tier-0 machine now runs
+`proc/interruptible` as a frame (`KontKind::Interruptible`, beside `Try`/`Binding`), so a
+`receive` in the window parks a capturing machine; the VM's region unfolds `(apply
+proc/interruptible …)`, and the JIT fences a chunk that reads the builtin as a value. A thin
+wrapper `(fn (c t) (proc/interruptible c t))` was a passthrough whose redirect called the
+builtin nested — `compute_passthrough` now refuses that head. Under a builtin's callback the
+thunk still runs nested and blocks its worker; the §7.4 handoff keeps the pool moving, and an
+interrupt reaches the waiter once it runs, as it does a parked one. The ui test's terminal
+C-g under `BROOD_TIER=0` found an older gap: the machine redid only `%receive` after a
+suspend, so `proc/receive-lane` on a capturing machine died with an empty `runtime error:`
+(a top-level `(proc/receive-lane 50)` at tier 0 did, before this change); it is parked and
+redone like `%receive` now. ADR-491's region test was red under `BROOD_TIER=0` (223 dirty
+blocks) and passes. New `crates/lisp/tests/interrupt_one_worker.rs` (a one-worker pool,
+`proc/info` barriers). Run here, at the default tier and `BROOD_TIER=0`: `--test interrupt`,
+`--test interrupt_one_worker`, the `receive_*` files, `exit_test`, `ui_test`; at the default
+tier `doc_examples`, `audit`, `--lib` filters `jit_subset` and `interrupt`; clippy (gui,
+treesit-grammars, all targets); cargo fmt. Each fix sabotaged red. Nothing was measured; the
+full suite was not run.

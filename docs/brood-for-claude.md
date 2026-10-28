@@ -911,7 +911,9 @@ code paints to a terminal or a GUI window unchanged.
   is `{:kind :interrupted :code "E0047"}` and it is STICKY: a `(catch e …)` inside the window
   is interrupted again at its next safepoint, so a catch-all cannot swallow quit. A process
   parked in `receive` is never interrupted; a `receive` inside the window PARKS (the VM runs
-  the call as a region on its own frame stack), so `update` may wait on a reply. Windows
+  the call, `apply`'d too, as a region on its own frame stack, the tier-0 machine as a frame —
+  ADR-494), so `update` may wait on a reply. Only a window opened inside a builtin's callback
+  blocks its worker thread instead, and the scheduler moves the queue off it. Windows
   NEST (ADR-493): a request (C-g, `proc/interrupt`) is answered by the innermost open window
   and a ceiling by its own window, and an interrupt one window answered does not stop the
   window around it — a command's own `proc/interruptible` inside a `ui-run` turn gets the

@@ -396,6 +396,39 @@ fn receive_bearing_chunks_stay_out_of_the_jit_subset() {
     );
 }
 
+/// ADR-494: a chunk that reads `proc/interruptible` as a VALUE — `(apply proc/interruptible
+/// …)`, which the VM unfolds into an interrupt region — stays out of the JIT subset, as one
+/// that calls it does: from native code the builtin would run the thunk nested, where a
+/// `receive` blocks the worker. Non-vacuous: the same shape applying `vector` is in it.
+#[cfg(feature = "jit")]
+#[test]
+fn a_chunk_reading_proc_interruptible_stays_out_of_the_jit_subset() {
+    let mut interp = crate::Interp::new();
+    let mut in_subset = |source: &str, name: &str| {
+        interp.eval_str(source).expect("define the arm");
+        let f = interp.eval_str(name).expect("read the arm back");
+        let crate::core::value::ValueRef::Fn(id) = f.unpack() else {
+            panic!("{name} is not a closure");
+        };
+        let arm = compiled_arm_for(&mut interp.heap, id, 2).expect("the arm compiles");
+        let chunk = arm.chunk.as_ref().expect("the arm has a chunk");
+        crate::eval::compile::jit_plan::chunk_in_jit_subset(&chunk.code)
+    };
+    assert!(
+        !in_subset(
+            "(def applies-window (fn (ceiling thunk) (apply proc/interruptible (list ceiling thunk))))",
+            "applies-window"
+        ),
+        "a chunk applying proc/interruptible entered the JIT subset"
+    );
+    assert!(
+        in_subset(
+            "(def applies-vector (fn (ceiling thunk) (apply vector (list ceiling thunk))))",
+            "applies-vector"
+        ),
+        "the control arm should be in the subset — the fence test would be vacuous"
+    );
+}
 /// ADR-410: which arms receive AT THEIR HEAD — may go native, parking by a re-run from ip 0.
 /// Only a `%receive` behind nothing but loads qualifies; one behind a branch or a call does
 /// not (re-running those from ip 0 is not the same), and neither does a second `%receive`.
