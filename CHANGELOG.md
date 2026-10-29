@@ -6,6 +6,13 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+## v0.48.0 — the callback is last
+
+One argument-order rule (ADR-507): the subject first, a callback last, and only the callback's
+own arguments after it. `merge-with`, `condp`, `transduce`, `iterate-times`, `times`,
+`stream/fn->` and the `buffer-edit` family moved to it; a stale call fails loudly or the
+checker flags it. Also the fix for v0.45.0's checker hang on a `match` with many clauses.
+
 **Changed — breaking.**
 - One argument-order rule (ADR-507): the subject first, a callback last, and only the
   callback's own arguments after it. These moved to it:
