@@ -6,7 +6,25 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Changed — breaking.**
+- One argument-order rule (ADR-507): the subject first, a callback last, and only the
+  callback's own arguments after it. These moved to it:
+  - `(map/merge-with maps f)` — the maps are one collection: `(map/merge-with [a b] +)`.
+  - `(condp expr pred t1 r1 …)` — the subject first, as in `case` and `match`.
+  - `(seq/transduce coll xform init rf)` — `reduce`'s `(coll init f)` with a transducer.
+  - `(seq/iterate-times x n f)` and `(seq/times x n f)`; `(stream/fn-> init f)`.
+  - `editor/buffer/buffer-edit`, `buffer-edit-reply` and `buffer-edit-value` take their
+    optional `origin` (and `timeout`) before the transform, as extra arities:
+    `(buffer-edit bp origin f)`.
+
+  A stale call fails loudly, or the checker flags it (`f:fn`).
+
 **Fixed.**
+- `seq/iterate-times` called its step once more than its result shows; it now runs it
+  exactly `n` times.
+- A typed parameter in a documented multi-clause `defn` (`(defn f "doc" ((x:int) …) …)`) is
+  refused, as it already was without the docstring. It used to bind a variable literally
+  named `x:int`.
 - `nest check` no longer hangs on a `match` with many clauses. Each clause fails to the
   next through a closure, and the checker re-read that closure at every failure point, so the
   cost grew exponentially: a 20-clause match over tagged tuples never finished. Each closure is

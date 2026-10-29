@@ -214,9 +214,12 @@ pub(crate) fn defn_param_types(heap: &Heap, form: Value) -> Option<(Symbol, Vec<
     (!out.is_empty()).then_some((name, out))
 }
 
-/// Is `fn_items` (`(fn …)`'s items) a multi-clause `fn` — every form after `fn` a clause?
+/// Is `fn_items` (`(fn …)`'s items) a multi-clause `fn` — every form after `fn`, past an
+/// optional leading docstring, a clause? The docstring is peeled as `lower_fn` peels it: a
+/// documented `(defn f "doc" ((x:int) …) ((x y) …))` reached here as `(fn "doc" clause…)`,
+/// was read as single-clause, and bound a variable literally named `x:int`.
 fn fn_is_multi_clause(heap: &Heap, fn_items: &[Value]) -> bool {
-    fn_items.len() > 1 && fn_items[1..].iter().all(|&f| is_clause(heap, f))
+    fn_items.len() > 1 && fn_is_arity_multi_clause(heap, fn_items)
 }
 
 /// Refuse types on a multi-clause `fn` — every clause's parameter list is checked, so a typed

@@ -244,7 +244,7 @@ Maps are immutable — every operation returns a **fresh** map:
 | `(keys m)` / `(vals m)` | the keys / values, as a list, in the map's (hash-derived, unspecified) iteration order — sort if you need a defined order |
 | `(map/reduce-kv m init f)` | fold over the entries: `(f acc k v)` left to right → the final acc — the `map` module, like `merge-with` below |
 | `(merge m1 m2 …)` | combine maps left to right; rightmost key wins (`nil` maps skipped) |
-| `(map/merge-with f m1 m2 …)` | like `merge`, but a shared key's value is `(f old new)` — the `map` module (ADR-227; `(:use map)` or qualify) |
+| `(map/merge-with maps f)` | like `merge` over the collection `maps`, but a shared key's value is `(f old new)` — the `map` module (ADR-227; `(:use map)` or qualify); the function comes last (ADR-507) |
 | `(update m k f args…)` | a new map with `k`'s value replaced by `(f current args…)` (`current` is `nil` if absent; also works on a **vector** by integer index, which must be in range) |
 | `(map/update-vals m f)` / `(map/update-keys m f)` | a new map with `f` applied to every value / key — the `map` module |
 | `(map/select-keys m ks)` | a new map of just the entries whose key is in `ks` — the `map` module |
@@ -1267,6 +1267,20 @@ thread-*last* variant would have nothing to thread (`->>` and friends were delet
 (as-> 5 $ (+ $ 1) (* $ 2))    ;=> 12    ; bind $, thread into ANY position
 ```
 
+The whole rule is one sentence (ADR-507): **the subject comes first, a callback comes last,
+and only the callback's own arguments may follow it.** The subject is what the call is
+about — a collection, a map, a process, a seed — so `(seq/iterate-times 1 4 f)` and
+`(map/merge-with [a b] +)` read in that order. Two things follow from the wording:
+
+- arguments *for* the callback come after it, since they belong to it: `(update m :n + 5)`
+  calls `(+ old 5)`, and `update-in`, `proc/offload` and `partial` do the same;
+- when the call transforms or runs a function, that function **is** the subject and comes
+  first: `(combinator/fnil f 0)`, `(gen/start server state)`.
+
+An optional slot goes before the callback, as a second arity — `(reduce coll f)` and
+`(reduce coll init f)` — never after it. A callback's *own* parameters keep their order:
+a reducer is `(fn (acc x))` (ADR-308).
+
 A step form naming **`$`** receives the threaded value at that position instead of first
 (ADR-303). The stdlib puts the subject first, so a pipeline over it needs no `$`; the
 hole is for a step that wants the value somewhere else — an operator's second operand, a
@@ -1600,14 +1614,15 @@ a `:match` error with `:context :case`, exactly as `match` does, and the
 type just as it covers a `match`.
 
 **`condp`** is `cond` with the predicate factored out — `case` compares literals, this
-asks a function (ADR-379). It evaluates the expression once and takes the first clause
-whose `(pred expr test)` is truthy — **value first**, the way every data-first Brood
-predicate reads, which is the opposite of Clojure's `(pred test expr)`:
+asks a function (ADR-379). Its subject comes first, as in `case` and `match`, then the
+predicate (ADR-507). It evaluates the subject once and takes the first clause whose
+`(pred expr test)` is truthy — **value first**, the way every data-first Brood predicate
+reads — so each clause reads in the order its test runs:
 
 ```clojure
-(condp < 15 10 :small 100 :medium :large)                            ;=> :medium
+(condp 15 < 10 :small 100 :medium :large)                            ;=> :medium
 (def line "# Title")
-(condp string/starts-with? line "#" :heading "-" :item :text)        ;=> :heading   ; a lone trailing form is the default
+(condp line string/starts-with? "#" :heading "-" :item :text)        ;=> :heading   ; a lone trailing form is the default
 ```
 
 **`if-some` / `when-some`** are `if-let` / `when-let` testing for *presence* rather than
@@ -3200,8 +3215,8 @@ machinery with the stages exposed, for when the pipeline is **computed, reused, 
 your own**:
 
 ```clojure
-(seq/transduce (range 10) (comp (seq/xfilter math/odd?) (seq/xmap (fn (x) (* x x)))) + 0)   ;=> 165   ; one pass
-(seq/transduce (list 1 2 3) (seq/xmap inc) conj [])                      ;=> [2 3 4]
+(seq/transduce (range 10) (comp (seq/xfilter math/odd?) (seq/xmap (fn (x) (* x x)))) 0 +)   ;=> 165   ; one pass
+(seq/transduce (list 1 2 3) (seq/xmap inc) [] conj)                      ;=> [2 3 4]
 ```
 
 A **transducer** is a function `(rf) -> rf'`, where a **reducing function** `rf` is
@@ -3212,20 +3227,26 @@ input. So a stage of your own is a plain `fn` — no protocol to implement:
 (defn xdrop-while (pred)
   (fn (rf) (fn (acc x) (if (pred x) acc (rf acc x)))))
 
-(seq/transduce (range 6) (xdrop-while (fn (n) (< n 3))) conj [])  ;=> [3 4 5]
+(seq/transduce (range 6) (xdrop-while (fn (n) (< n 3))) [] conj)  ;=> [3 4 5]
 ```
 
-Stages compose **left to right in data-flow order** under `comp` — the reverse of
-ordinary function composition — because each stage wraps the *next* one's reducer.
-`(comp (seq/xfilter p) (seq/xmap f))` filters, then maps.
+There is one `comp`, and it composes right to left: `((comp f g) x)` is `(f (g x))`. Items
+still flow through the stages **in the order they are written**, because a stage is applied
+to a *reducing function*, not to an item: in `(comp (seq/xfilter p) (seq/xmap f))` the map
+stage wraps `rf` first, the filter stage wraps that, and so the filter is the outermost
+wrapper and sees each item first. `(comp (seq/xfilter p) (seq/xmap f))` filters, then maps
+(ADR-507).
+
+`(seq/transduce coll xform init rf)` is `(reduce coll init rf)` with the transducer
+added: the collection first, the reducing function last.
 
 **Early termination (ADR-376).** A stage that knows the rest of the input cannot matter
 ends the run with `(seq/reduced acc)`: `transduce` returns `acc` at once, and the source
 is not walked further. `seq/xtake-while` is the built-in stopping stage:
 
 ```clojure
-(seq/transduce (range 1000000) (seq/xtake-while (fn (n) (< n 3))) conj [])   ;=> [0 1 2]   ; four stage calls
-(seq/transduce (range 10) (fn (rf) (fn (acc x) (if (= x 4) (seq/reduced :early) (rf acc x)))) conj [])
+(seq/transduce (range 1000000) (seq/xtake-while (fn (n) (< n 3))) [] conj)   ;=> [0 1 2]   ; four stage calls
+(seq/transduce (range 10) (fn (rf) (fn (acc x) (if (= x 4) (seq/reduced :early) (rf acc x)))) [] conj)
 ;=> :early
 ```
 
@@ -3244,7 +3265,7 @@ writes it with `table/get`/`table/put`; it never releases anything. `seq/xtake` 
 built-in one:
 
 ```clojure
-(seq/transduce (range 1000000) (seq/xtake 3) conj [])   ;=> [0 1 2]
+(seq/transduce (range 1000000) (seq/xtake 3) [] conj)   ;=> [0 1 2]
 (defn xdedupe ()                                           ; a stage of your own
   (fn (rf)
     (let ([run slot] (seq/stage-slot :none))

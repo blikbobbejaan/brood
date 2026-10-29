@@ -636,7 +636,7 @@
       (subscribe-buffer bp buffer-text)
       ; drain the seed
       (receive ([:buffer-updated _bp _ _ _] nil) (after test/*wait-ms* nil))
-      (buffer-edit-value bp (fn (b) [(insert b "!") :done]) :me)
+      (buffer-edit-value bp :me (fn (b) [(insert b "!") :done]))
       (assert= (receive ([:buffer-updated _bp _ _ o] o) (after test/*wait-ms* :none)) :me)
       (stop-buffer bp)))
 
@@ -844,7 +844,7 @@ suite run. `test/*wait-ms*` is a failure deadline, reached only if a relay never
       ;; untagged edit → nil origin; tagged edit → the tag comes back with the push
       (buffer-edit bp (fn (b) (insert (end-of-buffer b) "!")))
       (assert= (receive ([:buffer-updated _bp _ _ o] o) (after test/*wait-ms* :none)) nil)
-      (buffer-edit bp (fn (b) (insert (end-of-buffer b) "?")) :me-the-editor)
+      (buffer-edit bp :me-the-editor (fn (b) (insert (end-of-buffer b) "?")))
       (assert= (receive ([:buffer-updated _bp _ txt o] [txt o]) (after test/*wait-ms* :none))
         ["hi!?" :me-the-editor])
       (stop-buffer bp)))

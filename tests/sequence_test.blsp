@@ -251,9 +251,31 @@
     ;; insertion order may vary on rehash; compare as a frequency map.
     (assert= (frequencies (into [] {:a 1 :b 2})) {[:a 1] 1 [:b 2] 1})
     (assert= (into {} {:a 1 :b 2}) {:a 1 :b 2}))
-  (test "times applies f n times" (assert= (seq/times 5 inc 0) 5) (assert= (seq/times 0 inc 9) 9))
+  (test "times applies f n times: the seed, the count, the step"
+    (assert= (seq/times 0 5 inc) 5)
+    (assert= (seq/times 9 0 inc) 9))
   (test "seq/iterate-times yields n+1 successive states"
-    (assert= (seq/iterate-times (fn (n) (* n 2)) 1 4) (list 1 2 4 8 16)))
+    (assert= (seq/iterate-times 1 4 (fn (n) (* n 2))) (list 1 2 4 8 16))
+    (assert= (seq/iterate-times 0 0 inc) (list 0)))
+  (test "seq/iterate-times calls f exactly n times — no state past the last is computed"
+    (let (calls (table/new))
+      (seq/iterate-times 1 4 (fn (n) (table/incr calls :n) (* n 2)))
+      (assert= 4 (table/get calls :n))
+      (seq/iterate-times 1 0 (fn (n) (table/incr calls :zero) n))
+      (assert= nil (table/get calls :zero))
+      (table/drop calls)))
+  (test "a step-first call is flagged, and refused under contracts (ADR-507)"
+    ;; read as (x n f), the old (inc 0 4) has n = 0 and never calls f, so only its f:fn
+    ;; annotation stands between it and a silent (inc): the checker names it, and an armed
+    ;; contract raises at the call
+    (let (messages (map (reflect/check-string-structured "(seq/iterate-times inc 0 4)")
+                     (fn (d) (get d :message))))
+      (is (any? messages (fn (m) (includes? m "argument 3 expects fn")))))
+    (check-allow :type-mismatch
+      (assert= (%contracts-armed?)
+        (try (do (seq/iterate-times inc 0 4) false) (catch _ true)))
+      ;; the old (3 inc 0) compares a function with a number: loud either way
+      (assert-error (seq/times 3 inc 0))))
   (test "enumerate pairs items with indices"
     (assert= (enumerate (list :a :b :c)) (list [0 :a] [1 :b] [2 :c]))))
 

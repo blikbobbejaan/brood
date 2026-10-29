@@ -4752,3 +4752,30 @@ build), and the relay file in 5 s. The guard is `a_match_with_many_clauses_is_wa
 (forty clauses, and the domain must still come out): with a fresh cache per call it ran past a
 120 s timeout, and with the fix it passes in 1.4 s. Checked here: fmt, clippy `--all-features`,
 and that one test; not run here: the suite.
+
+2026-10-29 (ADR-507, the callback is last and only its own arguments follow it; ROADMAP B5):
+the design pass listed three suspected exceptions to callback-last. An audit of every public
+`defn` and `defmacro` in `std/` with a function-named parameter that was not last (typed
+parameters normalised, which the first scan missed) found seven shapes to reshape and three
+classes to keep. The rule is one sentence: the subject first, a callback last, and only the
+callback's own arguments after it; a call that transforms or runs a function has that function
+as its subject. Reshaped: `(map/merge-with maps f)`, `(condp expr pred …)` (now subject-first
+like `case` and `match`, so each clause reads in the order its test runs and `->` threads into
+it), `(seq/transduce coll xform init rf)` (`reduce`'s order), `(seq/iterate-times x n f)`,
+`(seq/times x n f)`, `(stream/fn-> init f)`, and the `buffer-edit` family, whose optional
+`origin` sat after the transform; it is now a second arity before it, as `reduce` has two. Kept:
+`update`/`update-in`/`proc/offload`/`partial`, whose trailing arguments are the callback's, and
+the functions whose subject is a function. Transducer `comp` needed no change: there is one
+`comp`, right to left, and items flow in written order because a stage wraps a reducing
+function; language.md said "the reverse of ordinary function composition", which is what made
+it look like an exception, and now says why. No checker table read any of these positions.
+Callers moved with a balanced-form rewriter (57 `transduce` sites, bedit's 6 tagged
+`buffer-edit` calls), each diff read by eye. Two bugs surfaced. `iterate-times` stepped once past
+its last state, so `(iterate-times x 0 f)` called `f`. And a documented multi-clause `defn` with
+a typed parameter bound a variable literally named `x:int`, because ADR-420's refusal read
+`(fn "doc" clause…)` as single-clause. Both fixed and guarded; the iterate-times guard went red
+when the fix was removed. The one stale call that could be silent, `(iterate-times inc 0 4)` read
+as `(x n f)`, is flagged by the checker through `f:fn` and raises under contracts. The stale
+"Brood has no `condp`" hint is gone from the evaluator. Checked here: fmt, clippy
+`--all-features`, `nest format`, `nest check` and `--strict` over std, tests and examples, and
+the nine affected test files, armed and unarmed; not run here: the suite.

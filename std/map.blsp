@@ -22,11 +22,13 @@ subset) and `zipmap` (pair keys with values). `(:use map)` for bare
 access, or call qualified (`map/update-vals`).")
 
 ;; merge-with: on a shared key, combine with `(f existing new)` instead of replacing.
-;; Read-modify-write per key, so it folds immutable `assoc` (each returns a fresh map).
-(defn merge-with (f & maps)
-  "Like `merge`, but when two maps share a key the combined value is `(f value-so-far next-value)` rather than just the latter. `nil` maps are skipped.
+;; Read-modify-write per key, so it folds immutable `assoc` (each returns a fresh map). The
+;; maps are one collection and the function comes last (ADR-507), so a list of maps threads.
+(defn merge-with (maps f:fn)
+  "Merge the collection `maps` left to right like `merge`, but when two share a key the combined value is `(f value-so-far next-value)` rather than just the latter. `nil` maps are skipped.
 
-    (map/merge-with + {:a 1 :b 2} {:b 3}) ;=> {:a 1 :b 5}"
+    (map/merge-with [{:a 1 :b 2} {:b 3}] +) ;=> {:a 1 :b 5}
+    (map/merge-with [] +)                   ;=> {}"
   (fold maps
     {}
     (fn (acc m)

@@ -167,9 +167,18 @@
       (assert= (merge a {:b 2}) {:a 1 :b 2})
       (assert= a {:a 1})))
   (test "merge-with combines shared keys with f"
-    (assert= (merge-with + {:a 1 :b 2} {:a 10 :c 3}) {:a 11 :b 2 :c 3}))
+    (assert= (merge-with [{:a 1 :b 2} {:a 10 :c 3}] +) {:a 11 :b 2 :c 3}))
   (test "merge-with f only fires on collisions"
-    (assert= (merge-with - {:a 5} {:b 1}) {:a 5 :b 1})))
+    (assert= (merge-with [{:a 5} {:b 1}] -) {:a 5 :b 1}))
+  (test "merge-with folds left to right over any number of maps, skipping nil"
+    (assert= (merge-with [{:a 1} nil {:a 2} {:a 3}] -) {:a -4})
+    (assert= (merge-with [] +) {})
+    (assert= (merge-with (list {:a 1}) +) {:a 1}))
+  (test "merge-with threads: the maps come first, the function last (ADR-507)"
+    (assert= (-> [{:n 1} {:n 2}] (merge-with +)) {:n 3}))
+  (test "a function-first call fails loudly rather than merging"
+    (check-allow :type-mismatch
+      (assert-error (merge-with + {:a 1})))))
 
 (describe "update / update-vals / update-keys"
   (test "update applies f to the value at a key"

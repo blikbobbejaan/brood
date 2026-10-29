@@ -53,19 +53,27 @@
     (table/drop gaps-memo-calls)))
 
 (describe "condp / if-some / when-some"
-  (test "condp asks (pred expr test), value first, and takes the first truthy clause"
-    (assert= :medium (condp < 15 10 :small 100 :medium :large))
-    (assert= :small (condp < 5 10 :small 100 :medium :large))
-    (assert= :large (condp < 500 10 :small 100 :medium :large))
-    (assert= 2 (condp = :b :a 1 :b 2))
-    (assert= :heading (condp string/starts-with? "# Title" "#" :heading "-" :item :text)))
-  (test "condp evaluates the expression once"
+  (test "condp takes the subject first and asks (pred expr test), value first"
+    (assert= :medium (condp 15 < 10 :small 100 :medium :large))
+    (assert= :small (condp 5 < 10 :small 100 :medium :large))
+    (assert= :large (condp 500 < 10 :small 100 :medium :large))
+    (assert= 2 (condp :b = :a 1 :b 2))
+    (assert= :heading (condp "# Title" string/starts-with? "#" :heading "-" :item :text)))
+  (test "condp threads: the subject is the first operand (ADR-507)"
+    (assert= :item
+      (-> "  - milk" string/trim (condp string/starts-with? "#" :heading "-" :item :text))))
+  (test "condp evaluates the expression and the predicate once each"
     (let (t (table/new))
-      (assert= :yes (condp = (do (table/incr t :n) :k) :zz :no :k :yes :other))
+      (assert= :yes
+        (condp (do (table/incr t :n) :k) (do (table/incr t :p) =) :zz :no :k :yes :other))
       (assert= 1 (table/get t :n))
+      (assert= 1 (table/get t :p))
       (table/drop t)))
   (test "no clause and no default raises, naming the value"
-    (is (includes? (error-message (try (condp = :zz :a 1) (catch e e))) ":zz")))
+    (is (includes? (error-message (try (condp :zz = :a 1) (catch e e))) ":zz")))
+  (test "a predicate-first call fails loudly rather than choosing a clause"
+    (check-allow :type-mismatch
+      (assert-error (condp < 15 10 :small :large))))
   (test "if-some / when-some test presence, so false is a value"
     (assert= false (if-some (x false) x :absent))
     (assert= :absent (if-some (x nil) x :absent))

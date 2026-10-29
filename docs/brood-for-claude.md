@@ -1096,8 +1096,8 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
   `warnings`, `value-of` (the default when unset or invalid) and `default-source` (the
   documented file to write the first time) ·
   `if-let`/`when-let` test truth, `if-some`/`when-some` test presence (`false` counts) ·
-  `condp` asks `(pred value test)`, value first: `(condp < 15 10 :small 100 :medium
-  :large)` → `:medium`.
+  `condp` takes the subject first and asks `(pred value test)`: `(condp 15 < 10 :small 100
+  :medium :large)` → `:medium`.
 - **iteration** (macros — there is no `while` and no imperative `for` loop): `for`
   (list comprehension, with `:when`; add `:into []` / `:into {}` / `:into #{}` as the
   LAST pair to build that kind directly), `fold-for` (an accumulating comprehension:

@@ -848,9 +848,6 @@ pub(crate) fn foreign_construct_hint(name: &str) -> Option<&'static str> {
              already a lazy O(1) value. For an unbounded/streaming source, a process that \
              `send`s values."
         }
-        // `case` now exists (literal dispatch, flat `test result` pairs); only
-        // `condp` is still absent.
-        "condp" => "Brood has no `condp` — use `cond`, or `match` with `:when` guards.",
         "progn" | "begin" => "Brood spells `progn`/`begin` as `do`.",
         "mapcar" => "Brood spells `mapcar` as `map`.",
         "null?" => "Brood tests nil with `nil?` (and `empty?` for an empty collection).",

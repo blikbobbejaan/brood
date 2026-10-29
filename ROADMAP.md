@@ -194,7 +194,7 @@ another Lisp has it.
    operator. 113 names moved to their family's module (`combinator/`, `list/`, `seq/`,
    `map/`, `set/`, `proc/`, `reflect/`, `debug/`, `io/`, a library type's own module, and
    63 subsystem dynamics); boot is no reason, as the prelude defines qualified names.
-5. ⬜ **Exceptions to "callback last".**
+5. ✅ **Exceptions to "callback last" (2026-10-29, ADR-507).**
    - `(map/merge-with f & maps)`: variadic maps force the function first.
    - `condp` is value-first, the opposite of Clojure's `(pred test expr)`.
    - Transducer `comp` composes left to right while plain `comp` goes right to left (as in
@@ -202,6 +202,16 @@ another Lisp has it.
 
    For each: keep it and document why, or reshape it (e.g. `merge-with` over a vector of
    maps).
+   **Done:** one rule — the subject first, a callback last, and only the callback's own
+   arguments after it; when the call transforms or runs a function, that function is the
+   subject. An audit of every public `defn`/`defmacro` in `std/` found four more than the
+   three listed. Reshaped: `(map/merge-with maps f)`, `(condp expr pred …)`,
+   `(seq/transduce coll xform init rf)`, `(seq/iterate-times x n f)`, `(seq/times x n f)`,
+   `(stream/fn-> init f)`, and the `buffer-edit` family's optional `origin` moved before the
+   transform as a second arity. Kept: `update`/`update-in`/`proc/offload`/`partial` (the
+   arguments after `f` are `f`'s), the functions whose subject is a function (`fnil`,
+   `gen/start`, …), and transducer `comp` — there is one `comp`, right to left, and items flow
+   in written order because a stage wraps a reducing function.
 6. ⬜ **"Lists for code, vectors for data" has exceptions.** These use vectors for
    parameters: ability op specs `(area [self] :-> float)`, `impl` methods `(area [c] …)`,
    `defmethod`'s `[money money]` dispatch tuple, and `{:keys [a b]}`. `defn`, `fn`, `let`

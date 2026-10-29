@@ -131,11 +131,12 @@ monitor is the whole guard.
                    (list-loop (rest xs)))))
     (:stream-close nil)))
 
-(defn fn-> (f init)
-  "A stream driven by generator `f`. Each call `(f state)` returns
-`[:yield v new-state]` to emit `v` and continue, or `:done` to end the stream.
+(defn fn-> (init f:fn)
+  "A stream driven by generator `f` from the state `init`. Each call `(f state)` returns
+`[:yield v new-state]` to emit `v` and continue, or `:done` to end the stream. The seed comes
+first and the generator last, as `seq/iterate` takes `(x f)` (ADR-507).
 
-    (stream/->list (stream/fn-> (fn (n) (if (> n 3) :done [:yield n (inc n)])) 1))   ;=> (1 2 3)"
+    (stream/->list (stream/fn-> 1 (fn (n) (if (> n 3) :done [:yield n (inc n)]))))   ;=> (1 2 3)"
   (spawn (fn-loop f init)))
 
 (defn- fn-loop (f state)
@@ -152,8 +153,8 @@ monitor is the whole guard.
   "A stream of integers from `start` (inclusive) to `stop` (exclusive).
 
     (stream/->list (stream/range 0 5))   ;=> (0 1 2 3 4)"
-  (fn-> (fn (i) (if (< i stop) [:yield i (+ i 1)] :done))
-    start))
+  (fn-> start
+    (fn (i) (if (< i stop) [:yield i (+ i 1)] :done))))
 
 ;; ---- TCP socket source ------------------------------------------------------
 ;; socket-> creates a stream that owns a TCP socket and delivers

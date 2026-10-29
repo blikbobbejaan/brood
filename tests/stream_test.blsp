@@ -42,11 +42,11 @@ full budget still yields the failing value, while a merely slow one is forgiven.
 
 (describe "from-fn"
   (test "generator terminates"
-    (let (s (stream/fn-> (fn (n) (if (> n 3) :done [:yield n (+ n 1)]))
-              1))
+    (let (s (stream/fn-> 1
+              (fn (n) (if (> n 3) :done [:yield n (+ n 1)]))))
       (assert= [1 2 3] (stream/->vector s))))
   (test "empty generator"
-    (let (s (stream/fn-> (fn (_) :done) nil))
+    (let (s (stream/fn-> nil (fn (_) :done)))
       (assert= :done (stream/next s)))))
 
 (describe "range"

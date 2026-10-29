@@ -2118,17 +2118,21 @@ name/file/point/mark) and rebuilds the rope inside the new process. Drive it wit
         (%process-flag :no-break true)
         (buffer-serve (assoc (make-buffer text name file) :point pt :mark mk) () 0)))))
 
-(defn buffer-edit (bp f &optional origin)
-  "Apply pure transform `f` (a `buffer -> buffer` fn) inside buffer process `bp`.
+;; The `buffer-edit` family takes its transform LAST and its optional slots before it, one
+;; arity each (ADR-507), as `reduce` takes `(coll f)` and `(coll init f)`: a multi-line `fn`
+;; with a tag dangling after it read as the call's last argument, and nothing caught a swap.
+(defn buffer-edit "Apply pure transform `f` (a `buffer -> buffer` fn) inside buffer process `bp`.
 With `origin` (any value — conventionally the sender's pid), the resulting push is
 tagged with it, so subscribers can recognise their own edit coming back (see
 `buffer-push` — the echo-suppression seam). Asynchronous — returns nil.
 
-    (editor/buffer/buffer-edit pid (fn (b) (editor/buffer/insert b \"x\")))   ;~> nil — the insert lands in the process"
-  (send bp [:edit f origin]))
+    (editor/buffer/buffer-edit pid (fn (b) (editor/buffer/insert b \"x\")))   ;~> nil — the insert lands in the process
+    (editor/buffer/buffer-edit pid (self) (fn (b) (editor/buffer/insert b \"x\")))   ;~> nil — the push is tagged with the caller"
+  ((bp f) (send bp [:edit f nil]))
+  ((bp origin f) (send bp [:edit f origin])))
+(sig buffer-edit (and (any fn -> any) (any any fn -> any)))
 
-(defn buffer-edit-reply (bp f &optional origin)
-  "Apply `f` — a `buffer -> [new-buf value]` fn — inside buffer process `bp` and have
+(defn buffer-edit-reply "Apply `f` — a `buffer -> [new-buf value]` fn — inside buffer process `bp` and have
 the extracted `value` sent back: the READ-THEN-DECIDE edit (kill-region's shape —
 delete the region *and* learn what was deleted) as one atomic, totally-ordered
 round-trip; no concurrent splice can land between the read and the write. `value`
@@ -2137,21 +2141,25 @@ must be non-rope (the rope never leaves the process); `origin` tags the push as 
 value]` (or use `buffer-edit-value` to block for it).
 
     (editor/buffer/buffer-edit-reply pid (fn (b) [b (editor/buffer/buffer-point b)]))   ;~> #<ref …> — then [:reply r 0] arrives"
-  (let (r (ref))
-    (send bp [:edit-reply f origin (self) r])
-    r))
+  ((bp f) (buffer-edit-reply bp nil f))
+  ((bp origin f) (let (r (ref)) (send bp [:edit-reply f origin (self) r]) r)))
+(sig buffer-edit-reply (and (any fn -> any) (any any fn -> any)))
 
-(defn buffer-edit-value (bp f &optional origin (timeout 5000))
-  "`buffer-edit-reply`, blocking for the extracted value: apply `f` (`buffer ->
+(defn buffer-edit-value "`buffer-edit-reply`, blocking for the extracted value: apply `f` (`buffer ->
 [new-buf value]`) in buffer process `bp` and return `value`. Throws after `timeout`
 ms (default 5000) — the bounded-sync form for callers that need the answer to
-proceed (an interactive command deciding on what it read).
+proceed (an interactive command deciding on what it read). `origin` tags the push as
+for `buffer-edit`.
 
     (editor/buffer/buffer-edit-value pid (fn (b) [b (editor/buffer/buffer-point b)]))   ;~> 0 — the point inside process `pid`"
-  (let (r (buffer-edit-reply bp f origin))
-    (receive
-      ([:reply ^r v] v)
-      (after timeout (error "buffer-edit-value: no reply after " timeout "ms")))))
+  ((bp f) (buffer-edit-value bp nil 5000 f))
+  ((bp origin f) (buffer-edit-value bp origin 5000 f))
+  ((bp origin timeout f) (let (r (buffer-edit-reply bp origin f))
+                           (receive
+                             ([:reply ^r v] v)
+                             (after timeout
+                               (error "buffer-edit-value: no reply after " timeout "ms"))))))
+(sig buffer-edit-value (and (any fn -> any) (any any fn -> any) (any any int fn -> any)))
 
 ;; ---- splice transforms: concurrent edits without a CRDT ----------------------
 ;; Two participants typing inside one round-trip window each compute a splice against

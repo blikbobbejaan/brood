@@ -11,35 +11,35 @@
 
 (describe "seq/iterate"
   (test "xtake ends it"
-    (assert= [1 2 4 8 16] (seq/transduce (doubling) (seq/xtake 5) conj [])))
+    (assert= [1 2 4 8 16] (seq/transduce (doubling) (seq/xtake 5) [] conj)))
   (test "xtake-while ends it"
-    (assert= [1 2 4 8] (seq/transduce (doubling) (seq/xtake-while (fn (n) (< n 10))) conj [])))
+    (assert= [1 2 4 8] (seq/transduce (doubling) (seq/xtake-while (fn (n) (< n 10))) [] conj)))
   (test "stateless stages run ahead of the stop"
     (assert= [3 9 15]
       (seq/transduce (seq/iterate 0 inc)
         (comp (seq/xfilter math/odd?) (seq/xmap (fn (n) (* n 3))) (seq/xtake 3))
-        conj
-        [])))
+        []
+        conj)))
   (test "a seq/l* view over it hands its stages to the run"
     (assert= [2 3 4 5]
-      (seq/transduce (seq/lmap (seq/iterate 1 inc) inc) (seq/xtake-while (fn (n) (< n 6))) conj []))
+      (seq/transduce (seq/lmap (seq/iterate 1 inc) inc) (seq/xtake-while (fn (n) (< n 6))) [] conj))
     (assert= [20 40]
       (seq/transduce (-> (seq/iterate 1 inc) (seq/lfilter math/even?) (seq/lmap (fn (n) (* n 10))))
         (seq/xtake 2)
-        conj
-        [])))
+        []
+        conj)))
   (test "the step is not called past the element that ends the run"
     ;; `f` raising on 4 would break the run if the loop stepped ahead of `rf`.
     (assert= [1 2 3]
       (seq/transduce (seq/iterate 1 (fn (n) (if (= n 3) (error "stepped past the end") (inc n))))
         (seq/xtake 3)
-        conj
-        [])))
+        []
+        conj)))
   (test "a failure accumulator ends it, as it ends fold"
     (is (failure? (seq/transduce (seq/iterate 1 inc)
                     (seq/xmap identity)
-                    (fn (acc n) (if (= n 3) (failure "stop at three") (+ acc n)))
-                    0))))
+                    0
+                    (fn (acc n) (if (= n 3) (failure "stop at three") (+ acc n)))))))
   (test "realising it raises instead of looping"
     (is (raises? (fn () (seq (doubling)))))
     (is (raises? (fn () (into [] (doubling)))))
@@ -49,7 +49,7 @@
 
 (defn- it-worker (parent start)
   (send parent
-    [:done start (seq/transduce (seq/iterate start inc) (seq/xtake 4) + 0)]))
+    [:done start (seq/transduce (seq/iterate start inc) (seq/xtake 4) 0 +)]))
 (defn- it-collect (n acc)
   (if (= n 0) acc (it-collect (- n 1) (receive ([:done start total] (assoc acc start total))))))
 
@@ -64,6 +64,6 @@
         (assert= 34 (get totals 7)))))
   (test "an iterate value sent to a worker runs there"
     (let (me (self)
-          w (spawn (receive (it (send me (seq/transduce it (seq/xtake 3) conj []))))))
+          w (spawn (receive (it (send me (seq/transduce it (seq/xtake 3) [] conj))))))
       (send w (doubling))
       (assert= [1 2 4] (receive)))))

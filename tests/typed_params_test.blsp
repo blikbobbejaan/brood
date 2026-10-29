@@ -57,6 +57,10 @@
     (assert-error (reflect/eval-string "(fn ([a:int b]) a)")))
   (test "types on a multi-clause fn"
     (assert-error (reflect/eval-string "(fn ((x:int) x) ((x y) y))")))
+  (test "types on a documented multi-clause defn — the docstring once hid them"
+    ;; `(fn "doc" clause…)` read as single-clause, and the clause bound `f:fn` literally
+    (assert-error (reflect/eval-string "(defn tp-documented \"doc\" ((f:fn) f) ((x f) f))"))
+    (assert-error (reflect/eval-string "(fn \"doc\" ((x:int) x) ((x y) y))")))
   (test "a result type that does not end the list"
     (assert-error (reflect/eval-string "(fn (x -> int y) x)"))))
 
