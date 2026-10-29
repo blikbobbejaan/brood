@@ -4736,3 +4736,19 @@ combinators were the one judgement the user changed: `identity`, `partial` and `
 the rest are `combinator/`. Checked here: fmt, clippy `--all-features`, `nest format`, `nest
 check` and `--strict`, and the std per-file checker gate over every std file; not run here: the
 suite. Downstream projects move with `nest check --fix-renames`.
+
+2026-10-29 (a match's failure thunk is walked once): zubr-relay's `nest check` never finished
+on brood 0.47.0. The file was `src/relay.blsp`, and in it `handle`: one `match` over the
+twenty tagged tuples `route` answers. The checker spent the time in the parameter-domain walk,
+which since 11601fe6 (v0.45.0) follows a `match`'s failure thunk into its body, so that a match
+too big to splice keeps its clause guards. Every clause fails to its successor's thunk from
+several points (not a vector, the wrong count, the wrong tag), and that body does the same to
+the next one, so walking the body at every call cost (failure points)^(clauses). A synthetic
+match over N tagged tuples took 0.07 s at 4 clauses, 2 s at 12, 20 s at 16 and never ended at
+20. Each thunk's domain is now walked once and kept on its binding. That is exact, not an
+approximation: the body is walked in the scope it was defined in, against the same parameters,
+so every call site gets the same answer. Forty clauses check in 2.4 s and eighty in 7.3 s (debug
+build), and the relay file in 5 s. The guard is `a_match_with_many_clauses_is_walked_once_per_clause`
+(forty clauses, and the domain must still come out): with a fresh cache per call it ran past a
+120 s timeout, and with the fix it passes in 1.4 s. Checked here: fmt, clippy `--all-features`,
+and that one test; not run here: the suite.

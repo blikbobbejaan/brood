@@ -23,7 +23,21 @@ pub(super) struct DomainScope {
     /// call made a match's clause guards vanish the moment its expansion grew past the splice
     /// budget. The definition scope is kept so a `k` its own body names is the OUTER one, as
     /// `let` binds it — the walk cannot loop.
-    pub(super) thunks: HashMap<Symbol, std::rc::Rc<(Vec<Value>, DomainScope)>>,
+    pub(super) thunks: HashMap<Symbol, std::rc::Rc<Thunk>>,
+}
+
+/// A `let`-bound nullary closure the domain walk follows into (see `DomainScope::thunks`).
+///
+/// Its domain is walked ONCE and kept. Every clause of a `match` fails to its successor's
+/// thunk from several points (not a vector, the wrong count, the wrong tag), and that
+/// successor's body does the same to the next one: re-walking the body at each call cost
+/// (failure points)^(clauses), and a 20-clause `match` over tagged tuples never finished
+/// checking. Keeping it is exact, not an approximation: the body is walked in the scope it
+/// was defined in, against the same parameters, so every call site gets the same answer.
+pub(super) struct Thunk {
+    body: Vec<Value>,
+    defined_in: DomainScope,
+    domain: std::cell::OnceCell<Domain>,
 }
 
 /// The body forms of `(fn () body…)` — a closure taking no arguments — else `None`.
@@ -311,9 +325,14 @@ fn domain_of_inner(
             match nullary_fn_body(heap, binds[i + 1]) {
                 Some(body) => {
                     let defined_in = inner.clone();
-                    inner
-                        .thunks
-                        .insert(name, std::rc::Rc::new((body, defined_in)));
+                    inner.thunks.insert(
+                        name,
+                        std::rc::Rc::new(Thunk {
+                            body,
+                            defined_in,
+                            domain: std::cell::OnceCell::new(),
+                        }),
+                    );
                 }
                 None => {
                     inner.thunks.remove(&name);
@@ -334,14 +353,18 @@ fn domain_of_inner(
         });
     }
     // A call of a `let`-bound nullary closure — a `match`'s failure thunk — runs its body:
-    // its domain is the body's, in the scope the closure was defined in.
+    // its domain is the body's, in the scope the closure was defined in, walked once (`Thunk`).
     if items.len() == 1
         && let Some(thunk) = scope.thunks.get(&h).cloned()
     {
-        let (body, defined_in) = &*thunk;
-        return body.iter().fold(any_domain(n), |acc, &form| {
-            meet(acc, domain_of(heap, form, params, defined_in, ctx))
-        });
+        return thunk
+            .domain
+            .get_or_init(|| {
+                thunk.body.iter().fold(any_domain(n), |acc, &form| {
+                    meet(acc, domain_of(heap, form, params, &thunk.defined_in, ctx))
+                })
+            })
+            .clone();
     }
     // An unexpanded **macro** call: its operands are syntax, not necessarily code —
     // a template may drop them, defer them, or bind them. Nothing here is known to

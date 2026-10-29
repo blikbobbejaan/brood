@@ -6,6 +6,12 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Fixed.**
+- `nest check` no longer hangs on a `match` with many clauses. Each clause fails to the
+  next through a closure, and the checker re-read that closure at every failure point, so the
+  cost grew exponentially: a 20-clause match over tagged tuples never finished. Each closure is
+  now read once. The bug was introduced in v0.45.0.
+
 ## v0.47.0 — the bare namespace is the language
 
 A name is bare only when it is syntax, a function most programs use, a built-in kind's

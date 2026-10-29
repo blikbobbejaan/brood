@@ -322,6 +322,26 @@ fn a_match_too_big_to_splice_still_has_its_clauses_domain() {
 }
 
 #[test]
+fn a_match_with_many_clauses_is_walked_once_per_clause() {
+    // Each clause fails to the next clause's thunk from several points, and that thunk's
+    // body does the same to the one after: re-walking a thunk at every call was
+    // exponential in the clauses, and a 20-clause route table in a real program never
+    // finished checking. Forty clauses here would not finish in this test's lifetime
+    // unless each thunk's domain is walked once — and the domain must still come out.
+    let clauses: String = (1..=40)
+        .map(|i| format!("    ([:k{i} v] (+ v {i}))\n"))
+        .collect();
+    let ws = file_warnings(&format!(
+        "(defn handle (x)\n  (match x\n{clauses}    ([:refuse status message] status)))\n\
+         (defn c () (handle 5))"
+    ));
+    assert!(
+        ws.iter().any(|w| w.contains("handle: argument 1 expects")),
+        "{ws:?}"
+    );
+}
+
+#[test]
 fn a_destructuring_head_constrains_the_argument() {
     let ws = file_warnings("(defn f ([a b]) (+ a b))\n(defn c () (f 5))");
     assert!(
