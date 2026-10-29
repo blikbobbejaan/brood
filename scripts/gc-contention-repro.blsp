@@ -1,0 +1,39 @@
+;; KI-307 repro: `BROOD_CONTRACTS=0 nest run scripts/gc-contention-repro.blsp` (~20 s). A timing run —
+;; the test machine, not the development desktop.
+;; Does a busy process slow another one down? The foreground times a fixed piece of work
+;; every 50 ms for 2 s; the background runs one kind of work the whole time.
+(def text (string/join (map (range 30000) (fn (i) (str "word" (math/mod i 997) " (call x) "))) ""))
+(def small (string/join (map (range 300) (fn (i) (str "word" i " (call x) "))) ""))
+
+(defn fixed-work ()
+  (fold (range 20000) {} (fn (acc i) (assoc acc (math/mod i 500) i))))
+
+(defn fixed-arithmetic ()
+  (fold (range 2000000) 0 (fn (acc i) (+ acc i))))
+
+(defn measure (label work)
+  (let (samples (map (range 40)
+                  (fn (_)
+                    (let (started (os/now-ns)
+                          _ (work)
+                          ms (/ (- (os/now-ns) started) 1000000.0))
+                      (do (receive (:never nil) (after 50 nil)) ms))))
+        sorted (sort samples))
+    (io/puts (string/format "%-44s p50 %7.2f ms  max %7.2f ms" label (nth sorted 20) (last sorted)))))
+
+(defn background (work)
+  (spawn (fn () (letrec (go (fn () (do (work) (go)))) (go)))))
+
+(defn beside (label background-work)
+  (let (pid (background background-work))
+    (do
+      (measure (str "maps, " label) fixed-work)
+      (measure (str "arithmetic, " label) fixed-arithmetic)
+      (exit pid :kill))))
+
+(measure "maps, alone" fixed-work)
+(measure "arithmetic, alone" fixed-arithmetic)
+(beside "beside a big live vector of maps"
+  (fn () (count (fold (range 60000) [] (fn (acc i) (conj acc {:start i :end (inc i)}))))))
+(beside "beside a big live vector of strings"
+  (fn () (count (fold (range 60000) [] (fn (acc i) (conj acc (str "w" i)))))))
