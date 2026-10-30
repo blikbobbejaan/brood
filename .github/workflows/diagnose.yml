@@ -42,6 +42,9 @@ on:
       times:
         description: "for repeat: how many runs"
         default: "200"
+      rows:
+        description: "for ab: the benchmark rows (empty: the default set)"
+        default: ""
 
 concurrency:
   group: diagnose-${{ inputs.what }}
@@ -184,7 +187,7 @@ jobs:
           nproc
           base=$(git rev-parse "${{ inputs.base }}")
           echo "base $base, this commit $(git rev-parse HEAD)"
-          scripts/ab-bench.sh -b "$base" --floor
+          scripts/ab-bench.sh -b "$base" --floor ${{ inputs.rows }}
 
   repeat:
     name: one test, run repeatedly
