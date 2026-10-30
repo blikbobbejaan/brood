@@ -9,6 +9,10 @@ name: Diagnose
 # shipped, v2, purging off, the system allocator) — and with a `perf` profile of the stalled
 # foreground, kernel symbols included.
 #
+# `repeat` builds one integration-test binary and runs one test in it `times` times, one
+# process each, with `BROOD_JIT_BAIL_TRACE=1`, and prints what every failing run traced: the
+# way to look at an intermittent test (KI-309) without a loop on the desktop.
+#
 # `ab` runs `scripts/ab-bench.sh --floor` over the default benchmark rows, `base` against this
 # commit. A shared runner is noisy, so it can show a large regression, not a few percent; the
 # benchmark box (`make ab`) is still the gate for a small one (docs/benchmarking.md).
@@ -20,11 +24,20 @@ on:
   workflow_dispatch:
     inputs:
       what:
-        description: "ki307 (the gc-contention repro) or ab (benchmark rows, base vs this commit)"
+        description: "ki307 (the gc-contention repro), ab (benchmark rows, base vs this commit) or repeat (one Rust test, many times)"
         default: ki307
       base:
         description: "for ab: the baseline ref"
         default: "HEAD^"
+      binary:
+        description: "for repeat: the integration-test binary under crates/lisp/tests (its file name, no .rs)"
+        default: interrupt_one_worker
+      test:
+        description: "for repeat: the test name filter"
+        default: a_native_walk_that_hosts_a_park_blocks_once_and_then_parks
+      times:
+        description: "for repeat: how many runs"
+        default: "200"
 
 concurrency:
   group: diagnose-${{ inputs.what }}
@@ -168,3 +181,35 @@ jobs:
           base=$(git rev-parse "${{ inputs.base }}")
           echo "base $base, this commit $(git rev-parse HEAD)"
           scripts/ab-bench.sh -b "$base" --floor
+
+  repeat:
+    name: one test, run repeatedly
+    if: inputs.what == 'repeat'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Build the test binary
+        run: cargo test -p brood --test "${{ inputs.binary }}" --no-run
+      - name: Run it ${{ inputs.times }} times
+        env:
+          BROOD_JIT_BAIL_TRACE: "1"
+        run: |
+          binary=$(ls -t target/debug/deps/${{ inputs.binary }}-* | grep -v '\.d$' | head -1)
+          echo "binary $binary, commit $(git rev-parse --short HEAD), $(nproc) cores"
+          failures=0
+          for round in $(seq 1 "${{ inputs.times }}"); do
+            if ( ulimit -v 16000000; timeout 120 "$binary" "${{ inputs.test }}" --nocapture --test-threads=1 ) > target/round.log 2>&1; then
+              if [ "$round" = 1 ]; then echo "== round 1 passed; its trace:"; grep -E "suspend-latched|dirty-receive-block" target/round.log | head -20; fi
+            else
+              failures=$((failures + 1))
+              echo "== round $round FAILED; its trace:"
+              grep -E "suspend-latched|dirty-receive-block|panicked|blocked more" target/round.log | head -30
+            fi
+          done
+          echo "$failures of ${{ inputs.times }} rounds failed"
+          [ "$failures" -eq 0 ]
