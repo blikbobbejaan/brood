@@ -207,11 +207,11 @@ jobs:
           failures=0
           for round in $(seq 1 "${{ inputs.times }}"); do
             if ( ulimit -v 16000000; timeout 120 "$binary" "${{ inputs.test }}" --nocapture --test-threads=1 ) > target/round.log 2>&1; then
-              if [ "$round" = 1 ]; then echo "== round 1 passed; its trace:"; grep -E "suspend-latched|dirty-receive-block" target/round.log | head -20; fi
+              if [ "$round" = 1 ]; then echo "== round 1 passed; its trace:"; grep -E "suspend-latched|dirty-receive-block|shared-arms-dropped" target/round.log | head -20; fi
             else
               failures=$((failures + 1))
               echo "== round $round FAILED; its trace:"
-              grep -E "suspend-latched|dirty-receive-block|panicked|blocked more" target/round.log | head -30
+              grep -E "suspend-latched|dirty-receive-block|shared-arms-dropped|panicked|blocked more" target/round.log | head -30
             fi
           done
           echo "$failures of ${{ inputs.times }} rounds failed"

@@ -577,6 +577,12 @@ impl Heap {
     /// when this is the sole process — so no peer can be mid-install.
     pub fn shared_closures_clear(&self) {
         if let Ok(mut m) = self.runtime.shared_closures.write() {
+            // Under the bail trace, say so: every arm the runtime shared goes, latches and
+            // all, and the next call of each function compiles a fresh one.
+            #[cfg(feature = "jit")]
+            if crate::diagnostics::debug_flags::jit_bail_trace() {
+                eprintln!("[jit-bail] shared-arms-dropped count={}", m.len());
+            }
             m.clear();
         }
     }
