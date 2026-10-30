@@ -10,7 +10,8 @@ name: Diagnose
 # foreground, kernel symbols included.
 #
 # `ki308` runs the repro's regex-split scenario three times with `BROOD_STALL_MS=20` (each long
-# pause the runtime instruments names itself), then three times with `std/regex` loaded first.
+# pause the runtime instruments names itself), three times with `std/regex` loaded first, and
+# the full sequence three times.
 #
 # `repeat` builds one integration-test binary and runs one test in it `times` times, one
 # process each, with `BROOD_JIT_BAIL_TRACE=1`, and prints what every failing run traced: the
@@ -245,4 +246,14 @@ jobs:
           for round in 1 2 3; do
             echo "== round $round"
             ( ulimit -v 16000000; KI307_MODE=regex-preloaded timeout 300 target/release/brood "$REPRO" ) 2>&1
+          done
+      # The stall showed in the FULL sequence (Diagnose 41019562798, both allocator builds) and
+      # not in six isolated runs, so it depends on what ran before.
+      - name: The full sequence, three times
+        env:
+          BROOD_STALL_MS: "20"
+        run: |
+          for round in 1 2 3; do
+            echo "== round $round"
+            ( ulimit -v 16000000; timeout 300 target/release/brood "$REPRO" ) 2>&1 | grep -v "native %receive took 5[0-9]ms"
           done
