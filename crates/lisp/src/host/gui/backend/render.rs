@@ -1527,8 +1527,9 @@ pub(super) fn composite_cluster(
 }
 
 /// Composite a shaped cluster's glyphs into `rgba` as a **subpixel** mask: R/G/B carry
-/// the coverage of each channel's third of the pixel (rendered by swash at 1/3-px
-/// offsets, hinted like the gray path), A is the max of the three so the blit's
+/// the coverage of each channel's third of the pixel (rasterised at 3× horizontal
+/// resolution and LCD-filtered, `lcd_filter`, hinted like the gray path), A is the max
+/// of the three so the blit's
 /// "anything here?" test still works. `bgr` flips the channel order for a panel whose
 /// subpixels run blue-first. Baseline-placed like text. Returns false — leaving `rgba`
 /// untouched — if no glyph had an outline to render this way (a bitmap-only face),
@@ -1565,39 +1566,50 @@ pub(super) fn composite_cluster_subpixel(
                 .size(f32::from_bits(key.font_size_bits))
                 .hint(!flags.contains(CacheKeyFlags::DISABLE_HINTING))
                 .build();
-            let format = if bgr {
-                Format::subpixel_bgra()
-            } else {
-                Format::Subpixel
-            };
             let offset = if flags.contains(CacheKeyFlags::PIXEL_FONT) {
                 Vector::new(key.x_bin.as_float().round(), key.y_bin.as_float().round())
             } else {
                 Vector::new(key.x_bin.as_float(), key.y_bin.as_float())
             };
-            let transform = flags
-                .contains(CacheKeyFlags::FAKE_ITALIC)
-                .then(|| Transform::skew(Angle::from_degrees(14.0), Angle::from_degrees(0.0)));
+            // The outline is rasterised at THREE TIMES the horizontal resolution, one
+            // coverage per subpixel, as FreeType does for LCD text — not as three
+            // whole-pixel renders shifted a third of a pixel apart, which is what swash's
+            // own `Format::Subpixel` is, and which leaves every stem edge a hard
+            // orange or blue fringe. `lcd_filter` then spreads each subpixel over its
+            // neighbours.
+            let triple = Transform::scale(LCD_OVERSAMPLE as f32, 1.0);
+            let transform = if flags.contains(CacheKeyFlags::FAKE_ITALIC) {
+                Transform::skew(Angle::from_degrees(14.0), Angle::from_degrees(0.0)).then(&triple)
+            } else {
+                triple
+            };
             let Some(img) = Render::new(&[Source::Outline])
-                .format(format)
-                .offset(offset)
-                .transform(transform)
+                .format(Format::Alpha)
+                .offset(Vector::new(offset.x * LCD_OVERSAMPLE as f32, offset.y))
+                .transform(Some(transform))
                 .render(&mut scaler, key.glyph_id)
             else {
                 continue;
             };
-            if img.data.len() < (img.placement.width * img.placement.height * 4) as usize {
+            if img.data.len() < (img.placement.width * img.placement.height) as usize {
                 continue;
             }
-            let (iw, ih) = (img.placement.width as i32, img.placement.height as i32);
+            let mask = lcd_filter(
+                &img.data,
+                img.placement.left,
+                img.placement.width as usize,
+                img.placement.height as usize,
+                bgr,
+            );
+            let (iw, ih) = (mask.width as i32, img.placement.height as i32);
             let (ox, oy) = (
-                phys.x + img.placement.left + grid_shift(gl, grid),
+                phys.x + mask.left + grid_shift(gl, grid),
                 baseline + phys.y - img.placement.top,
             );
             for ry in 0..ih {
                 for rx in 0..iw {
-                    let i = ((ry * iw + rx) * 4) as usize;
-                    let (r, g, b) = (img.data[i], img.data[i + 1], img.data[i + 2]);
+                    let i = ((ry * iw + rx) * 3) as usize;
+                    let (r, g, b) = (mask.rgb[i], mask.rgb[i + 1], mask.rgb[i + 2]);
                     let a = r.max(g).max(b);
                     if a == 0 {
                         continue;
@@ -1619,6 +1631,67 @@ pub(super) fn composite_cluster_subpixel(
         }
     }
     drew
+}
+
+/// Subpixels per pixel across a row: an LCD pixel is three stripes, R G B.
+const LCD_OVERSAMPLE: i32 = 3;
+
+/// FreeType's default LCD filter (`FT_LCD_FILTER_DEFAULT`), in 256ths: each subpixel's
+/// coverage spread over itself and two neighbours each side. Unfiltered, a stem edge
+/// that covers one stripe of a pixel lights that stripe alone, a saturated orange or
+/// blue fringe; filtered, the energy is shared with the stripes beside it and the edge
+/// reads as a lighter, near-neutral one. The weights sum to 256, so a solid run stays
+/// solid.
+const LCD_FILTER: [u32; 5] = [0x08, 0x4D, 0x56, 0x4D, 0x08];
+
+/// A glyph's per-channel coverage at whole pixels: `width` × the image's rows, three
+/// bytes a pixel (R G B in panel order), its left edge `left` pixels from the pen.
+pub(super) struct LcdMask {
+    pub(super) left: i32,
+    pub(super) width: usize,
+    pub(super) rgb: Vec<u8>,
+}
+
+/// Fold a coverage image rendered at [`LCD_OVERSAMPLE`]× horizontal resolution (`w3`
+/// subpixels wide, its first `left3` subpixels from the pen) into an [`LcdMask`]:
+/// filter each row with [`LCD_FILTER`], then give each channel its own stripe of the
+/// pixel — the left stripe to red on an R-G-B panel, to blue on a B-G-R one (`bgr`).
+/// The filter reaches two subpixels past the image on each side, so the mask can be a
+/// pixel wider than the image.
+pub(super) fn lcd_filter(alpha: &[u8], left3: i32, w3: usize, h: usize, bgr: bool) -> LcdMask {
+    let reach = (LCD_FILTER.len() / 2) as i32;
+    let first = (left3 - reach).div_euclid(LCD_OVERSAMPLE);
+    let last = (left3 + w3 as i32 - 1 + reach).div_euclid(LCD_OVERSAMPLE);
+    let width = (last - first + 1).max(0) as usize;
+    let mut rgb = vec![0u8; width * h * 3];
+    for row in 0..h {
+        let line = &alpha[row * w3..(row + 1) * w3];
+        let at = |sub: i32| -> u32 {
+            let i = sub - left3;
+            if i < 0 || i >= w3 as i32 {
+                0
+            } else {
+                line[i as usize] as u32
+            }
+        };
+        for p in 0..width {
+            for stripe in 0..LCD_OVERSAMPLE {
+                let sub = (first + p as i32) * LCD_OVERSAMPLE + stripe;
+                let sum: u32 = LCD_FILTER
+                    .iter()
+                    .enumerate()
+                    .map(|(k, w)| w * at(sub + k as i32 - reach))
+                    .sum();
+                let channel = if bgr { 2 - stripe } else { stripe } as usize;
+                rgb[(row * width + p) * 3 + channel] = ((sum + 128) >> 8).min(255) as u8;
+            }
+        }
+    }
+    LcdMask {
+        left: first,
+        width,
+        rgb,
+    }
 }
 
 pub(super) fn pack(rgb: [u8; 3]) -> u32 {
@@ -1978,6 +2051,65 @@ mod text_aa_tests {
         let gray = r.build_cluster("l", r.default_family, false, false, 1, false);
         assert!(!gray.subpixel);
         assert!(gray.rgba.chunks(4).any(|p| p[3] > 0));
+    }
+
+    /// A subpixel glyph carries the same ink as its gray twin: the 3× raster and the
+    /// filter move coverage between stripes, never add or lose it. A transform applied
+    /// the wrong way round (offset scaled twice, the outline left at 1×) lands the glyph
+    /// a third as wide or in the wrong place, and the ink no longer matches.
+    #[test]
+    fn subpixel_text_keeps_the_gray_glyphs_ink() {
+        let mut r = Renderer::new(1.0, default_families(), 16.0);
+        r.set_text_aa(TextAa::Subpixel);
+        let ink = |rgba: &[u8], channels: &[usize]| -> f64 {
+            rgba.chunks(4)
+                .map(|p| channels.iter().map(|&c| p[c] as f64).sum::<f64>())
+                .sum::<f64>()
+                / channels.len() as f64
+        };
+        for glyph in ["l", "o", "W"] {
+            let sub = r.build_cluster(glyph, r.default_family, false, false, 1, true);
+            let gray = r.build_cluster(glyph, r.default_family, false, false, 1, false);
+            assert!(sub.subpixel, "{glyph}: the subpixel path fell back to gray");
+            let (lcd, alpha) = (ink(&sub.rgba, &[0, 1, 2]), ink(&gray.rgba, &[3]));
+            let ratio = lcd / alpha;
+            assert!(
+                (0.85..1.15).contains(&ratio),
+                "{glyph}: subpixel ink {lcd} vs gray {alpha}"
+            );
+        }
+    }
+
+    /// A solid run of subpixels stays solid through the filter: the weights sum to one.
+    #[test]
+    fn the_lcd_filter_keeps_a_solid_run_solid() {
+        let mask = lcd_filter(&[255; 12], 0, 12, 1, false);
+        // pixels 1 and 2 are wholly inside the run, two subpixels from either end
+        assert_eq!(mask.left, -1);
+        assert_eq!(&mask.rgb[2 * 3..3 * 3], &[255, 255, 255]);
+    }
+
+    /// One lit stripe — a stem edge covering the green third of a pixel — is shared with
+    /// its neighbours, so the pixel reads near neutral instead of a saturated stripe, and
+    /// the stripes two away get the filter's tail.
+    #[test]
+    fn the_lcd_filter_spreads_one_stripe_over_its_neighbours() {
+        // subpixel 4 is pixel 1's green stripe
+        let mask = lcd_filter(&[255], 4, 1, 1, false);
+        assert_eq!(mask.left, 0);
+        assert_eq!(&mask.rgb[3..6], &[77, 86, 77], "pixel 1: R G B");
+        assert_eq!(mask.rgb[2], 8, "pixel 0's blue, two stripes left");
+        assert_eq!(mask.rgb[6], 8, "pixel 2's red, two stripes right");
+    }
+
+    /// On a B-G-R panel the pixel's LEFT stripe is blue.
+    #[test]
+    fn the_lcd_filter_puts_the_left_stripe_in_blue_on_a_bgr_panel() {
+        // subpixel 3 is pixel 1's left stripe
+        let rgb = lcd_filter(&[255], 3, 1, 1, false);
+        let bgr = lcd_filter(&[255], 3, 1, 1, true);
+        assert_eq!(&rgb.rgb[3..6], &[86, 77, 8]);
+        assert_eq!(&bgr.rgb[3..6], &[8, 77, 86]);
     }
 }
 

@@ -66,10 +66,14 @@ Used by `std/editor/lineedit.blsp` (the REPL editor); pure, so independently tes
 (def-face :syntax/match {:reverse true})
 ; a lone unmatched bracket (REPL)
 (def-face :syntax/error {:fg :red :bold true})
+;; Brackets coloured by DEPTH (Emacs's rainbow-delimiters), `:syntax/delimiter-1` the outermost,
+;; cycling past the ninth — painted only by a lexer asked to (`lisp-line-lexer`'s `:rainbow`).
+;; No colour of their own here: an app that wants the rainbow names its colours.
+(doseq (depth (range 1 10)) (def-face (keyword (str "syntax/delimiter-" depth)) {}))
 ;; Resolved snapshots of the defaults, kept under the original `hl-face-*` names for
 ;; consumers that read a face directly rather than re-resolving each frame: the REPL
 ;; line editor's bracket match/error (`std/editor/lineedit.blsp`) and the highlighter's own
-;; tests. The live fontify path (`hl-spans`) instead calls `(face :syntax/…)` per
+;; tests. The live fontify path (`hl-walk`) instead calls `(face :syntax/…)` per
 ;; span, so an app's `face-set :syntax/…` restyles the editor on its next frame while
 ;; these snapshots (and so the default REPL look) stay put.
 (def hl-face-comment (face :syntax/comment))
@@ -143,15 +147,20 @@ here and the face the fontifier paints cannot disagree (ADR-334)."
   (math/min n (string/span-until src i "\n")))
 
 ; backslash: skip it and the escaped char
-(defn- hl-string-end (src:string i:int n:int -> int)
+(defn- hl-string-close (src:string i:int n:int -> int)
   "Index just past the closing quote of a string whose body starts at `i` (one past
-the opening quote), honouring `\\` escapes; `n` if the string is unterminated."
-  (let (j (string/span-until src i "\\\""))
+the opening quote), honouring `\\` escapes; -1 if the string is unterminated — a backslash
+ending the text included, whose escaped character is not there (`\"a\\` at a line's end)."
+  (let (j (if (>= i n) n (string/span-until src i "\\\"")))
     ; first backslash or quote (or end)
     (cond
-      (>= j n) n
+      (>= j n) -1
       (= (string/char-at src j) "\"") (inc j)
-      else (hl-string-end src (+ j 2) n))))
+      else (hl-string-close src (+ j 2) n))))
+
+(defn- hl-string-end (src:string i:int n:int -> int)
+  "Like `hl-string-close`, but `n` if the string is unterminated."
+  (let (close (hl-string-close src i n)) (if (< close 0) n close)))
 (defn- hl-atom-end (src:string i:int n:int -> int)
   "Index of the first delimiter at or after `i` — the end of an atom token."
   (math/min n (string/span-until src i hl-delim-chars)))
@@ -181,38 +190,47 @@ the opening quote), honouring `\\` escapes; `n` if the string is unterminated."
   "Open a frame for the bracket `open`."
   (cons [open 0 nil false] stack))
 
+;; Past its third form nothing reads a frame's count, head or parameter flag (head position
+;; is form 0, a docstring form 2 or 3), so a frame that far in is stored as ONE value
+;; (`hl-frame`). The line lexer compares the states its lines start in to stop re-lexing after
+;; an edit; with the count kept, adding a form anywhere in a long body changed the state of
+;; every line after it until the body closed.
+(defn- hl-frame (open n head params?)
+  (if (> n 3) [open 4 nil false] [open n head params?]))
+
 (defn- hl-advance (stack params?)
   "Advance the innermost frame past one started form; `params?` marks that form as a
 bracketed list sitting in parameter position (index 2)."
   (if (empty? stack)
     stack
     (let ([open n head p] (first stack))
-      (cons [open (inc n) head (or p (and params? (= n 2)))] (rest stack)))))
+      (cons (hl-frame open (inc n) head (or p (and params? (= n 2)))) (rest stack)))))
 
 (defn- hl-name (stack text)
   "Advance past a symbol, recording it as the list's head when it is the first form."
   (if (empty? stack)
     stack
     (let ([open n head p] (first stack))
-      (cons [open (inc n) (if (and (= n 0) (= open "(")) text head) p] (rest stack)))))
+      (cons (hl-frame open (inc n) (if (and (= n 0) (= open "(")) text head) p) (rest stack)))))
 
 (defn- hl-head? (stack)
   "True when the form starting here is in HEAD position — the first form of a `(` list."
   (and (not (empty? stack))
     (let ([open n _ _] (first stack)) (and (= open "(") (= n 0)))))
 
-(defn- hl-more-forms? (toks)
+(defn- hl-more-forms? (toks open-end?)
   "True if another form follows in the current list — the next non-comment token is
-not this list's closing bracket."
+not this list's closing bracket. When the stream runs out first, `open-end?`: true when
+the stream is one LINE and the list may go on below it."
   (cond
-    (empty? toks) false
+    (empty? toks) open-end?
     else
       (let ([_ _ kind _] (first toks))
         (cond
-          (= kind :comment) (hl-more-forms? (rest toks))
+          (= kind :comment) (hl-more-forms? (rest toks) open-end?)
           else (not (= kind :close))))))
 
-(defn- hl-doc? (stack toks)
+(defn- hl-doc? (stack toks open-end?)
   "True when the string token starting here is a DOCSTRING rather than a string value:
 the enclosing form is a doc-carrying `def…` head (`(reflect/doc-forms)`), the string sits right
 after the name — or after the parameter list — and, for the heads that build a function,
@@ -225,7 +243,7 @@ string). `toks` is the stream AFTER the string."
       (and (= open "(")
         (not (nil? kind))
         (or (= n 2) (and (= n 3) params?))
-        (or (= kind :head) (hl-more-forms? toks))))))
+        (or (= kind :head) (hl-more-forms? toks open-end?))))))
 
 ;; ---- the lexer walk ---------------------------------------------------------
 
@@ -243,39 +261,54 @@ a `:syntax/*` face still restyles the editor on its next re-lex."
    :special (face :syntax/special)
    :function (face :syntax/function)})
 
-(defn- hl-spans (toks stack acc specials faces)
+(defn- hl-rainbow (acc pass start end depth)
+  ;; `acc` with the bracket at `[start, end)` in the face of `depth` (0 the outermost) when the
+  ;; pass paints a rainbow (`:rainbow`, the resolved depth faces), else `acc`
+  (let (rainbow (:rainbow pass))
+    (if (nil? rainbow) acc (cons [start end (nth rainbow (math/mod depth (count rainbow)))] acc))))
+
+(defn- hl-walk (toks stack acc pass)
   "Walk the `scan-tokens` stream into `[start end face]` colour spans, carrying the
 form `stack` (head position, and enough shape to tell a docstring from a string).
 `:symbol` needs position — head + special form → keyword face, head → call face, else
-uncoloured — and `:string` needs it too (reflect/doc vs. value). `faces` is the pass's resolved
-`hl-faces`. Accumulates in reverse."
+uncoloured — and `:string` needs it too (doc vs. value). `pass` is what the walk does not
+change: `:faces` (the resolved `hl-faces`), `:specials`, and `:open-end?` (the stream is one
+line of a longer source, see `hl-more-forms?`). Returns `[spans stack]`, the spans in
+REVERSE and the stack the stream ended with."
   (if (empty? toks)
-    (reverse acc)
+    [acc stack]
     (let ([s e kind text] (first toks)
-          more (rest toks))
+          more (rest toks)
+          faces (:faces pass))
       (cond
-        (= kind :open) (hl-spans more (hl-push (hl-advance stack true) text) acc specials faces)
-        (= kind :close) (hl-spans more (rest stack) acc specials faces)
-        (= kind :comment) (hl-spans more stack (cons [s e (get faces :comment)] acc) specials faces)
+        ;; with a rainbow, a bracket takes its depth's face: an opener the depth it opens, a
+        ;; closer the depth it closes, so a pair is one colour
+        (= kind :open)
+          (hl-walk more
+            (hl-push (hl-advance stack true) text)
+            (hl-rainbow acc pass s e (count stack))
+            pass)
+        (= kind :close)
+          (hl-walk more
+            (rest stack)
+            (hl-rainbow acc pass s e (math/max 0 (dec (count stack))))
+            pass)
         ; a comment starts no form — the stack is untouched
+        (= kind :comment) (hl-walk more stack (cons [s e (get faces :comment)] acc) pass)
         (= kind :symbol)
           (let (head? (hl-head? stack)
                 f (cond
-                    (and head? (= true (get specials text))) (get faces :special)
+                    (and head? (= true (get (:specials pass) text))) (get faces :special)
                     head? (get faces :function)
                     else nil))
-            (hl-spans more (hl-name stack text) (if (nil? f) acc (cons [s e f] acc)) specials faces))
+            (hl-walk more (hl-name stack text) (if (nil? f) acc (cons [s e f] acc)) pass))
         (= kind :string)
-          (let (f (if (hl-doc? stack more) (get faces :doc) (get faces :string)))
-            (hl-spans more (hl-advance stack false) (cons [s e f] acc) specials faces))
+          (let (f (if (hl-doc? stack more (:open-end? pass)) (get faces :doc) (get faces :string)))
+            (hl-walk more (hl-advance stack false) (cons [s e f] acc) pass))
         else
           (let (f (get faces kind))
             ; :number / :keyword
-            (hl-spans more
-              (hl-advance stack false)
-              (if (nil? f) acc (cons [s e f] acc))
-              specials
-              faces))))))
+            (hl-walk more (hl-advance stack false) (if (nil? f) acc (cons [s e f] acc)) pass))))))
 
 (defn highlight-spans (src &optional (specials hl-special-set))
   "Lexically tokenize Lisp `src` into a list of `[start end face]` colour spans
@@ -294,7 +327,11 @@ Scheme mode needs and all it needs.
 
     (editor/highlight/highlight-spans \"x ; hi\")    ;=> ([2 6 {:fg :dark-grey}])
     (editor/highlight/highlight-spans \"(let x)\")   ;=> ([1 4 {:fg :blue, :bold true}])"
-  (hl-spans (reflect/scan-tokens src) '() '() specials (hl-faces)))
+  (let ([spans _] (hl-walk (reflect/scan-tokens src)
+                    '()
+                    '()
+                    {:faces (hl-faces) :specials specials :open-end? false}))
+    (reverse spans)))
 (sig highlight-spans (string -> any))
 
 ;; ---- windowed highlighting (fontify just a viewport) ------------------------
@@ -398,6 +435,66 @@ line is never lexed twice. Every `editor/lexer` grammar is one: `lexer-line-lexe
 
     (:stateless? (editor/highlight/stateless-lexer (fn (line) [])))   ;=> true"
   {:lex (fn (line state) [(spans-of line) nil]) :initial nil :stateless? true})
+
+;; ---- the Lisp line lexer ------------------------------------------------------
+;; `highlight-spans` over a line at a time, for the line-state cache. What a line hands
+;; the next is everything the walk carries: the form stack (head position, docstring
+;; position) and, when the line ends inside a string, that string's face. A windowed lex
+;; has to guess both from a lead-in (`safe-restart`), and a lead-in that begins inside a
+;; multi-line docstring guesses the string state backwards: every `"` after it pairs the
+;; wrong way and the code reads as string. Carried, nothing is guessed.
+
+(defn- hl-lex-code (line from n stack acc pass)
+  "`[spans state]` for `line` from offset `from` on, outside any string, `acc` holding
+the spans before `from` (reversed). A string the line opens and does not close carries
+its face into the state."
+  (let (toks (if (= from 0)
+               (reflect/scan-tokens line)
+               (map (reflect/scan-tokens (string/substring line from n))
+                 (fn ([s e kind text]) [(+ s from) (+ e from) kind text])))
+        [spans stack-out] (hl-walk toks stack acc pass)
+        final (last toks)
+        ;; a token's start is an int (scan-tokens' offsets, shifted by an int); the guard says so
+        start (when final (first final))
+        open? (and (int? start)
+                (= (nth final 2) :string)
+                (< (hl-string-close line (inc start) n) 0)))
+    [(reverse spans) [stack-out (when open? (nth (first spans) 2))]]))
+
+(defn- hl-lex-line (line state pass)
+  (let ([stack string-face] state
+        n (string/length line))
+    (if (nil? string-face)
+      (hl-lex-code line 0 n stack '() pass)
+      (let (close (hl-string-close line 0 n))
+        (cond
+          (= n 0) ['() state]
+          (< close 0) [(list [0 n string-face]) state]
+          else (hl-lex-code line close n stack (list [0 close string-face]) pass))))))
+
+(defn lisp-line-lexer (&optional (specials nil) (options {}))
+  "`highlight-spans` as a `line-lexer`: a line's spans are what lexing the whole source
+gives it, because each line starts in the state the line above ended in — the open forms
+and, inside a multi-line string, that string's face. For `line-cache-update`, where a
+windowed `highlight-spans` would need a `safe-restart` lead-in and the lead-in can begin
+inside a docstring. `specials` is the head-symbol set, as for `highlight-spans` (nil for
+Brood's). `options` takes `:rainbow` — true colours each bracket by its depth in the
+`:syntax/delimiter-1` … `-9` faces (Emacs's rainbow-delimiters), exact across lines because
+the depth is the stack the lines carry. The faces are resolved when the lexer is built.
+
+One case reads differently: a string in a docstring's position that ends its line, with the
+form's next form (or its close) on a later line, is a docstring here — every line of it, when
+it runs over several — because the line cannot see whether the body goes on, where the
+whole-source lex calls a lone last body string a value.
+
+    (first ((:lex (editor/highlight/lisp-line-lexer)) \"doc.\\\" 1)\" [nil {:fg :grey :italic true}]))   ;=> ([0 5 {:fg :grey, :italic true}] [6 7 {:fg :yellow}])"
+  (let (pass {:faces (hl-faces)
+              :specials (or specials hl-special-set)
+              :open-end? true
+              :rainbow (when (:rainbow options)
+                         (vec (map (range 1 10)
+                                (fn (depth) (face (keyword (str "syntax/delimiter-" depth)))))))})
+    (line-lexer (fn (line state) (hl-lex-line line state pass)) [nil nil])))
 
 (defn line-cache ()
   "An empty line-state cache: what `line-cache-update` takes the first time, and what a

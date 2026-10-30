@@ -4,6 +4,7 @@
 //! subscribing process. Input translation, text rendering and frame painting are the
 //! child modules.
 
+mod bleed;
 #[cfg(all(test, feature = "gui-gpu"))]
 mod gpu_replay;
 mod input;
@@ -1331,6 +1332,9 @@ struct Win {
     /// without it.
     music: Option<(u32, crate::host::audio::Music)>,
     frame: Vec<Op>,
+    /// `frame` with its edge backgrounds continued over the margin (`bleed`), built once
+    /// per frame and window geometry, so a repaint (a caret blink, an expose) reuses it.
+    bleed: bleed::Bleed,
     mods: ModifiersState,
     cursor: (u16, u16),
     /// The pointer's last physical pixel position `(x, y)` — what a pixel-input
@@ -1573,6 +1577,7 @@ fn build_window(
         sounds: HashMap::new(),
         music: None,
         frame: Vec::new(),
+        bleed: bleed::Bleed::default(),
         mods: ModifiersState::empty(),
         cursor: (0, 0),
         cursor_px: (0, 0),
@@ -1885,6 +1890,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     // zone to pixels with the metrics its own region is painted at.
                     w.zones = cursor_zones(&ops, &w.renderer);
                     w.frame = ops;
+                    w.bleed.invalidate();
                     // A caret that moved, changed or appeared starts its blink over, shown; the
                     // same caret in a new frame (a spinner turned, a line elsewhere changed)
                     // keeps blinking where it was (ADR-469).
@@ -2598,14 +2604,18 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // when the GPU target skipped the frame (an occluded window) — nothing
                 // reached the compositor, so the window stays hidden and the input
                 // unanswered for the frame that does.
+                let inner = w.window.inner_size();
+                let margins =
+                    bleed::Margins::of(&w.renderer, inner.width as usize, inner.height as usize);
+                let frame = w.bleed.frame(&w.frame, margins);
                 let painted: Option<Option<[u64; 5]>> = match &mut w.backend {
                     Backend::Cpu { surface, .. } => {
-                        paint(surface, &w.window, &mut w.renderer, &w.frame);
+                        paint(surface, &w.window, &mut w.renderer, frame);
                         Some(None)
                     }
                     #[cfg(feature = "gui-gpu")]
                     Backend::Gpu(gpu) => gpu
-                        .paint(&w.frame, &mut w.renderer)
+                        .paint(frame, &mut w.renderer)
                         .map(|times| Some(times.phases())),
                 };
                 let presented = Instant::now();
@@ -2916,14 +2926,7 @@ fn publish_size(w: &Win) {
 /// metrics, and publish it for `gui-size`.
 fn update_cells(window: &winit::window::Window, r: &Renderer, size: &Arc<Mutex<(u16, u16)>>) {
     let sz = window.inner_size();
-    // The inset eats a margin on each edge, so the usable area is the window
-    // minus `2*inset` before it's divided into cells.
-    let inset = r.inset();
-    let usable_w = (sz.width as usize).saturating_sub(2 * inset);
-    let usable_h = (sz.height as usize).saturating_sub(2 * inset);
-    let cols = (usable_w / r.cell_w.max(1)).max(1).min(u16::MAX as usize) as u16;
-    let rows = (usable_h / r.cell_h.max(1)).max(1).min(u16::MAX as usize) as u16;
-    *lock(size) = (cols, rows);
+    *lock(size) = bleed::grid_cells(r, sz.width as usize, sz.height as usize);
 }
 
 impl Win {

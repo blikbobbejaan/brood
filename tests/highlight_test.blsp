@@ -628,3 +628,98 @@ cached: a line inserted at line 10, then the window (moved down one) shown again
             [_ spans2] (line-cache-update cache lexer edited 1 3))
         (assert= (lc-lexed) (list "cb"))
         (assert= spans2 (list [2 3 :c]))))))
+
+;; ---- the Lisp line lexer --------------------------------------------------------------
+;; `lisp-line-lexer` must colour every line as `highlight-spans` over the whole source
+;; does, through the line cache, from any window. The bug it fixes: a window lexed from a
+;; lead-in that began inside a multi-line docstring paired every later `"` the wrong way.
+
+(def ll-source
+  (string/join ["(defmodule probe"
+                 "  \"A module docstring" "over (three) lines, with \\\"escaped\\\" quotes"
+                 "and a ; that is no comment.\")" "" "(defn f (x)" "  \"Doc that" ""
+                 "spans a blank line.\"" "  (let (s \"one-line \\\"string\\\"\" ; a \"comment\""
+                 "        r #\"re\")" "    [s r :k 42]))" "(def g \"a value"
+                 "on two lines\" ) (h \"tail\")"]
+    "\n"))
+
+(defn ll-faces (src spans from to)
+  "The face of each character of `src` in `[from, to)` that is not a newline — what a
+reader sees, which a multi-line string's one span and its per-line spans agree on."
+  (for (i (range from to) :when (not (= (string/char-at src i) "\n")) :into [])
+    [i (face-at spans i)]))
+
+(describe "lisp-line-lexer — highlight-spans a line at a time"
+  (test "every window colours as the whole source does"
+    (let (rope (text/from-string ll-source)
+          lines (text/line-count rope)
+          whole (highlight-spans ll-source)
+          lexer (lisp-line-lexer))
+      (map (range lines)
+        (fn (lo)
+          (let (spans (second (line-cache-update (line-cache) lexer rope lo lines))
+                from (text/line->char rope lo))
+            (assert= (ll-faces ll-source spans from (string/length ll-source))
+              (ll-faces ll-source whole from (string/length ll-source))))))))
+
+  (test "a line inside a docstring carries the doc face, a value string's the string face"
+    (let (lex (:lex (lisp-line-lexer))
+          [_ in-doc] (lex "(defn f \"doc" [nil nil])
+          [_ in-value] (lex "(def g (str \"value" [nil nil]))
+      (assert= (first (lex "more" in-doc)) (list [0 4 hl-face-doc]))
+      (assert= (first (lex "more" in-value)) (list [0 4 hl-face-string]))))
+
+  (test "an escaped quote at a line's end leaves the string open"
+    (let (lex (:lex (lisp-line-lexer))
+          [_ state] (lex "(f \"a\\\"" [nil nil]))
+      (is (not (nil? (second state))))))
+
+  (test "the line closing a string goes back to code"
+    (let (lex (:lex (lisp-line-lexer))
+          [_ state] (lex "(f \"a" [nil nil])
+          [spans after] (lex "b\" (g 1)" state))
+      (assert= spans (list [0 2 hl-face-string] [4 5 hl-face-function] [6 7 hl-face-number]))
+      (assert= after [(list ["(" 3 "f" true]) nil])))
+
+  (test "a docstring ending its line is a doc, the body unseen"
+    ;; the one place a line differs from the whole source: here `\"hi\"` may be followed
+    ;; by more body on the next line, so it reads as the doc it almost always is
+    (let (lex (:lex (lisp-line-lexer)))
+      (assert= (first (lex "(defn f () \"hi\"" [nil nil]))
+        (list [1 5 hl-face-special] [11 15 hl-face-doc])))))
+
+(describe "lisp-line-lexer — rainbow brackets"
+  (test "each bracket takes its depth's face, a pair one colour, across lines"
+    (let (faces (vec (map (range 1 10) (fn (depth) {:fg (str "#" depth)})))
+          _ (doseq (depth (range 1 10))
+              (editor/face/face-set (keyword (str "syntax/delimiter-" depth))
+                (nth faces (dec depth))))
+          lex (:lex (lisp-line-lexer nil {:rainbow true}))
+          [first-spans state] (lex "(a [b" [nil nil])
+          [second-spans _] (lex " c] d)" state)
+          bracket-face (fn (spans at)
+                         (seq/find (map spans (fn ([s e f]) (when (= s at) f))) (fn (f) f))))
+      ;; `(` depth 1, `[` depth 2 on the first line; `]` closes depth 2, `)` depth 1 below
+      (assert= (bracket-face first-spans 0) (nth faces 0))
+      (assert= (bracket-face first-spans 3) (nth faces 1))
+      (assert= (bracket-face second-spans 2) (nth faces 1))
+      (assert= (bracket-face second-spans 5) (nth faces 0))))
+  (test "without the option no bracket is coloured"
+    (let ([spans _] ((:lex (lisp-line-lexer)) "(a)" [nil nil]))
+      ;; `a`, the call head, is coloured; neither bracket is
+      (is (not (any? spans (fn ([s _ _]) (or (= s 0) (= s 2)))))))))
+
+(describe "lisp-line-lexer — the edges a line meets"
+  (test "a string whose line ends in a lone backslash stays open, and nothing raises"
+    ;; typing an escape at a line's end: `"a\` before its letter
+    (let (lex (:lex (lisp-line-lexer))
+          [spans state] (lex "(def x \"a\\" [nil nil]))
+      (is (not (nil? (second state))))
+      (is (not (empty? spans)))
+      ;; and the continuation of such a string lexes too
+      (is (vector? (second (lex "\\" state))))))
+  (test "after its third form a list's lines start in the same state, however many forms"
+    ;; what lets the line cache stop re-lexing after an edit inside a long body
+    (let (lex (:lex (lisp-line-lexer))
+          after (fn (line) (second (lex line [nil nil]))))
+      (assert= (after "(defn f (x) (a) (b) (c)") (after "(defn f (x) (a) (b) (c) (d)")))))

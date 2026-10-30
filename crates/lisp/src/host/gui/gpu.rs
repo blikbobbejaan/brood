@@ -3191,17 +3191,26 @@ impl GpuWindow {
             });
         }
         if face.underline {
-            // A rule near the block bottom in the text colour, scaled with the glyph so
-            // it stays proportional.
+            // A rule (or a wave) near the block bottom, in its own colour or the text's,
+            // scaled with the glyph so it stays proportional.
             let underline_y = ch_s - 2.0 * scale as f32;
+            let rgb = face.underline_rgb.unwrap_or(fg);
             for (left, block_w, _) in &clusters {
-                quads.push(RunQuad::Fill {
-                    x: *left,
-                    y: underline_y,
-                    w: *block_w,
-                    h: scale as f32,
-                    rgb: fg,
-                });
+                for (x, y, w, h) in crate::host::gui::underline_rects(
+                    left.round() as isize,
+                    underline_y.round() as isize,
+                    block_w.round().max(0.0) as usize,
+                    scale,
+                    face.underline_wave,
+                ) {
+                    quads.push(RunQuad::Fill {
+                        x: x as f32,
+                        y: y as f32,
+                        w: w as f32,
+                        h: h as f32,
+                        rgb,
+                    });
+                }
             }
         }
         quads

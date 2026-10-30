@@ -4780,6 +4780,20 @@ as `(x n f)`, is flagged by the checker through `f:fn` and raises under contract
 `--all-features`, `nest format`, `nest check` and `--strict` over std, tests and examples, and
 the nine affected test files, armed and unarmed; not run here: the suite.
 
+2026-10-30 (ADR-508, edge bleed and filtered LCD text): compared against Emacs on the same panel
+with the same font and size, a GUI window had two real differences. The margin around the grid
+(inset plus the sub-cell remainder, all of it on the right and bottom) was plain background, so
+bedit's mode line stopped about 8 px short of the frame. And subpixel text was swash's
+`Format::Subpixel`, three whole-pixel renders shifted ±0.3 px with no LCD filter, read off zeno's
+`mask.rs`, which left hard orange and blue fringes. Now an opaque, square background at a grid
+edge gains `FRect`s over the margin (`backend/bleed.rs`, a frame rewrite cached per frame and
+geometry, so both painters and their damage tracking need no change); bedit draws its mode
+line and gutter as memoised fragments, so a fragment is bled inside and its result kept by
+address, without which the first version bled nothing in the real editor, and glyphs are rasterised
+at 3× width and filtered with FreeType's default weights (`lcd_filter`). The ink test went red
+when the 3× transform was removed. Checked here: fmt, clippy `--all-features`, the bleed and
+text-AA unit tests; not run here: the suite.
+
 2026-10-30 (ADR-509, KI-307: a collection is due on bytes too): KI-307 said a process with a
 large live heap stalled the processes beside it. The desktop runs no timing, so a new
 on-demand `Diagnose` workflow ran the repro on a CI runner, splitting each slow sample into
@@ -4799,6 +4813,19 @@ fixed: a preempted process wakes no idle worker, and an idle worker can sleep up
 (the repro's foreground is the root thread, so it cannot show whether that matters). Checked
 here: fmt, clippy `--all-features`, the new test file and the collector test, with the
 sabotage runs; not run here: the suite and the benchmarks.
+
+2026-10-30 (ADR-510, a Lisp coloured a line at a time): bedit showed a stretch of
+`rp2350.blsp` all in the string colour after a scroll. The windowed lex's 200-line lead-in
+began inside a multi-line docstring, and `safe-restart` scans from its input's first
+character as if that were outside any string, so every quote after the docstring's end paired
+the wrong way. Comparing a windowed lex with a whole-file lex for every viewport top found the
+two inverted windows. Now `editor/highlight/lisp-line-lexer` runs `highlight-spans` a line at a
+time for the line cache (ADR-471), carrying the form stack and an open string's face from line
+to line; bedit's Lisp modes name it as their `:line-lexer`. Every window of `rp2350.blsp`, and
+the whole of five large source files, colour exactly as a whole-file lex. The window test went
+red with the carried string state ignored. Checked here: `highlight_test`, `doc_examples_test`,
+and bedit's suite on the new std (its tree-sitter tests need a grammar-built nest); not run
+here: brood's suite.
 
 2026-10-30 (KI-308, KI-309, ADR-511: a no-issues pass). **KI-308**: beside each new background
 in the KI-307 repro, the root program's first sample waited 63–115 ms without running (3 of
@@ -4824,6 +4851,27 @@ and drop large vectors from a range, sized so the object count cannot trigger a 
 (each case checked red with the byte trigger removed). Checked here: fmt, clippy
 `--all-features`, the new and touched test files, the JIT, latch and scheduler binaries test
 by test, and the sabotage runs; not run here: the suite.
+
+2026-10-30 (ADR-510 addendum, rainbow brackets): bedit wanted Emacs's rainbow-delimiters. The
+Lisp line lexer already carries the form stack from line to line, so a bracket's depth is
+known exactly at any scroll position; `lisp-line-lexer` now takes `{:rainbow true}` and paints
+each bracket in `:syntax/delimiter-N` by depth. The faces are registered empty, so the REPL and
+the observer look as before. The rainbow test went red with the spans dropped. Checked here:
+`highlight_test`, `doc_examples_test`; not run here: the suite.
+
+2026-10-30 (ADR-513, coloured and wavy underlines; review fixes to ADR-508 / ADR-510): bedit's
+spell checker had to colour a misspelled word red because a face's underline was only a flag.
+`:underline` now takes a colour or `{:color c :style :wave}`, drawn by one `underline_rects`
+shared by the CPU and GPU painters, and in a terminal as the extended (curly, coloured)
+underline. A review of the day's Brood work found three more things, now fixed and guarded:
+`hl-string-close` read past the end of a line ending in a lone backslash inside a string
+(`"a\` while typing an escape), which the line lexer reaches on every such line; the line
+lexer's carried form stack kept counting forms, so an edit inside a long body changed the
+start state of every later line and defeated the line cache (a frame past its third form is
+now one canonical value); and the edge bleed clamped a scroll region's gliding row to the grid,
+leaving it no side piece, and bled a zero-sized rect. Each guard went red with its fix removed.
+Checked here: `highlight_test`, `doc_examples_test`, the `host::gui` bleed and underline unit
+tests; not run here: the suite.
 
 2026-10-30 (ADR-512, ROADMAP B6: every parameter list is a list). Of B6's four "exceptions" to
 lists for code, vectors for data, two were parameter lists — ability op specs and `impl`

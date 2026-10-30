@@ -1183,11 +1183,20 @@ pub(super) fn render_ops(
                         clip_skip,
                     );
                     if face.underline {
-                        // a rule near the block bottom, in the text colour
-                        // (scaled with the glyph so it stays proportional).
+                        // a rule (or a wave) near the block bottom, in its own colour or the
+                        // text's, scaled with the glyph so it stays proportional
                         let uy_signed = top_signed + ch_s as isize - 2 * scale as isize;
-                        if uy_signed >= oy as isize {
-                            fill_cell(canvas, left, uy_signed as usize, block_w, scale, pack(fg));
+                        let colour = pack(face.underline_rgb.unwrap_or(fg));
+                        for (x, y, w, h) in crate::host::gui::underline_rects(
+                            left as isize,
+                            uy_signed,
+                            block_w,
+                            scale,
+                            face.underline_wave,
+                        ) {
+                            if y >= oy as isize && x >= 0 {
+                                fill_cell(canvas, x as usize, y as usize, w, h, colour);
+                            }
                         }
                     }
                     cx += cells * scale;
@@ -1400,8 +1409,17 @@ pub(super) fn render_ops(
                         );
                         if face.underline {
                             let uy = top_signed + ch_s as isize - 2 * scale as isize;
-                            if uy >= 0 {
-                                fill_cell(canvas, left, uy as usize, block_w, scale, pack(fg));
+                            let colour = pack(face.underline_rgb.unwrap_or(fg));
+                            for (x, y, w, h) in crate::host::gui::underline_rects(
+                                left as isize,
+                                uy,
+                                block_w,
+                                scale,
+                                face.underline_wave,
+                            ) {
+                                if y >= 0 && x >= 0 {
+                                    fill_cell(canvas, x as usize, y as usize, w, h, colour);
+                                }
                             }
                         }
                     }

@@ -49,6 +49,12 @@ pub struct Face {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+    /// The underline's own colour (`:underline '#ff0000'` or `{:color …}`); `None` draws it in the
+    /// text colour.
+    pub underline_rgb: Option<[u8; 3]>,
+    /// A wavy underline (`{:style :wave}`, Emacs's `:underline (:style wave)`) — what a spell
+    /// checker or a diagnostic marks a word with, leaving the word its own colour.
+    pub underline_wave: bool,
     pub reverse: bool,
     pub family: Option<u32>,
     pub scale: u16,
@@ -64,11 +70,44 @@ impl Default for Face {
             bold: false,
             italic: false,
             underline: false,
+            underline_rgb: None,
+            underline_wave: false,
             reverse: false,
             family: None,
             scale: 1,
         }
     }
+}
+
+/// The rectangles `(x, y, w, h)` (pixels) an underline paints under a run `w` pixels wide from
+/// `left`, its rule's top at `y` and `thickness` tall: one rule, or for a wave a zigzag of
+/// `thickness`-square steps rising and falling `2 × thickness` over a `4 × thickness` period.
+/// The phase is the ABSOLUTE x, so the wave under one word is continuous across the cells
+/// (and runs) it is painted in. Shared by the CPU and GPU painters.
+pub(crate) fn underline_rects(
+    left: isize,
+    y: isize,
+    w: usize,
+    thickness: usize,
+    wave: bool,
+) -> Vec<(isize, isize, usize, usize)> {
+    let thickness = thickness.max(1);
+    if !wave {
+        return vec![(left, y, w, thickness)];
+    }
+    let half = (2 * thickness) as isize;
+    let period = 2 * half;
+    (0..w as isize)
+        .step_by(thickness)
+        .map(|i| {
+            let x = left + i;
+            let phase = x.rem_euclid(period);
+            let rise = if phase < half { phase } else { period - phase };
+            // centred on the plain rule: from a thickness above it to a thickness below
+            let step = (thickness as isize).min(w as isize - i) as usize;
+            (x, y - thickness as isize + rise, step, thickness)
+        })
+        .collect()
 }
 
 /// What `gui-font-info` reports about one font family: where its faces came from, so a
@@ -779,6 +818,33 @@ pub fn function_key(number: u8) -> Option<&'static str> {
         "f15", "f16", "f17", "f18", "f19", "f20", "f21", "f22", "f23", "f24",
     ];
     NAMES.get(usize::from(number).checked_sub(1)?).copied()
+}
+
+#[cfg(test)]
+mod underline_rect_tests {
+    use super::underline_rects;
+
+    #[test]
+    fn a_plain_underline_is_one_rule() {
+        assert_eq!(underline_rects(10, 20, 30, 2, false), vec![(10, 20, 30, 2)]);
+    }
+
+    #[test]
+    fn a_wave_covers_the_run_and_stays_a_thickness_either_side_of_the_rule() {
+        let rects = underline_rects(3, 20, 25, 2, true);
+        // contiguous columns from `left` to the end of the run, none past it
+        let mut x = 3;
+        for (rx, _, w, _) in &rects {
+            assert_eq!(*rx, x);
+            x += *w as isize;
+        }
+        assert_eq!(x, 3 + 25);
+        // it rises and falls, within [y - t, y + t]
+        assert!(rects.iter().all(|(_, y, _, _)| *y >= 18 && *y <= 22));
+        let heights: std::collections::BTreeSet<isize> =
+            rects.iter().map(|(_, y, _, _)| *y).collect();
+        assert!(heights.len() > 1);
+    }
 }
 
 #[cfg(test)]

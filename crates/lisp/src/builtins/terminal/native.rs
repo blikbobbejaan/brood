@@ -583,6 +583,9 @@ struct FaceKeys {
     reverse: Value,
     family: Value,
     scale: Value,
+    color: Value,
+    style: Value,
+    wave: Value,
 }
 static FACE_KEYS: std::sync::LazyLock<FaceKeys> = std::sync::LazyLock::new(|| FaceKeys {
     fg: value::kw("fg"),
@@ -593,6 +596,9 @@ static FACE_KEYS: std::sync::LazyLock<FaceKeys> = std::sync::LazyLock::new(|| Fa
     reverse: value::kw("reverse"),
     family: value::kw("family"),
     scale: value::kw("scale"),
+    color: value::kw("color"),
+    style: value::kw("style"),
+    wave: value::kw("wave"),
 });
 
 /// Apply a face map (`{:fg :red :bg :blue :bold true :reverse true}`) as
@@ -618,8 +624,28 @@ pub(in crate::builtins) fn apply_face<W: std::io::Write>(
     if heap.map_get(id, k.italic).is_some_and(face_truthy) {
         crossterm::queue!(out, SetAttribute(Attribute::Italic)).map_err(term_err)?;
     }
-    if heap.map_get(id, k.underline).is_some_and(face_truthy) {
-        crossterm::queue!(out, SetAttribute(Attribute::Underlined)).map_err(term_err)?;
+    if let Some(underline) = heap.map_get(id, k.underline).filter(|v| face_truthy(*v)) {
+        // a colour (`"#ff5f59"`) or `{:color c :style :wave}`: a terminal that knows the
+        // extended underline (kitty, foot, wezterm) draws it coloured and curly, one that
+        // does not falls back to a plain underline
+        let (colour, wave) = match underline {
+            Value::Map(spec) => (
+                heap.map_get(spec, k.color).and_then(|v| color_of(heap, v)),
+                matches!((heap.map_get(spec, k.style), k.wave), (Some(Value::Keyword(a)), Value::Keyword(b)) if a == b),
+            ),
+            Value::Bool(_) => (None, false),
+            other => (color_of(heap, other), false),
+        };
+        let style = if wave {
+            Attribute::Undercurled
+        } else {
+            Attribute::Underlined
+        };
+        crossterm::queue!(out, SetAttribute(style)).map_err(term_err)?;
+        if let Some(colour) = colour {
+            crossterm::queue!(out, crossterm::style::SetUnderlineColor(colour))
+                .map_err(term_err)?;
+        }
     }
     if heap.map_get(id, k.reverse).is_some_and(face_truthy) {
         crossterm::queue!(out, SetAttribute(Attribute::Reverse)).map_err(term_err)?;
@@ -774,7 +800,17 @@ pub(in crate::builtins) fn gui_face(heap: &Heap, face: Value) -> crate::host::gu
     f.bg = heap.map_get(id, k.bg).and_then(|v| face_rgb(heap, v));
     f.bold = heap.map_get(id, k.bold).is_some_and(face_truthy);
     f.italic = heap.map_get(id, k.italic).is_some_and(face_truthy);
-    f.underline = heap.map_get(id, k.underline).is_some_and(face_truthy);
+    // `:underline` is a flag, a colour (`"#ff5f59"`, `:red`), or `{:color c :style :wave}`
+    let underline = heap.map_get(id, k.underline);
+    f.underline = underline.is_some_and(face_truthy);
+    match underline {
+        Some(Value::Map(spec)) => {
+            f.underline_rgb = heap.map_get(spec, k.color).and_then(|v| face_rgb(heap, v));
+            f.underline_wave = matches!((heap.map_get(spec, k.style), k.wave), (Some(Value::Keyword(a)), Value::Keyword(b)) if a == b);
+        }
+        Some(Value::Bool(_)) | Some(Value::Nil) | None => {}
+        Some(colour) => f.underline_rgb = face_rgb(heap, colour),
+    }
     f.reverse = heap.map_get(id, k.reverse).is_some_and(face_truthy);
     // `:family` is a keyword naming a registered font family; carry its interned
     // id so the renderer can pick the matching font set (`:mono` / unknown → default).
@@ -2420,6 +2456,42 @@ mod gui_face_tests {
         let hex = heap.alloc_string("#61afef");
         let by_hex = heap.map_from_pairs(vec![(value::kw("bg"), hex)]);
         assert_eq!(gui_face(&heap, by_hex).bg, Some([0x61, 0xaf, 0xef]));
+    }
+}
+
+#[cfg(test)]
+mod underline_face_tests {
+    use super::gui_face;
+    use crate::core::heap::Heap;
+    use crate::core::value::{self, Value};
+
+    fn face_with_underline(heap: &mut Heap, underline: Value) -> crate::host::gui::Face {
+        let map = heap.map_from_pairs(vec![(value::kw("underline"), underline)]);
+        gui_face(heap, map)
+    }
+
+    #[test]
+    fn underline_takes_a_flag_a_colour_or_a_wave_spec() {
+        let mut heap = Heap::new();
+        let plain = face_with_underline(&mut heap, Value::boolean(true));
+        assert!(plain.underline && plain.underline_rgb.is_none() && !plain.underline_wave);
+
+        let red = heap.alloc_string("#ff0000");
+        let coloured = face_with_underline(&mut heap, red);
+        assert!(coloured.underline && !coloured.underline_wave);
+        assert_eq!(coloured.underline_rgb, Some([0xff, 0, 0]));
+
+        let green = heap.alloc_string("#00ff00");
+        let spec = heap.map_from_pairs(vec![
+            (value::kw("color"), green),
+            (value::kw("style"), value::kw("wave")),
+        ]);
+        let wave = face_with_underline(&mut heap, spec);
+        assert!(wave.underline && wave.underline_wave);
+        assert_eq!(wave.underline_rgb, Some([0, 0xff, 0]));
+
+        let off = face_with_underline(&mut heap, Value::boolean(false));
+        assert!(!off.underline);
     }
 }
 

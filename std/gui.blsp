@@ -149,7 +149,7 @@
   (%gui-inset! px))
 
 (defn bg (color)
-  "Set the window background colour: the fill for :clear, the per-frame pre-clear, and — being outside every cell — the gui/inset margin and the cell-grid snap remainder. So a GUI app's padding matches its own theme background instead of the hardcoded default. color is a keyword named colour, an [r g b] vector (0..255 per channel), or a \"#rrggbb\"/\"#rgb\" hex string; nil restores the default. Applies to every open window and the default for ones opened later (a pure repaint — no grid change). Needs --features gui. Returns nil.
+  "Set the window background colour: the fill for :clear, the per-frame pre-clear, and — being outside every cell — the gui/inset margin and the cell-grid snap remainder, except beside a square background that reaches the edge of the grid, which continues across the margin to the window edge (edge bleed, ADR-508). So a GUI app's padding matches its own theme background instead of the hardcoded default. color is a keyword named colour, an [r g b] vector (0..255 per channel), or a \"#rrggbb\"/\"#rgb\" hex string; nil restores the default. Applies to every open window and the default for ones opened later (a pure repaint — no grid change). Needs --features gui. Returns nil.
 
     (gui/bg \"#1e1e2e\")   ;~> nil; the background fill of every window"
   (%gui-bg! color))
