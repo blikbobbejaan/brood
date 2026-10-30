@@ -15,21 +15,20 @@ impl Heap {
 
     /// Should the next safepoint run a collection? Compares LOCAL live count
     /// against the adaptive threshold (recomputed by [`Self::collect`] as
-    /// `max(GC_FLOOR, 2 * live)`), and the fresh-buffer bytes allocated since the last
-    /// minor against their own threshold — an object count alone cannot see a vector of a
-    /// million elements (KI-307). Cheap: a sum of the slab lengths and two compares.
+    /// `max(GC_FLOOR, 2 * live)`), or once the nursery has spent its fresh-buffer budget —
+    /// an object count alone cannot see a vector of a million elements (KI-307). Cheap: a
+    /// sum of the slab lengths and two compares.
     #[inline]
     pub fn gc_due(&self) -> bool {
         self.gc_enabled
-            && (self.local_live_count() >= self.gc_threshold
-                || self.nursery_bytes >= self.gc_byte_threshold)
+            && (self.local_live_count() >= self.gc_threshold || self.nursery_budget_left == 0)
     }
 
-    /// Count a fresh buffer of `bytes` — a spilled vector, string text, a byte blob —
-    /// toward the byte half of [`gc_due`](Self::gc_due).
+    /// Spend `bytes` of a fresh buffer — a spilled vector, string text, a byte blob — from
+    /// the nursery's budget, the byte half of [`gc_due`](Self::gc_due).
     #[inline]
     pub(in crate::core::heap) fn note_fresh_buffer(&mut self, bytes: usize) {
-        self.nursery_bytes = self.nursery_bytes.saturating_add(bytes);
+        self.nursery_budget_left = self.nursery_budget_left.saturating_sub(budget_units(bytes));
     }
 
     /// Nursery growth factor: the next collection triggers at `growth × live`. Default **2.0**,

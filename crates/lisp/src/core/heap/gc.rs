@@ -148,24 +148,23 @@ impl Heap {
         // the bytes it adds are measured over what it copied, not the whole old generation.
         let old_mark = self.old_opt().map(buffer_mark).unwrap_or_default();
         self.minor_collect(tenure, extra_roots, extra_envs);
-        // The byte trigger counts fresh allocation since this minor, so it starts again
-        // from nothing: survivors are paid for, and keeping them in the count would fire a
-        // collection at every safepoint over one large live young vector. They scale the
-        // next threshold instead, beside the old generation's bytes.
-        self.nursery_bytes = 0;
+        // The old generation's buffer bytes, kept in the extras: only a collection touches
+        // them, and `collect` boxes the extras for its pause timing anyway.
+        let mut old_bytes = self.extras().map_or(0, |extras| extras.old_buffer_bytes);
+        // The byte budget refills from nothing spent: survivors are paid for, and keeping
+        // them in the count would make a collection due at every safepoint over one large
+        // live young vector. They size the budget instead, beside the old generation's bytes.
         let young_bytes = if tenure {
-            self.old_bytes = self
-                .old_bytes
-                .saturating_add(buffer_bytes_since(self.old(), old_mark));
+            old_bytes = old_bytes.saturating_add(buffer_bytes_since(self.old(), old_mark));
             0
         } else {
             buffer_bytes_since(&self.local, BufferMark::default())
         };
-        let retained_bytes = young_bytes.saturating_add(self.old_bytes);
-        self.gc_byte_threshold = std::cmp::max(
+        let retained_bytes = young_bytes.saturating_add(old_bytes);
+        self.nursery_budget_left = budget_units(std::cmp::max(
             nursery_byte_floor(),
             (((retained_bytes as f64) * Self::gc_growth()) as usize).min(NURSERY_BYTE_MAX),
-        );
+        ));
         // Next minor fires when the *young* gen reaches `gc_threshold`. Scale it with
         // the **total** live set (young + old): a tenuring build leaves young ≈ 0, so a
         // young-only scale would collapse to the floor and collect O(n/floor) times
@@ -184,8 +183,9 @@ impl Heap {
         // for copy throughput.
         // Or when the old generation's buffers have grown as much: a few tenured objects can
         // own gigabytes of dead vector, which the object count would wait on indefinitely.
+        let major_budget = self.extras().map_or(0, |extras| extras.major_buffer_budget);
         if self.old_live_count() >= self.major_threshold
-            || self.old_bytes >= self.major_byte_threshold
+            || old_bytes >= std::cmp::max(MAJOR_BYTE_FLOOR, major_budget)
         {
             self.major_collect(extra_roots, extra_envs);
             self.major_threshold = std::cmp::max(
@@ -193,14 +193,12 @@ impl Heap {
                 self.old_live_count().saturating_mul(major_growth()),
             );
             // A major copies the whole old generation, so measuring it whole costs the same.
-            self.old_bytes = self
+            old_bytes = self
                 .old_opt()
                 .map_or(0, |old| buffer_bytes_since(old, BufferMark::default()));
-            self.major_byte_threshold = std::cmp::max(
-                MAJOR_BYTE_FLOOR,
-                self.old_bytes.saturating_mul(major_growth()),
-            );
+            self.extras_mut().major_buffer_budget = old_bytes.saturating_mul(major_growth());
         }
+        self.extras_mut().old_buffer_bytes = old_bytes;
     }
 
     /// Live objects in the **old generation** (`Σ old.slab.len()`). Old is

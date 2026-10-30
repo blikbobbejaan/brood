@@ -96,6 +96,18 @@ pub(in crate::core::heap) fn nursery_byte_floor() -> usize {
 /// `conj` loop makes, and a minor that finds them dead costs nothing per byte.
 pub(in crate::core::heap) const NURSERY_BYTE_FLOOR: usize = 32 * 1024 * 1024;
 
+/// The unit of the nursery's byte budget ([`Heap::nursery_budget_left`]): 16 bytes, so one
+/// `u32` holds 64 GiB. A buffer under 16 bytes spends nothing, which costs nothing — the
+/// object count already bounds small allocations.
+pub(in crate::core::heap) const BUDGET_UNIT: usize = 16;
+
+/// `bytes` as a nursery budget, in [`BUDGET_UNIT`]s, saturating at `u32::MAX` — which an
+/// unbounded floor (`usize::MAX`, a pinned override) becomes.
+#[inline]
+pub(in crate::core::heap) fn budget_units(bytes: usize) -> u32 {
+    u32::try_from(bytes / BUDGET_UNIT).unwrap_or(u32::MAX)
+}
+
 /// The fan-out end of [`nursery_byte_floor`].
 pub(in crate::core::heap) const NURSERY_BYTE_FLOOR_MIN: usize = 1024 * 1024;
 

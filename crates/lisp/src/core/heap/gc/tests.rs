@@ -1035,7 +1035,6 @@ fn an_old_generation_of_dead_large_vectors_is_compacted_on_its_bytes() {
     let mut h = Heap::new();
     h.gc_enabled = true;
     h.major_threshold = major_floor();
-    h.major_byte_threshold = MAJOR_BYTE_FLOOR;
     let mut roots = [Value::nil()];
     for round in 0..ROUNDS {
         roots[0] = h.alloc_vector(vec![Value::int(round as i64); ELEMENTS]);

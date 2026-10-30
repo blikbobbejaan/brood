@@ -521,6 +521,16 @@ pub(crate) struct HeapExtras {
 
     pub(crate) gc_ns_last: u64,
 
+    /// The byte half of the **major** trigger (ADR-509): the buffer bytes the old generation
+    /// holds — measured by each major over what it copied, grown by each tenure by what it
+    /// appended — and the budget the last major left, `major_growth × what it kept` (0 before
+    /// the first: the floor alone). A major is due once the first reaches
+    /// `max(MAJOR_BYTE_FLOOR, budget)`. Here rather than on [`Heap`] because only a
+    /// collection reads or writes them, and a collection boxes these extras anyway.
+    pub(crate) old_buffer_bytes: usize,
+
+    pub(crate) major_buffer_budget: usize,
+
     /// Per-process heap limit (bytes) — set by
     /// this process on itself via `(proc/flag :max-heap n)`, `None` = unlimited
     /// (the default; the ADR-043 global soft/hard cap is separate). Checked
@@ -930,26 +940,19 @@ pub struct Heap {
     ///
     /// [`gc_enabled`]: Self::gc_enabled
     gc_threshold: usize,
-    /// Bytes of **fresh buffers** — spilled vectors, string text, byte blobs — allocated in
-    /// the nursery since the last minor collection. One object can own any number of bytes,
-    /// so the object count alone let a loop making large garbage vectors run to gigabytes
-    /// before a collection fired (KI-307: a `conj` loop over a 60 000-element vector reached
-    /// 12 GB resident in three seconds). [`gc_due`](Self::gc_due) fires on this too, against
-    /// [`gc_byte_threshold`](Self::gc_byte_threshold). Reset by every minor: survivors are
-    /// paid for already, and counting them would re-trigger on a big live vector forever.
-    nursery_bytes: usize,
-    /// The byte half of the minor trigger, recomputed after each collection as
-    /// `max(NURSERY_BYTE_FLOOR, growth × retained buffer bytes)` capped at
-    /// `NURSERY_BYTE_MAX` — the byte twin of [`gc_threshold`](Self::gc_threshold).
-    /// `usize::MAX` while GC is off.
-    gc_byte_threshold: usize,
-    /// Buffer bytes the old generation holds: set by each major (which walks it anyway),
-    /// grown by each tenure by what it copied. Drives the byte half of the major trigger.
-    old_bytes: usize,
-    /// The byte half of the major trigger: `max(MAJOR_BYTE_FLOOR, major_growth ×
-    /// old_bytes)` as of the last major. Without it an old generation of a few objects
-    /// owning huge dead buffers waited for its object count to grow before compacting.
-    major_byte_threshold: usize,
+    /// How many more bytes of **fresh buffers** — spilled vectors, string text, byte blobs —
+    /// the nursery may allocate before a minor collection is due, in 16-byte units
+    /// ([`budget_units`]). One object can own any number of bytes, so the object count
+    /// alone let a loop making large garbage vectors run to gigabytes before a collection
+    /// fired (KI-307: a `conj` loop over a 60 000-element vector reached 12 GB resident in
+    /// three seconds). Each fresh buffer counts down, [`gc_due`](Self::gc_due) fires at
+    /// zero, and every minor refills it to `max(byte floor, growth × retained buffer
+    /// bytes)` capped at `NURSERY_BYTE_MAX` — survivors are paid for, so they size the next
+    /// budget instead of spending it. A countdown in one `u32` rather than a count and a
+    /// threshold in two `usize`s, because this struct is per-process memory and a parked
+    /// process is held to a floor (`tests/process_floor.rs`). `u32::MAX` while GC is off or
+    /// an override pins the object floor: 64 GiB, never spent in practice.
+    nursery_budget_left: u32,
     /// [`park_trim_probe`] as of this process's last park-time trim — the baseline
     /// [`Heap::trim_parked`] measures growth against, in slab elements.
     park_trim_mark: usize,
@@ -1513,9 +1516,9 @@ mod gc;
 // The collector's tuning knobs live with it (move f); re-imported so `heap.rs` and the
 // sibling children resolve them unqualified, as they did when they were defined here.
 use self::gc::{
-    DRAIN_REPORT_STRIDE, MAJOR_BYTE_FLOOR, P1_LARGE_SEED, P1_REVALIDATE_STRIDE,
-    P2_REVALIDATE_STRIDE, RT_DRAIN_SCAN_STRIDE, WALKER_RED_ZONE, WALKER_STACK_CHUNK, gc_floor,
-    major_floor, nursery_byte_floor, rt_gc_floor,
+    DRAIN_REPORT_STRIDE, P1_LARGE_SEED, P1_REVALIDATE_STRIDE, P2_REVALIDATE_STRIDE,
+    RT_DRAIN_SCAN_STRIDE, WALKER_RED_ZONE, WALKER_STACK_CHUNK, budget_units, gc_floor, major_floor,
+    nursery_byte_floor, rt_gc_floor,
 };
 mod gc_runtime;
 mod local_string;
@@ -1859,8 +1862,7 @@ impl Heap {
             gc_threshold: usize::MAX,
             rt_gc_threshold: usize::MAX,
             major_threshold: usize::MAX,
-            gc_byte_threshold: usize::MAX,
-            major_byte_threshold: usize::MAX,
+            nursery_budget_left: u32::MAX,
             gc_enabled: false,
             ..Heap::with_regions(Arc::default(), Arc::default())
         }
@@ -1897,10 +1899,7 @@ impl Heap {
             roots: roots_buf::RootsBuf::new(),
             env_roots: Vec::new(),
             gc_threshold: gc_floor(),
-            nursery_bytes: 0,
-            gc_byte_threshold: nursery_byte_floor(),
-            old_bytes: 0,
-            major_byte_threshold: MAJOR_BYTE_FLOOR,
+            nursery_budget_left: budget_units(nursery_byte_floor()),
             park_trim_mark: 0,
             rt_gc_threshold: rt_gc_floor(),
             gc_enabled: true,
