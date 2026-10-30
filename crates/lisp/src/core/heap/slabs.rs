@@ -85,6 +85,17 @@ impl Clone for VecStore {
 }
 
 impl VecStore {
+    /// The bytes of this vector's own buffer: a spilled vector's elements, nothing for an
+    /// inline one (its elements live in the slab entry). What the collector's byte trigger
+    /// counts for a vector, and [`owned_bytes`] sums.
+    #[inline]
+    pub(super) fn buffer_bytes(&self) -> usize {
+        match self {
+            VecStore::Spill { vec, .. } => vec.capacity() * std::mem::size_of::<Value>(),
+            VecStore::Inline { .. } => 0,
+        }
+    }
+
     /// The one `Spill` constructor: caches the buffer pointer + length.
     #[inline]
     pub(super) fn spill(vec: Vec<Value>) -> Self {
@@ -420,6 +431,42 @@ pub(super) fn slab_capacity_bytes(s: &Slabs) -> usize {
         + s.envs.capacity() * size_of::<EnvFrame>()
 }
 
+/// Where a slab set's buffer-owning slabs end: their lengths at one moment. The
+/// collector takes one before a tenure and measures [`buffer_bytes_since`] after it, so
+/// counting the bytes a tenure added costs what the tenure copied, never the whole old
+/// generation. Every generation is append-only between collections, so the entries past
+/// the mark are exactly the ones added since.
+#[derive(Clone, Copy, Default)]
+pub(super) struct BufferMark {
+    vectors: usize,
+    strings: usize,
+    bytes: usize,
+}
+
+pub(super) fn buffer_mark(s: &Slabs) -> BufferMark {
+    BufferMark {
+        vectors: s.vectors.len(),
+        strings: s.strings.len(),
+        bytes: s.bytes.len(),
+    }
+}
+
+/// The bytes owned by the buffers of `s`'s entries past `mark`: spilled vectors, string
+/// text and byte blobs, the three kinds whose size one object does not bound. With the
+/// default mark it is the whole slab set's. O(entries past the mark).
+pub(super) fn buffer_bytes_since(s: &Slabs, mark: BufferMark) -> usize {
+    let vectors: usize = s.vectors[mark.vectors..]
+        .iter()
+        .map(VecStore::buffer_bytes)
+        .sum();
+    let strings: usize = s.strings[mark.strings..]
+        .iter()
+        .map(LocalString::buffer_bytes)
+        .sum();
+    let bytes: usize = s.bytes[mark.bytes..].iter().map(|blob| blob.len()).sum();
+    vectors + strings + bytes
+}
+
 /// Everything a slab set holds, in bytes: [`slab_capacity_bytes`] plus what the entries
 /// own outside the slabs — spilled vector buffers, map and frame arrays, string text and
 /// shared blobs, ropes. A shared blob counts in full in every heap that holds it, since
@@ -427,14 +474,7 @@ pub(super) fn slab_capacity_bytes(s: &Slabs) -> usize {
 /// process to stop under memory pressure ([`crate::process::pressure`]) — never a hot path.
 pub(super) fn owned_bytes(s: &Slabs) -> usize {
     use std::mem::size_of;
-    let vectors: usize = s
-        .vectors
-        .iter()
-        .map(|store| match store {
-            VecStore::Spill { vec, .. } => vec.capacity() * size_of::<Value>(),
-            VecStore::Inline { .. } => 0,
-        })
-        .sum();
+    let vectors: usize = s.vectors.iter().map(VecStore::buffer_bytes).sum();
     let maps: usize = s
         .maps
         .iter()
@@ -452,14 +492,7 @@ pub(super) fn owned_bytes(s: &Slabs) -> usize {
             data + children
         })
         .sum();
-    let strings: usize = s
-        .strings
-        .iter()
-        .map(|string| match &string.data {
-            StrData::Inline(text) => text.capacity(),
-            StrData::Shared(blob) => blob.len(),
-        })
-        .sum();
+    let strings: usize = s.strings.iter().map(LocalString::buffer_bytes).sum();
     let bytes: usize = s.bytes.iter().map(|blob| blob.len()).sum();
     let ropes: usize = s.ropes.iter().map(|rope| rope.len_bytes()).sum();
     let envs: usize = s

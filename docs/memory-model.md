@@ -21,7 +21,9 @@
 > carry an age bit + per-generation epoch (the nursery and old epochs bump
 > independently). Observability: `(gc-stats)`, `(gc-collect)` (force a collection),
 > `(gc-trace on?)` + `BROOD_GC_TRACE`; thresholds tune via
-> `BROOD_GC_FLOOR`/`BROOD_GC_TENURE`/`BROOD_GC_MAJOR`. So where the banners below
+> `BROOD_GC_FLOOR`/`BROOD_GC_TENURE`/`BROOD_GC_MAJOR`. Both triggers also fire on bytes:
+> a minor once a process has made enough fresh vector, string and byte buffers, a major
+> once the old generation's buffers have grown 4× (ADR-509). So where the banners below
 > say "semi-space copy of the whole live set," read "minor copy of the nursery
 > survivors only, plus a rare major over old." See ADR-072 and the 2026-05-30
 > devlog entry.

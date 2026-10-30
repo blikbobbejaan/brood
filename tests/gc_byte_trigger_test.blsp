@@ -1,0 +1,62 @@
+;; The collector's byte trigger (KI-307). A collection used to be due only when a process
+;; had made enough OBJECTS, but one object can own any number of bytes: a vector built by
+;; `conj` is a fresh flat copy each step, so 2500 steps make ~5000 objects and ~75 MB of
+;; dead element arrays. Below the object floor no collection ran at all, and a loop doing
+;; that repeatedly reached 12 GB resident in three seconds and starved the processes
+;; beside it of memory bandwidth. A collection is now also due once a process has made
+;; enough fresh buffer bytes — spilled vectors, string text, byte blobs.
+;;
+;; Each case counts its own process's collections around a loop whose object count can
+;; trigger at most one (the floor is 4096 objects at its lowest, under the suite's
+;; fan-out), so two or more can only come from the bytes.
+
+(defmodule gc-byte-trigger-test (:use test))
+
+(defn collections ()
+  (get (dev/gc-stats) :collections))
+
+;; A vector grown one `conj` at a time: n vectors of up to n elements, 24 bytes each.
+(defn conj-build (n)
+  (fold (range n) [] (fn (acc i) (conj acc i))))
+
+;; A string grown one `str` at a time: n strings of up to 10·n bytes.
+(defn str-build (n)
+  (fold (range n) "" (fn (acc _) (str acc "0123456789"))))
+
+(describe "a collection is due on the bytes a process makes, not only its object count"
+  (test "a vector grown by conj collects as its dead copies pile up"
+    (let (before (collections)
+          built (conj-build 2500)
+          after (collections))
+      (do
+        (assert= (count built) 2500)
+        (assert= (last built) 2499)
+        (assert (>= (- after before) 2)))))
+
+  (test "a string grown by str collects as its dead copies pile up"
+    (let (before (collections)
+          built (str-build 3000)
+          after (collections))
+      (do
+        (assert= (string/length built) 30000)
+        (assert (>= (- after before) 2))))))
+
+(describe "the byte trigger across processes"
+  :isolated (test "workers building large vectors at once each collect on their own bytes"
+    (let (parent (self)
+          workers (map (range 4)
+                    (fn (k)
+                      (spawn (fn ()
+                               (let (before (collections)
+                                     built (conj-build (+ 2500 k))
+                                     after (collections))
+                                 (send parent
+                                   {:worker k
+                                    :count (count built)
+                                    :last (last built)
+                                    :collections (- after before)}))))))
+          replies (map workers
+                    (fn (_) (receive ({:worker k :count c :last l :collections n} [k c l n])))))
+      (do
+        (assert= (count replies) 4)
+        (assert (every? replies (fn ([k c l n]) (and (= c (+ 2500 k)) (= l (+ 2499 k)) (>= n 2)))))))))

@@ -1022,3 +1022,48 @@ fn a_declaration_or_a_rebinding_starts_the_verdicts_over() {
         KnownVerdict::Unknown
     ));
 }
+
+/// An old generation of a few objects that own large dead buffers is compacted on its
+/// bytes (KI-307). Each round tenures one 12 MB vector and drops the previous one, so the
+/// old generation's object count stays far below the major floor while its dead buffers
+/// pile up; only the byte half of the major trigger reclaims them. Driven through
+/// `collect`, the entry point the eval safepoint calls.
+#[test]
+fn an_old_generation_of_dead_large_vectors_is_compacted_on_its_bytes() {
+    const ELEMENTS: usize = 512 * 1024; // 12 MB of `Value`s
+    const ROUNDS: usize = 12;
+    let mut h = Heap::new();
+    h.gc_enabled = true;
+    h.major_threshold = major_floor();
+    h.major_byte_threshold = MAJOR_BYTE_FLOOR;
+    let mut roots = [Value::nil()];
+    for round in 0..ROUNDS {
+        roots[0] = h.alloc_vector(vec![Value::int(round as i64); ELEMENTS]);
+        // Garbage enough that the collection tenures its survivor.
+        for filler in 0..min_tenure() {
+            h.alloc_pair(Value::int(filler as i64), Value::nil());
+        }
+        h.collect(&mut roots, &mut []);
+    }
+    assert!(
+        h.old_live_count() < major_floor(),
+        "the object count alone would have compacted"
+    );
+    let retained = buffer_bytes_since(h.old(), BufferMark::default());
+    let one_vector = ELEMENTS * std::mem::size_of::<Value>();
+    assert!(
+        retained < ROUNDS / 2 * one_vector,
+        "the old generation keeps {} MB of vectors after {ROUNDS} rounds of one live vector",
+        retained >> 20
+    );
+    match roots[0].unpack() {
+        ValueRef::Vector(id) => {
+            let survivor = h.vector(id);
+            assert_eq!(survivor.len(), ELEMENTS);
+            assert!(
+                matches!(survivor[0].unpack(), ValueRef::Int(round) if round == ROUNDS as i64 - 1)
+            );
+        }
+        _ => unreachable!(),
+    }
+}

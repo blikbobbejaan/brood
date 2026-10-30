@@ -930,6 +930,26 @@ pub struct Heap {
     ///
     /// [`gc_enabled`]: Self::gc_enabled
     gc_threshold: usize,
+    /// Bytes of **fresh buffers** — spilled vectors, string text, byte blobs — allocated in
+    /// the nursery since the last minor collection. One object can own any number of bytes,
+    /// so the object count alone let a loop making large garbage vectors run to gigabytes
+    /// before a collection fired (KI-307: a `conj` loop over a 60 000-element vector reached
+    /// 12 GB resident in three seconds). [`gc_due`](Self::gc_due) fires on this too, against
+    /// [`gc_byte_threshold`](Self::gc_byte_threshold). Reset by every minor: survivors are
+    /// paid for already, and counting them would re-trigger on a big live vector forever.
+    nursery_bytes: usize,
+    /// The byte half of the minor trigger, recomputed after each collection as
+    /// `max(NURSERY_BYTE_FLOOR, growth × retained buffer bytes)` capped at
+    /// `NURSERY_BYTE_MAX` — the byte twin of [`gc_threshold`](Self::gc_threshold).
+    /// `usize::MAX` while GC is off.
+    gc_byte_threshold: usize,
+    /// Buffer bytes the old generation holds: set by each major (which walks it anyway),
+    /// grown by each tenure by what it copied. Drives the byte half of the major trigger.
+    old_bytes: usize,
+    /// The byte half of the major trigger: `max(MAJOR_BYTE_FLOOR, major_growth ×
+    /// old_bytes)` as of the last major. Without it an old generation of a few objects
+    /// owning huge dead buffers waited for its object count to grow before compacting.
+    major_byte_threshold: usize,
     /// [`park_trim_probe`] as of this process's last park-time trim — the baseline
     /// [`Heap::trim_parked`] measures growth against, in slab elements.
     park_trim_mark: usize,
@@ -1493,8 +1513,9 @@ mod gc;
 // The collector's tuning knobs live with it (move f); re-imported so `heap.rs` and the
 // sibling children resolve them unqualified, as they did when they were defined here.
 use self::gc::{
-    DRAIN_REPORT_STRIDE, P1_LARGE_SEED, P1_REVALIDATE_STRIDE, P2_REVALIDATE_STRIDE,
-    RT_DRAIN_SCAN_STRIDE, WALKER_RED_ZONE, WALKER_STACK_CHUNK, gc_floor, major_floor, rt_gc_floor,
+    DRAIN_REPORT_STRIDE, MAJOR_BYTE_FLOOR, P1_LARGE_SEED, P1_REVALIDATE_STRIDE,
+    P2_REVALIDATE_STRIDE, RT_DRAIN_SCAN_STRIDE, WALKER_RED_ZONE, WALKER_STACK_CHUNK, gc_floor,
+    major_floor, nursery_byte_floor, rt_gc_floor,
 };
 mod gc_runtime;
 mod local_string;
@@ -1518,8 +1539,8 @@ mod small_map;
 #[cfg(feature = "jit")]
 pub(crate) use self::slabs::rt_vec_entry_stride;
 use self::slabs::{
-    CodeSlabs, Slabs, owned_bytes, park_trim_due, park_trim_probe, shrink_slabs, slab_bytes,
-    slab_capacity_bytes, slab_live_count,
+    BufferMark, CodeSlabs, Slabs, buffer_bytes_since, buffer_mark, owned_bytes, park_trim_due,
+    park_trim_probe, shrink_slabs, slab_bytes, slab_capacity_bytes, slab_live_count,
 };
 pub(crate) use self::slabs::{INLINE_VEC_CAP, VecStore};
 pub(crate) use self::small_map::SmallMap;
@@ -1838,6 +1859,8 @@ impl Heap {
             gc_threshold: usize::MAX,
             rt_gc_threshold: usize::MAX,
             major_threshold: usize::MAX,
+            gc_byte_threshold: usize::MAX,
+            major_byte_threshold: usize::MAX,
             gc_enabled: false,
             ..Heap::with_regions(Arc::default(), Arc::default())
         }
@@ -1874,6 +1897,10 @@ impl Heap {
             roots: roots_buf::RootsBuf::new(),
             env_roots: Vec::new(),
             gc_threshold: gc_floor(),
+            nursery_bytes: 0,
+            gc_byte_threshold: nursery_byte_floor(),
+            old_bytes: 0,
+            major_byte_threshold: MAJOR_BYTE_FLOOR,
             park_trim_mark: 0,
             rt_gc_threshold: rt_gc_floor(),
             gc_enabled: true,
@@ -2144,7 +2171,9 @@ impl Heap {
     }
 
     pub fn alloc_vector(&mut self, items: Vec<Value>) -> Value {
-        let idx = alloc_slot!(self, vectors, VecStore::from_vec(items));
+        let store = VecStore::from_vec(items);
+        self.note_fresh_buffer(store.buffer_bytes());
+        let idx = alloc_slot!(self, vectors, store);
         Value::vector(VecId::local_gen(idx, self.local_epoch))
     }
 
@@ -2154,6 +2183,7 @@ impl Heap {
     /// it inline and free it. A longer one is copied into its spill buffer once.
     pub fn alloc_vector_from_slice(&mut self, items: &[Value]) -> Value {
         let store = VecStore::from_flushed(items.len(), |i| items[i]);
+        self.note_fresh_buffer(store.buffer_bytes());
         let idx = alloc_slot!(self, vectors, store);
         Value::vector(VecId::local_gen(idx, self.local_epoch))
     }
@@ -2163,6 +2193,7 @@ impl Heap {
     /// one exact-size spill buffer otherwise. The caller drops the operands after.
     pub(crate) fn alloc_vector_from_roots(&mut self, start: usize, len: usize) -> Value {
         let store = VecStore::from_flushed(len, |k| self.root_at(start + k));
+        self.note_fresh_buffer(store.buffer_bytes());
         let idx = alloc_slot!(self, vectors, store);
         Value::vector(VecId::local_gen(idx, self.local_epoch))
     }

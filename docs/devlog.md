@@ -4779,3 +4779,23 @@ as `(x n f)`, is flagged by the checker through `f:fn` and raises under contract
 "Brood has no `condp`" hint is gone from the evaluator. Checked here: fmt, clippy
 `--all-features`, `nest format`, `nest check` and `--strict` over std, tests and examples, and
 the nine affected test files, armed and unarmed; not run here: the suite.
+
+2026-10-30 (ADR-509, KI-307: a collection is due on bytes too): KI-307 said a process with a
+large live heap stalled the processes beside it. The desktop runs no timing, so a new
+on-demand `Diagnose` workflow ran the repro on a CI runner, splitting each slow sample into
+CPU, collection and waiting. The slow foreground was not waiting and not collecting: it burned
+2.5× the CPU. The memory figures then showed why. The background "with a large live heap" was
+building a 60 000-element vector by `conj` in a loop, and a vector `conj` is a flat copy, so
+each round made 43 GB of dead element arrays in two objects per step. The collector counted
+objects only, so it barely ran: 12.4 GB resident in three seconds, then an abort on the run's
+16 GB address-space cap, under mimalloc and the system allocator alike. The neighbour was
+slow because the machine's memory was being churned at gigabytes a second, and nothing in the
+runtime was shared. A minor collection is now also due on fresh buffer bytes (spilled vectors,
+string text, unshared byte blobs) against a process-count-aware budget, and a major on the old
+generation's buffer bytes. Two guards, each red with its half removed: the
+`gc_byte_trigger_test.blsp` cases (peak 289 MB without the fix, 60 MB with it) and a collector
+test that keeps 144 MB of dead vectors without the major's half. Found on the way and not
+fixed: a preempted process wakes no idle worker, and an idle worker can sleep up to 500 ms
+(the repro's foreground is the root thread, so it cannot show whether that matters). Checked
+here: fmt, clippy `--all-features`, the new test file and the collector test, with the
+sabotage runs; not run here: the suite and the benchmarks.

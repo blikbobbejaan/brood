@@ -48,19 +48,7 @@ pub(in crate::core::heap) fn gc_count_env(key: &str) -> Option<usize> {
 /// path), so the relaxed atomic load is free. `BROOD_GC_FLOOR` / `BROOD_GC_STRESS`
 /// still pin a fixed value and opt out of the adaptive policy.
 pub(in crate::core::heap) fn gc_floor() -> usize {
-    // An explicit override pins a fixed floor and bypasses the adaptive policy —
-    // used by the GC stress tests and honoured by the "non-default GC config"
-    // benchmark guard. Cached: the env is read once.
-    static OVERRIDE: OnceLock<Option<usize>> = OnceLock::new();
-    let fixed = *OVERRIDE.get_or_init(|| {
-        if std::env::var_os("BROOD_GC_STRESS").is_some() {
-            Some(0)
-        } else {
-            // Overridable for tuning via `BROOD_GC_FLOOR` (object count, K/M ok).
-            gc_count_env("BROOD_GC_FLOOR")
-        }
-    });
-    if let Some(n) = fixed {
+    if let Some(n) = pinned_gc_floor() {
         return n;
     }
     // ~64K objects for a lone process (well above per-call working sets, trivial
@@ -71,6 +59,53 @@ pub(in crate::core::heap) fn gc_floor() -> usize {
     let live = live_process_count().max(1);
     (FLOOR_MAX / live).clamp(FLOOR_MIN, FLOOR_MAX)
 }
+
+/// The object floor an explicit override pins, if one does: `BROOD_GC_STRESS` (0, a
+/// collection at every safepoint) or `BROOD_GC_FLOOR` (object count, K/M ok). Pinning
+/// bypasses the adaptive policy — used by the GC stress tests and honoured by the
+/// "non-default GC config" benchmark guard — and takes the byte trigger out of play too
+/// ([`nursery_byte_floor`]), so a pinned floor means what it says. Cached: the env is read
+/// once.
+fn pinned_gc_floor() -> Option<usize> {
+    static OVERRIDE: OnceLock<Option<usize>> = OnceLock::new();
+    *OVERRIDE.get_or_init(|| {
+        if std::env::var_os("BROOD_GC_STRESS").is_some() {
+            Some(0)
+        } else {
+            gc_count_env("BROOD_GC_FLOOR")
+        }
+    })
+}
+
+/// Fresh-buffer bytes a process may allocate before a minor collection, at least — the
+/// byte twin of [`gc_floor`], and process-count-aware for the same reason: a fixed budget
+/// per process would let a wide fan-out buffer `processes × budget`. 32 MiB for a lone
+/// process, down to 1 MiB under heavy fan-out. `usize::MAX` when an override pins the
+/// object floor, which then decides alone.
+pub(in crate::core::heap) fn nursery_byte_floor() -> usize {
+    if pinned_gc_floor().is_some() {
+        return usize::MAX;
+    }
+    let live = live_process_count().max(1);
+    (NURSERY_BYTE_FLOOR / live).clamp(NURSERY_BYTE_FLOOR_MIN, NURSERY_BYTE_FLOOR)
+}
+
+/// The fresh-buffer bytes a lone process allocates before a minor collection, at least
+/// ([`nursery_byte_floor`]). Spilled vectors, string text and byte blobs are the objects
+/// whose size one object does not bound; 32 MiB is a few hundred of the large vectors a
+/// `conj` loop makes, and a minor that finds them dead costs nothing per byte.
+pub(in crate::core::heap) const NURSERY_BYTE_FLOOR: usize = 32 * 1024 * 1024;
+
+/// The fan-out end of [`nursery_byte_floor`].
+pub(in crate::core::heap) const NURSERY_BYTE_FLOOR_MIN: usize = 1024 * 1024;
+
+/// Ceiling for the adaptive byte threshold, the byte twin of [`NURSERY_MAX`]: a process
+/// with a large retained heap that churns big buffers collects at least every 512 MiB.
+pub(in crate::core::heap) const NURSERY_BYTE_MAX: usize = 512 * 1024 * 1024;
+
+/// Old-generation buffer bytes below which the byte half of the major trigger never fires
+/// — the byte twin of [`major_floor`].
+pub(in crate::core::heap) const MAJOR_BYTE_FLOOR: usize = 64 * 1024 * 1024;
 
 /// RUNTIME-closure count at or above which the eval safepoint auto-runs a
 /// **RUNTIME** compaction ([`Heap::maybe_runtime_collect`]) — the shared-code

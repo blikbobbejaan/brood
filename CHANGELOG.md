@@ -6,6 +6,13 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Fixed.**
+- A loop that makes large garbage vectors or strings no longer grows to gigabytes (KI-307,
+  ADR-509). The collector counted objects only, and one object can own any number of
+  bytes: building a 60 000-element vector by `conj` in a loop reached 12 GB resident in
+  three seconds, and slowed every process beside it. A collection is now also due on the
+  fresh buffer bytes a process makes.
+
 **Dependencies.**
 - wasmtime 50.0.1 and cranelift 0.137.1; wasm-bindgen 0.2.130 (the playground and tab pins,
   which the CLI in CI and hive's image follow). Every direct dependency is on its latest

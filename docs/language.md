@@ -3706,8 +3706,10 @@ iolist in memory.
   defaulted from `BROOD_GC_TRACE`). **Memory is reclaimed automatically:** the
   LOCAL heap is a **generational** copying collector (a nursery every `alloc`
   bumps into, plus a tenured old generation) that fires at the eval safepoint
-  (ADR-055) whenever a process's live set crosses an adaptive threshold — a minor
-  collection copies the nursery's survivors and drops the rest, an occasional
+  (ADR-055) whenever a process's live set crosses an adaptive threshold, or once it has made
+  enough fresh vector, string and byte buffers (ADR-509: one object can own any number of
+  bytes, so the object count alone is not enough). A minor collection copies the
+  nursery's survivors and drops the rest, an occasional
   major compacts the old generation (ADR-072). So a long-running tail loop or
   `receive` server runs in bounded memory with nothing from the author — no
   manual GC call, no `while`, just recursion. (You never collect by hand; the old

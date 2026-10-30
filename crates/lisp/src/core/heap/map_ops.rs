@@ -904,6 +904,7 @@ impl Heap {
     }
 
     fn alloc_string_entry(&mut self, entry: LocalString) -> Value {
+        self.note_fresh_buffer(entry.buffer_bytes());
         let idx = alloc_slot!(self, strings, entry);
         Value::str_(StrId::local_gen(idx, self.local_epoch))
     }
@@ -1045,6 +1046,11 @@ impl Heap {
     /// (mirrors [`alloc_bigint`](Self::alloc_bigint)). Byte-clean — the bytes
     /// are arbitrary, never assumed UTF-8.
     pub fn alloc_bytes(&mut self, blob: Arc<SharedBlob>) -> Value {
+        // A blob only this handle holds is fresh; one already shared was counted where it
+        // was made (and may be large and held by many heaps), so a re-wrap costs nothing.
+        if Arc::strong_count(&blob) == 1 {
+            self.note_fresh_buffer(blob.len());
+        }
         let idx = alloc_slot!(self, bytes, blob);
         Value::bytes(BytesId::local_gen(idx, self.local_epoch))
     }

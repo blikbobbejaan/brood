@@ -144,7 +144,28 @@ impl Heap {
         // safepoint) from tenuring transient garbage. Either way it reclaims dead
         // nursery objects and never recopies the tenured old gen.
         let tenure = self.local_live_count() >= min_tenure();
+        // Where the old generation's buffer slabs end before a tenure appends to them, so
+        // the bytes it adds are measured over what it copied, not the whole old generation.
+        let old_mark = self.old_opt().map(buffer_mark).unwrap_or_default();
         self.minor_collect(tenure, extra_roots, extra_envs);
+        // The byte trigger counts fresh allocation since this minor, so it starts again
+        // from nothing: survivors are paid for, and keeping them in the count would fire a
+        // collection at every safepoint over one large live young vector. They scale the
+        // next threshold instead, beside the old generation's bytes.
+        self.nursery_bytes = 0;
+        let young_bytes = if tenure {
+            self.old_bytes = self
+                .old_bytes
+                .saturating_add(buffer_bytes_since(self.old(), old_mark));
+            0
+        } else {
+            buffer_bytes_since(&self.local, BufferMark::default())
+        };
+        let retained_bytes = young_bytes.saturating_add(self.old_bytes);
+        self.gc_byte_threshold = std::cmp::max(
+            nursery_byte_floor(),
+            (((retained_bytes as f64) * Self::gc_growth()) as usize).min(NURSERY_BYTE_MAX),
+        );
         // Next minor fires when the *young* gen reaches `gc_threshold`. Scale it with
         // the **total** live set (young + old): a tenuring build leaves young ≈ 0, so a
         // young-only scale would collapse to the floor and collect O(n/floor) times
@@ -161,11 +182,23 @@ impl Heap {
         // the nursery bounded. During a large-structure build the old gen is nearly
         // all-live, so a major reclaims little; a larger factor trades retained garbage
         // for copy throughput.
-        if self.old_live_count() >= self.major_threshold {
+        // Or when the old generation's buffers have grown as much: a few tenured objects can
+        // own gigabytes of dead vector, which the object count would wait on indefinitely.
+        if self.old_live_count() >= self.major_threshold
+            || self.old_bytes >= self.major_byte_threshold
+        {
             self.major_collect(extra_roots, extra_envs);
             self.major_threshold = std::cmp::max(
                 major_floor(),
                 self.old_live_count().saturating_mul(major_growth()),
+            );
+            // A major copies the whole old generation, so measuring it whole costs the same.
+            self.old_bytes = self
+                .old_opt()
+                .map_or(0, |old| buffer_bytes_since(old, BufferMark::default()));
+            self.major_byte_threshold = std::cmp::max(
+                MAJOR_BYTE_FLOOR,
+                self.old_bytes.saturating_mul(major_growth()),
             );
         }
     }

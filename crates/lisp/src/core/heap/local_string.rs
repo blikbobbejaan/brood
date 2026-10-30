@@ -139,6 +139,17 @@ impl Default for LocalString {
 }
 
 impl LocalString {
+    /// The bytes of this string's text: its own buffer, or the shared blob it holds (in
+    /// full — every holder keeps the blob alive). What the collector's byte trigger counts
+    /// for a fresh string, and [`owned_bytes`](super::slabs::owned_bytes) sums.
+    #[inline]
+    pub(super) fn buffer_bytes(&self) -> usize {
+        match &self.data {
+            StrData::Inline(text) => text.capacity(),
+            StrData::Shared(blob) => blob.len(),
+        }
+    }
+
     pub(super) fn inline(s: String) -> Self {
         let chars = s.chars().count();
         Self::inline_counted(s, chars)
