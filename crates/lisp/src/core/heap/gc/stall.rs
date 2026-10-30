@@ -1,6 +1,6 @@
 //! The stall guard: a scope timer that reports any GC or compaction phase that ran past
-//! `BROOD_STALL_MS`. Used by the RUNTIME compactor (`gc_runtime`), the scheduler and the
-//! GUI paint path.
+//! `BROOD_STALL_MS`. Used by the RUNTIME compactor (`gc_runtime`), the scheduler, the
+//! synchronous JIT compile (`jit_compile_now`) and the GUI paint path.
 
 /// Gameplay-lag diagnostic. `BROOD_STALL_MS=<n>`: anything wrapped in a `stall_guard`
 /// that runs ≥ n ms logs `[stall] <label> Nms` to stderr. Release-capable; zero cost

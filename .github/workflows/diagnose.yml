@@ -9,6 +9,9 @@ name: Diagnose
 # shipped, v2, purging off, the system allocator) — and with a `perf` profile of the stalled
 # foreground, kernel symbols included.
 #
+# `ki308` runs the repro's regex-split scenario three times with `BROOD_STALL_MS=20` (each long
+# pause the runtime instruments names itself), then three times with `std/regex` loaded first.
+#
 # `repeat` builds one integration-test binary and runs one test in it `times` times, one
 # process each, with `BROOD_JIT_BAIL_TRACE=1`, and prints what every failing run traced: the
 # way to look at an intermittent test (KI-309) without a loop on the desktop.
@@ -24,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       what:
-        description: "ki307 (the gc-contention repro), ab (benchmark rows, base vs this commit) or repeat (one Rust test, many times)"
+        description: "ki307 (the gc-contention repro), ab (benchmark rows, base vs this commit) ki308 (the regex-split stall), or repeat (one Rust test, many times)"
         default: ki307
       base:
         description: "for ab: the baseline ref"
@@ -213,3 +216,33 @@ jobs:
           done
           echo "$failures of ${{ inputs.times }} rounds failed"
           [ "$failures" -eq 0 ]
+
+  regex-stall:
+    name: KI-308 — the regex-split stall, with the stall log
+    if: inputs.what == 'ki308'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Build (release)
+        run: cargo build --release -p cli
+      - name: The regex scenario, three times
+        env:
+          BROOD_STALL_MS: "20"
+        run: |
+          for round in 1 2 3; do
+            echo "== round $round"
+            ( ulimit -v 16000000; KI307_MODE=regex timeout 300 target/release/brood "$REPRO" ) 2>&1
+          done
+      - name: The regex scenario with std/regex loaded first, three times
+        env:
+          BROOD_STALL_MS: "20"
+        run: |
+          for round in 1 2 3; do
+            echo "== round $round"
+            ( ulimit -v 16000000; KI307_MODE=regex-preloaded timeout 300 target/release/brood "$REPRO" ) 2>&1
+          done

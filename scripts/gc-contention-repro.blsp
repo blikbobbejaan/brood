@@ -20,7 +20,7 @@
 (defn gc-us ()
   (get (dev/gc-stats) :pause-total-us))
 
-(defn sample (work)
+(defn sample (work index)
   (let (cpu-before (cpu-us)
         gc-before (gc-us)
         started (os/now-ns)
@@ -28,19 +28,22 @@
         wall (/ (- (os/now-ns) started) 1000000.0)
         cpu (/ (- (cpu-us) cpu-before) 1000.0)
         gc (/ (- (gc-us) gc-before) 1000.0))
-    (do (receive (:never nil) (after 50 nil)) {:wall wall :cpu cpu :gc gc :wait (- wall cpu)})))
+    (do
+      (receive (:never nil) (after 50 nil))
+      {:index index :wall wall :cpu cpu :gc gc :wait (- wall cpu)})))
 
 (defn total (samples key)
   (fold samples 0 (fn (acc one) (+ acc (get one key)))))
 
 (defn measure (label work)
-  (let (samples (map (range 40) (fn (_) (sample work)))
+  (let (samples (map (range 40) (fn (index) (sample work index)))
         sorted (seq/sort-by samples (fn (one) (get one :wall)))
         worst (last sorted))
-    (io/puts (string/format "%-44s p50 %7.2f max %7.2f ms | worst: cpu %7.2f gc %7.2f wait %7.2f | all: cpu %8.1f gc %8.1f wait %8.1f"
+    (io/puts (string/format "%-44s p50 %7.2f max %7.2f ms | worst #%-2d cpu %7.2f gc %7.2f wait %7.2f | all: cpu %8.1f gc %8.1f wait %8.1f"
                label
                (get (nth sorted 20) :wall)
                (get worst :wall)
+               (get worst :index)
                (get worst :cpu)
                (get worst :gc)
                (get worst :wait)
@@ -93,13 +96,24 @@
 
 ;; `KI307_MODE` splits the experiment across two OS processes, which share the machine but
 ;; not an address space, an allocator or a scheduler: `background` runs the live-maps loop
-;; until killed, `foreground` only measures. `maps` and `strings` run only that scenario.
-;; Unset runs everything in this one runtime.
+;; until killed, `foreground` only measures. `maps`, `strings` and `regex` run only that
+;; scenario; `regex-preloaded` loads `std/regex` before its background starts (KI-308). Unset
+;; runs everything in this one runtime.
 (let (mode (os/env "KI307_MODE"))
   (cond
     (= mode "background") (letrec (go (fn () (do (keep-maps) (go)))) (go))
     (= mode "maps")
       (do (memory-report "at the start") (beside "beside a big live vector of maps" keep-maps))
+    (= mode "regex-preloaded")
+      (do
+        (regex/split "\\s+" "loads std/regex in this runtime before the background starts")
+        (memory-report "at the start")
+        (beside "beside a regex split, regex loaded first"
+          (fn () (count (regex/split "\\s+" text)))))
+    (= mode "regex")
+      (do
+        (memory-report "at the start")
+        (beside "beside a regex split of a big text" (fn () (count (regex/split "\\s+" text)))))
     (= mode "strings")
       (do
         (memory-report "at the start")

@@ -327,12 +327,18 @@ pub(crate) fn jit_compile_now(heap: &Heap, arm: &Arc<CompiledArm>, base: usize) 
     // Snapshot the live frame's slot tags exactly as jit_tier's enqueuer does
     // (used to type-specialize float arms).
     let slot_tags = super::profile_slot_tags(heap, arm, base);
-    let mut jit = crate::jit::GLOBAL_JIT
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    // The background compiler holds this lock across each of its compiles, so the wait
+    // here is whatever it is in the middle of: `BROOD_STALL_MS` names a long one.
+    let mut jit = {
+        let _waiting = crate::core::heap::stall_guard("jit-compile-now: waiting for the module");
+        crate::jit::GLOBAL_JIT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    };
     if arm.jit_code.load(Acquire) != crate::jit::QUEUED {
         return; // the background thread finished it while we waited for the lock
     }
+    let _lowering = crate::core::heap::stall_guard("jit-compile-now: lowering");
     let lowered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         jit.lower_arm(arm, &slot_tags)
     }));
