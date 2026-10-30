@@ -197,13 +197,14 @@ pub(crate) fn sched_dbg() -> bool {
 /// Queue a process that was not parked — a fresh spawn, a preempted process — stamped
 /// now for the steal grace: a thief is what takes a fan-out's children, and a stamp made
 /// at its first look would hold each steal back a further grace.
-pub(crate) fn enqueue(mut proc: Box<Process>) {
+pub(crate) fn enqueue(mut proc: Box<Process>) -> usize {
     proc.queued_at = now_nanos();
-    push_runnable(proc);
+    push_runnable(proc)
 }
 
-/// Put `proc` on its worker's run queue, stamped by the caller (`queued_at`).
-fn push_runnable(proc: Box<Process>) {
+/// Put `proc` on its worker's run queue, stamped by the caller (`queued_at`). Returns how many
+/// processes that queue holds with it.
+fn push_runnable(proc: Box<Process>) -> usize {
     let wid = proc.worker_id;
     if sched_dbg() {
         eprintln!("[sched] enq pid={} wid={}", proc.pid, wid);
@@ -216,7 +217,11 @@ fn push_runnable(proc: Box<Process>) {
     // of the `wake_a_parked_peer` handshake.
     STEALABLE.fetch_add(1, Ordering::SeqCst);
     let (lock, cv) = &WORKERS[wid].0;
-    crate::core::sync::lock(lock).push_back(proc);
+    let queued = {
+        let mut queue = crate::core::sync::lock(lock);
+        queue.push_back(proc);
+        queue.len()
+    };
     // Elide the wake syscall when we're enqueueing onto the very worker running THIS
     // thread (the direct-handoff case: a `send` readying a receiver, run next on our own
     // queue). `Condvar::notify_one` is an unconditional `futex_wake` syscall on Linux, but
@@ -235,6 +240,7 @@ fn push_runnable(proc: Box<Process>) {
     if LIVE_EXECUTORS.load(Ordering::SeqCst) == 0 {
         spawn_overflow_drainer();
     }
+    queued
 }
 
 /// Enqueue a process that is **waking from a park** (a `receive`/timer/exit wake, or a
@@ -1091,7 +1097,18 @@ fn handle_capture_outcome(
             // put for cache locality; migration is for *idle* (parked) processes.
             PREEMPTED.fetch_add(1, Ordering::Relaxed);
             proc.store_resume(s);
-            enqueue(proc);
+            // Staying put is right only while nothing else waits here. Behind another process,
+            // this one waits for as long as that one runs — a JIT'd loop over a long call polls
+            // its budget every 128 iterations, so seconds — while workers sit idle: nothing
+            // told them, since an enqueue notifies only its own worker, and an idle worker backs
+            // off up to `IDLE_BACKOFF_MAX` between looks (KI-308: the root program waited 60–115
+            // ms behind a background it had just spawned). So wake one to come and steal. A
+            // single load when no worker is parked, and nothing on the ping-pong path, which
+            // re-queues through `wake_enqueue`.
+            let wid = proc.worker_id;
+            if enqueue(proc) > 1 {
+                wake_a_parked_peer(wid);
+            }
         }
         Ok(Ok(VmOutcome::Killed)) => {
             // A hard `:kill` was observed at a loop-top safepoint. Take its reason.
