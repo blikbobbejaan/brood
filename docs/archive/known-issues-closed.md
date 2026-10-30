@@ -15491,3 +15491,49 @@ count at zero) — a second path to the same `:untried`; `settle` covers both.
 **Left as an observation:** `code_relocations` is coarse — one collection resets every native arm
 in the runtime, whether or not anything it baked moved. A per-arm check would spare the
 recompiles; nothing measured asks for it yet.
+
+## KI-307 — a process with a large, growing live heap stalls allocating processes beside it ✅ FIXED 2026-10-30
+
+**Seen:** reported from bedit on 0.47.0 (28 cores): beside a background building a 60 000-map
+vector, a 9.6 ms map fold read p50 55 ms and max 596 ms (`scripts/gc-contention-repro.blsp`).
+In bedit the completion preview's word-index task put 100–220 ms turns on the UI loop.
+
+**How it was found.** The development desktop runs no timing, so an on-demand `Diagnose`
+workflow ran the repro on a CI runner, with each sample split into the foreground's CPU time,
+its collection time and its waiting. The slow samples were not waiting and not collecting:
+the foreground burned 2.5× the CPU (826 ms over 40 samples, 328 ms alone). The repro's
+foreground is the root process on its own OS thread, and a local collection takes no lock
+another process holds, so nothing in the runtime was shared. The memory figures then showed
+the background was not "a large live heap" at all: 12.4 GB resident three seconds into a
+scenario, 11 GB under the system allocator, and every full run died on the 16 GB
+address-space cap.
+
+**Cause.** The collector's trigger counted objects, and one object can own any number of
+bytes. A vector is flat, so `(conj v x)` copies `v`'s elements into a fresh buffer: building a
+60 000-element vector one `conj` at a time makes 43 GB of element arrays at two objects per
+step, and a minor collection waited for 64K objects. The neighbour was slow because the
+machine's memory was being churned at gigabytes a second; mimalloc's purging only shaped how
+much that cost.
+
+**Fix (`64b99545`, ADR-509; `fac6c240`).** A minor collection is also due on the fresh buffer bytes a
+process makes (spilled vectors, string text, unshared byte blobs), against
+`max(32 MiB / live processes, growth × retained bytes)` capped at 512 MiB, and a major on the
+old generation's buffer bytes. On the runner after the fix: 150–340 MB resident through every
+scenario, and the map foreground beside the background reads p50 12.7 ms against 12.0 ms
+alone, 518 ms of CPU against 476 ms.
+
+**Guard.** `tests/gc_byte_trigger_test.blsp` (a `conj` loop, a `str` loop, four processes at
+once; all red with the byte half of `gc_due` removed, peak 289 MB against 60 MB) and the
+collector test `an_old_generation_of_dead_large_vectors_is_compacted_on_its_bytes` (144 MB of
+dead vectors kept without the major's half).
+The first push broke `process_floor`: four `usize` fields on every heap made a parked process
+cost 2831 B against its 2800 B floor. `fac6c240` made the minor budget one `u32` countdown,
+which sits in the heap's existing padding, and moved the old generation's figures to the
+extras a collection boxes anyway.
+
+**Left as observations.** `(conj v x)` on a vector is still linear in `v`, so a `conj` loop is
+quadratic in time; it is no longer quadratic in memory. A preempted process is re-queued on
+its own worker and wakes no idle peer, and an idle worker can sleep up to 500 ms before it
+looks to steal; the repro's foreground runs outside the worker pool, so it could not show
+whether that matters for a green process like bedit's UI loop. KI-308 is the one stall the
+fixed repro still shows.

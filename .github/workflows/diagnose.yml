@@ -5,8 +5,9 @@ name: Diagnose
 #
 # `ki307` (the default) answers KI-307 — does a process with a large live heap stall the
 # processes beside it, and through what — by running `scripts/gc-contention-repro.blsp`
-# under variants that each rule a shared resource in or out — the allocator (mimalloc v3 as shipped, v2, purging off, the system allocator) — and
-# with a `perf` profile of the stalled foreground, kernel symbols included.
+# under variants that each rule a shared resource in or out — the allocator (mimalloc v3 as
+# shipped, v2, purging off, the system allocator) — and with a `perf` profile of the stalled
+# foreground, kernel symbols included.
 #
 # `ab` runs `scripts/ab-bench.sh --floor` over the default benchmark rows, `base` against this
 # commit. A shared runner is noisy, so it can show a large regression, not a few percent; the
