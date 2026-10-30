@@ -383,6 +383,39 @@ pub(super) fn flush_vector(
             }
             VecStore::spill(vec)
         }
+        // An append buffer (ADR-511). The last vector over it takes it and rewrites its own
+        // elements in place, cut to its length (the slots past it were longer vectors', now
+        // dead) with the spare capacity kept for its next `conj`. While another vector still
+        // holds it, this one copies its elements out, so the buffer that one reads is never
+        // rewritten under it — and the newest vector over the buffer, the one a `conj` loop
+        // is building, copies into a buffer as roomy as the old, or the garbage versions
+        // behind it in the nursery would make every collection cost it its room.
+        VecStore::Shared { len, buf, .. } => match AppendBuf::into_unique(buf, len as usize) {
+            Ok(mut items) => {
+                for i in 0..items.len() {
+                    let x = items[i];
+                    items[i] = flush_value(old, new, forward, x);
+                }
+                VecStore::shared(AppendBuf::new(items), len as usize)
+            }
+            Err(buf) => {
+                let newest = buf.claimed() == len as usize;
+                let capacity = buf.capacity();
+                let shared = VecStore::shared(buf, len as usize);
+                let source = shared.as_slice();
+                if newest {
+                    let mut items = Vec::with_capacity(capacity);
+                    for &x in source {
+                        items.push(flush_value(old, new, forward, x));
+                    }
+                    VecStore::shared(AppendBuf::new(items), len as usize)
+                } else {
+                    VecStore::from_flushed(source.len(), |i| {
+                        flush_value(old, new, forward, source[i])
+                    })
+                }
+            }
+        },
         inline => {
             let items = inline.as_slice();
             VecStore::from_flushed(items.len(), |i| flush_value(old, new, forward, items[i]))

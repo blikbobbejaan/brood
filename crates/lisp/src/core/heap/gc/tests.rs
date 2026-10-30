@@ -1066,3 +1066,173 @@ fn an_old_generation_of_dead_large_vectors_is_compacted_on_its_bytes() {
         _ => unreachable!(),
     }
 }
+
+/// The handle a `Value::Vector` holds, for the append tests.
+fn vector_id(v: Value) -> VecId {
+    match v.unpack() {
+        ValueRef::Vector(id) => id,
+        _ => panic!("not a vector"),
+    }
+}
+
+/// A vector's elements as integers, for the append tests.
+fn ints(h: &Heap, v: Value) -> Vec<i64> {
+    h.vector(vector_id(v))
+        .iter()
+        .map(|x| match x.unpack() {
+            ValueRef::Int(i) => i,
+            _ => panic!("not an int"),
+        })
+        .collect()
+}
+
+/// ADR-511: `vector_append` writes into the spare capacity of an append buffer only for the
+/// newest vector over it, and never changes a vector that already exists. A first append
+/// copies exactly; appending to that copies with room; the next appends go in place; and an
+/// append onto a version that something was already appended to copies, so two `conj`s onto
+/// one vector cannot both claim the same slot.
+#[test]
+fn an_append_writes_in_place_only_past_the_newest_vector() {
+    let mut h = Heap::new();
+    let base = h.alloc_vector((0..10).map(Value::int).collect());
+    let a = h.vector_append(vector_id(base), &[Value::int(10)]);
+    let b = h.vector_append(vector_id(a), &[Value::int(11)]);
+    let c = h.vector_append(vector_id(b), &[Value::int(12)]);
+    assert_eq!(
+        h.vector(vector_id(b)).as_ptr(),
+        h.vector(vector_id(c)).as_ptr(),
+        "the append onto the newest vector went in place"
+    );
+    let d = h.vector_append(vector_id(b), &[Value::int(99)]);
+    assert_ne!(
+        h.vector(vector_id(b)).as_ptr(),
+        h.vector(vector_id(d)).as_ptr(),
+        "a second append onto the same vector copied"
+    );
+    assert_eq!(ints(&h, base), (0..10).collect::<Vec<_>>());
+    assert_eq!(ints(&h, a), (0..11).collect::<Vec<_>>());
+    assert_eq!(ints(&h, b), (0..12).collect::<Vec<_>>());
+    assert_eq!(ints(&h, c), (0..13).collect::<Vec<_>>());
+    let mut expected_d: Vec<i64> = (0..12).collect();
+    expected_d.push(99);
+    assert_eq!(ints(&h, d), expected_d);
+}
+
+/// ADR-511: a collection relocates every vector over a shared append buffer with its own
+/// elements intact — the young ones that share a buffer, and a young vector appended into
+/// the buffer of a tenured one (an old buffer then holds a young element past the old
+/// vector's length, which only the young vector reads). A minor, then a major.
+#[test]
+fn a_collection_keeps_every_vector_over_a_shared_buffer() {
+    let mut h = Heap::new();
+    h.gc_enabled = true;
+    let mut roots = [Value::nil(); 4];
+    let start = h.alloc_vector((0..10).map(Value::int).collect());
+    let first = h.vector_append(vector_id(start), &[Value::int(10)]);
+    roots[0] = h.vector_append(vector_id(first), &[Value::int(11)]); // room to spare
+    // Tenure it: enough garbage that the collection moves survivors to the old generation.
+    for filler in 0..min_tenure() {
+        h.alloc_pair(Value::int(filler as i64), Value::nil());
+    }
+    h.collect(&mut roots, &mut []);
+    assert!(vector_id(roots[0]).is_old(), "the vector was tenured");
+    // Young appends into the tenured vector's buffer, and a branch that copies.
+    roots[1] = h.vector_append(vector_id(roots[0]), &[Value::int(12)]);
+    roots[2] = h.vector_append(vector_id(roots[1]), &[Value::int(13)]);
+    roots[3] = h.vector_append(vector_id(roots[1]), &[Value::int(99)]);
+    let check = |h: &Heap, roots: &[Value; 4]| {
+        assert_eq!(ints(h, roots[0]), (0..12).collect::<Vec<_>>());
+        assert_eq!(ints(h, roots[1]), (0..13).collect::<Vec<_>>());
+        assert_eq!(ints(h, roots[2]), (0..14).collect::<Vec<_>>());
+        let mut branch: Vec<i64> = (0..13).collect();
+        branch.push(99);
+        assert_eq!(ints(h, roots[3]), branch);
+    };
+    check(&h, &roots);
+    h.minor_collect(false, &mut roots, &mut []);
+    check(&h, &roots);
+    h.major_collect(&mut roots, &mut []);
+    check(&h, &roots);
+    // And an append after the collections still sees the right elements.
+    let after = h.vector_append(vector_id(roots[2]), &[Value::int(14)]);
+    assert_eq!(ints(&h, after), (0..15).collect::<Vec<_>>());
+}
+
+/// ADR-511: writable access to a vector over a buffer another vector holds gives it a buffer
+/// of its own first, so a builder or the collector writing through it never reaches the
+/// other.
+#[test]
+fn a_write_never_reaches_another_vector_over_the_same_buffer() {
+    let mut h = Heap::new();
+    let start = h.alloc_vector((0..10).map(Value::int).collect());
+    let first = h.vector_append(vector_id(start), &[Value::int(10)]);
+    let shorter = h.vector_append(vector_id(first), &[Value::int(11)]);
+    let longer = h.vector_append(vector_id(shorter), &[Value::int(12)]);
+    let index = vector_id(shorter).index();
+    h.local.vectors[index][0] = Value::int(-1);
+    assert_eq!(ints(&h, shorter)[0], -1);
+    assert_eq!(
+        ints(&h, longer),
+        (0..13).collect::<Vec<_>>(),
+        "a write through one vector reached another over the same buffer"
+    );
+}
+
+/// ADR-511: the vector a `conj` loop is building keeps its room across a collection. Its
+/// older versions are garbage still sitting in the nursery, so when the collector reaches
+/// it the buffer is still shared and it is copied out — into a buffer as roomy as the one
+/// it leaves, being the newest over it, so the loop's next `conj` goes in place.
+#[test]
+fn the_vector_a_loop_is_building_keeps_its_room_across_a_collection() {
+    let mut h = Heap::new();
+    h.gc_enabled = true;
+    let mut newest = h.alloc_vector((0..10).map(Value::int).collect());
+    for i in 10..40 {
+        newest = h.vector_append(vector_id(newest), &[Value::int(i)]);
+    }
+    let mut roots = [newest];
+    h.collect(&mut roots, &mut []);
+    let kept = roots[0];
+    let next = h.vector_append(vector_id(kept), &[Value::int(40)]);
+    assert_eq!(
+        h.vector(vector_id(kept)).as_ptr(),
+        h.vector(vector_id(next)).as_ptr(),
+        "the loop's next conj after the collection copied"
+    );
+    assert_eq!(ints(&h, kept), (0..40).collect::<Vec<_>>());
+    assert_eq!(ints(&h, next), (0..41).collect::<Vec<_>>());
+}
+
+/// ADR-511: when the collector finds itself the only holder of an append buffer, it cuts
+/// the buffer back to the vector's length — the slots past it were claimed by longer
+/// vectors that have since died — so the vector's next `conj` goes in place. Here a tenured
+/// vector's buffer gains a young vector that dies in a minor; the major after it finds the
+/// buffer held by the tenured vector alone.
+#[test]
+fn a_buffer_the_collector_holds_alone_is_cut_back_to_its_vector() {
+    let mut h = Heap::new();
+    h.gc_enabled = true;
+    let start = h.alloc_vector((0..10).map(Value::int).collect());
+    let first = h.vector_append(vector_id(start), &[Value::int(10)]);
+    let mut roots = [h.vector_append(vector_id(first), &[Value::int(11)])];
+    for filler in 0..min_tenure() {
+        h.alloc_pair(Value::int(filler as i64), Value::nil());
+    }
+    h.collect(&mut roots, &mut []);
+    assert!(vector_id(roots[0]).is_old(), "the vector was tenured");
+    // A longer young vector over the tenured one's buffer, which dies in the next minor.
+    h.vector_append(vector_id(roots[0]), &[Value::int(12)]);
+    h.minor_collect(false, &mut roots, &mut []);
+    h.major_collect(&mut roots, &mut []);
+    let kept = roots[0];
+    let next = h.vector_append(vector_id(kept), &[Value::int(42)]);
+    assert_eq!(
+        h.vector(vector_id(kept)).as_ptr(),
+        h.vector(vector_id(next)).as_ptr(),
+        "the append after the major copied: the dead vector's slot was still claimed"
+    );
+    let mut expected: Vec<i64> = (0..12).collect();
+    assert_eq!(ints(&h, kept), expected);
+    expected.push(42);
+    assert_eq!(ints(&h, next), expected);
+}

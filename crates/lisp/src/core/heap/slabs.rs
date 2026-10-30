@@ -62,6 +62,88 @@ pub(crate) enum VecStore {
         len: u64,
         vec: Vec<Value>,
     },
+    /// The first `len` elements of an [`AppendBuf`] this vector may share with the vectors
+    /// appended from it (ADR-511), so a `conj` onto the newest one writes one element
+    /// instead of copying them all. `ptr` and `len` sit where `Spill`'s do, so the JIT
+    /// reads both the same way.
+    #[allow(dead_code)]
+    Shared {
+        ptr: *const Value,
+        len: u64,
+        buf: Arc<AppendBuf>,
+    },
+}
+
+/// The buffer a [`VecStore::Shared`] vector reads its elements from (ADR-511): a `Vec`
+/// whose length is how far it is CLAIMED — the longest vector built over it — and whose
+/// spare capacity is room for the next. Every vector over it reads only its own first `len`
+/// elements, which never change once written. An append writes past the claimed length,
+/// where no vector over the buffer reads, and only when the vector appended to ends exactly
+/// there: two `conj`s onto one vector cannot both claim a slot, because the second finds it
+/// claimed and copies. No value is ever changed — the buffer only grows into space nothing
+/// can see.
+///
+/// One heap holds it, and so one thread: the buffer is LOCAL-only. A promotion, a message
+/// and a [`VecStore`] clone all copy the elements out, and the shared regions build their
+/// own stores, so no other heap ever reaches it.
+pub(crate) struct AppendBuf {
+    items: std::cell::UnsafeCell<Vec<Value>>,
+}
+
+// SAFETY: see the type's doc — one heap holds the buffer, and a heap runs on one thread at a
+// time; moving the heap to another worker moves the buffer with it, never shares it.
+unsafe impl Send for AppendBuf {}
+unsafe impl Sync for AppendBuf {}
+
+impl AppendBuf {
+    pub(super) fn new(items: Vec<Value>) -> Arc<Self> {
+        Arc::new(AppendBuf {
+            items: std::cell::UnsafeCell::new(items),
+        })
+    }
+
+    fn items(&self) -> &Vec<Value> {
+        // SAFETY: one thread (the type's doc), and no `&mut` to the `Vec` outlives
+        // `append_in_place`.
+        unsafe { &*self.items.get() }
+    }
+
+    pub(super) fn as_ptr(&self) -> *const Value {
+        self.items().as_ptr()
+    }
+
+    pub(super) fn capacity(&self) -> usize {
+        self.items().capacity()
+    }
+
+    /// How far the buffer is claimed: the length of the longest vector built over it.
+    pub(super) fn claimed(&self) -> usize {
+        self.items().len()
+    }
+
+    /// Append `tail` after the first `len` elements, in place: only when nothing is claimed
+    /// past `len` and `tail` fits without moving the buffer. `false` means copy instead.
+    pub(super) fn append_in_place(&self, len: usize, tail: &[Value]) -> bool {
+        // SAFETY: one thread (the type's doc). Readers go through a vector's cached `ptr`
+        // and `len`, never this `Vec`, and the capacity check rules out the reallocation
+        // that would move what they read.
+        let items = unsafe { &mut *self.items.get() };
+        if items.len() != len || items.capacity() - len < tail.len() {
+            return false;
+        }
+        items.extend_from_slice(tail);
+        true
+    }
+
+    /// The elements, cut to `len`, when `this` is the buffer's only holder — the collector
+    /// relocating the last vector over it, which then rewrites them in place.
+    pub(super) fn into_unique(this: Arc<Self>, len: usize) -> Result<Vec<Value>, Arc<Self>> {
+        Arc::try_unwrap(this).map(|buf| {
+            let mut items = buf.items.into_inner();
+            items.truncate(len);
+            items
+        })
+    }
 }
 
 // SAFETY: `Spill::ptr` always points into `Spill::vec`'s own buffer (established
@@ -80,6 +162,9 @@ impl Clone for VecStore {
             // NOT derived: a derived clone would copy `ptr` — pointing the clone
             // at the ORIGINAL buffer. Re-derive from the cloned Vec.
             VecStore::Spill { vec, .. } => VecStore::spill(vec.clone()),
+            // A copy of its own elements: a clone may land in another heap, and an append
+            // buffer never leaves the one it was made in (`AppendBuf`).
+            VecStore::Shared { .. } => VecStore::spill(self.as_slice().to_vec()),
         }
     }
 }
@@ -92,6 +177,7 @@ impl VecStore {
     pub(super) fn buffer_bytes(&self) -> usize {
         match self {
             VecStore::Spill { vec, .. } => vec.capacity() * std::mem::size_of::<Value>(),
+            VecStore::Shared { buf, .. } => buf.capacity() * std::mem::size_of::<Value>(),
             VecStore::Inline { .. } => 0,
         }
     }
@@ -103,6 +189,16 @@ impl VecStore {
             ptr: vec.as_ptr(),
             len: vec.len() as u64,
             vec,
+        }
+    }
+
+    /// A vector of the first `len` elements of `buf`, which must hold at least that many.
+    #[inline]
+    pub(super) fn shared(buf: Arc<AppendBuf>, len: usize) -> Self {
+        VecStore::Shared {
+            ptr: buf.as_ptr(),
+            len: len as u64,
+            buf,
         }
     }
 
@@ -146,14 +242,33 @@ impl VecStore {
         match self {
             VecStore::Inline { len, items } => &items[..*len as usize],
             VecStore::Spill { vec, .. } => vec,
+            // SAFETY: `ptr` is the buffer's start and its first `len` elements are written
+            // and never change (`AppendBuf`); the buffer lives as long as `buf` does.
+            VecStore::Shared { ptr, len, .. } => unsafe {
+                std::slice::from_raw_parts(*ptr, *len as usize)
+            },
         }
     }
 
+    /// The elements, writable — by a builder before the vector is visible, or the collector
+    /// rewriting handles it relocated. A `Shared` vector is first given a buffer of its own
+    /// unless it already holds its buffer alone: a write must never reach a vector that
+    /// shares it.
     #[inline]
     pub(super) fn as_mut_slice(&mut self) -> &mut [Value] {
+        if let VecStore::Shared { buf, .. } = self
+            && Arc::get_mut(buf).is_none()
+        {
+            *self = VecStore::spill(self.as_slice().to_vec());
+        }
         match self {
             VecStore::Inline { len, items } => &mut items[..*len as usize],
             VecStore::Spill { vec, .. } => vec,
+            // SAFETY: as in `as_slice`, and `Arc::get_mut` above found no other holder, so
+            // nothing else reads these elements.
+            VecStore::Shared { ptr, len, .. } => unsafe {
+                std::slice::from_raw_parts_mut(*ptr as *mut Value, *len as usize)
+            },
         }
     }
 
@@ -182,6 +297,10 @@ impl VecStore {
     /// Discriminant value that means `Spill` (pointer-readable).
     #[cfg(feature = "jit")]
     pub(crate) const JIT_SPILL_TAG: i64 = 1;
+    /// Discriminant value that means `Shared`, pointer-readable exactly like `Spill`: its
+    /// `ptr` and `len` sit at the same offsets (ADR-511).
+    #[cfg(feature = "jit")]
+    pub(crate) const JIT_SHARED_TAG: i64 = 2;
     /// `Spill.ptr` byte offset within a slot (u8 tag, padded to the pointer's align).
     #[cfg(feature = "jit")]
     pub(crate) const JIT_SPILL_PTR_OFF: i32 = 8;
@@ -189,6 +308,15 @@ impl VecStore {
     #[cfg(feature = "jit")]
     pub(crate) const JIT_SPILL_LEN_OFF: i32 = 16;
 }
+
+// The JIT reads a vector through its cached `ptr`/`len` when the tag is at least `Spill`'s
+// (`jit_lower::emit`), which is right only while `Inline` sorts first and `Spill` and `Shared`
+// after it.
+#[cfg(feature = "jit")]
+const _: () = assert!(
+    VecStore::JIT_INLINE_TAG < VecStore::JIT_SPILL_TAG
+        && VecStore::JIT_SPILL_TAG < VecStore::JIT_SHARED_TAG
+);
 
 impl std::ops::Deref for VecStore {
     type Target = [Value];
@@ -810,6 +938,27 @@ mod vecstore_layout_tests {
             );
             assert_eq!(*ptr, vec.as_ptr(), "cached ptr matches the buffer");
             assert_eq!(*len as usize, vec.len(), "cached len matches");
+        }
+        // Shared layout (ADR-511): discriminant 2, and `ptr`/`len` exactly where Spill's are,
+        // so the JIT's one pointer-read path serves both.
+        let buf = AppendBuf::new(vec![Value::int(1), Value::int(2), Value::int(3)]);
+        let sh = VecStore::shared(buf, 3);
+        let hbase = &sh as *const VecStore as usize;
+        let htag = unsafe { *(hbase as *const u8) };
+        assert_eq!(htag as i64, VecStore::JIT_SHARED_TAG, "Shared discriminant");
+        if let VecStore::Shared { ptr, len, buf } = &sh {
+            assert_eq!(
+                ptr as *const *const Value as usize - hbase,
+                VecStore::JIT_SPILL_PTR_OFF as usize,
+                "Shared.ptr offset"
+            );
+            assert_eq!(
+                len as *const u64 as usize - hbase,
+                VecStore::JIT_SPILL_LEN_OFF as usize,
+                "Shared.len offset"
+            );
+            assert_eq!(*ptr, buf.as_ptr(), "cached ptr matches the buffer");
+            assert_eq!(*len, 3, "cached len");
         }
     }
 }

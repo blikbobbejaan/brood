@@ -1484,11 +1484,14 @@ pub(super) fn vector_ref(
             BlockArg::Value(i2),
         ],
     );
-    // Spill storage: bounds vs the cached len, elements via the cached ptr.
+    // Spill or Shared storage (the same `ptr`/`len` offsets, ADR-511): bounds vs the cached
+    // len, elements via the cached ptr.
     b.switch_to_block(not_inl);
-    let is_spill = b.ins().icmp_imm_s(IntCC::Equal, disc, VS::JIT_SPILL_TAG);
+    let pointer_read =
+        b.ins()
+            .icmp_imm_s(IntCC::UnsignedGreaterThanOrEqual, disc, VS::JIT_SPILL_TAG);
     let spl = b.create_block();
-    b.ins().brif(is_spill, spl, &[], ffi_blk, &[]);
+    b.ins().brif(pointer_read, spl, &[], ffi_blk, &[]);
     b.switch_to_block(spl);
     let sptr = b.ins().load(
         types::I64,
@@ -1879,7 +1882,10 @@ pub(super) fn inline_vec_ref(
     // bounds check. Out-of-range (or an unexpected disc) deopts — the VM owns `nth`'s
     // exact result.
     b.switch_to_block(heap_blk);
-    let is_spill = b.ins().icmp_imm_s(IntCC::Equal, disc, VS::JIT_SPILL_TAG);
+    // Spill or Shared: both read through the cached `ptr`/`len` (ADR-511).
+    let is_spill = b
+        .ins()
+        .icmp_imm_s(IntCC::UnsignedGreaterThanOrEqual, disc, VS::JIT_SPILL_TAG);
     let spill_blk = b.create_block();
     let deopt_reason = deopt_code(b, DeoptReason::InlineVectorRefUnexpectedStore);
     b.ins().brif(

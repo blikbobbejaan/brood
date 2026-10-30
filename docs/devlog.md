@@ -4799,3 +4799,28 @@ fixed: a preempted process wakes no idle worker, and an idle worker can sleep up
 (the repro's foreground is the root thread, so it cannot show whether that matters). Checked
 here: fmt, clippy `--all-features`, the new test file and the collector test, with the
 sabotage runs; not run here: the suite and the benchmarks.
+
+2026-10-30 (KI-308, KI-309, ADR-511: a no-issues pass). **KI-308**: beside each new background
+in the KI-307 repro, the root program's first sample waited 63–115 ms without running (3 of
+3 runs). It is a green process on a worker, the background it spawned was queued there, and
+when the root's budget ran out it re-queued behind it; the enqueue notified only that busy
+worker, and idle ones back off up to 500 ms. The preemption path now wakes a parked peer when
+the queue holds anything else: the stall is gone in three runs, and `pingpong` and `ring`
+read 5% faster in the A/B (the rest noise). **KI-309**: the native-walk case of
+`interrupt_one_worker` saw `%vector-fold-walk` latched suspend-host twice. A latch is meant
+to be final, and three writers could undo it: a re-lowering reset in the same exit, a copy
+of the arm adopting the code the latch left published, and — the one CI kept hitting — the
+background compile, which stored its pointer over whatever the slot held, a latch included.
+Every write to `jit_code` now goes through a compare-and-swap from what the writer read, or a
+reset that leaves a latch alone, and a structural test fails on any new plain store. Found on
+the way and not a bug: a busy process keeps its worker for seconds when nothing else waits —
+by design (ADR-401) — and the stall guard's comment, which called that a quantum, now says
+so. **ADR-511**: a `conj` onto a vector appends in place into the spare capacity of a buffer
+it shares with the vectors built from it, past every existing vector's length, so a `conj`
+loop is linear (200 000 in a fraction of a second; the copy each step would have moved
+480 GB); every other write is copy-on-write and the buffer never leaves its heap. The
+byte-trigger test's vector cases had used a `conj` loop to make garbage, so they now build
+and drop large vectors from a range, sized so the object count cannot trigger a collection
+(each case checked red with the byte trigger removed). Checked here: fmt, clippy
+`--all-features`, the new and touched test files, the JIT, latch and scheduler binaries test
+by test, and the sabotage runs; not run here: the suite.

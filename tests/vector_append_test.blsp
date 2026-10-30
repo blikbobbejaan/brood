@@ -1,0 +1,117 @@
+;; `conj` and `into` onto a vector append in place when they can (ADR-511). A vector is flat,
+;; so an append used to copy every element, and a loop of `conj` was quadratic. Now the
+;; newest vector over an append buffer appends into its spare capacity, and anything else
+;; copies. No vector that already exists ever changes: these tests read every version back.
+
+(defmodule vector-append-test (:use test))
+
+(defn conj-build (n)
+  (fold (range n) [] (fn (acc i) (conj acc i))))
+
+;; Sum a vector by index in a self-tail loop: hot enough to run natively, so the elements
+;; are read the way the JIT reads them, through the vector's cached pointer.
+(defn indexed-sum (v)
+  (letrec (go (fn (i acc) (if (= i (count v)) acc (go (inc i) (+ acc (or (nth v i) 0))))))
+    (go 0 0)))
+
+(describe "an append never changes a vector that exists"
+  (test "every version of a conj chain keeps its own elements"
+    (let (base (conj-build 10)
+          a (conj base 10)
+          b (conj a 11)
+          c (conj b 12))
+      (assert= base (vec (range 10)))
+      (assert= a (vec (range 11)))
+      (assert= b (vec (range 12)))
+      (assert= c (vec (range 13)))))
+
+  (test "two conjs onto one vector make two vectors, and neither sees the other's element"
+    (let (base (conj-build 20)
+          left (conj base :left)
+          right (conj base :right))
+      (assert= (count base) 20)
+      (assert= (last left) :left)
+      (assert= (last right) :right)
+      (assert= (count left) 21)
+      (assert= (count right) 21)
+      (assert= (conj left :more) (conj (conj base :left) :more))))
+
+  (test "an append onto an older version, after newer ones exist, copies it"
+    (let (base (conj-build 10)
+          older (conj base 1)
+          newer (conj older 2)
+          branch (conj older 3))
+      (assert= (last newer) 2)
+      (assert= (last branch) 3)
+      (assert= (count older) 11)))
+
+  (test "into appends like conj, and onto an appended vector"
+    (let (start (into [] (range 5))
+          more (into start [5 6 7])
+          again (conj more 8))
+      (assert= more [0 1 2 3 4 5 6 7])
+      (assert= again [0 1 2 3 4 5 6 7 8])
+      (assert= start [0 1 2 3 4]))))
+
+(describe "a conj loop"
+  (test "builds the vector it says"
+    (assert= (conj-build 5000) (vec (range 5000))))
+
+  (test "is linear: 200 000 conjs finish (a copy each step would move about 480 GB)"
+    (let (started (os/now-ns)
+          built (conj-build 200000)
+          seconds (/ (- (os/now-ns) started) 1000000000.0))
+      (assert= (count built) 200000)
+      (assert= (nth built 199999) 199999)
+      (assert (< seconds 5.0))))
+
+  (test "keeps every version right across collections"
+    (let (chain (fold (range 2000)
+                  [[]]
+                  (fn (versions i)
+                    (do
+                      (when (= 0 (math/mod i 500)) (dev/gc-collect))
+                      (conj versions (conj (last versions) i))))))
+      (assert= (count chain) 2001)
+      (assert= (nth chain 0) [])
+      (assert= (nth chain 1) [0])
+      (assert= (nth chain 1000) (vec (range 1000)))
+      (assert= (last chain) (vec (range 2000)))))
+
+  (test "reads back by index on the native path"
+    (let (v (conj-build 3000))
+      (assert= (indexed-sum v) (/ (* 2999 3000) 2))
+      (assert= (indexed-sum (conj v 1)) (+ 1 (/ (* 2999 3000) 2))))))
+
+(def shared-by-conj (conj-build 1000))
+
+(describe "vectors built by conj, across processes"
+  :isolated (test "a vector built by conj is sent whole, and the receiver can append to it"
+    (let (parent (self)
+          _ (spawn (send parent [:built (conj-build 1500)]))
+          received (receive ([:built v] v)))
+      (assert= received (vec (range 1500)))
+      (assert= (conj received :mine) (conj (vec (range 1500)) :mine))))
+
+  (test "workers append to one shared global at once, each to its own copy"
+    (let (parent (self)
+          workers (map (range 4)
+                    (fn (k)
+                      (spawn (send parent
+                               [k (fold (range 300) shared-by-conj (fn (acc i) (conj acc [k i])))]))))
+          replies (map workers (fn (_) (receive ([k v] [k v])))))
+      (assert= (count shared-by-conj) 1000)
+      (assert= (last shared-by-conj) 999)
+      (assert (every? replies
+                (fn ([k v])
+                  (and (= (count v) 1300) (= (nth v 999) 999) (= (last v) [k 299])))))))
+
+  (test "a vector a worker appends to and sends back keeps its elements"
+    (let (parent (self)
+          worker (spawn (receive (v (send parent (conj (conj v :a) :b)))))
+          start (conj-build 800))
+      (send worker start)
+      (let (back (receive (v v)))
+        (assert= (count back) 802)
+        (assert= (seq/take-last back 2) '(:a :b))
+        (assert= start (vec (range 800)))))))

@@ -118,6 +118,10 @@ a binding is made, it never changes. Concretely:
   like `cons`, `assoc`, `conj`, and `append` return a **fresh** value and leave
   their inputs untouched. Strings, lists, and vectors are read-only after
   construction.
+  A `conj` (or `into`) onto a vector costs O(1) amortised, not a copy of the vector: the
+  newest vector over a buffer appends into its spare room, past the length any existing
+  vector reads, and every other append copies (ADR-511). No value changes either way, so
+  a `conj` loop onto a vector is linear and every older version stays exactly as it was.
 - **Local bindings never change.** A `let` or `fn` binding is fixed for the life
   of its frame — there is no `set!` to rebind it.
 - **The one mutation is `def`.** `def` rebinds a name in the **global**

@@ -1324,11 +1324,12 @@ pub(super) fn vector_assoc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
 }
 
 /// `(%vector-concat v xs)` — a fresh vector of `v`'s items followed by `xs`'s (a
-/// vector, a list, a range, a set or nil): one allocation, one copy. The kernel op
-/// behind `conj` on a vector and `into` onto one — a vector is flat, so the fresh copy
-/// IS the append, rather than building a list, reversing it twice and re-vectorising it in
-/// code every game frame runs. No GC safepoint runs inside a builtin, so the handles stay valid
-/// across `alloc_vector`.
+/// vector, a list, a range, a set or nil). The kernel op behind `conj` on a vector and
+/// `into` onto one, rather than building a list, reversing it twice and re-vectorising it in
+/// code every game frame runs. It appends in place when `v` is the newest vector over an
+/// append buffer, so a loop of `conj` is amortised O(1) a step rather than a copy of
+/// everything so far (ADR-511, `Heap::vector_append`). No GC safepoint runs inside a
+/// builtin, so the handles stay valid.
 pub(super) fn vector_concat(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let v = arg(args, 0);
     let id = match v {
@@ -1336,11 +1337,7 @@ pub(super) fn vector_concat(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
         _ => return Err(LispError::wrong_type(heap, "%vector-concat", "vector", v)),
     };
     let tail = heap.seq_items(arg(args, 1))?;
-    let head = heap.vector(id);
-    let mut items = Vec::with_capacity(head.len() + tail.len());
-    items.extend_from_slice(head);
-    items.extend(tail);
-    Ok(heap.alloc_vector(items))
+    Ok(heap.vector_append(id, &tail))
 }
 
 /// `(subvec v start)` / `(subvec v start end)` — a fresh vector of the elements

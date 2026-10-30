@@ -1542,8 +1542,8 @@ mod small_map;
 #[cfg(feature = "jit")]
 pub(crate) use self::slabs::rt_vec_entry_stride;
 use self::slabs::{
-    BufferMark, CodeSlabs, Slabs, buffer_bytes_since, buffer_mark, owned_bytes, park_trim_due,
-    park_trim_probe, shrink_slabs, slab_bytes, slab_capacity_bytes, slab_live_count,
+    AppendBuf, BufferMark, CodeSlabs, Slabs, buffer_bytes_since, buffer_mark, owned_bytes,
+    park_trim_due, park_trim_probe, shrink_slabs, slab_bytes, slab_capacity_bytes, slab_live_count,
 };
 pub(crate) use self::slabs::{INLINE_VEC_CAP, VecStore};
 pub(crate) use self::small_map::SmallMap;
@@ -2187,6 +2187,51 @@ impl Heap {
         Value::vector(VecId::local_gen(idx, self.local_epoch))
     }
 
+    /// A fresh vector of `v`'s elements followed by `tail` — the append behind `conj` and
+    /// `into` on a vector (ADR-511). A vector is flat, so this used to copy all of `v`, and
+    /// a loop of `conj` was quadratic. Now it writes into the spare capacity of `v`'s append
+    /// buffer when `v` is the newest vector over it, and copies only otherwise: exactly
+    /// sized for a first append, so a one-off `into` wastes nothing, and with room for as
+    /// many again when `v` was itself an append, so a chain of them is amortised O(1).
+    pub fn vector_append(&mut self, id: VecId, tail: &[Value]) -> Value {
+        let head_len = self.vector(id).len(); // the use-after-GC tripwire, before the slot read
+        let total = head_len + tail.len();
+        // Only a LOCAL vector's buffer may grow: a shared region's never takes a write.
+        let (appended, appending) = {
+            let store = match id.region() {
+                LOCAL if id.is_old() => Some(&self.old().vectors[id.index()]),
+                LOCAL => Some(&self.local.vectors[id.index()]),
+                _ => None,
+            };
+            match store {
+                Some(VecStore::Shared { len, buf, .. }) => (
+                    buf.append_in_place(*len as usize, tail)
+                        .then(|| VecStore::shared(buf.clone(), total)),
+                    true,
+                ),
+                _ => (None, false),
+            }
+        };
+        let store = match appended {
+            Some(store) => store,
+            None if total <= INLINE_VEC_CAP => {
+                let mut items = self.vector(id).to_vec();
+                items.extend_from_slice(tail);
+                VecStore::from_vec(items)
+            }
+            None => {
+                let capacity = if appending { total * 2 } else { total };
+                let mut items = Vec::with_capacity(capacity);
+                items.extend_from_slice(self.vector(id));
+                items.extend_from_slice(tail);
+                self.note_fresh_buffer(capacity * std::mem::size_of::<Value>());
+                VecStore::shared(AppendBuf::new(items), total)
+            }
+        };
+        let idx = alloc_slot!(self, vectors, store);
+        Value::vector(VecId::local_gen(idx, self.local_epoch))
+    }
+
     /// Allocate a vector of the `len` operand-stack slots from `start` — the VM's vector
     /// literal (`Inst::MakeVector`) — with no intermediate `Vec`: inline for a small one,
     /// one exact-size spill buffer otherwise. The caller drops the operands after.
@@ -2244,7 +2289,9 @@ impl Heap {
         );
         let ptr = match &mut self.local.vectors[idx] {
             VecStore::Inline { items, .. } => items.as_mut_ptr(),
-            VecStore::Spill { .. } => unreachable!("just pushed an Inline"),
+            VecStore::Spill { .. } | VecStore::Shared { .. } => {
+                unreachable!("just pushed an Inline")
+            }
         };
         (Value::vector(VecId::local_gen(idx, self.local_epoch)), ptr)
     }

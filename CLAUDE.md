@@ -344,6 +344,11 @@ commits in this repo.**
   matter how much it would speed up a build (a user-facing transient was tried and removed).
   Fast bulk construction is a **GC-quiet in-place build inside one Rust builtin** that still
   returns a fresh immutable `Value` (e.g. `%map-into`).
+  - **An append buffer is not a mutable buffer** (ADR-511): a vector `conj`ed onto may share
+    its element buffer with the vector built from it, which writes only past the length any
+    existing vector reads, once per slot. Nothing that exists ever changes. It stays
+    LOCAL-only (promotion, messages and clones copy out), and every write to a shared
+    buffer goes copy-on-write (`VecStore::as_mut_slice`). Keep those two properties.
   - **The ONE and ONLY mutable structure is `Value::Table`** (shared, identity-mutable,
     deep-clones keys/values in and out). Reach for a `Table` or a **process** holding state
     in its loop when you genuinely need mutable state.

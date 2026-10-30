@@ -6,7 +6,19 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Performance.**
+- `conj` and `into` onto a vector append in place when they can, so a `conj` loop is linear
+  rather than quadratic (ADR-511): 200 000 `conj`s take a fraction of a second, where a copy
+  each step moved about 480 GB. Vectors stay flat (O(1) `nth`) and no existing vector ever
+  changes.
+
 **Fixed.**
+- A process preempted behind another on its worker now wakes an idle worker to take it,
+  instead of waiting for that one to finish while idle workers slept (KI-308: 63–115 ms
+  stalls in the KI-307 repro).
+- A JIT'd function latched off native code because it blocked its worker stays off it
+  (KI-309): a background compile finishing after the latch, a re-lowering due in the same
+  exit, and a copy adopting the code it had published could each put it back.
 - A loop that makes large garbage vectors or strings no longer grows to gigabytes (KI-307,
   ADR-509). The collector counted objects only, and one object can own any number of
   bytes: building a 60 000-element vector by `conj` in a loop reached 12 GB resident in
