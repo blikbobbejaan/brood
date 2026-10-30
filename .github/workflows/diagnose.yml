@@ -1,19 +1,32 @@
 name: Diagnose
 
 # Timing questions the development desktop must not answer (no benchmarks or timing runs
-# there): run on demand, never on a push. Today it answers KI-307 — does a process with a
-# large live heap stall the processes beside it, and through what — by running
-# `scripts/gc-contention-repro.blsp` under variants that each rule a shared resource in or
-# out — the allocator (mimalloc v3 as shipped, v2, purging off, the system allocator) — and
+# there): run on demand, never on a push. `what` picks the job.
+#
+# `ki307` (the default) answers KI-307 — does a process with a large live heap stall the
+# processes beside it, and through what — by running `scripts/gc-contention-repro.blsp`
+# under variants that each rule a shared resource in or out — the allocator (mimalloc v3 as shipped, v2, purging off, the system allocator) — and
 # with a `perf` profile of the stalled foreground, kernel symbols included.
 #
-#     gh workflow run diagnose.yml -R broodlang/brood   (then `gh run watch` on the run it starts)
+# `ab` runs `scripts/ab-bench.sh --floor` over the default benchmark rows, `base` against this
+# commit. A shared runner is noisy, so it can show a large regression, not a few percent; the
+# benchmark box (`make ab`) is still the gate for a small one (docs/benchmarking.md).
+#
+#     gh workflow run diagnose.yml -R broodlang/brood -f what=ab -f base=<ref>
+#     (then `gh run watch` on the run it starts)
 
 on:
   workflow_dispatch:
+    inputs:
+      what:
+        description: "ki307 (the gc-contention repro) or ab (benchmark rows, base vs this commit)"
+        default: ki307
+      base:
+        description: "for ab: the baseline ref"
+        default: "HEAD^"
 
 concurrency:
-  group: diagnose
+  group: diagnose-${{ inputs.what }}
   cancel-in-progress: true
 
 env:
@@ -22,6 +35,7 @@ env:
 jobs:
   gc-contention:
     name: KI-307 — a big live heap beside an allocating process
+    if: inputs.what == 'ki307'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -127,3 +141,29 @@ jobs:
           name: ki307-reports
           path: target/ki307-*.txt
           if-no-files-found: warn
+
+  ab:
+    name: benchmark rows, base vs this commit
+    if: inputs.what == 'ab'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/checkout@v7
+        with:
+          repository: broodlang/brood-benchmarks
+          path: brood-benchmarks
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: A/B the default rows
+        env:
+          BROOD_BENCH_DIR: ${{ github.workspace }}/brood-benchmarks
+        run: |
+          nproc
+          base=$(git rev-parse "${{ inputs.base }}")
+          echo "base $base, this commit $(git rev-parse HEAD)"
+          scripts/ab-bench.sh -b "$base" --floor
