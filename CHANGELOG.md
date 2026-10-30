@@ -6,6 +6,15 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Dependencies.**
+- wasmtime 50.0.1 and cranelift 0.137.1; wasm-bindgen 0.2.130 (the playground and tab pins,
+  which the CLI in CI and hive's image follow). Every direct dependency is on its latest
+  release except `num-bigint` (0.4; 0.5 waits on `bigdecimal` and `num-rational`, which
+  both still build on 0.4).
+- The wasm build no longer carries `getrandom` 0.2/0.3 shims or a `--cfg getrandom_backend`
+  flag: nothing depends on those versions any more, and 0.4 takes its browser backend from
+  the `wasm_js` feature alone.
+
 ## v0.48.0 — the callback is last
 
 One argument-order rule (ADR-507): the subject first, a callback last, and only the callback's

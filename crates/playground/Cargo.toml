@@ -19,7 +19,7 @@ path = "src/lib.rs"
 # visitor's snippet may reach.
 brood = { path = "../lisp", default-features = false, features = ["brotli", "checker", "image-formats", "toolchain"] }
 # Pinned to the installed wasm-bindgen CLI — the crate and CLI versions must match.
-wasm-bindgen = "=0.2.129"
+wasm-bindgen = "=0.2.130"
 
 # NOTE: no `[profile.*]` here, deliberately. `brood-playground` is a workspace *member*,
 # and cargo ignores a non-root package's profiles — it said so on every build of the
