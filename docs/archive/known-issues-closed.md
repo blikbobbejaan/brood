@@ -15537,3 +15537,55 @@ its own worker and wakes no idle peer, and an idle worker can sleep up to 500 ms
 looks to steal; the repro's foreground runs outside the worker pool, so it could not show
 whether that matters for a green process like bedit's UI loop. KI-308 is the one stall the
 fixed repro still shows.
+
+## KI-308 — beside a background running `regex/split`, one sample of the foreground stalls ~120 ms without running ✅ FIXED 2026-10-30
+
+**Seen:** in the KI-307 repro after its fix (Diagnose 41019562798), one sample per run spent
+111–123 ms waiting, not running. Six isolated runs of that scenario showed nothing; three
+full-sequence runs with `BROOD_STALL_MS` (Diagnose 41039041747) showed it every time, always
+in sample #0 — the first after `beside` spawns a new background — at 63–115 ms, and 12–15 ms
+in the strings scenario's sample #0.
+
+**Cause.** The repro's root program is a green process on a worker (ADR-135). The background
+it spawns is queued on its worker; when the root's budget ran out it re-queued there, behind
+the background — a JIT'd loop over long calls, which holds its worker for seconds — and the
+enqueue notified only that worker. Idle workers are not told a peer's queue grew, and back off
+up to `IDLE_BACKOFF_MAX` (500 ms) between looks, so the root waited for one to happen by. The
+first suspicion (the background's load of `std/regex`) was ruled out: preloading it changed
+nothing.
+
+**Fix (`753f4404`).** A process preempted behind another wakes a parked peer: one load when no
+worker is parked, and nothing on the direct-handoff path whose wakes once cost `pingpong`
+1.6×. Three full-sequence runs after (Diagnose 41040279603): no sample waited. A/B on the
+process rows (Diagnose 41040290930): `pingpong` −5.5%, `ring` −5.0%, the rest noise.
+
+**Guard.** No standing test: the stall is timing on a loaded machine. The Diagnose workflow's
+`ki308` job reruns the measurement on demand.
+
+**Left as an observation:** the `[stall] quantum` line times a whole worker run, which is
+seconds for a busy process alone on its worker (by design, ADR-401). Its comment now says so
+(`388ed859`).
+
+## KI-309 — `interrupt_one_worker`'s native-walk case sees its worker block twice, intermittently ✅ FIXED 2026-10-30
+
+**Seen:** `a_native_walk_that_hosts_a_park_blocks_once_and_then_parks` failed
+`dirty_receive_block_count() <= dirty + 1` in CI on `a67f4889`, `535354c6` and `11a98f5b`;
+1 run in 200 when repeated alone (Diagnose 41037757418), where the bail trace named the same
+`%vector-fold-walk` latched suspend-host twice.
+
+**Cause.** A suspend-host latch takes an arm off native code for good once it blocks its
+worker, but three writers could put it back: the deopt feedback's re-lowering reset, which
+runs after the latch in the same exit and nulled `jit_code`; a copy of the closure's arm
+adopting the native code the latch had left in the shared cache; and the background
+compiler's install, which stored its pointer over whatever the slot held — so a compile
+finishing after another process latched the arm undid the latch. That last one is what CI
+kept hitting (it survived the first fix).
+
+**Fix (`2ffc0f54`, `3e5909d8`).** A reset leaves a latched arm alone; the latch retracts its
+published code; every other write to `jit_code` is a compare-and-swap from the value the
+writer read (`CompiledArm::replace_code`, `clear_code_unless_latched`).
+
+**Guard.** `a_suspend_latch_survives_a_relowering_due_in_the_same_exit`,
+`a_suspend_latch_takes_back_the_code_it_published`, and
+`nothing_stores_over_an_arms_code_but_the_latch`, which scans the crate for a plain store to
+`jit_code`; each red with its fix removed.

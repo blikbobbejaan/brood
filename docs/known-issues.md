@@ -68,43 +68,7 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 
 (An open entry's `## KI-N` section goes here until it is resolved.)
 
-## KI-309 — `interrupt_one_worker`'s native-walk case sees its worker block twice, intermittently — open 2026-10-30
-
-**Symptom.** `a_native_walk_that_hosts_a_park_blocks_once_and_then_parks` failed
-`dirty_receive_block_count() <= dirty + 1` ("a native walk blocked more than once: the latch did
-not take it off native code") in CI on `a67f4889` (run 40832994935) and `535354c6` (run
-41019666803), and passed on the commits between and after. It passes on the development desktop.
-
-**Cause.** Not established. The case's one allocation is a 5000-element vector, so the
-collector's byte trigger (ADR-509, in `535354c6`) never fires there, and it failed before that
-change too. `jit_latch_suspend_host` latches the innermost native arm per dirty park and
-"converges outward over successive parks", so when both the step closure and the walk around
-it are native the program can block once per arm before the latch has them all; whether both are
-native when the first park comes depends on when the compiler thread finishes.
-
-**Next step.** Run the case repeatedly on the test machine or in CI with `BROOD_JIT_BAIL_TRACE=1`,
-and see whether the failing runs name two `suspend-latched` arms.
-
-**Guard.** The test itself, once it is deterministic.
-
-## KI-308 — beside a background running `regex/split`, one sample of the foreground stalls ~120 ms without running — open 2026-10-30
-
-**Symptom.** In `scripts/gc-contention-repro.blsp` on a 4-core CI runner (Diagnose run
-41019562798, after the KI-307 fix), the "beside a regex split of a big text" scenario has one
-sample per run at 129 ms (mimalloc v3) and 142 ms (v2) where the median is 14–15 ms. The
-split of that sample says 111 and 123 ms of it were **waiting**: wall time the foreground (the
-root process, on its own OS thread) was not on a CPU. No other scenario shows more than 7 ms of
-waiting, and the arithmetic foreground beside the same background is unaffected.
-
-**Cause.** Not established. One sample per run, and in both allocator builds, suggests a
-one-time event; the candidate is the background's first `regex/split`, which loads `std/regex`
-and publishes it to the runtime's shared code while the foreground is mid-sample.
-
-**Next step.** A Diagnose variant that loads `regex` before the background starts, and prints
-the stalled sample's index. Timing, so CI or the test machine, not the development desktop.
-
-**Guard.** None yet.
-
+(None open.)
 
 ## Index — status per issue
 
@@ -112,8 +76,8 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
-| KI-309 | **`interrupt_one_worker`'s native-walk case sees its worker block twice, intermittently** — `a_native_walk_that_hosts_a_park_blocks_once_and_then_parks` failed `<= dirty + 1` in CI on `a67f4889` and `535354c6` and passed between | open 2026-10-30 — cause not established; the suspend-host latch converging outward over two native arms is the candidate. Needs repeated runs with `BROOD_JIT_BAIL_TRACE=1`, not the desktop |
-| KI-308 | **beside a background running `regex/split`, one sample of the foreground stalls ~120 ms without running** — one sample per run, 111–123 ms of it waiting, in the KI-307 repro after its fix (Diagnose run 41019562798, mimalloc v3 and v2 alike) | open 2026-10-30 — cause not established; the candidate is the background loading `std/regex` mid-sample. Needs a timing run, not the desktop |
+| KI-309 | **`interrupt_one_worker`'s native-walk case sees its worker block twice, intermittently** — `a_native_walk_that_hosts_a_park_blocks_once_and_then_parks` failed `<= dirty + 1` in CI on `a67f4889` and `535354c6` and passed between | ✅ **FIXED 2026-10-30** in `2ffc0f54` and `3e5909d8` — a latch could be undone by a reset in the same exit, by a copy adopting the code it left published, and by a background compile storing over it; every write to `jit_code` now goes over what the writer read. Guards: two latch tests and `nothing_stores_over_an_arms_code_but_the_latch`, each red without its fix. CI green on `388ed859`; 0 of 400 repeated runs failed |
+| KI-308 | **beside a background running `regex/split`, one sample of the foreground stalls ~120 ms without running** — one sample per run, 111–123 ms of it waiting, in the KI-307 repro after its fix (Diagnose run 41019562798, mimalloc v3 and v2 alike) | ✅ **FIXED 2026-10-30** in `753f4404` — the root program re-queued behind a background on its worker and no idle worker was told; a process preempted behind another now wakes one. 3 of 3 runs stalled before, 0 of 3 after (Diagnose); `pingpong` and `ring` 5% faster |
 | KI-307 | **a process with a large, growing live heap stalls allocating processes beside it** — a 9.6 ms map fold read p50 55 ms, max 596 ms beside a background building a 60 000-map vector (`scripts/gc-contention-repro.blsp`, reported from bedit on 0.47.0) | ✅ **FIXED 2026-10-30** in `64b99545` and `fac6c240` (ADR-509) — the background was not a large live heap but a runaway: a `conj` loop makes 43 GB of dead vector buffers per round, and the collector counted objects only, so it reached 12.4 GB resident in three seconds and the neighbour ran 2.5× slower on a machine churning memory. A collection is now also due on fresh buffer bytes. Guards: `gc_byte_trigger_test.blsp` and `an_old_generation_of_dead_large_vectors_is_compacted_on_its_bytes`, each red with its half removed. Measured on a CI runner (Diagnose); the suite ran in CI |
 | KI-306 | **two JIT tier tests read a native arm off the native tier, intermittently** — `receive_loop_jit_test` "a loop that parks on EVERY message still goes native" read `:untried`, and `jit_unrelated_rebind_test` "…keeps rebinding" failed `(> rebinds 0)` (CI on `6ff080db`, `f37fcdf7`) | ✅ **FIXED 2026-10-27** in `dc94e5f4` — test races: the loop test now drives through `settle`, the rebinder signals before settling. Two paths reset a hot arm to `:untried`: a full compile queue (`dc94e5f4`'s attribution) and a runtime collection that moves shared code (`code_relocations` resets EVERY native arm; reproduced on demand). The arm re-tiers after either. Not run here; CI |
 | KI-305 | **a rebound type predicate did not reach native code that had inlined it** — the compiler lowers any `(%eq (type-of x) :kw)` one-liner, a user's own included, to `PrimOp1::TypeIs`; `native_still_valid` re-checked only the 2-ary inlines (`chunk_ops_native`), so after `(def my-int? (fn (x) true))` a native caller kept the old tag compare: 3 where the VM answered 5, and re-warming did not fix it. The 3-ary inlines had the same gap (their heads are reserved today). Found by reading while landing the `(vector …)` inline | ✅ **FIXED 2026-10-26** — `chunk_ops_native` re-checks `Prim1` and `Prim3` heads as it does `Prim2`'s, so the rebind takes the arm off the native tier and it re-tiers against the new binding. The arm then latches `:bailed` (`chunk-ops-not-all-native`), as for a rebound `+`. Guard: `jit_prim1_rebind_test` (its shape, run as a script on the 8b7fddaa binary, reads 3 at tier 2 with the arm `:native`; 5 and `:bailed` after the fix). First push red: the guard also asked the arm to go native again after the predicate was restored, which the latch never allows |
