@@ -2692,3 +2692,53 @@ fn a_suspend_latch_takes_back_the_code_it_published() {
         "a copy of the arm could still adopt the latched code"
     );
 }
+
+/// KI-309: a latch is final only if nothing stores over it. Every write to an arm's
+/// `jit_code` goes through `CompiledArm::replace_code` (a compare-and-swap from what the
+/// writer read) or `clear_code_unless_latched`, except the latch itself storing `BAILED`;
+/// the background compile's plain store over a latch was the one that put a suspend-latched
+/// arm back on native code. The race needs a compile to finish while another process
+/// latches, so this holds the line structurally: a new plain store anywhere in the crate
+/// fails here.
+#[test]
+fn nothing_stores_over_an_arms_code_but_the_latch() {
+    fn rust_files(directory: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(directory).expect("read the source tree") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                rust_files(&path, found);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                found.push(path);
+            }
+        }
+    }
+    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    rust_files(&source_root, &mut files);
+    let mut offenders = Vec::new();
+    let this_file = source_root.join("eval/compile/tests.rs"); // its own patterns
+    for file in files.iter().filter(|file| **file != this_file) {
+        let text = std::fs::read_to_string(file).expect("read a source file");
+        // Without whitespace, so a store rustfmt split over lines is still one token run.
+        let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+        for pattern in ["jit_code.store(", "jit_code.swap("] {
+            for (at, _) in compact.match_indices(pattern) {
+                let after = &compact[at + pattern.len()..];
+                if pattern == "jit_code.store(" && after.starts_with("crate::jit::BAILED") {
+                    continue; // the latch
+                }
+                offenders.push(format!(
+                    "{}: {}",
+                    file.strip_prefix(&source_root).unwrap().display(),
+                    &compact[at..(at + 60).min(compact.len())]
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a plain store to jit_code can undo a latch — use replace_code or \
+         clear_code_unless_latched:\n{}",
+        offenders.join("\n")
+    );
+}

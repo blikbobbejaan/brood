@@ -438,18 +438,8 @@ pub(super) fn reset_native_state(arm: &CompiledArm) {
     // (the compiler thread's `install`).
     arm.native_resets.fetch_add(1, SeqCst);
     // Null whatever is there — unless it is a latch that landed after the check above.
-    let mut current = arm.jit_code.load(Acquire);
-    loop {
-        if current == crate::jit::BAILED {
-            return;
-        }
-        match arm
-            .jit_code
-            .compare_exchange_weak(current, std::ptr::null_mut(), Release, Acquire)
-        {
-            Ok(_) => break,
-            Err(now) => current = now,
-        }
+    if !arm.clear_code_unless_latched() {
+        return;
     }
     // Unsettle: the re-tier may adopt this very pointer back from the shared cache, and the
     // upgrade state below is being reset for it.

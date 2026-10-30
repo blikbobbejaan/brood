@@ -319,7 +319,10 @@ pub(crate) fn jit_compile_now(heap: &Heap, arm: &Arc<CompiledArm>, base: usize) 
         arm.compile_relocations
             .store(heap.code_relocations(), Release);
         arm.compile_epoch.store(epoch, Release);
-        arm.jit_code.store(ptr, Release);
+        // Over the queue marker, or not at all (a latch or a peer's install came first).
+        if !arm.replace_code(crate::jit::QUEUED, ptr) {
+            return;
+        }
         arm.shared_published
             .store(true, std::sync::atomic::Ordering::Relaxed);
         return;
@@ -350,7 +353,9 @@ pub(crate) fn jit_compile_now(heap: &Heap, arm: &Arc<CompiledArm>, base: usize) 
             // Pinned BEFORE the pointer is published, so a cold-path lookup by code
             // never misses an installed arm.
             jit_keep_alive(ptr, arm);
-            arm.jit_code.store(ptr as *mut u8, Release);
+            // Over the queue marker, or not at all: the arm may have been latched while this
+            // lowered (KI-309), or the background compile installed first.
+            arm.replace_code(crate::jit::QUEUED, ptr as *mut u8);
         }
         Ok(None) | Err(_) => {
             let reason = trace_lower_declined(arm, false);
@@ -499,17 +504,26 @@ pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::La
                     if !still_valid(arm) {
                         return false;
                     }
-                    let before = slot.load(SeqCst);
-                    slot.store(ptr, SeqCst);
+                    // Only over the queue marker this compile was started for — QUEUED for
+                    // the small slot, null for an upgrade's. Anything else was decided while
+                    // it lowered, and stands: a suspend-host latch (`BAILED` is final; storing
+                    // over it put a latched arm back on native code, KI-309) or the pointer a
+                    // spinning loop's synchronous compile installed first.
+                    let expected = if inlined {
+                        std::ptr::null_mut()
+                    } else {
+                        crate::jit::QUEUED
+                    };
+                    if slot
+                        .compare_exchange(expected, ptr, SeqCst, SeqCst)
+                        .is_err()
+                    {
+                        return false;
+                    }
                     if still_valid(arm) {
                         return true;
                     }
-                    let restore = if inlined {
-                        std::ptr::null_mut()
-                    } else {
-                        before
-                    };
-                    let _ = slot.compare_exchange(ptr, restore, SeqCst, SeqCst);
+                    let _ = slot.compare_exchange(ptr, expected, SeqCst, SeqCst);
                     false
                 };
                 // Already resolved (a spinning loop sync-compiled it via

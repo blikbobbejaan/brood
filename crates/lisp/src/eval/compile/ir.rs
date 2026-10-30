@@ -1078,6 +1078,42 @@ impl CompiledArm {
             .store(crate::jit::BAILED, std::sync::atomic::Ordering::Release);
     }
 
+    /// Put `code` in `jit_code` only if it still holds `expected` — what the writer read
+    /// when it decided. Every writer but [`latch_bailed`](Self::latch_bailed) goes through
+    /// here or [`clear_code_unless_latched`](Self::clear_code_unless_latched), because a
+    /// latch is final and arms are shared: another process can latch this one between a
+    /// writer's read and its store, and a plain store then put the arm back on the native
+    /// code it was latched off (KI-309: a background compile finishing after the latch).
+    /// `false`: the slot moved on, and what it holds now stands.
+    pub(crate) fn replace_code(&self, expected: *mut u8, code: *mut u8) -> bool {
+        use std::sync::atomic::Ordering::{Acquire, Release};
+        self.jit_code
+            .compare_exchange(expected, code, Release, Acquire)
+            .is_ok()
+    }
+
+    /// Back to untried (null), unless the arm is latched: a reset is for native code being
+    /// replaced, and a latched arm has none (see [`replace_code`](Self::replace_code)).
+    /// `false` when it was latched.
+    pub(crate) fn clear_code_unless_latched(&self) -> bool {
+        use std::sync::atomic::Ordering::{Acquire, Release};
+        let mut current = self.jit_code.load(Acquire);
+        loop {
+            if current == crate::jit::BAILED {
+                return false;
+            }
+            match self.jit_code.compare_exchange_weak(
+                current,
+                std::ptr::null_mut(),
+                Release,
+                Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(now) => current = now,
+            }
+        }
+    }
+
     /// The arm's bytecode as a space-separated opcode list, for the `[jit-bail]` traces.
     pub(crate) fn dbg_opcodes(&self) -> String {
         let code = self

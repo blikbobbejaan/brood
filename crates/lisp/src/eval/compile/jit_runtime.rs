@@ -425,7 +425,11 @@ fn jit_tier_in_frame_slow(
                 );
             }
         }
-        arm.jit_code.store(ptr, Release);
+        // Over what was read, or not at all: a peer may have latched or installed this arm
+        // since (KI-309).
+        if !arm.replace_code(code, ptr) {
+            return None;
+        }
         arm.shared_published.store(true, Relaxed); // already in the cache
         code = ptr;
     }
@@ -576,7 +580,7 @@ fn jit_tier_in_frame_slow(
                 // full (tens of millions of redundant re-validations under a spawn storm).
                 // The arm still compiles once the queue
                 // drains (a long-lived process re-reaches the threshold and re-enqueues).
-                arm.jit_code.store(std::ptr::null_mut(), Release);
+                arm.replace_code(crate::jit::QUEUED, std::ptr::null_mut());
                 arm.jit_calls.store(0, Relaxed);
             }
         }
@@ -730,7 +734,11 @@ fn jit_tier_in_frame_slow(
                 // so only this process's links are re-pointed. `inline_queued` stays
                 // true, which is the once-per-epoch latch against re-enqueueing.
                 arm.inline_code.store(std::ptr::null_mut(), Release);
-                arm.jit_code.store(ic, Release);
+                // Over the small body this entry read, or not at all (a peer latched or
+                // swapped first, KI-309).
+                if !arm.replace_code(code, ic) {
+                    return None;
+                }
                 // Nothing is left to swap for the re-lowered body, but its slot now reads null
                 // like a compile in flight, which the settle test below must treat as pending
                 // — so it settles here. Its publish was the small body's (the flag stays set).
@@ -798,7 +806,12 @@ fn jit_tier_in_frame_slow(
                 }
             }
             arm.inline_installed.store(true, Release); // BEFORE jit_code — see comment above
-            arm.jit_code.store(ic, Release);
+            // Over the small body this entry read, or not at all: latched since, the arm is
+            // never entered, so the flag above means nothing; swapped by a peer, it holds this
+            // same upgrade (KI-309).
+            if !arm.replace_code(code, ic) {
+                return None;
+            }
             if let Some(sym) = arm.inline_name {
                 heap.invalidate_fast_links_for(sym);
             }
@@ -924,7 +937,9 @@ fn depth_bail_to_boxed(arm: &CompiledArm) {
     if let Some(sym) = arm.dbg_name {
         ActiveBackend::note_depth_bail(sym);
     }
-    arm.jit_code.store(std::ptr::null_mut(), Release);
+    if !arm.clear_code_unless_latched() {
+        return;
+    }
     arm.jit_calls.store(TIER_THRESHOLD, Release);
     arm.shared_published.store(false, Relaxed);
 }
