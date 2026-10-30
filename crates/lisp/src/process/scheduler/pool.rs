@@ -897,10 +897,14 @@ fn run_one_timed(mut proc: Box<Process>) {
     proc.install_ctx();
     SPAWNS_SINCE_PARK.with(|c| c.set(proc.spawns_since_park));
     set_capture_run(true);
-    // Stall trace (BROOD_STALL_MS): a green-process quantum is bounded by the reduction
-    // budget, so it should be quick — if one runs ≥ n ms, the time went into a blocking
-    // builtin (terminal render, file I/O, sleep) or a long native call, NOT minor GC /
-    // compaction (those have their own guards). Pinpoints a gameplay lag the GC guards miss.
+    // Stall trace (BROOD_STALL_MS): times this whole run of the process on the worker, until
+    // it parks, is preempted or exits. That is one reduction budget only while something
+    // else waits for a worker: with nothing queued, a spent budget is refilled and the
+    // process runs on (ADR-401), so a busy process alone on its worker logs its whole run —
+    // seconds, and no one was kept waiting. A long run with work waiting is the stall: the
+    // time went into a blocking builtin (terminal render, file I/O, sleep), a long native
+    // call, or a native-nested receive, NOT minor GC / compaction (those have their own
+    // guards). Pinpoints a gameplay lag the GC guards miss.
     let _sg = {
         let pid = proc.pid;
         crate::core::heap::stall_guard_pid("quantum", pid)
