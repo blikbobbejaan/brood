@@ -55,3 +55,39 @@
         (try (require-one top) (catch _ nil))
         (try (require-one top) (catch _ nil)))
       (assert= 2 (loads count-file)))))
+
+;; Each process's answer to `require-one`, in arrival order; `:timeout` marks one that never came.
+(defn- answers (n acc)
+  (if (= n 0)
+    acc
+    (receive
+      ([:answer a] (answers (- n 1) (conj acc a)))
+      (after 10000 (conj acc :timeout)))))
+
+(describe "a load that throws while other processes wait on it"
+  ;; The waiters used to retry: woken by the failed load, each claimed it and loaded the same
+  ;; broken source again, and the parallel build's workers, waiting on a broken dependency many
+  ;; modules use, each loaded it once more. The loader now hands its waiters the error.
+  (test "every waiter raises the loader's error, and the module loads once"
+    (let (prefix (str "reqfail-wait-" (os/now-ns))
+          count-file (path/join *dir* (str prefix ".count"))
+          module (symbol (str prefix "-slow"))
+          me (self))
+      ;; slow enough that every requirer below is waiting before it throws
+      (file/spit (path/join *dir* (str prefix "-slow.blsp"))
+        (str "(defmodule "
+          prefix
+          "-slow)\n"
+          "(file/spit-append "
+          (pr-str count-file)
+          " \"x\")\n"
+          "(proc/sleep 300)\n"
+          "(error \"boom while they waited\")\n"))
+      (doseq (_ (range 4))
+        (spawn (fn ()
+                 (send me
+                   [:answer (try (require-one module) :no-error (catch e (error-message e)))]))))
+      (assert= ["boom while they waited"
+                 "boom while they waited" "boom while they waited" "boom while they waited"]
+        (answers 4 []))
+      (assert= 1 (loads count-file)))))

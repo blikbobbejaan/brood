@@ -4900,3 +4900,17 @@ the last pushed commit too, so B6 was not the cause. Split by `describe`, then b
 per level before the pattern compiler's depth cap could refuse the pattern. It walks with a
 work list now; the file's 53 tests pass, and a unit test strips the same pattern on a 256 KB
 thread (the recursive walk aborts it). CI's threads had enough stack, which is why it passed there.
+
+2026-10-30 (KI-312: the parallel cold build hung on a cycle of many modules and on a broken
+dependency). mur-forge's `nest check` hung after the ADR-512 migration (its `_deps/hatch` still
+on the old vectors) where the sequential walk reported the error at once, and bedit's cold build
+on 0.49.0 hung too. A 24-module `(:use …)` ring reproduced it on every run: the one process that
+breaks a cross-process cycle shortens it by one member a round, and the waiters far from the
+break reach the 30 s backstop and force-load mid-cycle. Letting every member but one break at
+once just moved the claims around, because each member checks on its own tick. Pool workers now
+bind `*require-cycle-abandons*` and give a cycle up without retrying, which the driver already
+leaves to the sequential pass. Two more pieces: the driver kills its workers at the first real
+failure rather than waiting for the jobs in flight, which reloaded the broken dependency over
+and over, and a waiter on a failed load raises the loader's error rather than loading the
+module itself. bedit's cold build: hung to 2.4–7 s; mur-forge's 8.7 s to 2.1–3.3 s (debug). Guards
+in `parallel_load.rs` and `require_failure_test.blsp`, each sabotage-verified (ADR-426 amendment).

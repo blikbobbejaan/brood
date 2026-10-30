@@ -679,7 +679,9 @@ only; `tests/` files come from [[collect-tests]].
                   ;; edge of anything. Under `""` every module became a require of the ROOT
                   ;; section, which a warm start replays — loading the whole project (0.2 s →
                   ;; 1.3 s on the 302-module rig). Requires INSIDE a module still key on its ns.
-                  (binding (*require-parent* nil) (require-one (symbol feature)))
+                  (binding (*require-parent* nil
+                            *require-cycle-abandons* true)
+                    (require-one (symbol feature)))
                   [:ok file])
                 (catch e [:failed file e]))))
         (send driver [:next (self) outcome])
@@ -699,12 +701,21 @@ only; `tests/` files come from [[collect-tests]].
     deaths
     (receive
       ([:next pid outcome]
-        (let (failed? (or failed?
-                        (and outcome
-                          (= (first outcome) :failed)
-                          (not (project-load-missing? (third outcome))))))
-          ;; Fail fast: after the first real failure hand out nothing more — every dependent
-          ;; of the broken module would only retry its load and fail the same way.
+        (if (and (not failed?)
+              outcome
+              (= (first outcome) :failed)
+              (not (project-load-missing? (third outcome))))
+          ;; Fail fast at the first real failure: hand out nothing more, and KILL the workers
+          ;; still loading. Letting them finish is not a drain — each is mid-way through modules
+          ;; that use the broken one, so each loads it again, fails, discards its own claims, and
+          ;; meets the other workers' half-done loads as cycles to break and retry: mur-forge
+          ;; with one broken dependency sat in that for minutes. The sequential pass below raises
+          ;; the error anyway. A killed load publishes nothing (its journal dies with it), and
+          ;; the claim it leaves is cleared by the next process to require that module, which
+          ;; finds its holder dead (`%require-release-dead-claim!`).
+          (do
+            (doseq (worker workers) (exit worker :kill))
+            (project-load-drive jobs workers (into stopped workers) true deaths))
           (if (or (empty? jobs) failed?)
             (do
               (send pid :stop)
@@ -713,12 +724,15 @@ only; `tests/` files come from [[collect-tests]].
               (send pid (let ([feature file] (first jobs)) [:job feature file]))
               (project-load-drive (rest jobs) workers stopped failed? deaths)))))
       ;; a worker that died mid-job left its module unloaded (`require-one` released its
-      ;; waiters); the sequential pass after the pool loads it
+      ;; waiters); the sequential pass after the pool loads it. One this driver killed is not a
+      ;; death to report.
       ([:down _ pid reason] (project-load-drive jobs
                               (set/disj workers pid)
                               stopped
                               failed?
-                              (if (= reason :normal) deaths (conj deaths reason)))))))
+                              (if (or (= reason :normal) (and failed? (= reason :killed)))
+                                deaths
+                                (conj deaths reason)))))))
 
 ;; A module the pool could not load by key, or whose load met a require cycle across two
 ;; workers that the loader did not settle itself (`%require-cycle?` in the prelude) — either

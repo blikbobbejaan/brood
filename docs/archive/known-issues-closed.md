@@ -15608,6 +15608,53 @@ threads had enough stack to pass; this machine's did not.
 **Guard.** `typed::tests::a_deep_untyped_pattern_is_walked_on_a_small_stack` strips a
 100 000-level pattern on a 256 KB thread; the recursive walk aborts it.
 
+## KI-312 — a cold parallel build hung on a `(:use …)` cycle of many modules, and on a broken dependency ✅ FIXED 2026-10-30
+
+**Seen:** mur-forge's `nest check` hung after the ADR-512 migration, with its `_deps/hatch` still
+on the old parameter vectors; `BROOD_LOAD_SEQUENTIAL=1` reported the error at once. Then bedit's
+cold `nest run --check-boot` on 0.49.0 hung in two runs of two (`[require] BUG: waited 30s …`),
+and a project of 24 modules each `:use`ing the next, the last the first, hung on every run while
+the sequential walk loaded it in 0.15 s.
+
+**Cause.** Three, compounding.
+
+1. *A cycle of many processes was broken one process a round.* A pool worker that starts any
+   module of a ring meets the others' loads as one require cycle split across processes. The
+   waiter on the greatest key broke it (`%require-cycle?`); its claims went to the process that
+   had waited on them, whose chain ran on to the same greatest key and closed the cycle again,
+   one member fewer. With 21 workers on the ring that is 20 rounds, a quarter-second apart plus
+   each breaker's yield, and the waiters far from the break reached the 30 s backstop and
+   force-loaded in the middle of it. Breaking it with every member but one at once does not
+   work either: each member checks on its own tick, and one woken by a release claims the
+   module before its tick comes, so the claims just move.
+2. *A failure did not stop the loads in flight.* The driver stopped handing out jobs at the
+   first real failure and then waited for every worker to finish its own. Each was mid-way
+   through modules over the broken one: it loaded that again, failed, discarded its claims and
+   met the others' half-done loads as cycles. One worker in mur-forge was still loading after
+   30 s, 19 million reductions in.
+3. *A waiter on a failed load loaded it again.* The loader released its waiters without saying
+   the load had failed, so each one claimed the module and ran the same broken source.
+
+**Fix.** Pool workers bind `*require-cycle-abandons*`: a worker on a cross-process cycle raises
+and does not retry, every member of the cycle in the same round, and the driver already treats
+that error as "leave the module to the sequential pass". Each cycle costs the pool its jobs, so
+the pool always ends; outside the pool one member still breaks the cycle and retries, which
+settles the cycles of a few processes ordinary programs meet. The driver kills its workers at
+the first real failure (a killed load publishes nothing, and the next requirer clears its claim
+by finding the holder dead). `%require-release!` hands the waiters the load's error, and a
+waiter raises it unless the load failed for a broken cycle. bedit's cold build: hung to 2.4–7 s;
+mur-forge's 8.7 s to 2.1–3.3 s (debug build).
+
+**Guard.** In `crates/nest/tests/parallel_load.rs`, under a deadline so a hang fails the case:
+`a_ring_of_modules_builds_in_parallel` (hangs past 60 s without the binding),
+`a_failure_does_not_wait_for_the_loads_still_in_flight` (times out at 20 s without the kill) and
+`a_broken_module_under_a_ring_fails_the_parallel_build` (red with neither half). In
+`tests/require_failure_test.blsp`, "every waiter raises the loader's error, and the module loads
+once" (fails with the waiter's raise disabled).
+
+**Left.** The pool loads mur-forge more slowly than the sequential walk on a debug build
+(2.1 s against 1.2 s); not measured on a release build here.
+
 ## KI-311 — `table_address_space`'s exit case read 192 MB of growth with every table reclaimed ✅ FIXED 2026-10-30
 
 **Seen:** `a_process_s_tables_are_reclaimed_when_it_exits` failed "2000 exited table owners grew

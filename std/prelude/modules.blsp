@@ -80,6 +80,17 @@
 ;; for minutes). Dynamic: bound around the one source load the pre-pass ran for.
 (defdyn *require-failed* {})
 
+;; True in a process that gives up its loads rather than wait out a require cycle split across
+;; processes: the parallel build's pool workers (ADR-426), whose driver loads whatever the pool
+;; left, in walk order, once it is done. Everywhere else one process on such a cycle breaks it
+;; and retries (`%require-cycle?`), which settles a cycle of a few processes and not a ring of
+;; many: the breaker's claims pass to the process waiting on them, which closes the cycle again
+;; one member fewer, a round each quarter-second, and a 24-module ring loaded by 21 workers
+;; was still at it when its waiters reached the 30 s backstop. A process that abandons breaks
+;; every cycle it is on and does not retry: each cycle costs the pool the jobs on it, and the
+;; pool always ends.
+(defdyn *require-cycle-abandons* false)
+
 ;; The root setter for the pair above, and it exists for the same reason `reflect/set-load-path`
 ;; does: these globals live in the ROOT namespace, so a `(def *image-sections* …)` written
 ;; inside a module defines `mod/*image-sections*` and `%require-force` — root code — goes on
@@ -1247,15 +1258,16 @@ waiter joining concurrently either lands before the take (and is returned here) 
       (%registry-cas! '*features-waiting* old (dissoc old key)) ws
       else (%require-take-waiters! key))))
 
-(defn- %require-release! (key)
-  "Wake every process waiting on `key`'s load. MUST be called after `provide` (or after the
-marker is cleared on failure), never before — see the ordering note above."
-  ;; `[:load-done <ref> …]` — keyword first, ref second, which is the shape the kernel
+(defn- %require-release! (key failure)
+  "Wake every process waiting on `key`'s load, handing each the load's `failure` (nil when it
+provided). MUST be called after `provide` (or after the marker is cleared on failure), never
+before — see the ordering note above."
+  ;; `[:load-done <ref> key failure]` — keyword first, ref second, which is the shape the kernel
   ;; recognises as a reply alias. A waiter that has already given up deactivated its
   ;; ref, so this send is dropped at delivery instead of queueing in a process that is
   ;; back to doing application work.
   (doseq ([p r] (%require-take-waiters! key))
-    (send p [:load-done r key])))
+    (send p [:load-done r key failure])))
 
 ;; A require cycle split across processes (still the protocol above: a wait that can never
 ;; complete, and how a waiter gets out of it). One process loading `a`, which requires `b`, which requires `a`, is the classic cycle: the
@@ -1312,12 +1324,14 @@ only one may break it, or all of them back out, retry together and meet the same
 (a livelock — the guard's fixture, whose two ends start waiting on the same tick, did exactly
 that). The one waiting on the greatest key breaks it (`compare`'s total order; the keys on a
 cycle are distinct); the rest keep waiting and are woken when its claims are released. The
-chain is at most as long as there are loads in flight."
+chain is at most as long as there are loads in flight. A process that abandons
+(`*require-cycle-abandons*`) breaks every cycle it is on."
   (let (keys (%require-cycle-keys (get *features-loading* key)
                me
                (list key)
                (count *features-loading*)))
-    (and (not (nil? keys)) (every? keys (fn (other) (>= (compare key other) 0))))))
+    (and (not (nil? keys))
+      (or *require-cycle-abandons* (every? keys (fn (other) (>= (compare key other) 0)))))))
 
 ;; How long a process that broke a cycle leaves its module to the others before it loads it
 ;; itself: `*require-yield-checks*` looks, `*require-yield-ms*` apart.
@@ -1371,7 +1385,7 @@ of this process's never asks for this one."
   "`%require-await`'s wait: for the completion, the claimant's death, or — every
 `*require-cycle-check-ms*` — a cycle across processes, `checks` times before the backstop."
   (receive
-    ([:load-done r k] :when
+    ([:load-done r k failure] :when
       (= r rref)
       (do
         (when mref (demonitor mref))
@@ -1380,7 +1394,15 @@ of this process's never asks for this one."
         ;; trust the notification: without this a failed load is reported to every
         ;; waiter as a success, and the caller meets an unbound name instead of the
         ;; loader's actual error.
-        (if (%registry-member? '*features* k) k (require-one k))))
+        ;; A failed load is RAISED here, as it would have been had this process loaded the
+        ;; module itself — not retried. A retry loads the same broken source again: every
+        ;; process waiting on a broken module loaded it once more, each load re-running the
+        ;; failing dependencies below it. Only a broken cross-process cycle is retried: that
+        ;; load failed for the race, not for its source.
+        (cond
+          (%registry-member? '*features* k) k
+          (and failure (not (includes? (error-message failure) *require-cycle*))) (throw failure)
+          else (require-one k))))
     ;; The claimant died mid-load: nobody will provide, and its marker is still there
     ;; — nothing clears `*features-loading*` on process death. CLEAR IT FIRST, then
     ;; retry. Retrying without clearing is not a slow retry, it is a hot infinite
@@ -1550,14 +1572,15 @@ it waits for that load to finish (a half-evaluated module is never observable).
                         ;; Release BEFORE rethrowing. A load that throws must not strand its
                         ;; waiters: the marker is gone, so nobody will provide, and a waiter
                         ;; blocked on a completion that can never arrive would sit until its
-                        ;; backstop. Woken here, each waiter re-checks, finds `key` unprovided and
-                        ;; unclaimed, and one of them wins the claim and retries the load.
-                        (%require-release! key)
+                        ;; backstop. Each waiter is handed the error and raises it; only a broken
+                        ;; cross-process cycle sends them back to claim the load again.
+                        (%require-release! key e)
                         ;; A cycle across processes this process closed (`%require-cycle?`) is
                         ;; broken once its last claim is released — here, at its OUTERMOST load.
                         ;; A load nested in another of its own rethrows, so the levels above
                         ;; release theirs too.
                         (if (and (includes? (error-message e) *require-cycle*)
+                              (not *require-cycle-abandons*)
                               (not (%require-holds-a-load? (self) key)))
                           :%cycle-broken (throw e)))))))
             ;; The other end of the cycle can finish it now — but only if this process does
@@ -1572,7 +1595,7 @@ it waits for that load to finish (a half-evaluated module is never observable).
               ;; provide-then-drain is what lets a waiter that joins the queue late still
               ;; observe the load itself.
               (%registry-update! '*features-loading* :dissoc [key] nil)
-              (%require-release! key)
+              (%require-release! key nil)
               key))))))
 
 ;; The VM's first-use load of a module not yet provided (`derive::module_to_load_off_native`),
