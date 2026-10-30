@@ -4,7 +4,13 @@ All notable changes to the Brood toolchain (`brood`, `nest`, `brood-lsp`) are
 recorded here. Versions follow [semver](https://semver.org); the full
 engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
-## Unreleased
+## v0.49.0 — lists for parameters, a linear conj, and no open issues
+
+Every parameter list is a list (ADR-512): ability op specs, `impl` methods and `defbehaviour`
+ops take theirs like `defn` does. A `conj` loop onto a vector is linear (ADR-511), a collection
+is due on the bytes a process makes (ADR-509), and four scheduler, JIT and macro bugs are fixed.
+The editor framework colours a Lisp a line at a time with rainbow brackets, and the GUI bleeds
+edge backgrounds, filters LCD text and draws coloured and wavy underlines.
 
 **Changed — breaking.**
 - Every parameter list is a list (ADR-512). Ability op specs, `impl` methods and
@@ -19,7 +25,18 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   each step moved about 480 GB. Vectors stay flat (O(1) `nth`) and no existing vector ever
   changes.
 
+**Added.**
+- `editor/highlight`: `lisp-line-lexer` colours a Lisp a line at a time from the state the line
+  above ended in, so a window starting inside a multi-line docstring no longer colours its code
+  as string; `{:rainbow true}` colours brackets by depth (ADR-510).
+- GUI: an opaque background at the grid's edge continues across the window margin, and
+  subpixel text is filtered with FreeType's LCD weights (ADR-508). A face's `:underline` takes a
+  colour or `{:color c :style :wave}`, in the GUI and as the extended underline in a terminal
+  (ADR-513).
+
 **Fixed.**
+- A `fn` or `let` over a pattern nested 100 000 levels raises "nested deeper than 64" instead
+  of overflowing the native stack and aborting (KI-310).
 - A process preempted behind another on its worker now wakes an idle worker to take it,
   instead of waiting for that one to finish while idle workers slept (KI-308: 63–115 ms
   stalls in the KI-307 repro).
