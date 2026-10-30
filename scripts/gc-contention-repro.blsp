@@ -1,9 +1,12 @@
-;; KI-307 repro: `BROOD_CONTRACTS=0 nest run scripts/gc-contention-repro.blsp` (~20 s). A timing run —
-;; the test machine, not the development desktop.
+;; KI-307 repro: `brood scripts/gc-contention-repro.blsp` (~30 s). A timing run — the test
+;; machine or the `Diagnose` workflow, not the development desktop.
 ;; Does a busy process slow another one down? The foreground times a fixed piece of work
 ;; every 50 ms for 2 s; the background runs one kind of work the whole time.
+;;
+;; Each sample is split three ways, so a slow one says where its time went: `cpu` is the
+;; CPU time the foreground itself consumed, `gc` the part of that spent in its own
+;; collections, and `wait` (wall − cpu) the time it was runnable or blocked but not running.
 (def text (string/join (map (range 30000) (fn (i) (str "word" (math/mod i 997) " (call x) "))) ""))
-(def small (string/join (map (range 300) (fn (i) (str "word" i " (call x) "))) ""))
 
 (defn fixed-work ()
   (fold (range 20000) {} (fn (acc i) (assoc acc (math/mod i 500) i))))
@@ -11,15 +14,39 @@
 (defn fixed-arithmetic ()
   (fold (range 2000000) 0 (fn (acc i) (+ acc i))))
 
+(defn cpu-us ()
+  (get (proc/info (self)) :cpu-us))
+
+(defn gc-us ()
+  (get (dev/gc-stats) :pause-total-us))
+
+(defn sample (work)
+  (let (cpu-before (cpu-us)
+        gc-before (gc-us)
+        started (os/now-ns)
+        _ (work)
+        wall (/ (- (os/now-ns) started) 1000000.0)
+        cpu (/ (- (cpu-us) cpu-before) 1000.0)
+        gc (/ (- (gc-us) gc-before) 1000.0))
+    (do (receive (:never nil) (after 50 nil)) {:wall wall :cpu cpu :gc gc :wait (- wall cpu)})))
+
+(defn total (samples key)
+  (fold samples 0 (fn (acc one) (+ acc (get one key)))))
+
 (defn measure (label work)
-  (let (samples (map (range 40)
-                  (fn (_)
-                    (let (started (os/now-ns)
-                          _ (work)
-                          ms (/ (- (os/now-ns) started) 1000000.0))
-                      (do (receive (:never nil) (after 50 nil)) ms))))
-        sorted (sort samples))
-    (io/puts (string/format "%-44s p50 %7.2f ms  max %7.2f ms" label (nth sorted 20) (last sorted)))))
+  (let (samples (map (range 40) (fn (_) (sample work)))
+        sorted (seq/sort-by samples (fn (one) (get one :wall)))
+        worst (last sorted))
+    (io/puts (string/format "%-44s p50 %7.2f max %7.2f ms | worst: cpu %7.2f gc %7.2f wait %7.2f | all: cpu %8.1f gc %8.1f wait %8.1f"
+               label
+               (get (nth sorted 20) :wall)
+               (get worst :wall)
+               (get worst :cpu)
+               (get worst :gc)
+               (get worst :wait)
+               (total samples :cpu)
+               (total samples :gc)
+               (total samples :wait)))))
 
 (defn background (work)
   (spawn (fn () (letrec (go (fn () (do (work) (go)))) (go)))))
@@ -31,9 +58,28 @@
       (measure (str "arithmetic, " label) fixed-arithmetic)
       (exit pid :kill))))
 
-(measure "maps, alone" fixed-work)
-(measure "arithmetic, alone" fixed-arithmetic)
-(beside "beside a big live vector of maps"
-  (fn () (count (fold (range 60000) [] (fn (acc i) (conj acc {:start i :end (inc i)}))))))
-(beside "beside a big live vector of strings"
-  (fn () (count (fold (range 60000) [] (fn (acc i) (conj acc (str "w" i)))))))
+(defn keep-maps ()
+  (count (fold (range 60000) [] (fn (acc i) (conj acc {:start i :end (inc i)})))))
+
+(defn run-all ()
+  (do
+    (measure "maps, alone" fixed-work)
+    (measure "arithmetic, alone" fixed-arithmetic)
+    (beside "beside garbage only (nothing kept)"
+      (fn () (fold (range 60000) 0 (fn (acc i) (+ acc (count {:start i :end (inc i)}))))))
+    (beside "beside a big live vector of maps" keep-maps)
+    (beside "beside a big live vector of strings"
+      (fn () (count (fold (range 60000) [] (fn (acc i) (conj acc (str "w" i)))))))
+    (beside "beside a regex split of a big text" (fn () (count (regex/split "\\s+" text))))))
+
+;; `KI307_MODE` splits the experiment across two OS processes, which share the machine but
+;; not an address space, an allocator or a scheduler: `background` runs the live-maps loop
+;; until killed, `foreground` only measures. Unset runs everything in this one runtime.
+(let (mode (os/env "KI307_MODE"))
+  (cond
+    (= mode "background") (letrec (go (fn () (do (keep-maps) (go)))) (go))
+    (= mode "foreground")
+      (do
+        (measure "maps, beside another OS process" fixed-work)
+        (measure "arithmetic, beside another OS process" fixed-arithmetic))
+    else (run-all)))

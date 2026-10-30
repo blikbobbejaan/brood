@@ -1,0 +1,115 @@
+name: Diagnose
+
+# Timing questions the development desktop must not answer (no benchmarks or timing runs
+# there): run on demand, never on a push. Today it answers KI-307 — does a process with a
+# large live heap stall the processes beside it, and through what — by running
+# `scripts/gc-contention-repro.blsp` under variants that each rule a shared resource in or
+# out: the allocator (mimalloc with purging off, the system allocator), the address space
+# (the background in a separate OS process), and the kernel's view (`strace -c` of the memory
+# syscalls, `perf stat` of faults and TLB flushes, a `perf` profile with kernel symbols).
+#
+#     gh workflow run diagnose.yml -R broodlang/brood   (then `gh run watch` on the run it starts)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: diagnose
+  cancel-in-progress: true
+
+env:
+  REPRO: scripts/gc-contention-repro.blsp
+
+jobs:
+  gc-contention:
+    name: KI-307 — a big live heap beside an allocating process
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # Frame pointers and line tables for `perf -g`; neither changes what the optimizer does
+      # with the code being timed beyond keeping the frame-pointer register.
+      - name: Build (release, mimalloc — the shipped allocator)
+        env:
+          RUSTFLAGS: "-C force-frame-pointers=yes"
+          CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+        run: cargo build --release -p cli
+
+      - name: Build (release, the system allocator)
+        env:
+          RUSTFLAGS: "-C force-frame-pointers=yes"
+          CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+        run: cargo build --release -p cli --features brood/system-alloc --target-dir target/system-alloc
+
+      - name: Install perf and strace; allow kernel profiling
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q strace linux-tools-common "linux-tools-$(uname -r)" || sudo apt-get install -y -q strace linux-tools-generic
+          sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
+          nproc; free -m; uname -r
+
+      - name: Repro, twice (mimalloc, defaults)
+        continue-on-error: true
+        run: |
+          for round in 1 2; do
+            echo "== round $round"
+            ( ulimit -v 16000000; timeout 300 target/release/brood "$REPRO" )
+          done
+
+      - name: Repro with mimalloc's purging off
+        continue-on-error: true
+        env:
+          MIMALLOC_PURGE_DELAY: "-1"
+        run: ( ulimit -v 16000000; timeout 300 target/release/brood "$REPRO" )
+
+      - name: Repro with the system allocator
+        continue-on-error: true
+        run: ( ulimit -v 16000000; timeout 300 target/system-alloc/release/brood "$REPRO" )
+
+      - name: Repro with the background in a separate OS process
+        continue-on-error: true
+        run: |
+          ( ulimit -v 16000000; KI307_MODE=foreground timeout 120 target/release/brood "$REPRO" )
+          ( ulimit -v 16000000; KI307_MODE=background exec timeout 300 target/release/brood "$REPRO" ) &
+          background=$!
+          sleep 3
+          ( ulimit -v 16000000; KI307_MODE=foreground timeout 120 target/release/brood "$REPRO" )
+          kill "$background" || true
+
+      - name: Memory syscalls (strace -c)
+        continue-on-error: true
+        run: |
+          ( ulimit -v 16000000; timeout 600 strace -f -c --seccomp-bpf -e trace=%memory \
+              target/release/brood "$REPRO" ) 2>&1 | tail -30
+
+      - name: Faults, migrations and TLB flushes (perf stat)
+        continue-on-error: true
+        run: |
+          ( ulimit -v 16000000; timeout 600 perf stat \
+              -e page-faults,context-switches,cpu-migrations,tlb:tlb_flush \
+              target/release/brood "$REPRO" ) 2>&1 | tail -30
+
+      - name: Profile (perf record, kernel included)
+        continue-on-error: true
+        run: |
+          ( ulimit -v 16000000; timeout 600 perf record -F 999 -g -o target/ki307.perf \
+              target/release/brood "$REPRO" )
+          perf report -i target/ki307.perf --stdio --no-children --sort comm,dso,sym \
+              --percent-limit 0.5 2>/dev/null | grep -v "^$" | head -200 | tee target/ki307-report.txt
+          echo "== kernel only"
+          perf report -i target/ki307.perf --stdio --no-children --sort sym \
+              --dsos '[kernel.kallsyms]' --percent-limit 0.3 -g none 2>/dev/null | grep -v "^$" | head -80 \
+              | tee target/ki307-kernel.txt
+
+      - name: Upload the reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ki307-reports
+          path: target/ki307-*.txt
+          if-no-files-found: warn
