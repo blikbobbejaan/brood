@@ -4845,3 +4845,10 @@ is in uncommitted `editor/highlight` work), the changed test files, the checker,
 touched integration tests, and the doc examples. Not run here: the suite;
 `robustness_limits_test` aborts with a stack overflow on this machine at the last pushed
 commit too, so it is not this change — investigated next.
+
+2026-10-30 (KI-310): `robustness_limits_test` aborted with a stack overflow on this machine at
+the last pushed commit too, so B6 was not the cause. Split by `describe`, then by surface: a
+`fn` or `let` over a 100 000-level pattern overflowed in `typed::mentions_types`, which recursed
+per level before the pattern compiler's depth cap could refuse the pattern. It walks with a
+work list now; the file's 53 tests pass, and a unit test strips the same pattern on a 256 KB
+thread (the recursive walk aborts it). CI's threads had enough stack, which is why it passed there.

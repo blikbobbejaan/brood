@@ -15589,3 +15589,21 @@ writer read (`CompiledArm::replace_code`, `clear_code_unless_latched`).
 `a_suspend_latch_takes_back_the_code_it_published`, and
 `nothing_stores_over_an_arms_code_but_the_latch`, which scans the crate for a plain store to
 `jit_code`; each red with its fix removed.
+
+## KI-310 — a `fn` or `let` over a 100 000-level pattern overflowed the native stack ✅ FIXED 2026-10-30
+
+**Seen:** `robustness_limits_test.blsp` aborted with `stack overflow` on the development desktop
+at `590ea7e4` and after, while CI passed it. Split by `describe` and then by surface: the `fn` and
+`let` cases of "a pattern nested past the lowering cap" aborted; `match`, `receive` and the map
+pattern raised "nested deeper" as meant.
+
+**Cause.** Every `fn` and `let` parameter list goes through `typed::strip_param_list`, which asks
+`mentions_types` about each parameter before the pattern compiler's depth cap (64) can refuse a
+deep one. `mentions_types` recursed once per nesting level, with no stack growth, so a 100 000-level
+vector pattern overflowed the native stack and aborted the runtime instead of raising. CI's
+threads had enough stack to pass; this machine's did not.
+
+**Fix.** `mentions_types` walks with an explicit work list. The file's 53 tests pass here.
+
+**Guard.** `typed::tests::a_deep_untyped_pattern_is_walked_on_a_small_stack` strips a
+100 000-level pattern on a 256 KB thread; the recursive walk aborts it.

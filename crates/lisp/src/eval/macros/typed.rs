@@ -32,21 +32,33 @@ fn is_sym(v: Value, name: &str) -> bool {
     matches!(v.unpack(), ValueRef::Sym(s) if value::symbol_is(s, name))
 }
 
-/// Does `v` (a pattern) mention a typed symbol or the `->` marker anywhere inside it?
+/// Does `v` (a pattern) mention a typed symbol or the `->` marker anywhere inside it? A walk
+/// with an explicit work list, not recursion: it runs on every parameter list of a `fn` or
+/// `let` BEFORE the pattern compiler's depth cap can refuse one, and a pattern built at
+/// runtime can nest past any native stack — a 100 000-level vector overflowed this walk
+/// and aborted the runtime, where the cap meant to raise "nested deeper than 64".
 fn mentions_types(heap: &Heap, v: Value) -> bool {
-    if typed_name(v).is_some() || is_sym(v, syntax_typed::ARROW) {
-        return true;
+    let mut work = vec![v];
+    while let Some(v) = work.pop() {
+        if typed_name(v).is_some() || is_sym(v, syntax_typed::ARROW) {
+            return true;
+        }
+        match v.unpack() {
+            ValueRef::Pair(_) | ValueRef::Vector(_) => {
+                if let Some(items) = heap.list_or_vector_items(v) {
+                    work.extend(items);
+                }
+            }
+            ValueRef::Map(id) => {
+                for (k, val) in heap.map_entries(id) {
+                    work.push(k);
+                    work.push(val);
+                }
+            }
+            _ => {}
+        }
     }
-    match v.unpack() {
-        ValueRef::Pair(_) | ValueRef::Vector(_) => heap
-            .list_or_vector_items(v)
-            .is_some_and(|items| items.iter().any(|&i| mentions_types(heap, i))),
-        ValueRef::Map(id) => heap
-            .map_entries(id)
-            .into_iter()
-            .any(|(k, val)| mentions_types(heap, k) || mentions_types(heap, val)),
-        _ => false,
-    }
+    false
 }
 
 /// A parameter list with its types taken out: the plain list and the signature it declares,
@@ -329,4 +341,36 @@ pub(super) fn refuse_typed_let(heap: &Heap, who: &str, items: &[Value]) -> Resul
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A parameter pattern nested far past any native stack is walked without recursion:
+    /// `strip_param_list` asks `mentions_types` about every parameter before the pattern
+    /// compiler's depth cap can refuse it, and a recursive walk of a 100 000-level vector
+    /// overflowed the stack and aborted the runtime (`robustness_limits_test`'s `fn` and `let`
+    /// cases, on this machine). Run on a thread with a deliberately small stack, so the
+    /// recursive walk could not pass by luck of a large one.
+    #[test]
+    fn a_deep_untyped_pattern_is_walked_on_a_small_stack() {
+        let answer = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let mut heap = Heap::new();
+                let mut deep = value::sym("x");
+                for _ in 0..100_000 {
+                    deep = heap.alloc_vector(vec![deep]);
+                }
+                let params = heap.list(vec![deep]);
+                strip_param_list(&mut heap, "fn", params)
+                    .expect("an untyped list strips without error")
+                    .is_none()
+            })
+            .expect("spawn the small-stack thread")
+            .join()
+            .expect("the walk did not overflow");
+        assert!(answer, "an untyped parameter list carries no signature");
+    }
 }
