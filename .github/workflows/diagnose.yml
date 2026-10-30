@@ -4,9 +4,8 @@ name: Diagnose
 # there): run on demand, never on a push. Today it answers KI-307 — does a process with a
 # large live heap stall the processes beside it, and through what — by running
 # `scripts/gc-contention-repro.blsp` under variants that each rule a shared resource in or
-# out: the allocator (mimalloc with purging off, the system allocator), the address space
-# (the background in a separate OS process), and the kernel's view (`strace -c` of the memory
-# syscalls, `perf stat` of faults and TLB flushes, a `perf` profile with kernel symbols).
+# out — the allocator (mimalloc v3 as shipped, v2, purging off, the system allocator) — and
+# with a `perf` profile of the stalled foreground, kernel symbols included.
 #
 #     gh workflow run diagnose.yml -R broodlang/brood   (then `gh run watch` on the run it starts)
 
@@ -46,64 +45,79 @@ jobs:
           CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
         run: cargo build --release -p cli --features brood/system-alloc --target-dir target/system-alloc
 
-      - name: Install perf and strace; allow kernel profiling
+      # mimalloc v3 is what the `mimalloc` crate builds by default; v2 is its other line. The
+      # switch is made in this checkout only, so the shipped manifest keeps one allocator.
+      - name: Build (release, mimalloc v2)
+        env:
+          RUSTFLAGS: "-C force-frame-pointers=yes"
+          CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+        run: |
+          sed -i 's/^mimalloc = { version = "0.1", default-features = false }/mimalloc = { version = "0.1", default-features = false, features = ["v2"] }/' crates/lisp/Cargo.toml
+          grep -n '^mimalloc' crates/lisp/Cargo.toml
+          cargo build --release -p cli --target-dir target/mimalloc-v2
+          git checkout -- crates/lisp/Cargo.toml Cargo.lock
+
+      - name: Install perf; allow kernel profiling
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q strace linux-tools-common "linux-tools-$(uname -r)" || sudo apt-get install -y -q strace linux-tools-generic
+          sudo apt-get install -y -q linux-tools-common "linux-tools-$(uname -r)" || sudo apt-get install -y -q linux-tools-generic
           sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
           nproc; free -m; uname -r
 
-      - name: Repro, twice (mimalloc, defaults)
+      # The full run aborted on the 16 GB address-space cap as the live-strings scenario began,
+      # under mimalloc and the system allocator alike. Run that scenario on its own first, with
+      # the kernel's memory figures printed around the background's kill.
+      - name: The live-strings scenario alone (the abort)
         continue-on-error: true
-        run: |
-          for round in 1 2; do
-            echo "== round $round"
-            ( ulimit -v 16000000; timeout 300 target/release/brood "$REPRO" )
-          done
+        env:
+          KI307_MODE: strings
+          RUST_BACKTRACE: "1"
+        run: ( ulimit -v 16000000; timeout 300 target/release/brood "$REPRO" )
 
-      - name: Repro with mimalloc's purging off
+      - name: Repro (mimalloc v3, the default)
+        continue-on-error: true
+        env:
+          RUST_BACKTRACE: "1"
+        run: ( ulimit -v 16000000; timeout 300 target/release/brood "$REPRO" )
+
+      - name: Repro (mimalloc v2)
+        continue-on-error: true
+        env:
+          RUST_BACKTRACE: "1"
+        run: ( ulimit -v 16000000; timeout 300 target/mimalloc-v2/release/brood "$REPRO" )
+
+      - name: Repro (mimalloc v3, purging off)
         continue-on-error: true
         env:
           MIMALLOC_PURGE_DELAY: "-1"
-        run: ( ulimit -v 16000000; timeout 300 target/release/brood "$REPRO" )
+        run: ( ulimit -v 16000000; KI307_MODE=maps timeout 300 target/release/brood "$REPRO" )
 
-      - name: Repro with the system allocator
+      - name: Repro (the system allocator)
         continue-on-error: true
-        run: ( ulimit -v 16000000; timeout 300 target/system-alloc/release/brood "$REPRO" )
+        run: ( ulimit -v 16000000; KI307_MODE=maps timeout 300 target/system-alloc/release/brood "$REPRO" )
 
-      - name: Repro with the background in a separate OS process
+      # The foreground is the root process, which runs on the main thread, so its thread id is
+      # the process id: the per-thread report separates it from the background's worker.
+      - name: Profile the live-maps scenario (perf record, kernel included)
         continue-on-error: true
+        env:
+          KI307_MODE: maps
         run: |
-          ( ulimit -v 16000000; KI307_MODE=foreground timeout 120 target/release/brood "$REPRO" )
-          ( ulimit -v 16000000; KI307_MODE=background exec timeout 300 target/release/brood "$REPRO" ) &
-          background=$!
-          sleep 3
-          ( ulimit -v 16000000; KI307_MODE=foreground timeout 120 target/release/brood "$REPRO" )
-          kill "$background" || true
-
-      - name: Memory syscalls (strace -c)
-        continue-on-error: true
-        run: |
-          ( ulimit -v 16000000; timeout 600 strace -f -c --seccomp-bpf -e trace=%memory \
-              target/release/brood "$REPRO" ) 2>&1 | tail -30
-
-      - name: Faults, migrations and TLB flushes (perf stat)
-        continue-on-error: true
-        run: |
-          ( ulimit -v 16000000; timeout 600 perf stat \
-              -e page-faults,context-switches,cpu-migrations,tlb:tlb_flush \
-              target/release/brood "$REPRO" ) 2>&1 | tail -30
-
-      - name: Profile (perf record, kernel included)
-        continue-on-error: true
-        run: |
-          ( ulimit -v 16000000; timeout 600 perf record -F 999 -g -o target/ki307.perf \
+          ( ulimit -v 16000000; timeout 300 perf record -F 1999 -g -o target/ki307.perf \
               target/release/brood "$REPRO" )
-          perf report -i target/ki307.perf --stdio --no-children --sort comm,dso,sym \
-              --percent-limit 0.5 2>/dev/null | grep -v "^$" | head -200 | tee target/ki307-report.txt
-          echo "== kernel only"
+          perf report -i target/ki307.perf --stdio --no-children --sort pid,tid --percent-limit 1 -g none \
+              2>/dev/null | grep -v "^$" | head -20 | tee target/ki307-threads.txt
+          main=$(perf script -i target/ki307.perf -F pid 2>/dev/null | head -1 | tr -d " ")
+          echo "== the foreground (main thread $main)"
+          perf report -i target/ki307.perf --stdio --no-children --tid "$main" --sort dso,sym \
+              --percent-limit 0.5 -g none 2>/dev/null | grep -v "^$" | head -60 | tee target/ki307-foreground.txt
+          echo "== the foreground, callers of its top symbols"
+          perf report -i target/ki307.perf --stdio --no-children --tid "$main" --sort sym \
+              --percent-limit 3 -g caller,0.5,callee --max-stack 12 2>/dev/null | grep -v "^$" | head -200 \
+              | tee target/ki307-foreground-callers.txt
+          echo "== everything, kernel only"
           perf report -i target/ki307.perf --stdio --no-children --sort sym \
-              --dsos '[kernel.kallsyms]' --percent-limit 0.3 -g none 2>/dev/null | grep -v "^$" | head -80 \
+              --dsos '[kernel.kallsyms]' --percent-limit 0.3 -g none 2>/dev/null | grep -v "^$" | head -60 \
               | tee target/ki307-kernel.txt
 
       - name: Upload the reports

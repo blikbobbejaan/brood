@@ -51,33 +51,59 @@
 (defn background (work)
   (spawn (fn () (letrec (go (fn () (do (work) (go)))) (go)))))
 
+;; The address space and resident set from the kernel, and how many processes are alive: a
+;; killed background that lingers, or memory that is never handed back, shows here.
+(defn memory-report (label)
+  (let (status (seq/filter (file/read-lines "/proc/self/status")
+                 (fn (line)
+                   (or (string/starts-with? line "VmSize") (string/starts-with? line "VmRSS")))))
+    (io/puts (str "  memory "
+               label
+               ": "
+               (string/join (map status (fn (line) (string/replace line "\t" " "))) ", ")
+               ", processes "
+               (count (proc/list))))))
+
 (defn beside (label background-work)
   (let (pid (background background-work))
     (do
       (measure (str "maps, " label) fixed-work)
       (measure (str "arithmetic, " label) fixed-arithmetic)
-      (exit pid :kill))))
+      (memory-report "before the kill")
+      (exit pid :kill)
+      (receive (:never nil) (after 200 nil))
+      (memory-report "200 ms after the kill"))))
 
 (defn keep-maps ()
   (count (fold (range 60000) [] (fn (acc i) (conj acc {:start i :end (inc i)})))))
 
+(defn keep-strings ()
+  (count (fold (range 60000) [] (fn (acc i) (conj acc (str "w" i))))))
+
 (defn run-all ()
   (do
+    (memory-report "at the start")
     (measure "maps, alone" fixed-work)
     (measure "arithmetic, alone" fixed-arithmetic)
     (beside "beside garbage only (nothing kept)"
       (fn () (fold (range 60000) 0 (fn (acc i) (+ acc (count {:start i :end (inc i)}))))))
     (beside "beside a big live vector of maps" keep-maps)
-    (beside "beside a big live vector of strings"
-      (fn () (count (fold (range 60000) [] (fn (acc i) (conj acc (str "w" i)))))))
+    (beside "beside a big live vector of strings" keep-strings)
     (beside "beside a regex split of a big text" (fn () (count (regex/split "\\s+" text))))))
 
 ;; `KI307_MODE` splits the experiment across two OS processes, which share the machine but
 ;; not an address space, an allocator or a scheduler: `background` runs the live-maps loop
-;; until killed, `foreground` only measures. Unset runs everything in this one runtime.
+;; until killed, `foreground` only measures. `maps` and `strings` run only that scenario.
+;; Unset runs everything in this one runtime.
 (let (mode (os/env "KI307_MODE"))
   (cond
     (= mode "background") (letrec (go (fn () (do (keep-maps) (go)))) (go))
+    (= mode "maps")
+      (do (memory-report "at the start") (beside "beside a big live vector of maps" keep-maps))
+    (= mode "strings")
+      (do
+        (memory-report "at the start")
+        (beside "beside a big live vector of strings" keep-strings))
     (= mode "foreground")
       (do
         (measure "maps, beside another OS process" fixed-work)
