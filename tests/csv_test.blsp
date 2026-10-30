@@ -127,7 +127,7 @@
 ;; defines instead of its field map (and a number no longer trips the quoting scan).
 
 (defrecord usd (cents))
-(impl Display csv-test/usd (->string [m] (str "$" (get m :cents))))
+(impl Display csv-test/usd (->string (m) (str "$" (get m :cents))))
 
 (describe "encode renders non-string cells"
   ;; `->string` on a keyword is the bare word, colon stripped. It was the printed form

@@ -426,8 +426,8 @@ const IMAGED_APP: &[(&str, &str)] = &[
         "(defmodule lib)\n\
          (io/puts \"evaluated: lib\")\n\
          (defrecord square (side))\n\
-         (defability Shape (area [self]))\n\
-         (impl Shape lib/square (area [s] (* (get s :side) (get s :side))))",
+         (defability Shape (area (self)))\n\
+         (impl Shape lib/square (area (s) (* (get s :side) (get s :side))))",
     ),
     (
         "store/repo",

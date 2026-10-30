@@ -32,9 +32,9 @@ const PROGRAM: &str = "\
 (defn above (n) n)\n\
 (defn optional-arity (a &optional b) a)\n\
 (sig optional-arity (int -> int))\n\
-(defability Size (size [self] :-> int) (tag [self]))\n\
-(impl Size :string (size [s] \"not an int\") (tag [s] :anything))\n\
-(impl Size :int (size [n] n) (tag [n] :fine))\n\
+(defability Size (size (self) :-> int) (tag (self)))\n\
+(impl Size :string (size (s) \"not an int\") (tag (s) :anything))\n\
+(impl Size :int (size (n) n) (tag (n) :fine))\n\
 (defn- report (label thunk)\n\
 \x20\x20(io/puts (str label (try (thunk) (catch e (str \"RAISED \" (error-message e)))))))\n\
 (defn padded (s w &optional (fill \"-\")) (string/pad-left s w fill))\n\

@@ -148,21 +148,27 @@ Two rules that keep Brood code uniform and unambiguous. The first is
 **enforced** — a vector where a binding container belongs is an error, not an
 alternative spelling (ADR-149); the second is idiom.
 
-**1. Code uses `( )`; vectors `[ ]` are for data.** Param lists and the binding
-forms of `let` / `letrec` / `binding` / `for` / `doseq` / `when-let` / `if-let`
-are *lists*, not Clojure-style vectors — writing the vector is a clean error with
-a hint. Vectors are reserved for tuple values (`[x y]`),
-sequence literals (`[1 2 3]`), and tuple **patterns** that match against tuple
-values inside `match` / `let` / `receive` heads. Code is cons-lists so the
-editor and macros manipulate one structure uniformly (ADR-010).
+**1. Code uses `( )`; vectors `[ ]` are for data.** Every parameter list is a
+*list* — `defn`, `fn`, a `defmethod`, an ability op spec, an `impl` method, a
+`defbehaviour` op (ADR-512) — and so are the binding forms of `let` / `letrec` /
+`binding` / `for` / `doseq` / `when-let` / `if-let`. Writing the vector is a clean
+error with a hint. Vectors are reserved for data: tuple values (`[x y]`), sequence
+literals (`[1 2 3]`), tuple **patterns** that match against tuple values inside
+`match` / `let` / `receive` heads, and lists of names that are data rather than
+parameters — a `defmethod` dispatch tuple `[money money]`, the names a
+`{:keys [a b]}` pattern binds, `:sealed [circle rect]` and `:requires [Eq]`. Code is
+cons-lists so the editor and macros manipulate one structure uniformly (ADR-010).
 
 ```lisp fragment
-;; good                          ;; ERROR: "bindings must be a list, not a vector"
-(let (a 1 b 2) …)                (let [a 1 b 2] …)
-(for (x xs :when p) …)           (for [x xs :when p] …)
-(doseq (x xs) …)                 (doseq [x xs] …)
-(defn f (x y) …)                 (defn f [x y] …)
-(defn g ((x) …) ((x y) …))       (defn g ([x] …) ([x y] …))   ; Clojure multi-arity
+;; good                              ;; ERROR: a vector where the list belongs
+(let (a 1 b 2) …)                    (let [a 1 b 2] …)
+(for (x xs :when p) …)               (for [x xs :when p] …)
+(doseq (x xs) …)                     (doseq [x xs] …)
+(defn f (x y) …)                     (defn f [x y] …)
+(defn g ((x) …) ((x y) …))           (defn g ([x] …) ([x y] …))   ; Clojure multi-arity
+(defability Shape (area (self)))     (defability Shape (area [self]))
+(impl Shape circle (area (c) …))     (impl Shape circle (area [c] …))
+(defmethod add [money money] (a b) …)   ; the tuple is data, the params a list
 ```
 
 A vector *inside* a binding position is still destructuring — `(let ([x y] p) …)`
@@ -323,10 +329,10 @@ definition, so two record shapes in one module dispatch apart.
 (defrecord circle (r))                 ; a record WITH a dispatch identity
 (defrecord rect (w h))
 
-(defability Shape (area [self] :-> number))
+(defability Shape (area (self) :-> number))
 
-(impl Shape geometry/circle (area [c] (* 3.0 (get c :r) (get c :r))))
-(impl Shape geometry/rect   (area [r] (* (get r :w) (get r :h))))
+(impl Shape geometry/circle (area (c) (* 3.0 (get c :r) (get c :r))))
+(impl Shape geometry/rect   (area (r) (* (get r :w) (get r :h))))
 
 (area (circle 2))       ;=> 12.0
 (area (rect 3 4))       ;=> 12
@@ -346,23 +352,23 @@ Built-in kinds take `:default` as a fallback; without one, a missing impl is a l
 named error, never `nil`:
 
 ```lisp
-(defability Size (size [self] :-> int))
-(impl Size :int     (size [n] n))
-(impl Size :string  (size [s] (count s)))
-(impl Size :default (size [_] -1))
+(defability Size (size (self) :-> int))
+(impl Size :int     (size (n) n))
+(impl Size :string  (size (s) (count s)))
+(impl Size :default (size (_) -1))
 ```
 
 **Provided ops — implement the required ones, inherit the rest.** An op spec with a
-**body** — `(op [args] :-> ret? body…)` — is *provided*: its body becomes the op's
+**body** — `(op (args) :-> ret? body…)` — is *provided*: its body becomes the op's
 `:default` impl. An `impl` supplies only the bodyless **required** ops and inherits the
 provided ones; to override a provided op, add its method to that type's `impl` (same form).
 This is Rust/Haskell provided methods:
 
 ```lisp fragment
 (defability Ord
-  (compare-to [self other] :-> int)                          ; required
-  (lt [self other] :-> bool (< (compare-to self other) 0)))  ; provided
-(impl Ord money/amount (compare-to [a b] (- (cents a) (cents b))))
+  (compare-to (self other) :-> int)                          ; required
+  (lt (self other) :-> bool (< (compare-to self other) 0)))  ; provided
+(impl Ord money/amount (compare-to (a b) (- (cents a) (cents b))))
 (lt (amount 1) (amount 2))     ;=> true   — free, via the provided default
 ```
 
@@ -373,8 +379,8 @@ record's use; deriving an ability with no recipe is a clean error.
 
 ```lisp
 (defability Columns
-  (columns [self] :-> vector)
-  :derive-record (fn (fs) (list `(columns [r] [~@(map fs (fn (f) `(get r ~(keyword (->string f)))))]))))
+  (columns (self) :-> vector)
+  :derive-record (fn (fs) (list `(columns (r) [~@(map fs (fn (f) `(get r ~(keyword (->string f)))))]))))
 (defrecord point (x y) :derives [Columns])
 (columns (point 3 4))          ;=> [3 4]   ; synthesized, no impl written
 ```
@@ -405,7 +411,7 @@ Other things worth knowing:
   Sealed only — an *open* ability can't be a sound bound (late binding could add a member
   later), so the checker ignores an open-ability name in a sig rather than under-warning
   (ADR-192). This is what gives occurrence typing its nominal domains too.
-- **Super-abilities — `(defability B :requires [A] (op [self] …))`.** A conformance
+- **Super-abilities — `(defability B :requires [A] (op (self) …))`.** A conformance
   contract: every implementor of `B` must also satisfy `A`, and `nest check` demands it
   (ADR-193). Checker-only, no runtime dispatch change; `:requires [A C]` names several.
 - `(satisfies? 'Shape x)` to branch instead of letting a missing op raise.
@@ -1224,7 +1230,7 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
   `eprint` family. They **space-join** their args (Python-style, via `%render`) —
   distinct from `str`, which concatenates. A **record** defines how it prints on screen
   via the core, always-on `Display` ability: just
-  `(impl Display my/rec (->string [r] …))` and the screen printers honor it — no import,
+  `(impl Display my/rec (->string (r) …))` and the screen printers honor it — no import,
   no activation step; built-ins unchanged (ADR-171/172).
   These **flush stdout every call** — there's no separate flush, so
   an animation frame paints immediately. For raw terminal control without the

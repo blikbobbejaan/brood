@@ -34,7 +34,7 @@ const DOORS: &str = r#"
 (defmethod num/add [usd usd] (a b) (usd (+ (get a :cents) (get b :cents))))
 (defmethod compare-to [usd usd] (a b) (compare (get a :cents) (get b :cents)))
 (defrecord stack (items))
-(impl Seqable stack (->seq [s] (get s :items)))
+(impl Seqable stack (->seq (s) (get s :items)))
 (io/puts (str "add = " (get (+ (usd 3) (usd 4)) :cents)))
 (io/puts (str "lt = " (< (usd 3) (usd 4))))
 (io/puts (str "first = " (first (stack (list 10 20)))))

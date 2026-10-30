@@ -361,10 +361,10 @@ raises, since it has no end. For values that cross a `send`, use `std/stream`.
 
 (impl Seqable
   seq/%iterate
-  (->seq [_]
+  (->seq (_)
     (error "seq/iterate: an unbounded sequence cannot be realised — consume it with "
       "seq/transduce and a stopping stage (seq/xtake, seq/xtake-while)")))
-(impl Display seq/%iterate (->string [_] "#<iterate>"))
+(impl Display seq/%iterate (->string (_) "#<iterate>"))
 
 (defn- iterate-loop (x step acc rf)
   ;; Stops on a failure accumulator, as `fold` does (ADR-315).

@@ -74,7 +74,7 @@ and `impl LogBackend` for it; reuse `backend-passes?` for the standard gate."
   backends in turn; the backend decides whether and how the record is written.
 
     (log/backend-emit (log/stdout-backend) {:level :info :ts 0 :msg \"up\"})   ;~> nil, the line written"
-  (backend-emit [self record] :-> nil))
+  (backend-emit (self record) :-> nil))
 
 (defn backend-passes? (b record)
   "True if `record` clears backend `b`'s standard gate: its `:min-level` severity floor
@@ -94,14 +94,14 @@ backend's policy — a custom `LogBackend` should call this so it honours the sa
 ;; The stock backend: gate the record, then write exactly one formatted line to the port.
 (impl LogBackend
   log/line-backend
-  (backend-emit [b record]
+  (backend-emit (b record)
     (when (backend-passes? b record)
       (emit (get b :sink) ((get b :format) record)))
     nil))
 
 (impl Display
   log/line-backend
-  (->string [b]
+  (->string (b)
     (str "#<log-backend "
       (->string (get b :sink))
       " min="

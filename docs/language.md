@@ -34,6 +34,7 @@ these are the ones to unlearn:
 | `{:a 1}` map literal | **Supported.** Immutable; `get`/`assoc`/`dissoc`/`keys`/`vals`/`contains?` (see [Maps](#maps)). Iteration order is **hash-derived, not insertion order** (unlike Clojure's array-map — see [Maps](#maps)). | Works as you'd expect, except don't rely on key order. |
 | `{:keys [a b]}` / `:or` map destructuring | **Supported** — a map literal in pattern position binds each `:keys` symbol to the same-named keyword's value (nil if absent, or the `:or` default): `(let ({:keys [a b] :or {b 0}} m) …)`, works in `let`/`fn`/`match`. General `{:key subpattern}` nesting and `:as` are deferred (ADR-011). | Works as in Clojure for the `:keys`/`:or` subset. |
 | `(defn f [x y] …)`, `(let [a 1 b 2] …)` | Param lists and `let` bindings are **lists** — `(x y)` / `(a 1 b 2)`. A vector *inside* one is still destructuring: `(let ([x y] p) …)`. | A clean error with a hint (ADR-149). The vector spelling was once accepted as an alias; that is what turned every Clojure binding shape into a silent misread — `(let [[a 1] [b 2]] …)` destructured `[a 1]` against `[b 2]` and reported `unbound symbol: b`. |
+| `(defprotocol P (area [this]))`, `(extend-type T P (area [c] …))` | `defability` and `impl`, and their parameter lists are **lists** like every other: `(defability Shape (area (self)))`, `(impl Shape circle (area (c) …))` (ADR-512). A vector stays data — `defmethod`'s dispatch tuple `[money money]`, `:sealed [circle rect]`. | A clean error whose hint is the list spelling: `write (area (c) …), not [c]`. |
 | `(let [[a 1] [b 2]] …)` / Scheme's `(let ((a 1)) …)` | Bindings are **flat**: `(let (a 1 b 2) …)`. | A clean error **with a hint** to flatten (was accepted-then-confusing). |
 | `^:kw` / `^{:doc "…"}` metadata | Brood has **no metadata**. `^` is the pattern **pin**: `^expr` matches the current value of `expr` (ADR-150). | `^:kw` reads as a pin of the keyword — a pattern where you meant an annotation. Docstrings go in the body (see [Docstrings](#docstrings)). |
 | `#{1 2 3}` set literal | A first-class set (`Value::Set`, ADR-060): `set?` true, prints `#{…}`, never `=` to a map. Evaluates its elements and dedups. | Reads as a kernel set; the `set` library (`(:use set)`) adds `union`/`intersection`/… |
@@ -384,10 +385,10 @@ An argument's **dispatch identity** is one of two things:
 
 (defability Shape
   "The area of a shape."
-  (area [self] :-> float))
+  (area (self) :-> float))
 
-(impl Shape geometry/circle (area [c] (* 3.0 (get c :r) (get c :r))))
-(impl Shape geometry/rect   (area [r] (* 1.0 (get r :w) (get r :h))))
+(impl Shape geometry/circle (area (c) (* 3.0 (get c :r) (get c :r))))
+(impl Shape geometry/rect   (area (r) (* 1.0 (get r :w) (get r :h))))
 
 (area (circle 2))         ;=> 12.0
 (area (rect 3 4))         ;=> 12.0
@@ -396,10 +397,10 @@ An argument's **dispatch identity** is one of two things:
 Built-in kinds work the same way, with **`:default`** as the fallback:
 
 ```clojure
-(defability Size (size [self] :-> int))
-(impl Size :int      (size [n] n))
-(impl Size :string   (size [s] (count s)))
-(impl Size :default  (size [_] -1))
+(defability Size (size (self) :-> int))
+(impl Size :int      (size (n) n))
+(impl Size :string   (size (s) (count s)))
+(impl Size :default  (size (_) -1))
 
 (size 7)          ;=> 7
 (size "hello")    ;=> 5
@@ -410,9 +411,9 @@ Built-in kinds work the same way, with **`:default`** as the fallback:
 ability declares when none are named:
 
 ```clojure
-(defability Size (size [self] :-> int))
-(impl Size :default (size [_] -1))
-(impl Size :int (size [n] n))
+(defability Size (size (self) :-> int))
+(impl Size :default (size (_) -1))
+(impl Size :int (size (n) n))
 (size 7)                    ;=> 7
 (%unimpl Size :int)         ;=> 1   ; impls removed
 (size 7)                    ;=> -1  ; falls back to :default; no :default → a no-impl error
@@ -436,15 +437,15 @@ REPL undoing an experiment, a hot reload retracting an impl the new source no lo
 declares (ADR-204).
 
 **Op arity.** An op dispatches on its **first** argument, so it must take at least
-one — a zero-arg op `(op [])` is a clean expansion-time error. Beyond the first, an
-op may take more fixed arguments (`(fetch [self k])`) or a `&`-rest
-(`(cat [self & rest])`, dispatched on `self`, the rest passed through). An `impl`
+one — a zero-arg op `(op ())` is a clean expansion-time error. Beyond the first, an
+op may take more fixed arguments (`(fetch (self k))`) or a `&`-rest
+(`(cat (self & rest))`, dispatched on `self`, the rest passed through). An `impl`
 must match the declared op's arity: a fixed impl exactly, a variadic impl as long
 as it accepts that arity — `nest check` and load-time registration both flag a
 mismatch.
 
 **Provided ops (default bodies).** An op whose spec carries a **body** —
-`(op [args] :-> ret? body…)` — is *provided*: `defability` registers that body as the
+`(op (args) :-> ret? body…)` — is *provided*: `defability` registers that body as the
 op's `:default` impl. An `impl` that supplies only the **required** ops (the bodyless
 specs) inherits every provided op; an id-keyed impl of a provided op **overrides** its
 default. Write the minimal contract and derive the rest (Rust/Haskell *provided methods*) —
@@ -454,11 +455,11 @@ implement `priority`, get the rest free:
 (defrecord task (title level))
 
 (defability Priority
-  (priority      [self] :-> int)                                              ; required
-  (more-urgent?  [self other] :-> bool (> (priority self) (priority other)))   ; provided
-  (same-urgency? [self other] :-> bool (= (priority self) (priority other))))  ; provided
+  (priority      (self) :-> int)                                              ; required
+  (more-urgent?  (self other) :-> bool (> (priority self) (priority other)))   ; provided
+  (same-urgency? (self other) :-> bool (= (priority self) (priority other))))  ; provided
 
-(impl Priority task (priority [t] (task-level t)))   ; only the required op
+(impl Priority task (priority (t) (task-level t)))   ; only the required op
 (more-urgent? (task "deploy" 3) (task "lunch" 1))    ;=> true   ; via the provided default
 ```
 
@@ -477,11 +478,11 @@ the record opts in with `:derives`:
 
 ```clojure
 (defability Columns
-  (columns [self] :-> vector)                       ; required — derived
-  (ncols [self] :-> int (count (columns self)))     ; provided — composes with derive
+  (columns (self) :-> vector)                       ; required — derived
+  (ncols (self) :-> int (count (columns self)))     ; provided — composes with derive
   :derive-record
   (fn (flds)
-    (list `(columns [r] [~@(map flds (fn (f) `(get r ~(keyword (->string f)))))]))))
+    (list `(columns (r) [~@(map flds (fn (f) `(get r ~(keyword (->string f)))))]))))
 
 (defrecord point (x y) :derives [Columns])
 (columns (point 3 4))    ;=> [3 4]     ; synthesized
@@ -561,11 +562,11 @@ different value:
 ```clojure
 (defmodule store)
 
-(defability Store (fetch [self k]))
+(defability Store (fetch (self k)))
 (defrecord pg  (pool))
 (defrecord mem (data))
-(impl Store store/pg  (fetch [db k] (str "pg:" (get db :pool) "/" k)))
-(impl Store store/mem (fetch [db k] (get (get db :data) k)))
+(impl Store store/pg  (fetch (db k) (str "pg:" (get db :pool) "/" k)))
+(impl Store store/mem (fetch (db k) (get (get db :data) k)))
 
 (fetch (mem {"a" 1}) "a")          ;=> 1
 (fetch (pg "main") "a")            ;=> "pg:main/a"
@@ -579,7 +580,7 @@ default, so members need not implement it). Runtime dispatch is unchanged —
 sealing is a contract, not a restriction:
 
 ```clojure
-(defability Shape :sealed [circle rect] (area [self] :-> float))
+(defability Shape :sealed [circle rect] (area (self) :-> float))
 ```
 
 **Super-abilities (`:requires`).** `:requires [A B …]` names prerequisite abilities — an id that
@@ -589,9 +590,9 @@ time, not by a runtime `no-impl` later. Advisory and checker-only, like `:sealed
 means it can't gate); a required ability's *provided* op is satisfied by its default.
 
 ```clojure
-(defability Named    (label [self] :-> string))
-(defability Priority :requires [Named] (priority [self] :-> int))
-(impl Priority task (priority [t] …))   ; warns unless `task` also impls Named
+(defability Named    (label (self) :-> string))
+(defability Priority :requires [Named] (priority (self) :-> int))
+(impl Priority task (priority (t) …))   ; warns unless `task` also impls Named
 ```
 
 **Introspection and helpers.** `(satisfies? 'Shape x)` is true when every declared
@@ -629,10 +630,10 @@ tail is a real type the checker consumes, not a comment. Two things follow from 
 - **The return flows into inference at every call site.** An op is a generic `defn`
   whose body *is* the dispatch machinery, so its own type is opaque — the declared
   return is the only static handle on what the call yields. `(area shape)` for `(area
-  [self] :-> float)` types as `float`, so `(+ (area s) 1.0)` checks and `(string/length
+  (self) :-> float)` types as `float`, so `(+ (area s) 1.0)` checks and `(string/length
   (area s))` is flagged. This is the single most useful place to recover type
   information, because it's the polymorphic boundary where it would otherwise be lost.
-- **Each `impl` body is checked against it.** An impl of `(size [self] :-> int)` whose
+- **Each `impl` body is checked against it.** An impl of `(size (self) :-> int)` whose
   body provably yields a non-`int` (a string literal, a `bool`) warns. The check is
   **gradual and false-positive-clean** — exactly like a `sig` return: an
   over-approximated body (a call result, an unknown param) is `dynamic` and defers; only
@@ -640,7 +641,7 @@ tail is a real type the checker consumes, not a comment. Two things follow from 
   constraint (`any` is the gradual unknown, not a top type). All advisory — the return
   type never gates the live image, and dispatch is unchanged.
 - **Parameters may be typed too — `(name T)`.** An op spec's params are bare symbols by
-  default; wrap one as `(name T)` to declare its type: `(scale [self (factor float)] :->
+  default; wrap one as `(name T)` to declare its type: `(scale (self (factor float)) :->
   int)`. The type is the same checker-only annotation as `:-> RET` (dispatch is still on the
   first argument's identity), and it does two things: an **argument** at that position is
   checked at every call site — `(scale s "x")` warns "argument 2 expects float" — and the
@@ -652,7 +653,7 @@ tail is a real type the checker consumes, not a comment. Two things follow from 
 **A sealed ability *is a type* (ADR-181).** A `:sealed` ability names a closed member set,
 so its name is usable directly in the type grammar — it denotes the **union of what its
 members denote**. `Shape :sealed [circle rect]` means `(or circle rect)` as a type, so you can
-write `(sig total (Shape -> float))` or return one from an op (`(scaled [self] :-> Shape)`).
+write `(sig total (Shape -> float))` or return one from an op (`(scaled (self) :-> Shape)`).
 A member record satisfies it (records are open, so extra fields are fine); a non-record is a
 provable mismatch; anything whose type isn't pinned down defers — sound, no false positives.
 
@@ -783,7 +784,7 @@ copying its body:
 
 ```clojure
 (impl Display shapes/circle               ; the app's override
-  (->string [c] (str "⭕ " (next-impl))))  ; …around the library's own rendering
+  (->string (c) (str "⭕ " (next-impl))))  ; …around the library's own rendering
 ```
 
 With nothing below and no `:default` it raises. A method whose parameters are patterns has
@@ -805,7 +806,7 @@ import, no activation step. Built-ins are unchanged and pay no dispatch cost.
 (defmodule money)             ; no (:use ability), no (:use show) — both are core
 (defrecord usd (cents))
 (impl Display usd
-  (->string [m] (str "$" (math/->fixed (/ (get m :cents) 100.0) 2))))
+  (->string (m) (str "$" (math/->fixed (/ (get m :cents) 100.0) 2))))
 
 (io/puts (usd 1050))          ; prints .50   (not {:__id__ :money/usd, :cents 1050})
 (->string (usd 1050))         ;=> "$10.50"   ; the explicit call, for use inside str/string/interp
@@ -828,9 +829,9 @@ loaded in the prelude), so `defbehaviour` is available bare — no `require`, no
 ;; where the contract is declared
 (defmodule views)
 (defbehaviour LiveModule
-  (mount [params])
-  (render [model])
-  (handle-event [name params model]))
+  (mount (params))
+  (render (model))
+  (handle-event (name params model)))
 
 ;; a module that satisfies it — the header claims it, the module defines the ops
 (defmodule counter-view (:use views) (:implements LiveModule))

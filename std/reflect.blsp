@@ -53,7 +53,7 @@ read the same registry.
 
     (reflect/behaviour-ops 'No-Such-Behaviour)   ;=> nil
 
-after `(defbehaviour Renderable (render [x]))`, `(reflect/behaviour-ops 'Renderable)`
+after `(defbehaviour Renderable (render (x)))`, `(reflect/behaviour-ops 'Renderable)`
 answers `((render [x]))`."
   (get *protocols* bname))
 

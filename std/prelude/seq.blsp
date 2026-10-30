@@ -443,13 +443,13 @@ and it must be loaded before this `defrecord`.
 
     (defmodule geometry)
     (defrecord circle (r))          ; (circle 2) → {:__id__ :geometry/circle, :r 2}
-    (impl Shape circle (area [c] (* 3.14 (get c :r) (get c :r))))
+    (impl Shape circle (area (c) (* 3.14 (get c :r) (get c :r))))
 
     ;; deriving: the ability supplies the recipe, the record just names it
     (defability Columns
-      (columns [self] :-> vector)
+      (columns (self) :-> vector)
       :derive-record (fn (flds)
-        (list `(columns [r] [~@(map flds (fn (f) `(get r ~(keyword (->string f)))))]))))
+        (list `(columns (r) [~@(map flds (fn (f) `(get r ~(keyword (->string f)))))]))))
     (defrecord point (x y) :derives [Columns])   ; columns synthesised field-wise
 
 Note the example defines the ability *with* a `:derive-record` recipe: no ability in the

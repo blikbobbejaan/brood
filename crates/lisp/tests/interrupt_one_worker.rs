@@ -177,16 +177,16 @@ fn a_window_under_a_kernel_dispatch_parks() {
                (do (< (knock ceiling thunk) (knock ceiling thunk)) (receive ([:window r] r)))))",
         // a record's `->seq` under `first`
         "(do (defrecord knock (ceiling thunk))
-             (impl Seqable knock (->seq [k] (list (proc/interruptible (get k :ceiling) (get k :thunk)))))
+             (impl Seqable knock (->seq (k) (list (proc/interruptible (get k :ceiling) (get k :thunk)))))
              (fn (ceiling thunk) (first (knock ceiling thunk))))",
         // its `->count` under `count`, and under `empty?`
         "(do (defrecord knock (ceiling thunk))
              (impl Counted knock
-               (->count [k] (do (send (self) [:window (proc/interruptible (get k :ceiling) (get k :thunk))]) 1)))
+               (->count (k) (do (send (self) [:window (proc/interruptible (get k :ceiling) (get k :thunk))]) 1)))
              (fn (ceiling thunk) (do (count (knock ceiling thunk)) (receive ([:window r] r)))))",
         "(do (defrecord knock (ceiling thunk))
              (impl Counted knock
-               (->count [k] (do (send (self) [:window (proc/interruptible (get k :ceiling) (get k :thunk))]) 1)))
+               (->count (k) (do (send (self) [:window (proc/interruptible (get k :ceiling) (get k :thunk))]) 1)))
              (fn (ceiling thunk) (do (empty? (knock ceiling thunk)) (receive ([:window r] r)))))",
         // `apply` taken as a value: the engine unfolds it wherever it is called from Brood
         "(fn (ceiling thunk) (let (call apply) (call proc/interruptible [ceiling thunk])))",

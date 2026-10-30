@@ -101,13 +101,14 @@ pub fn protocol_ops(interp: &Interp, proto: &str) -> Vec<(String, usize)> {
             if value::symbol_name(s) != proto {
                 continue;
             }
-            // Each spec is `(op-name [args…] …)`: name + the arg vector's length.
+            // Each spec is `(op-name (args…) …)`: name + the parameter list's length. A
+            // parameter list is a list, as in `defn` (ADR-512); `defability` refuses a vector.
             for op in heap.list_to_vec(specs).unwrap_or_default() {
                 let items = heap.list_to_vec(op).unwrap_or_default();
-                if let (Some(&Value::Sym(name)), Some(&Value::Vector(vid))) =
-                    (items.first(), items.get(1))
+                if let (Some(&Value::Sym(name)), Some(&params)) = (items.first(), items.get(1))
+                    && let Ok(params) = heap.list_to_vec(params)
                 {
-                    out.push((value::symbol_name(name), heap.vector(vid).len()));
+                    out.push((value::symbol_name(name), params.len()));
                 }
             }
         }

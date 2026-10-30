@@ -101,7 +101,7 @@ fn a_record_collection_with_its_own_iteration_is_not_judged_by_its_fields() {
     // `__id__` guard exists for.
     let ws = file_warnings(
         "(defrecord stack (items))\n\
-         (impl Seqable stack (->seq [s] (get s :items)))\n\
+         (impl Seqable stack (->seq (s) (get s :items)))\n\
          (defn use-it () (map (stack (list 10 20)) inc))",
     );
     assert!(!has(&ws, "is a callback handed"), "{ws:?}");

@@ -711,9 +711,9 @@
 ;; armed while `nest check` rejected it.
 (defrecord c-pt (x y))
 (defrecord c-circ (r))
-(defability CSealed (c-sealed-label [s] :-> string) :sealed [c-circ])
-(impl CSealed c-circ (c-sealed-label [c] "circle"))
-(defability COpen (c-open-label [s] :-> string))
+(defability CSealed (c-sealed-label (s) :-> string) :sealed [c-circ])
+(impl CSealed c-circ (c-sealed-label (c) "circle"))
+(defability COpen (c-open-label (s) :-> string))
 
 (defn c-takes-pt (p) (:x p))
 (sig! c-takes-pt (c-pt -> any))

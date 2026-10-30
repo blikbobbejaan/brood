@@ -68,11 +68,11 @@ it prints as `#<queue …>` instead of leaking its two-list representation.")
 ;; below are thin aliases over the protocol, not a parallel API.
 (impl Seqable
   queue/queue
-  (->seq [q]
+  (->seq (q)
     (if (= (get q :size) 0) nil (append (get q :front) (reverse (get q :back))))))
-(impl Conjable queue/queue (conj-onto [q v] (push q v)))
+(impl Conjable queue/queue (conj-onto (q v) (push q v)))
 ;; The queue carries its size, so `count` and `empty?` need not build its sequence.
-(impl Counted queue/queue (->count [q] (get q :size)))
+(impl Counted queue/queue (->count (q) (get q :size)))
 
 (defn list-> (xs)
   "Build a queue from a list or vector, front → back — i.e. `(into (queue/empty) xs)`.
@@ -84,11 +84,11 @@ it prints as `#<queue …>` instead of leaking its two-list representation.")
 ;; (size + the element that pops next), `Inspect` the full FIFO contents.
 (impl Display
   queue/queue
-  (->string [q]
+  (->string (q)
     (if (empty? q)
       "#<queue empty>"
       (str "#<queue " (get q :size) " front=" (->string (peek q)) ">"))))
 
 (impl Inspect
   queue/queue
-  (inspect [q] (str "#<queue " (pr-str (seq q)) ">")))
+  (inspect (q) (str "#<queue " (pr-str (seq q)) ">")))

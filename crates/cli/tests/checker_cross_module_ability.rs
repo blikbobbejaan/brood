@@ -32,10 +32,10 @@ fn write_fixture() -> TempDir {
         dir.join("greet.blsp"),
         "(defmodule greet)\n\
          (defability Greeter\n\
-         \x20\x20(to-line [self] :-> string))\n\
+         \x20\x20(to-line (self) :-> string))\n\
          (defrecord person (name))\n\
          (impl Greeter person\n\
-         \x20\x20(to-line [self] (str \"hi \" (person-name self))))\n",
+         \x20\x20(to-line (self) (str \"hi \" (person-name self))))\n",
     )
     .unwrap();
 

@@ -214,17 +214,17 @@ identity and may override those paths. The rest of the tool is its siblings:
 ;; tree agree. Registered here (the type owner) rather than in the package manager.
 (impl Display
   project/dep-path
-  (->string [d] (str (get d :name) "  (path \"" (get d :path) "\")")))
+  (->string (d) (str (get d :name) "  (path \"" (get d :path) "\")")))
 (impl Display
   project/dep-git
-  (->string [d]
+  (->string (d)
     (str (get d :name) "  (git " (get d :url) " @ " (or (get d :ref) (get d :version)) ")")))
 (impl Display
   project/dep-tarball
-  (->string [d] (str (get d :name) "  (tarball " (get d :url) ")")))
+  (->string (d) (str (get d :name) "  (tarball " (get d :url) ")")))
 (impl Display
   project/dep-registry
-  (->string [d] (str (get d :name) "  (registry v" (get d :version) ")")))
+  (->string (d) (str (get d :name) "  (registry v" (get d :version) ")")))
 
 (def- *project-dep-ids*
   (list :project/dep-path :project/dep-git :project/dep-tarball :project/dep-registry))

@@ -327,31 +327,31 @@
     (os/cmd "sh" ["-c" "rm -rf /tmp/brood-rl-cyc"])))
 
 (describe "abilities and imports refuse what they used to accept silently"
-  (test "a defability op spec with a list where the vector belongs, or a duplicated op"
-    (is (includes? (message (fn () (reflect/eval '(defability RlM (rlm (self))))))
-          "needs a [args…] VECTOR"))
-    (is (includes? (message (fn () (reflect/eval '(defability RlD (rld [self]) (rld [self])))))
+  (test "a defability op spec with a vector where its parameter list belongs, or a duplicated op"
+    (is (includes? (message (fn () (reflect/eval '(defability RlM (rlm [self])))))
+          "takes its parameters as a list"))
+    (is (includes? (message (fn () (reflect/eval '(defability RlD (rld (self)) (rld (self))))))
           "declared twice"))
     (assert= (reflect/eval '(do
                               (defability RlOk
                                 "doc"
-                                (rlok [self] :-> int)
-                                (rlprov [self] :-> int (+ 1 (rlok self))))
+                                (rlok (self) :-> int)
+                                (rlprov (self) :-> int (+ 1 (rlok self))))
                               :ok))
       :ok)
     (assert= (reflect/eval '(do
-                              (defability RlDr :derive-record (fn (fields) nil) (rldr [self]))
+                              (defability RlDr :derive-record (fn (fields) nil) (rldr (self)))
                               :ok))
       :ok))
   (test "an impl method that is not an op of a known ability; late binding still allowed"
-    (reflect/eval '(do (defability RlI (rli [self])) (defrecord rlir (a))))
-    (is (includes? (message (fn () (reflect/eval '(impl RlI rlir (rlj [x] 1)))))
+    (reflect/eval '(do (defability RlI (rli (self))) (defrecord rlir (a))))
+    (is (includes? (message (fn () (reflect/eval '(impl RlI rlir (rlj (x) 1)))))
           "is not an op of RlI"))
-    (assert= (reflect/eval '(do (impl RlI rlir (rli [x] :fine)) (rli (rlir 1)))) :fine)
+    (assert= (reflect/eval '(do (impl RlI rlir (rli (x) :fine)) (rli (rlir 1)))) :fine)
     (assert= (reflect/eval '(do
                               (defrecord rllr (a))
-                              (impl RlLate rllr (rll [x] :late))
-                              (defability RlLate (rll [self]))
+                              (impl RlLate rllr (rll (x) :late))
+                              (defability RlLate (rll (self)))
                               (rll (rllr 1))))
       :late))
   (test "(:use m :only [name]) stays lazy: a name resolves at reference, not at refer"

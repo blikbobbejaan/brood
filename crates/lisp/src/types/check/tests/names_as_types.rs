@@ -122,9 +122,9 @@ fn sealed_over_builtin_kinds_accepts_its_own_members() {
     let ws = file_warnings(
         "\
          (defmodule t)\n\
-         (defability Sizey :sealed [:int :float] (sizey [self] :-> int))\n\
-         (impl Sizey :int (sizey [n] n))\n\
-         (impl Sizey :float (sizey [n] 0))\n\
+         (defability Sizey :sealed [:int :float] (sizey (self) :-> int))\n\
+         (impl Sizey :int (sizey (n) n))\n\
+         (impl Sizey :float (sizey (n) 0))\n\
          (sig use-it (Sizey -> int))\n\
          (defn use-it (x) (sizey x))\n\
          (defn good-int () (use-it 42))\n\
@@ -140,9 +140,9 @@ fn sealed_over_builtin_kinds_still_rejects_a_non_member() {
     let ws = file_warnings(
         "\
          (defmodule t)\n\
-         (defability Sizey :sealed [:int :float] (sizey [self] :-> int))\n\
-         (impl Sizey :int (sizey [n] n))\n\
-         (impl Sizey :float (sizey [n] 0))\n\
+         (defability Sizey :sealed [:int :float] (sizey (self) :-> int))\n\
+         (impl Sizey :int (sizey (n) n))\n\
+         (impl Sizey :float (sizey (n) 0))\n\
          (sig use-it (Sizey -> int))\n\
          (defn use-it (x) (sizey x))\n\
          (defn bad () (use-it \"not a number\"))",
@@ -164,9 +164,9 @@ fn sealed_over_records_keeps_its_id_precision() {
          (defmodule t)\n\
          (defrecord circle (r))\n\
          (defrecord rect (w h))\n\
-         (defability Shape :sealed [circle rect] (area [self] :-> float))\n\
-         (impl Shape t/circle (area [c] (get c :r)))\n\
-         (impl Shape t/rect (area [r] (get r :w)))\n\
+         (defability Shape :sealed [circle rect] (area (self) :-> float))\n\
+         (impl Shape t/circle (area (c) (get c :r)))\n\
+         (impl Shape t/rect (area (r) (get r :w)))\n\
          (sig total (Shape -> float))\n\
          (defn total (s) (area s))\n\
          (defn good () (total (circle 2)))\n\
@@ -198,8 +198,8 @@ fn sealed_member_id_that_collides_with_a_kind_name_is_the_record() {
     let ws = file_warnings(
         "\
          (defrecord ratio (n d))\n\
-         (defability Sz :sealed [ratio] (sz [self] :-> int))\n\
-         (impl Sz ratio (sz [v] 1))\n\
+         (defability Sz :sealed [ratio] (sz (self) :-> int))\n\
+         (impl Sz ratio (sz (v) 1))\n\
          (sig g (Sz -> int))\n\
          (defn g (v) (sz v))\n\
          (defn ok () (g (ratio 1 2)))",
@@ -212,8 +212,8 @@ fn sealed_member_colliding_with_a_kind_name_still_rejects_a_non_member() {
     let ws = file_warnings(
         "\
          (defrecord ratio (n d))\n\
-         (defability Sz :sealed [ratio] (sz [self] :-> int))\n\
-         (impl Sz ratio (sz [v] 1))\n\
+         (defability Sz :sealed [ratio] (sz (self) :-> int))\n\
+         (impl Sz ratio (sz (v) 1))\n\
          (sig g (Sz -> int))\n\
          (defn g (v) (sz v))\n\
          (defn bad () (g \"x\"))",
@@ -235,10 +235,10 @@ fn sealed_mixing_records_and_kinds_accepts_every_member() {
         "\
          (defmodule t)\n\
          (defrecord money (cents))\n\
-         (defability Amt :sealed [:int :float money] (amt [self] :-> float))\n\
-         (impl Amt :int (amt [n] (* 1.0 n)))\n\
-         (impl Amt :float (amt [n] n))\n\
-         (impl Amt t/money (amt [m] (* 0.01 (get m :cents))))\n\
+         (defability Amt :sealed [:int :float money] (amt (self) :-> float))\n\
+         (impl Amt :int (amt (n) (* 1.0 n)))\n\
+         (impl Amt :float (amt (n) n))\n\
+         (impl Amt t/money (amt (m) (* 0.01 (get m :cents))))\n\
          (sig twice (Amt -> float))\n\
          (defn twice (x) (* 2.0 (amt x)))\n\
          (defn a () (twice 42))\n\

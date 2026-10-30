@@ -316,7 +316,7 @@ fn an_impl_added_in_another_file_moves_the_cached_verdict() {
     write(
         &dir,
         "src/shapes.blsp",
-        "(defmodule shapes)\n(defability Area (area [self] :-> int))\n(defrecord circle (r))\n(defn use-it () (area (circle 2)))\n",
+        "(defmodule shapes)\n(defability Area (area (self) :-> int))\n(defrecord circle (r))\n(defn use-it () (area (circle 2)))\n",
     );
     write(
         &dir,
@@ -336,7 +336,7 @@ fn an_impl_added_in_another_file_moves_the_cached_verdict() {
     write(
         &dir,
         "src/impls.blsp",
-        "(defmodule impls (:use shapes))\n(defn placeholder () 1)\n(impl Area shapes/circle (area [c] (* 3 (get c :r))))\n",
+        "(defmodule impls (:use shapes))\n(defn placeholder () 1)\n(impl Area shapes/circle (area (c) (* 3 (get c :r))))\n",
     );
     let (code, out) = nest_check(&dir);
     assert!(

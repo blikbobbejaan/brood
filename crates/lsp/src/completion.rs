@@ -192,7 +192,7 @@ fn item(label: String, kind: CompletionItemKind) -> CompletionItem {
 }
 
 /// The text inserted when an ability op is picked inside `(impl …)`: the method
-/// skeleton `(op [self …] body)`, so the user fills in the body rather than
+/// skeleton `(op (self …) body)` (a parameter LIST, ADR-512), so the user fills in the body rather than
 /// retyping the shape. With `snippet` (the client declared `snippetSupport`), the
 /// params and body are tabstops (`${1:self}` … `$0`); otherwise a plain skeleton
 /// with an empty body (no `$`-syntax a non-snippet client would insert literally).
@@ -214,7 +214,7 @@ fn impl_method_skeleton(name: &str, arity: usize, paren_open: bool, snippet: boo
     };
     let params = (0..arity).map(param).collect::<Vec<_>>().join(" ");
     let body = if snippet { "$0" } else { "" };
-    format!("{open}{name} [{params}] {body}{close}")
+    format!("{open}{name} ({params}) {body}{close}")
 }
 
 /// If byte `offset` falls inside an `(impl Ability …)` form, the ability name
@@ -632,7 +632,7 @@ mod tests {
         // Seed the ability registry directly (defability isn't loaded in a bare interp).
         let mut interp = Interp::new();
         interp
-            .eval_str("(def *abilities* (assoc {} 'Encode (list (list 'encode '[v]))))")
+            .eval_str("(def *abilities* (assoc {} 'Encode (list (list 'encode '(v)))))")
             .unwrap();
         let src = "(impl Encode :int (enc";
         let root = cst::parse(src);
@@ -655,7 +655,7 @@ mod tests {
         );
         // A fillable method skeleton is inserted: params + a body tabstop. The
         // cursor sits inside the already-typed `(`, so no wrapping parens.
-        assert_eq!(enc.insert_text.as_deref(), Some("encode [${1:self}] $0"));
+        assert_eq!(enc.insert_text.as_deref(), Some("encode (${1:self}) $0"));
         assert_eq!(enc.insert_text_format, Some(InsertTextFormat::SNIPPET));
     }
 
@@ -760,21 +760,21 @@ mod tests {
         // snippet + method `(` already open → tabstops, no wrapping parens.
         assert_eq!(
             impl_method_skeleton("area", 1, true, true),
-            "area [${1:self}] $0"
+            "area (${1:self}) $0"
         );
         // snippet + directly in the impl form → supply the wrapping parens.
         assert_eq!(
             impl_method_skeleton("area", 1, false, true),
-            "(area [${1:self}] $0)"
+            "(area (${1:self}) $0)"
         );
         // no snippet support → a plain skeleton, empty body, never literal `$`.
         assert_eq!(
             impl_method_skeleton("cmp", 2, false, false),
-            "(cmp [self arg2] )"
+            "(cmp (self arg2) )"
         );
         assert_eq!(
             impl_method_skeleton("cmp", 2, true, false),
-            "cmp [self arg2] "
+            "cmp (self arg2) "
         );
     }
 }

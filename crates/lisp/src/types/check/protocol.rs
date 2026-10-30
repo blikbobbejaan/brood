@@ -8,7 +8,7 @@
 //! un-expanded tree.
 //!
 //! The checker keys off the surface syntax (`defprotocol`/`defimpl` as bare heads,
-//! op specs `(op [args] …)`); it doesn't need the macros' definitions, so this is a
+//! op specs `(op (args) …)`); it doesn't need the macros' definitions, so this is a
 //! pure static analysis independent of where the macros live (the std/Hatch prototype).
 
 use std::collections::{HashMap, HashSet};
@@ -162,7 +162,7 @@ pub(super) fn check_impls(
     }
 }
 
-/// `(defprotocol Name doc? (op [args] …) …)` or `(defbehaviour Name …)` → (name,
+/// `(defprotocol Name doc? (op (args) …) …)` or `(defbehaviour Name …)` → (name,
 /// model), else `None`. Protocols and behaviours share the op-spec shape; they
 /// differ only in *who* implements them (a `defimpl` vs a module's own functions).
 fn parse_protocol(heap: &Heap, form: Value) -> Option<(String, Protocol)> {
@@ -190,16 +190,15 @@ fn parse_protocol(heap: &Heap, form: Value) -> Option<(String, Protocol)> {
     Some((pname, Protocol { ops }))
 }
 
-/// Parse `(name [args] …)` → its op name, fixed arity, and variadic flag. Shared by
+/// Parse `(name (args) …)` → its op name, fixed arity, and variadic flag. Shared by
 /// protocol op specs and `impl` methods. The fixed arity counts params before a `&`-rest.
 /// `None` for a non-list (e.g. a docstring) or a malformed spec.
 fn parse_op(heap: &Heap, form: Value) -> Option<Op> {
     let items = list_items(heap, form)?;
     let name = sym_name(*items.first()?)?;
-    // The runtime takes either spelling of a parameter list — `(eqv [a b] …)` and
-    // `(eqv (a b) …)` (an `impl` method is a `defn` arm) — so the checker must too.
+    // A parameter list is a list, as in `defn` (ADR-512); the macros refuse a vector, so a
+    // spec with one never reaches a running image and is not an op here either.
     let args = match *items.get(1)? {
-        Value::Vector(id) => heap.vector(id).to_vec(),
         params @ (Value::Pair(_) | Value::Nil) => list_items(heap, params)?,
         _ => return None,
     };
@@ -214,11 +213,11 @@ fn parse_op(heap: &Heap, form: Value) -> Option<Op> {
     })
 }
 
-/// True when op spec `spec` carries a default-implementation body — a form beyond the arg
-/// vector and the optional `:-> RET`. Such a **provided** op (ADR-185) is registered as a
+/// True when op spec `spec` carries a default-implementation body — a form beyond the
+/// parameter list and the optional `:-> RET`. Such a **provided** op (ADR-185) is registered as a
 /// `:default` impl by `defability`, so it is satisfied for every id and is never demanded
 /// of a sealed member. The `:->` arrow, when present, always sits at index 2 (right after
-/// the arg vector), so the body — if any — starts at index 4, else at index 2.
+/// the parameter list), so the body — if any — starts at index 4, else at index 2.
 fn spec_has_body(heap: &Heap, spec: Value) -> bool {
     let Some(items) = list_items(heap, spec) else {
         return false;
@@ -277,7 +276,7 @@ pub(super) fn check_behaviours(
                         bname, op.name, op.arity
                     ),
                 )),
-                // A variadic op (`(render [self & more])`) declares no single arity to pin
+                // A variadic op (`(render (self & more))`) declares no single arity to pin
                 // — accept any provider, as `check_impls` does.
                 Some(&Some(arity)) if !op.variadic && arity != op.arity => out.push((
                     pos,
@@ -387,11 +386,10 @@ fn fn_arity(heap: &Heap, v: Value) -> Option<usize> {
     param_count(heap, params)
 }
 
-/// The number of fixed parameters in a param list/vector, or `None` if it's variadic.
+/// The number of fixed parameters in a parameter list, or `None` if it's variadic.
 fn param_count(heap: &Heap, params: Value) -> Option<usize> {
     let items = match params {
         Value::Nil => return Some(0),
-        Value::Vector(id) => heap.vector(id).to_vec(),
         Value::Pair(_) => list_items(heap, params)?,
         _ => return None,
     };
@@ -902,7 +900,7 @@ pub(super) fn build_ability_info_visible(
     }
 }
 
-/// The `:-> RET` return-type form of an op spec `(op [params] :-> RET)`, or `None` when
+/// The `:-> RET` return-type form of an op spec `(op (params) :-> RET)`, or `None` when
 /// the spec declares no return type. The arrow token is the keyword `:->` (a keyword
 /// named `->`); the return type is the form that follows it.
 fn spec_ret_form(heap: &Heap, spec: Value) -> Option<Value> {
@@ -913,18 +911,18 @@ fn spec_ret_form(heap: &Heap, spec: Value) -> Option<Value> {
     items.get(arrow + 1).copied()
 }
 
-/// The per-position parameter types of an op spec `(op [p0 (p1 T1) …] …)`: `Some(ty)` for a
+/// The per-position parameter types of an op spec `(op (p0 (p1 T1) …) …)`: `Some(ty)` for a
 /// typed `(name T)` entry, `None` for a bare symbol (or a `&`-rest marker). `None` (the
-/// whole result) when the spec has no param vector or declares no type at all — so an op
-/// with all-bare params contributes nothing to argument checking.
+/// whole result) when the spec has no parameter list or declares no type at all — so an op
+/// with all-bare params contributes nothing to argument checking. The parameter list is a
+/// LIST (ADR-512).
 fn spec_param_types(heap: &Heap, spec: Value) -> Option<Vec<Option<crate::types::Ty>>> {
     let items = list_items(heap, spec)?;
-    let Some(&Value::Vector(vid)) = items.get(1) else {
-        return None;
+    let params = match *items.get(1)? {
+        params @ Value::Pair(_) => list_items(heap, params)?,
+        _ => return None,
     };
-    let types: Vec<Option<crate::types::Ty>> = heap
-        .vector(vid)
-        .to_vec()
+    let types: Vec<Option<crate::types::Ty>> = params
         .iter()
         .map(|&p| {
             // `(name T)` → parse T; a bare symbol / `&` → no type.

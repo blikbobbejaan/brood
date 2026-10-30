@@ -217,7 +217,7 @@ milliseconds.
     (datetime/->iso (datetime/parse-date \"2026-08-27\"))   ;=> \"2026-08-27\"
     (datetime/->iso (datetime/epoch-ms-> 0))               ;=> \"1970-01-01T00:00:00.000Z\""
   :sealed [datetime date time-of-day]
-  (->iso [self] :-> string))
+  (->iso (self) :-> string))
 
 ;; The two halves, shared by the three impls (a datetime is date + \"T\" + time + \"Z\").
 (defn- dt-iso-date (d)
@@ -236,18 +236,18 @@ milliseconds.
     "."
     (dt-zero-pad (get t :ms 0) 3)))
 
-(impl Temporal datetime/date (->iso [d] (dt-iso-date d)))
-(impl Temporal datetime/time-of-day (->iso [t] (dt-iso-time t)))
+(impl Temporal datetime/date (->iso (d) (dt-iso-date d)))
+(impl Temporal datetime/time-of-day (->iso (t) (dt-iso-time t)))
 (impl Temporal
   datetime/datetime
-  (->iso [dt] (str (dt-iso-date dt) "T" (dt-iso-time dt) "Z")))
+  (->iso (dt) (str (dt-iso-date dt) "T" (dt-iso-time dt) "Z")))
 
 ;; A temporal value's display form is its ISO string — so `(io/puts (utc-now))` shows
 ;; `2026-07-28T14:03:11.000Z`, not the field map. `str`/`pr-str` stay native (ADR-171),
 ;; so the data form is still available for debugging via `pr-str`.
-(impl Display datetime/datetime (->string [dt] (->iso dt)))
-(impl Display datetime/date (->string [d] (->iso d)))
-(impl Display datetime/time-of-day (->string [t] (->iso t)))
+(impl Display datetime/datetime (->string (dt) (->iso dt)))
+(impl Display datetime/date (->string (d) (->iso d)))
+(impl Display datetime/time-of-day (->string (t) (->iso t)))
 
 (defn- dt-fmt-code (dt code)
   (cond

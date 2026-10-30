@@ -83,8 +83,8 @@ fn a_dead_literal_match_clause_without_a_predicate_is_still_reported() {
 // ---- sealed-match exhaustiveness forgets a rebound name ---------------------------------
 
 const SEALED_PRELUDE: &str = "(defmodule u) (defrecord c (x)) (defrecord r (y)) \
-     (defability S :sealed [c r] (op [self] :-> int)) \
-     (impl S u/c (op [s] 1)) (impl S u/r (op [s] 2)) ";
+     (defability S :sealed [c r] (op (self) :-> int)) \
+     (impl S u/c (op (s) 1)) (impl S u/r (op (s) 2)) ";
 
 fn sealed_warnings(body: &str) -> Vec<String> {
     let w = file_warnings(&format!("{SEALED_PRELUDE}{body}"));
@@ -132,7 +132,7 @@ fn sealed_match_forgets_a_name_rebound_by_if_let_for_destructuring_fn_and_catch(
 #[test]
 fn an_impl_op_with_a_list_parameter_form_is_read() {
     let w = file_warnings(
-        "(defmodule u) (defrecord m (n)) (defability Eq (eqv [self other] :-> bool)) (impl Eq u/m (eqv (a b) true))",
+        "(defmodule u) (defrecord m (n)) (defability Eq (eqv (self other) :-> bool)) (impl Eq u/m (eqv (a b) true))",
     );
     assert_eq!(
         count_containing(&w, "eqv"),
@@ -144,11 +144,11 @@ fn an_impl_op_with_a_list_parameter_form_is_read() {
 #[test]
 fn a_variadic_behaviour_op_accepts_any_provider_arity() {
     let w = file_warnings(
-        "(defmodule bv (:implements V)) (defbehaviour V (render [self & more])) (defn render (a b c) [a b c])",
+        "(defmodule bv (:implements V)) (defbehaviour V (render (self & more))) (defn render (a b c) [a b c])",
     );
     assert_eq!(count_containing(&w, "behaviour V"), 0, "{w:?}");
     let fixed = file_warnings(
-        "(defmodule bv (:implements V)) (defbehaviour V (render [self])) (defn render (a b c) [a b c])",
+        "(defmodule bv (:implements V)) (defbehaviour V (render (self))) (defn render (a b c) [a b c])",
     );
     assert_eq!(
         count_containing(&fixed, "behaviour V"),
@@ -280,11 +280,11 @@ fn a_file_is_not_told_about_abilities_it_cannot_see() {
             "(defmodule rv-sm)\n\
              (defrecord c (x))\n\
              (defrecord r (y))\n\
-             (defability S :sealed [c r] (op [self] :-> int))\n\
-             (impl S rv-sm/c (op [s] 1))\n\
-             (defability Eq (eqv [self other] :-> bool))\n\
-             (defability Ord :requires [Eq] (compare-to [self other] :-> int))\n\
-             (impl Ord rv-sm/c (compare-to [a b] 0))",
+             (defability S :sealed [c r] (op (self) :-> int))\n\
+             (impl S rv-sm/c (op (s) 1))\n\
+             (defability Eq (eqv (self other) :-> bool))\n\
+             (defability Ord :requires [Eq] (compare-to (self other) :-> int))\n\
+             (impl Ord rv-sm/c (compare-to (a b) 0))",
         )
         .expect("load the ability module");
     let mut heap =

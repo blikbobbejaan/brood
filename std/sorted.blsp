@@ -228,38 +228,38 @@ A nil bound is open on that side. Only the part of the tree in range is visited.
 
 ;; ---- the collection protocol --------------------------------------------------------
 
-(impl Seqable sorted/sorted-map (->seq [m] (entries-onto (tree m) map-entry nil)))
-(impl Seqable sorted/sorted-set (->seq [s] (entries-onto (tree s) set-entry nil)))
-(impl Counted sorted/sorted-map (->count [m] (size m)))
-(impl Counted sorted/sorted-set (->count [s] (size s)))
+(impl Seqable sorted/sorted-map (->seq (m) (entries-onto (tree m) map-entry nil)))
+(impl Seqable sorted/sorted-set (->seq (s) (entries-onto (tree s) set-entry nil)))
+(impl Counted sorted/sorted-map (->count (m) (size m)))
+(impl Counted sorted/sorted-set (->count (s) (size s)))
 (impl Conjable
   sorted/sorted-map
-  (conj-onto [m x]
+  (conj-onto (m x)
     (cond
       (and (vector? x) (= (count x) 2)) (put m (nth x 0) (nth x 1))
       (map? x) (fold (seq x) m (fn (acc pair) (put acc (nth pair 0) (nth pair 1))))
       else (error "conj: adding to a sorted map takes a [key value] pair or a map, got " (pr-str x)))))
-(impl Conjable sorted/sorted-set (conj-onto [s x] (put s x nil)))
+(impl Conjable sorted/sorted-set (conj-onto (s x) (put s x nil)))
 ;; `Lookup` is what makes bare `get` and `keys` answer for the contents rather than the
 ;; record's fields — and `keys` in key order.
 (impl Lookup
   sorted/sorted-map
-  (lookup-get [m k] (get m k))
-  (lookup-keys [m] (entries-onto (tree m) set-entry nil)))
+  (lookup-get (m k) (get m k))
+  (lookup-keys (m) (entries-onto (tree m) set-entry nil)))
 (impl Lookup
   sorted/sorted-set
-  (lookup-get [s k] (get s k))
-  (lookup-keys [s] (entries-onto (tree s) set-entry nil)))
+  (lookup-get (s k) (get s k))
+  (lookup-keys (s) (entries-onto (tree s) set-entry nil)))
 
 (impl Display
   sorted/sorted-map
-  (->string [m] (str "#<sorted-map " (size m) " entries>")))
+  (->string (m) (str "#<sorted-map " (size m) " entries>")))
 (impl Display
   sorted/sorted-set
-  (->string [s] (str "#<sorted-set " (size s) " elements>")))
+  (->string (s) (str "#<sorted-set " (size s) " elements>")))
 (impl Inspect
   sorted/sorted-map
-  (inspect [m] (str "#<sorted-map " (pr-str (seq m)) ">")))
+  (inspect (m) (str "#<sorted-map " (pr-str (seq m)) ">")))
 (impl Inspect
   sorted/sorted-set
-  (inspect [s] (str "#<sorted-set " (pr-str (seq s)) ">")))
+  (inspect (s) (str "#<sorted-set " (pr-str (seq s)) ">")))

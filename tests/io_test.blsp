@@ -9,8 +9,8 @@
 ;; A record with BOTH a Display and an Inspect impl — the pair the writers must keep
 ;; distinct (`puts` shows the display form, `inspect` the debug form).
 (defrecord money (amount))
-(impl Display money (->string [m] (str "$" (get m :amount))))
-(impl Inspect money (inspect [m] (str "#money<$" (get m :amount) ">")))
+(impl Display money (->string (m) (str "$" (get m :amount))))
+(impl Inspect money (inspect (m) (str "#money<$" (get m :amount) ">")))
 
 (describe "io: ports reroute print/println"
   ;; These send to (self) and receive — no globals, no spawn — so they can run in
@@ -99,7 +99,7 @@
 (impl Port
   io-test/counting-port
   ;; The op is `emit` — `write` is the caller-facing function now.
-  (emit [p s] (emit (get p :target) (str "[" (string/length s) "] " s))))
+  (emit (p s) (emit (get p :target) (str "[" (string/length s) "] " s))))
 
 (describe "io: a third-party port type"
   (test "a record from another module is a port once it impls Port"

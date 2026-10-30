@@ -30,7 +30,12 @@
 ;;                    string (a true colour, identical in both frontends — for a
 ;;                    curated palette beyond the 16 named slots)
 ;;   :bold :reverse — flags, both frontends
-;;   :underline :italic — flags (terminal + GUI)
+;;   :italic        — a flag (terminal + GUI)
+;;   :underline     — a flag; a colour (`"#ff5f59"`, `:red`) for an underline of its own
+;;                    colour; or `{:color c :style :wave}` for a wavy one (a spell
+;;                    checker's, a diagnostic's), the text keeping its own colour.
+;;                    The terminal draws the coloured / curly form where it supports
+;;                    the extended underline (ADR-513), else a plain underline
 ;;   :family        — GUI only: a font-family keyword (`:mono` is the bundled
 ;;                    default; others registered via `gui/font-register`)
 ;;   :height        — GUI only: a hint, honored by the whole-window `gui/font` knob

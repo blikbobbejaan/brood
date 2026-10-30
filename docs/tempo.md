@@ -114,7 +114,7 @@ a loud missing-impl error rather than a silent guess at today's date.
 ```lisp
 (defability Temporal
   :sealed [datetime date time-of-day]
-  (->iso [self] :-> string))
+  (->iso (self) :-> string))
 ```
 
 `tempo` ships its own plain `tempo/->iso` function rather than joining `Temporal`.
@@ -126,7 +126,7 @@ any module, and both `nest check` and the runtime accept it — verified:
 
 ```lisp
 (defmodule anywhere (:use datetime))
-(impl Temporal tempo/tempo (->iso [t] (tempo/->iso t)))
+(impl Temporal tempo/tempo (->iso (t) (tempo/->iso t)))
 (->iso (tempo/parse! "2026-06"))              ; → "2026-06", check exit 0
 ```
 
@@ -148,7 +148,7 @@ So the real choice is narrower than it looks:
    three, so that test changes too.
 3. **Leave it.** Two `->iso` ops, callers pick by namespace.
 
-**Shipped as (1).** `std/tempo.blsp` carries `(impl Temporal tempo/tempo (->iso [t] (->iso t)))`,
+**Shipped as (1).** `std/tempo.blsp` carries `(impl Temporal tempo/tempo (->iso (t) (->iso t)))`,
 so `(datetime/->iso x)` renders a tempo, a date, a datetime or a time-of-day. `std/datetime` is
 untouched and `(%sealed-members 'Temporal)` still names exactly its original three; the only
 thing not gained is the checker *demanding* the impl exist, which is what (2) would buy at the

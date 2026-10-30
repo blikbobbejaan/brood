@@ -270,15 +270,15 @@
   (defrecord ov-mini ()) ; capture-all: only active?/handle implemented
   (impl Overlay
     ov-mini
-    (overlay-active? [_ m] (get m :mini))
-    (overlay-handle [_ m k] (assoc m :typed k)))
+    (overlay-active? (_ m) (get m :mini))
+    (overlay-handle (_ m k) (assoc m :typed k)))
   (defrecord ov-pop ()) ; discriminating: all four ops
   (impl Overlay
     ov-pop
-    (overlay-active? [_ m] (get m :pop))
-    (overlay-owns? [_ m k] (= k "x"))
-    (overlay-handle [_ m k] (assoc m :popped k))
-    (overlay-exit [_ m] (assoc m :pop nil :exited true)))
+    (overlay-active? (_ m) (get m :pop))
+    (overlay-owns? (_ m k) (= k "x"))
+    (overlay-handle (_ m k) (assoc m :popped k))
+    (overlay-exit (_ m) (assoc m :pop nil :exited true)))
   (def rec-overlays (list (ov-mini) (ov-pop)))
   (defn rec-fallback (m k) (assoc m :dispatched k))
   (test "no overlay open → fallback"

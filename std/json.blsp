@@ -429,7 +429,7 @@ the named escapes + every C0 control) that would each find nothing."
   custom wire shape, and for any kind JSON has no built-in rule for.
 
     (json/->json (point 1 2))   ;~> …the encodable value `point`'s own impl returns, e.g. {:x 1, :y 2}…"
-  (->json [self] :-> any))
+  (->json (self) :-> any))
 
 (defn- custom (v)
   "`v`'s own `JsonEncode/->json` impl, or nil when its identity has none. `JsonEncode`

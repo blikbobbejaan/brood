@@ -141,7 +141,7 @@
 
 (impl LogBackend
   log-test/raw-backend
-  (backend-emit [b record]
+  (backend-emit (b record)
     (when (backend-passes? b record)
       (send (get b :target) [:rec record]))
     nil))

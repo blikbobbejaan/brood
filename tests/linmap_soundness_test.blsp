@@ -112,8 +112,8 @@
 (defrecord lm-counter (hits))
 (impl Lookup
   lm-counter
-  (lookup-get [c k] (if (= k :hits) (get c :hits) 100))
-  (lookup-keys [c] (list :hits)))
+  (lookup-get (c k) (if (= k :hits) (get c :hits) 100))
+  (lookup-keys (c) (list :hits)))
 
 ;; `inc`, `dec` and `-` spellings of the same tally.
 (defn lm-inc (xs acc)

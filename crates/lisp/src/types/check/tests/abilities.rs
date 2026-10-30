@@ -9,13 +9,13 @@ use super::*;
 
 #[test]
 fn ability_impl_flags_a_missing_op() {
-    let ws = file_warnings("(defability P (a [x]) (b [x]))\n(impl P :int (a [x] x))");
+    let ws = file_warnings("(defability P (a (x)) (b (x)))\n(impl P :int (a (x) x))");
     assert!(ws.iter().any(|w| w.contains("missing op `b`")), "{ws:?}");
 }
 
 #[test]
 fn ability_impl_flags_an_arity_mismatch() {
-    let ws = file_warnings("(defability P (a [x]))\n(impl P :int (a [x y] x))");
+    let ws = file_warnings("(defability P (a (x)))\n(impl P :int (a (x y) x))");
     assert!(
         ws.iter()
             .any(|w| w.contains("`a` takes 1 arg(s), this impl has 2")),
@@ -25,13 +25,13 @@ fn ability_impl_flags_an_arity_mismatch() {
 
 #[test]
 fn ability_impl_flags_an_undeclared_method() {
-    let ws = file_warnings("(defability P (a [x]))\n(impl P :int (a [x] x) (z [x] x))");
+    let ws = file_warnings("(defability P (a (x)))\n(impl P :int (a (x) x) (z (x) x))");
     assert!(ws.iter().any(|w| w.contains("has no op `z`")), "{ws:?}");
 }
 
 #[test]
 fn ability_impl_complete_is_clean() {
-    let ws = file_warnings("(defability P (a [x]) (b [x]))\n(impl P :int (a [x] x) (b [x] x))");
+    let ws = file_warnings("(defability P (a (x)) (b (x)))\n(impl P :int (a (x) x) (b (x) x))");
     assert!(!ws.iter().any(|w| w.contains("missing op")), "{ws:?}");
     assert!(!ws.iter().any(|w| w.contains("has no op")), "{ws:?}");
     assert!(!ws.iter().any(|w| w.contains("takes")), "{ws:?}");
@@ -46,8 +46,8 @@ fn ability_impl_complete_is_clean() {
 fn ability_flags_a_builtin_kind_with_no_impl() {
     let ws = file_warnings(
         "\
-         (defability Size (size [self] :-> int))\n\
-         (impl Size :int (size [n] n))\n\
+         (defability Size (size (self) :-> int))\n\
+         (impl Size :int (size (n) n))\n\
          (defn bad () (size \"hi\"))",
     );
     assert!(
@@ -65,7 +65,7 @@ fn ability_flags_a_record_with_no_impl() {
     let ws = file_warnings(
         "\
          (defmodule t)\n\
-         (defability Size (size [self] :-> int))\n\
+         (defability Size (size (self) :-> int))\n\
          (defrecord rect (w h))\n\
          (defn bad () (size (rect 1 2)))",
     );
@@ -79,8 +79,8 @@ fn ability_flags_a_record_with_no_impl() {
 fn ability_is_silent_when_the_call_is_covered() {
     let ws = file_warnings(
         "\
-         (defability Size (size [self] :-> int))\n\
-         (impl Size :int (size [n] n))\n\
+         (defability Size (size (self) :-> int))\n\
+         (impl Size :int (size (n) n))\n\
          (defn ok () (size 5))",
     );
     assert!(
@@ -95,8 +95,8 @@ fn a_local_named_like_an_op_shadows_it() {
     // a `fn` parameter, and on a variable the inference hook types.
     let ws = file_warnings(
         "\
-         (defability Size (size [self] :-> int))\n\
-         (impl Size :int (size [n] n))\n\
+         (defability Size (size (self) :-> int))\n\
+         (impl Size :int (size (n) n))\n\
          (defn by-let () (let (size (fn (x) 0)) (size \"hi\")))\n\
          (defn by-param (size) (size \"hi\"))\n\
          (defn by-inference () (let (size (fn (x) 0) s \"hi\") (size s)))",
@@ -119,8 +119,8 @@ fn a_local_named_like_a_generic_shadows_it() {
 fn a_dispatch_call_inside_a_vector_or_under_a_computed_head_is_checked() {
     let ws = file_warnings(
         "\
-         (defability Size (size [self] :-> int))\n\
-         (impl Size :int (size [n] n))\n\
+         (defability Size (size (self) :-> int))\n\
+         (impl Size :int (size (n) n))\n\
          (defmulti mm)\n\
          (defmethod mm [:int :int] (a b) a)\n\
          (defn in-vector () [(size \"hi\") (mm 1 \"x\")])\n\
@@ -143,7 +143,7 @@ fn ability_flags_a_record_typed_variable_via_inference() {
     let ws = file_warnings(
         "\
          (defmodule t)\n\
-         (defability Size (size [self] :-> int))\n\
+         (defability Size (size (self) :-> int))\n\
          (defrecord rect (w h))\n\
          (defn bad () (let (r (rect 1 2)) (size r)))",
     );
@@ -158,9 +158,9 @@ fn ability_inference_is_silent_when_the_variable_is_covered() {
     let ws = file_warnings(
         "\
          (defmodule t)\n\
-         (defability Size (size [self] :-> int))\n\
+         (defability Size (size (self) :-> int))\n\
          (defrecord circle (r))\n\
-         (impl Size t/circle (size [c] (get c :r)))\n\
+         (impl Size t/circle (size (c) (get c :r)))\n\
          (defn ok () (let (c (circle 2)) (size c)))",
     );
     assert!(
@@ -176,8 +176,8 @@ fn sealed_ability_flags_a_member_missing_an_impl() {
          (defmodule t)\n\
          (defrecord circle (r))\n\
          (defrecord rect (w h))\n\
-         (defability Shape :sealed [circle rect] (area [self] :-> float))\n\
-         (impl Shape t/circle (area [c] (get c :r)))",
+         (defability Shape :sealed [circle rect] (area (self) :-> float))\n\
+         (impl Shape t/circle (area (c) (get c :r)))",
     );
     assert!(
         ws.iter()
@@ -195,8 +195,8 @@ fn sealed_ability_bare_impl_id_qualifies_ki15() {
         "\
          (defmodule t)\n\
          (defrecord circle (r))\n\
-         (defability Shape :sealed [circle] (area [self] :-> float))\n\
-         (impl Shape circle (area [c] (get c :r)))",
+         (defability Shape :sealed [circle] (area (self) :-> float))\n\
+         (impl Shape circle (area (c) (get c :r)))",
     );
     assert!(!ws.iter().any(|w| w.contains("sealed ability")), "{ws:?}");
 }
@@ -208,9 +208,9 @@ fn sealed_ability_complete_is_silent() {
          (defmodule t)\n\
          (defrecord circle (r))\n\
          (defrecord rect (w h))\n\
-         (defability Shape :sealed [circle rect] (area [self] :-> float))\n\
-         (impl Shape t/circle (area [c] (get c :r)))\n\
-         (impl Shape t/rect (area [r] (get r :w)))",
+         (defability Shape :sealed [circle rect] (area (self) :-> float))\n\
+         (impl Shape t/circle (area (c) (get c :r)))\n\
+         (impl Shape t/rect (area (r) (get r :w)))",
     );
     assert!(!ws.iter().any(|w| w.contains("sealed ability")), "{ws:?}");
 }
@@ -224,8 +224,8 @@ fn ability_op_return_type_flows_to_call_site() {
     // flowed into inference at the op call site.
     let ws = file_warnings(
         "\
-         (defability Size (size [self] :-> int))\n\
-         (impl Size :int (size [n] n))\n\
+         (defability Size (size (self) :-> int))\n\
+         (impl Size :int (size (n) n))\n\
          (defn bad () (string/length (size 5)))",
     );
     assert!(
@@ -241,8 +241,8 @@ fn ability_impl_return_mismatch_is_flagged() {
     // disjointness the impl-return check catches.
     let ws = file_warnings(
         "\
-         (defability Size (size [self] :-> int))\n\
-         (impl Size :int (size [n] \"hi\"))",
+         (defability Size (size (self) :-> int))\n\
+         (impl Size :int (size (n) \"hi\"))",
     );
     assert!(
         ws.iter().any(|w| w
@@ -257,9 +257,9 @@ fn ability_impl_return_consistent_is_silent() {
     // An `int` literal body conforms; an unknown (`n`) body defers (gradual) — neither warns.
     let ws = file_warnings(
         "\
-         (defability Size (size [self] :-> int))\n\
-         (impl Size :int (size [n] 5))\n\
-         (impl Size :float (size [n] n))",
+         (defability Size (size (self) :-> int))\n\
+         (impl Size :int (size (n) 5))\n\
+         (impl Size :float (size (n) n))",
     );
     assert!(
         !ws.iter().any(|w| w.contains("declared return type")),
@@ -272,8 +272,8 @@ fn ability_op_any_return_imposes_no_impl_constraint() {
     // A `:-> any` op is the gradual unknown — an impl may return anything.
     let ws = file_warnings(
         "\
-         (defability Blob (blob [self] :-> any))\n\
-         (impl Blob :int (blob [n] \"whatever\"))",
+         (defability Blob (blob (self) :-> any))\n\
+         (impl Blob :int (blob (n) \"whatever\"))",
     );
     assert!(
         !ws.iter().any(|w| w.contains("declared return type")),
@@ -327,8 +327,8 @@ fn ability_op_typed_param_flags_a_bad_argument() {
     // the argument-side sibling of the `:-> RET` return flow.
     let ws = file_warnings(
         "\
-         (defability Scale (scale [self (factor float)] :-> int))\n\
-         (impl Scale :int (scale [n f] n))\n\
+         (defability Scale (scale (self (factor float)) :-> int))\n\
+         (impl Scale :int (scale (n f) n))\n\
          (defn bad () (scale 5 \"x\"))",
     );
     assert!(
@@ -343,8 +343,8 @@ fn ability_op_typed_param_accepts_a_good_argument() {
     // A float where a float is wanted, and an untyped position — neither warns.
     let ws = file_warnings(
         "\
-         (defability Scale (scale [self (factor float)] :-> int))\n\
-         (impl Scale :int (scale [n f] n))\n\
+         (defability Scale (scale (self (factor float)) :-> int))\n\
+         (impl Scale :int (scale (n f) n))\n\
          (defn ok () (scale 5 2.5))",
     );
     assert!(!ws.iter().any(|w| w.contains("argument")), "{ws:?}");
@@ -355,8 +355,8 @@ fn ability_op_untyped_params_impose_no_argument_constraint() {
     // An all-bare op spec declares no arg types — any argument is fine.
     let ws = file_warnings(
         "\
-         (defability Plain (plain [self k] :-> int))\n\
-         (impl Plain :int (plain [n k] n))\n\
+         (defability Plain (plain (self k) :-> int))\n\
+         (impl Plain :int (plain (n k) n))\n\
          (defn ok () (plain 5 \"anything\"))",
     );
     assert!(!ws.iter().any(|w| w.contains("argument")), "{ws:?}");
@@ -368,8 +368,8 @@ fn ability_op_typed_param_flows_into_the_impl_body() {
     // declares `:-> int` is a provable return mismatch (caught only because the param is typed).
     let ws = file_warnings(
         "\
-         (defability Scale (scale [self (factor float)] :-> int))\n\
-         (impl Scale :int (scale [n f] f))",
+         (defability Scale (scale (self (factor float)) :-> int))\n\
+         (impl Scale :int (scale (n f) f))",
     );
     assert!(
         ws.iter().any(|w| w
@@ -389,7 +389,7 @@ fn sealed_ability_name_resolves_as_a_type_in_a_sig() {
          (defmodule t)\n\
          (defrecord circle (r))\n\
          (defrecord rect (w h))\n\
-         (defability Shape :sealed [circle rect] (area [self] :-> float))\n\
+         (defability Shape :sealed [circle rect] (area (self) :-> float))\n\
          (sig total (Shape -> float))\n\
          (defn total (s) 1.0)\n\
          (defn bad () (total 5))",
@@ -410,7 +410,7 @@ fn sealed_ability_type_accepts_a_member_record() {
          (defmodule t)\n\
          (defrecord circle (r))\n\
          (defrecord rect (w h))\n\
-         (defability Shape :sealed [circle rect] (area [self] :-> float))\n\
+         (defability Shape :sealed [circle rect] (area (self) :-> float))\n\
          (sig total (Shape -> float))\n\
          (defn total (s) 1.0)\n\
          (defn ok () (total (circle 2)))",
@@ -432,9 +432,9 @@ fn sealed_ability_type_soundness_precise_paths() {
          (defmodule t)\n\
          (defrecord circle (r))\n\
          (defrecord rect (w h))\n\
-         (defability Shape :sealed [circle rect] (area [self] :-> float))\n\
-         (impl Shape t/circle (area [c] (* 1.0 (get c :r))))\n\
-         (impl Shape t/rect (area [r] (* 1.0 (get r :w))))\n\
+         (defability Shape :sealed [circle rect] (area (self) :-> float))\n\
+         (impl Shape t/circle (area (c) (* 1.0 (get c :r))))\n\
+         (impl Shape t/rect (area (r) (* 1.0 (get r :w))))\n\
          (sig total (Shape -> float))\n\
          (defn total (s) (area s))\n\
          (defn ok-literal () (total {:__id__ :t/circle :r 2}))\n\
@@ -456,9 +456,9 @@ fn sealed_ability_type_in_op_return_position() {
          (defmodule t)\n\
          (defrecord circle (r))\n\
          (defrecord rect (w h))\n\
-         (defability Shape :sealed [circle rect] (area [self] :-> float))\n\
-         (defability Scaled (scaled [self] :-> Shape))\n\
-         (impl Scaled :int (scaled [n] (circle n)))\n\
+         (defability Shape :sealed [circle rect] (area (self) :-> float))\n\
+         (defability Scaled (scaled (self) :-> Shape))\n\
+         (impl Scaled :int (scaled (n) (circle n)))\n\
          (defn bad (x) (string/length (scaled x)))",
     );
     assert!(
@@ -474,7 +474,7 @@ fn non_sealed_ability_name_is_not_a_type() {
     let ws = file_warnings(
         "\
          (defmodule t)\n\
-         (defability Open (op [self] :-> int))\n\
+         (defability Open (op (self) :-> int))\n\
          (sig f (Open -> int))\n\
          (defn f (s) 1)\n\
          (defn use-it () (f 5))",
@@ -490,7 +490,7 @@ fn non_sealed_ability_name_is_not_a_type() {
 #[test]
 fn behaviour_flags_a_missing_callback() {
     let ws = file_warnings(
-        "(defbehaviour B (render [m]) (mount [p]))\n(defmodule foo (:implements B))\n(defn render (m) m)",
+        "(defbehaviour B (render (m)) (mount (p)))\n(defmodule foo (:implements B))\n(defn render (m) m)",
     );
     assert!(
         ws.iter()
@@ -502,7 +502,7 @@ fn behaviour_flags_a_missing_callback() {
 #[test]
 fn behaviour_flags_an_arity_mismatch() {
     let ws = file_warnings(
-        "(defbehaviour B (render [m]))\n(defmodule foo (:implements B))\n(defn render (m extra) m)",
+        "(defbehaviour B (render (m)))\n(defmodule foo (:implements B))\n(defn render (m extra) m)",
     );
     assert!(
         ws.iter()
@@ -514,7 +514,7 @@ fn behaviour_flags_an_arity_mismatch() {
 #[test]
 fn behaviour_complete_module_is_clean() {
     let ws = file_warnings(
-        "(defbehaviour B (render [m]))\n(defmodule foo (:implements B))\n(defn render (m) m)",
+        "(defbehaviour B (render (m)))\n(defmodule foo (:implements B))\n(defn render (m) m)",
     );
     // No conformance diagnostic (the bare-interp "unbound symbol: defbehaviour"
     // noise contains the substring "behaviour", so match the real messages).

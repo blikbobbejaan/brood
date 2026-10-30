@@ -69,8 +69,8 @@
 (impl Lookup
   memo-defaulted
   ;; an absent key answers 7 through `get`, which only the walk can ask
-  (lookup-get [r k] (if (= k :hits) (get r :hits) 7))
-  (lookup-keys [r] (list :hits)))
+  (lookup-get (r k) (if (= k :hits) (get r :hits) 7))
+  (lookup-keys (r) (list :hits)))
 
 (deftype memo-wants-extra (record &open :extra int))
 

@@ -93,8 +93,8 @@
 
 ;; ---- the collection protocol: a custom record joins iteration (Seqable) + build (Conjable) ----
 (defrecord stack (items))
-(impl Seqable stack (->seq [s] (get s :items))) ; iterate the items, not the fields
-(impl Conjable stack (conj-onto [s x] (stack (cons x (get s :items))))) ; prepend on conj
+(impl Seqable stack (->seq (s) (get s :items))) ; iterate the items, not the fields
+(impl Conjable stack (conj-onto (s x) (stack (cons x (get s :items))))) ; prepend on conj
 (describe "defrecord: custom collection (Seqable + Conjable)"
   (test "Seqable — a custom record iterates its own way"
     (let (s (stack (list 10 20 30)))

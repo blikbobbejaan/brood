@@ -212,11 +212,12 @@ another Lisp has it.
    arguments after `f` are `f`'s), the functions whose subject is a function (`fnil`,
    `gen/start`, …), and transducer `comp` — there is one `comp`, right to left, and items flow
    in written order because a stage wraps a reducing function.
-6. ⬜ **"Lists for code, vectors for data" has exceptions.** These use vectors for
-   parameters: ability op specs `(area [self] :-> float)`, `impl` methods `(area [c] …)`,
-   `defmethod`'s `[money money]` dispatch tuple, and `{:keys [a b]}`. `defn`, `fn`, `let`
-   and `defrecord` fields use lists, and a vector there is an error with a hint (ADR-149).
-   Either make the ability forms take lists, or restate the rule with its exceptions.
+6. ✅ **"Lists for code, vectors for data" had exceptions (2026-10-30, ADR-512).** Ability op
+   specs, `impl` methods and `defbehaviour` ops took their parameters as vectors, where `defn`,
+   `fn` and even `defmethod` take a list. They take a list now, and a vector there is an error
+   whose hint is the list spelling, as ADR-149 made it for `defn`. The other two were never
+   parameters: `defmethod`'s `[money money]` is a tuple of dispatch ids and `{:keys [a b]}`
+   names the keys to bind — data, so vectors, as are `:sealed` and `:requires` member lists.
 7. ⬜ **Two polymorphism mechanisms.** Abilities dispatch on the first argument;
    `defmulti` dispatches on the tuple of argument identities (ADR-179). Write the rule for
    which one a library author picks, and say in one place why both exist.
@@ -256,7 +257,6 @@ another Lisp has it.
 - collection-first argument order and the missing `->>`;
 - `condp` taking the value first;
 - `else` rather than `:else`;
-- vectors in ability op specs;
 - a failure being truthy (the `or`-default habit);
 - `let` on an `*earmuffed*` name being lexical, and `spawn` not inheriting `binding`s;
 - callable keywords but not callable maps or vectors;
@@ -814,7 +814,7 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
       rope doing the same is consistent with the thing it models. The checker's `countable`
       gained `Rope`/`Table` in step. Superseded text follows:
 - [ ] ~~**Ability seams do not reach built-in kinds** (ADR-253) — **half closed.** `Display`
-      DOES reach a built-in now: `(impl Display :rope (->string [x] …))` is consulted, almost
+      DOES reach a built-in now: `(impl Display :rope (->string (x) …))` is consulted, almost
       certainly because `->string` became an ability op in v0.15.0. What remains is the
       *seqable* family: `(count r)`, `(first r)` and `(empty? r)` raise on a rope and on a
       table, and **`(seq r)` returns the rope unchanged** — a wrong VALUE rather than an

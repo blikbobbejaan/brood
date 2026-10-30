@@ -295,7 +295,7 @@ which is meaningless for a rope, so falling through unconditionally would swap a
 (defn %derive-into (aname id fields from)
   "Load-time worker for `defrecord`'s `:derives` (ADR-185): register ability `aname`'s derived
   impl for record id `id` (field-name symbols `fields`), tagged with ns `from`. Calls the
-  ability's `:derive-record` recipe to get a list of `impl` method forms `((op [args] body…)
+  ability's `:derive-record` recipe to get a list of `impl` method forms `((op (args) body…)
   …)`, evals each into a fn, and registers it for `id`. Loud error if `aname` is not derivable
   (declares no recipe). Runs at load, so the ability's `defability` need only precede the
   record's construction — not its macro-expansion."
@@ -310,12 +310,11 @@ which is meaningless for a rope, so falling through unconditionally would swap a
         (error "defrecord :derives — no ability named "
           aname " is loaded " "(check the spelling, and that its defability runs first)")))
     (doseq (m (recipe fields))
-      ;; a method form is `(op [args] body…)` (impl syntax — a `[args]` VECTOR); `fn` wants a
-      ;; LIST param, so convert the vector to a list, exactly as the `impl` macro does.
+      ;; a method form is `(op (args) body…)`, `impl`'s spelling
       (%register-impl aname
         (first m)
         id
-        (reflect/eval (cons 'fn (cons (map (second m) (fn (s) s)) (rest (rest m)))))
+        (reflect/eval (cons 'fn (cons (%method-params aname (first m) (second m)) (rest (rest m)))))
         from))))
 
 (defn %no-impl (op-key key)
@@ -381,7 +380,7 @@ which is meaningless for a rope, so falling through unconditionally would swap a
 (defn- %defability-op-call (impl-sym arg-syms)
   "The dispatch call an op emits once its impl `impl-sym` is resolved. A fixed-arity op
   emits a direct `(impl self a b …)` — no arg-list allocation. A VARIADIC op (a `&` in the
-  arg vector) emits `(apply impl self a … rest)`, because `&` is a binding marker, not a
+  parameter list) emits `(apply impl self a … rest)`, because `&` is a binding marker, not a
   call-position argument — a direct `(impl self & rest)` would pass the symbol `&` as an
   argument (an unbound-symbol error at every call)."
   (if (includes? arg-syms '&)
@@ -391,68 +390,86 @@ which is meaningless for a rope, so falling through unconditionally would swap a
     (cons impl-sym arg-syms)))
 
 (defn- %defability-op-body (op)
-  "The default-implementation body of op spec `op` — everything after the arg vector and
-  any `:-> RET` — or nil when the op declares none. A spec `(op [args] :-> ret? body…)`
+  "The default-implementation body of op spec `op` — everything after the parameter list and
+  any `:-> RET` — or nil when the op declares none. A spec `(op (args) :-> ret? body…)`
   with a body is a PROVIDED op (ADR-185): `defability` emits its body as an auto-registered
   `:default` impl, so an `impl` that omits the op still gets it (Rust/Haskell provided
   methods). The body typically calls the ability's
   *required* ops on `self`, so it works for any id that supplies those."
   (let (tail (rest (rest op)))
-    ; forms after `(op-name [args])`
+    ; forms after `(op-name (args))`
     (if (= (first tail) :->)
       (rest (rest tail)) ; skip the `:-> ret` pair
       tail)))
 
-;; Every list in a `defability` is an op spec, `(op [args…] …)`, except the value of a
-;; `:derive-record` clause (a `(fn (fields) …)`). One with a non-vector parameter list —
-;; `(zm (self))`, the `defn` spelling — is an error rather than silently dropped (which
-;; would leave the ability with no ops), and so is a duplicated op name (the second `defn`
-;; would shadow the first).
-(defn- %defability-check-specs (aname specs)
-  (letrec (go (fn (items after-derive seen)
+;; A parameter vector written as the list it should be, for the hint an old-spelling op spec
+;; or method gets (ADR-512): `[self k]` reads `(self k)`, and `[]` reads `()`.
+(defn %params-as-list-text (params)
+  (if (empty? params) "()" (pr-str (map params (fn (p) p)))))
+
+;; The op specs of a `defability`, by position: past the leading docstring, every keyword
+;; is a clause and takes the form after it as its value (`:sealed [ids…]`, `:requires
+;; [abilities…]`, `:derive-record recipe` — a recipe may itself be a list), and every other
+;; list is an op spec `(op (args…) …)`.
+(defn- %defability-op-specs (specs)
+  (letrec (go (fn (items acc)
                 (cond
-                  (empty? items) nil
-                  (%eq (first items) :derive-record) (go (rest items) true seen)
-                  (keyword? (first items)) (go (rest items) false seen)
-                  (pair? (first items))
-                    (let (s (first items))
-                      (cond
-                        after-derive (go (rest items) false seen)
-                        (not (symbol? (first s)))
-                          (error "defability "
-                            aname
-                            ": an op spec is (op [args…] …), got "
-                            (pr-str s))
-                        (not (vector? (second s)))
-                          (error "defability "
-                            aname
-                            ": op `"
-                            (first s)
-                            "` needs a [args…] VECTOR (the defn spelling `("
-                            (first s)
-                            " (…))` is not an op spec), got "
-                            (pr-str s))
-                        (includes? seen (first s))
-                          (error "defability " aname ": op `" (first s) "` is declared twice")
-                        else (go (rest items) false (cons (first s) seen))))
-                  else (go (rest items) false seen))))
-    (go (if (string? (first specs)) (rest specs) specs) false nil)))
+                  (empty? items) (reverse acc)
+                  (keyword? (first items)) (go (rest (rest items)) acc)
+                  (pair? (first items)) (go (rest items) (cons (first items) acc))
+                  else (go (rest items) acc))))
+    (go (if (string? (first specs)) (rest specs) specs) nil)))
+
+;; An op spec is `(op (args…) …)`: its parameter list is a LIST, as in `defn`, `fn` and
+;; `defmethod` (ADR-512). A vector there is an error naming the list spelling — it used to
+;; be the spelling, and a vector in a parameter position destructures, so it reads as
+;; something else (ADR-149). A duplicated op name is an error too: the second `defn` would
+;; shadow the first.
+(defn- %defability-check-specs (aname specs)
+  (fold (%defability-op-specs specs)
+    nil
+    (fn (seen s)
+      (cond
+        (not (symbol? (first s)))
+          (error "defability " aname ": an op spec is (op (args…) …), got " (pr-str s))
+        (vector? (second s))
+          (error "defability "
+            aname
+            ": op `"
+            (first s)
+            "` takes its parameters as a list, as defn does — write ("
+            (first s)
+            " "
+            (%params-as-list-text (second s))
+            " …), not "
+            (pr-str (second s))
+            " (ADR-512)")
+        (not (list? (second s)))
+          (error "defability "
+            aname
+            ": op `"
+            (first s)
+            "` needs a parameter list (op (args…) …), got "
+            (pr-str s))
+        (includes? seen (first s))
+          (error "defability " aname ": op `" (first s) "` is declared twice")
+        else (cons (first s) seen)))))
 
 (defmacro defability (aname & specs)
-  "Declare ability `aname`. Each op spec `(op [args…] :-> ret?)` becomes a generic
+  "Declare ability `aname`. Each op spec `(op (args…) :-> ret?)` becomes a generic
   function dispatching on its first argument's identity. An optional leading docstring
   is allowed. Records the specs in *abilities* for the checker / LSP.
 
-  A **provided** op carries a default body after its spec — `(op [args] :-> ret? body…)`
+  A **provided** op carries a default body after its spec — `(op (args) :-> ret? body…)`
   — which `defability` registers as the op's `:default` impl (ADR-185). An `impl` that
   omits a provided op inherits the default; one that supplies it overrides it (an id-keyed
   impl always beats `:default`). Write the required ops as bodyless specs and derive the
   rest — implement `rank`, get `outranks?`/`ranks-below?` free:
 
     (defability Ranked
-      (rank [self] :-> int)                                        ; required
-      (outranks?    [a b] :-> bool (> (rank a) (rank b)))           ; provided
-      (ranks-below? [a b] :-> bool (< (rank a) (rank b))))          ; provided
+      (rank (self) :-> int)                                        ; required
+      (outranks?    (a b) :-> bool (> (rank a) (rank b)))           ; provided
+      (ranks-below? (a b) :-> bool (< (rank a) (rank b))))          ; provided
 
   An optional `:sealed [id …]` clause names the CLOSED set of member ids the ability is
   meant to cover; the checker then flags any member missing an impl of any *required* op
@@ -463,22 +480,20 @@ which is meaningless for a rope, so falling through unconditionally would swap a
   maps a record's field names to a list of `impl` method forms, which `defrecord`'s
   `:derives` splices in (see `defrecord`).
 
-    (defability Size  (size [self] :-> int))
-    (defability Store (fetch [self k]) (put [self k v]))
-    (defability Shape :sealed [circle rect] (area [self] :-> float))"
-  ; An op spec is a pair whose second element is the `[args]` VECTOR; that excludes a
-  ; `:derive-record` recipe `(fn (fields) …)` (its second is a `(fields)` *list*) and any
-  ; keyword-clause value, so only real ops are collected.
+    (defability Size  (size (self) :-> int))
+    (defability Store (fetch (self k)) (put (self k v)))
+    (defability Shape :sealed [circle rect] (area (self) :-> float))"
+  ; The op specs are found by position (`%defability-op-specs`): a keyword clause's value —
+  ; a `:derive-record` recipe `(fn (fields) …)` is a list too — is never one.
   (%defability-check-specs aname specs)
-  (let (ops (%filter specs (fn (s) (and (pair? s) (vector? (second s)))))
+  (let (ops (%defability-op-specs specs)
         ;; The ability's own docstring, if it wrote one — the leading string in `specs`.
         ;; Each generated op inherits it (see the `defn` below): an op IS the ability's
         ;; surface, and a generic function with no doc at all is a hole in `(doc …)`,
         ;; `nest doc` and the LSP alike. Surfaced by `(audit/undocumented)`.
         ability-doc (if (string? (first specs)) (first specs) nil)
         ;; The keyword clauses: `:sealed [members…]`, `:derive-record recipe` (an inline
-        ;; `(fn (fields) …)` or a fn-symbol — its second element is no `[args]` vector, so
-        ;; the op filter above skips it) and `:requires [abilities…]`.
+        ;; `(fn (fields) …)` or a fn-symbol) and `:requires [abilities…]`.
         sealed-vec (%form-after specs :sealed)
         sealed-ids (if sealed-vec (map sealed-vec %ability-id-kw) nil)
         derive-fn (%form-after specs :derive-record)
@@ -527,7 +542,7 @@ which is meaningless for a rope, so falling through unconditionally would swap a
         op-defs (map ops
                   (fn (op)
                     (let (op-name (first op)
-                          ; arg vector → list of bare param symbols; dispatch reads the FIRST
+                          ; the parameter list → bare param symbols; dispatch reads the FIRST
                           ; arg's identity. A param may be typed `(->string T)` (the `:-> RET`
                           ; sibling — a checker-only annotation, ADR-180); strip the type here
                           ; so the generated `defn` gets a plain symbol, `factor` not `(factor float)`.
@@ -692,14 +707,32 @@ error is a `:blame :callee` contract error, like a function's own result mismatc
             body))))
     (cons 'fn (cons arg-syms body))))
 
+;; An `impl` method's parameter list — `(op (args…) body…)`, `defn`'s spelling (ADR-512). A
+;; vector is refused with the list it should be: it was the spelling, and a vector in a
+;; parameter position destructures (ADR-149), so it would read as something else.
+(defn- %method-params (aname op params)
+  (if (vector? params)
+    (error "impl "
+      aname
+      ": method `"
+      op
+      "` takes its parameters as a list, as defn does — write ("
+      op
+      " "
+      (%params-as-list-text params)
+      " …), not "
+      (pr-str params)
+      " (ADR-512)")
+    params))
+
 (defmacro impl (aname key & methods)
   "Register implementations of ability `aname` for dispatch id `key` — a `type-of`
   keyword (`:int`, `:map`, …), a record's nominal id (`geometry/circle`), or `:default`.
-  Open and late: from any module, any time. Each method is `(op [args…] body…)`; the
+  Open and late: from any module, any time. Each method is `(op (args…) body…)`; the
   registration is tagged with the current namespace for conflict detection.
 
-    (impl Size :int             (size [n] n))
-    (impl Size geometry/circle  (size [c] (get c :r)))
+    (impl Size :int             (size (n) n))
+    (impl Size geometry/circle  (size (c) (get c :r)))
 
   Inside a method body, `(next-impl)` calls the impl this one shadows — the next
   precedence tier down, else the ability's `:default` — with the same arguments, or with
@@ -710,15 +743,16 @@ error is a `:blame :callee` contract error, like a function's own result mismatc
   ; A method is registered as the thin closure it was written as. An op's declared `:-> RET`
   ; is checked by the OP function (`defability`), at every call when contracts are armed —
   ; never by a wrapper around each method body here, which would make every impl a real
-  ; activation and stop `(impl Port :native (write [p s] (%port-write p s)))` being elided
+  ; activation and stop `(impl Port :native (write (p s) (%port-write p s)))` being elided
   ; to its primitive (KI-182).
   (let (id-kw (%ability-id-kw key))
     (cons 'do
       (map methods
         (fn (m)
           (let (op-name (first m)
-                ; arg vector → list
-                arg-syms (map (second m) (fn (s) s))
+                ; a parameter list is a LIST, as in `defn` (ADR-512): a vector here is the old
+                ; spelling, and a vector in a parameter position destructures (ADR-149)
+                arg-syms (%method-params aname op-name (second m))
                 body (rest (rest m)))
             (list '%register-impl
               (list 'quote aname)
@@ -752,7 +786,7 @@ error is a `:blame :callee` contract error, like a function's own result mismatc
   (fold ops 0 (fn (n op) (if (%unregister-impl aname op key) (inc n) n))))
 
 ;; The position of `:->` in a `defmulti`'s opts, or nil. `:->` is the same marker an
-;; ability op spec uses for its return (`(compare-to [self other] :-> int)`), so a reader
+;; ability op spec uses for its return (`(compare-to (self other) :-> int)`), so a reader
 ;; meets one spelling for "and it returns" across both dispatch forms.
 (defn- %index-of-arrow (opts)
   (%arrow-at opts 0))
@@ -991,11 +1025,11 @@ An optional leading docstring is carried onto the generated function.
 
     (->string \"hi\")       ;=> \"hi\"
     (->string [1 \"a\"])    ;=> \"[1 a]\""
-  (->string [self] :-> string))
+  (->string (self) :-> string))
 
 ;; Every built-in kind, and every record without a custom impl, lands here: the
 ;; native `str` — i.e. exactly what printing produced before this module loaded.
-(impl Display :default (->string [x] (str x)))
+(impl Display :default (->string (x) (str x)))
 
 ;; A symbol or keyword displays as its SPELLING, without the sigil — `(->string :foo)`
 ;; is "foo", not ":foo". This is the one built-in kind where `->string` and `str`
@@ -1008,8 +1042,8 @@ An optional leading docstring is carried onto the generated function.
 ;; compile error. Restating costs three kernel ops and is
 ;; pinned by `bootstrap_and_ability_agree` in `prelude_hygiene`, so the two spellings
 ;; cannot drift apart unnoticed.
-(impl Display :keyword (->string [k] (string/substring (str k) 1)))
-(impl Display :symbol (->string [s] (str s)))
+(impl Display :keyword (->string (k) (string/substring (str k) 1)))
+(impl Display :symbol (->string (s) (str s)))
 
 ;; `Inspect` — the DEBUG form (Haskell's `Show`), the companion
 ;; to `Display`. `(inspect x)` is what you want in a log line or a REPL: unambiguous,
@@ -1023,9 +1057,9 @@ An optional leading docstring is carried onto the generated function.
 
     (inspect \"hi\")       ;=> \"\\\"hi\\\"\"
     (inspect [1 \"a\"])    ;=> \"[1 \\\"a\\\"]\""
-  (inspect [self] :-> string))
+  (inspect (self) :-> string))
 
-(impl Inspect :default (inspect [x] (pr-str x)))
+(impl Inspect :default (inspect (x) (pr-str x)))
 
 ;; `inspect` is the `Inspect` ability op and returns a STRING, so it belongs with `pr-str`,
 ;; not with the printers; there is no print-and-return variant — use `inspect` + `io/puts`.
@@ -1041,8 +1075,8 @@ An optional leading docstring is carried onto the generated function.
   "A value's sequence view — the list that `seq`/`map`/`fold`/`for`/`into` iterate.
 
     (->seq {:a 1})   ;=> ([:a 1])"
-  (->seq [self] :-> any))
-(impl Seqable :default (->seq [x] (%map-pairs (fields x))))
+  (->seq (self) :-> any))
+(impl Seqable :default (->seq (x) (%map-pairs (fields x))))
 
 ;; Counted — a collection record's size, when it knows it without walking its `Seqable`
 ;; view: `count` and `empty?` consult it for a record, so a queue answers both in O(1). No
@@ -1053,7 +1087,7 @@ what `empty?` compares with zero, instead of walking its `Seqable` view. An ordi
 record has no impl and counts its fields; see `std/queue.blsp`.
 
     (->count (queue/list-> [1 2 3]))   ;=> 3"
-  (->count [self] :-> int))
+  (->count (self) :-> int))
 
 ;; `first` / `rest` / `empty?` of a RECORD as the kernel builtins hand them back to the engine
 ;; (ADR-505): the builtin would ask the record's `->seq` (or `->count`) from Rust, under its own
@@ -1091,8 +1125,8 @@ the engine (ADR-505)."
 contents are not simply its fields. An ordinary record has no impl and keeps the
 field lookup, so these are called only for a custom-collection record — see
 `std/multimap.blsp`, e.g. `(lookup-get mm :k)` → the values stored under `:k`."
-  (lookup-get [self k] :-> any)
-  (lookup-keys [self] :-> any))
+  (lookup-get (self k) :-> any)
+  (lookup-keys (self) :-> any))
 
 ;; Conjable — adding an element: the seam `conj`/`into` consult for a RECORD. The default
 ;; is the map behaviour (a record is a map: assoc a `[k v]` pair, or merge a map), so a
@@ -1103,9 +1137,9 @@ field lookup, so these are called only for a custom-collection record — see
   "Add element `x` to collection `self`, returning a fresh collection.
 
     (conj-onto {:a 1} [:b 2])   ;=> {:a 1, :b 2}"
-  (conj-onto [self x] :-> any))
+  (conj-onto (self x) :-> any))
 (impl Conjable
-  :default (conj-onto [coll x]
+  :default (conj-onto (coll x)
     (cond
       (map? x) (merge coll x)
       (and (vector? x) (%eq (count x) 2)) (assoc coll (nth x 0) (nth x 1))

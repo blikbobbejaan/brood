@@ -260,7 +260,7 @@ mod tests {
         // `(defability Shape …)` name token at column 12.
         assert_eq!(
             def_char_at(
-                "(defability Shape (area [s]))\n(sig f (Shape -> int))",
+                "(defability Shape (area (s)))\n(sig f (Shape -> int))",
                 "Shape -"
             ),
             Some(12)
@@ -351,7 +351,7 @@ mod tests {
         let iface = dir.join("shapes.blsp");
         std::fs::write(
             &iface,
-            "(defmodule shapes)\n(defbehaviour Drawable (draw [s]))\n",
+            "(defmodule shapes)\n(defbehaviour Drawable (draw (s)))\n",
         )
         .unwrap();
 

@@ -726,9 +726,9 @@ the minibuffer UI state. Paints to whatever frontend `ui-run` holds."
 (defrecord command-overlay ())
 (impl editor/ui/Overlay
   command-overlay
-  (overlay-active? [_overlay model] (= (get model :mode) :command))
+  (overlay-active? (_overlay model) (= (get model :mode) :command))
   ;; no overlay-owns? — the eval minibuffer captures every key
-  (overlay-handle [_overlay model input] (observe-command-key model (get model :backend) input)))
+  (overlay-handle (_overlay model input) (observe-command-key model (get model :backend) input)))
 
 (def- observe-key-overlays (list (command-overlay)))
 

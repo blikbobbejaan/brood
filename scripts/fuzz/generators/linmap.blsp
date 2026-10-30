@@ -109,7 +109,7 @@
     ;; xs is a list of ints so `(first xs)` is a key; `i` counts down.
     (str
       "(defrecord lm-rec (hits))
-(impl Lookup lm-rec (lookup-get [c k] (if (= k :hits) (get c :hits) 100)) (lookup-keys [c] (list :hits)))
+(impl Lookup lm-rec (lookup-get (c k) (if (= k :hits) (get c :hits) 100)) (lookup-keys (c) (list :hits)))
 (defn go (i xs m)
   (if (= i 0)
     "

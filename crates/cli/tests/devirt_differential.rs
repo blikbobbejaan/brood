@@ -136,10 +136,10 @@ const CASES: &[Case] = &[
     Case {
         name: "an impl registered and used in the same body",
         source: "(defrecord rec (n))\n\
-                 (defability Show (render [self] :-> string))\n\
-                 (impl Show :default (render [x] \"DEFAULT\"))\n\
+                 (defability Show (render (self) :-> string))\n\
+                 (impl Show :default (render (x) \"DEFAULT\"))\n\
                  (do\n\
-                 \x20\x20(impl Show rec (render [r] (str \"R\" (get r :n))))\n\
+                 \x20\x20(impl Show rec (render (r) (str \"R\" (get r :n))))\n\
                  \x20\x20(io/puts (str \"same-body: \" (render (rec 7)))))\n\
                  (%unimpl Show rec)\n\
                  (io/puts (str \"after-retract: \" (render (rec 7))))\n",
@@ -155,9 +155,9 @@ const CASES: &[Case] = &[
         name: "a stale record id, in a module",
         source: "(defmodule mono-stale)\n\
                  (defrecord shape (n))\n\
-                 (defability Show (render [self] :-> string))\n\
-                 (impl Show :default (render [x] \"DEFAULT\"))\n\
-                 (impl Show mono-stale/shape (render [r] (str \"REC\" (get r :n))))\n\
+                 (defability Show (render (self) :-> string))\n\
+                 (impl Show :default (render (x) \"DEFAULT\"))\n\
+                 (impl Show mono-stale/shape (render (r) (str \"REC\" (get r :n))))\n\
                  (io/puts (str \"record: \" (render (shape 7))))\n\
                  (defn shape (n) {:n n})\n\
                  (io/puts (str \"rebound: \" (render (shape 7))))\n",
@@ -168,9 +168,9 @@ const CASES: &[Case] = &[
     Case {
         name: "a stale record id, module-less",
         source: "(defrecord shape (n))\n\
-                 (defability Show (render [self] :-> string))\n\
-                 (impl Show :default (render [x] \"DEFAULT\"))\n\
-                 (impl Show shape (render [r] (str \"REC\" (get r :n))))\n\
+                 (defability Show (render (self) :-> string))\n\
+                 (impl Show :default (render (x) \"DEFAULT\"))\n\
+                 (impl Show shape (render (r) (str \"REC\" (get r :n))))\n\
                  (io/puts (str \"record: \" (render (shape 7))))\n\
                  (defn shape (n) {:n n})\n\
                  (io/puts (str \"rebound: \" (render (shape 7))))\n",
@@ -183,9 +183,9 @@ const CASES: &[Case] = &[
     Case {
         name: "a constructor rebound after the caller compiled",
         source: "(defrecord shape (n))\n\
-                 (defability Show (render [self]))\n\
-                 (impl Show :default (render [x] \"DEFAULT\"))\n\
-                 (impl Show shape (render [r] \"REC\"))\n\
+                 (defability Show (render (self)))\n\
+                 (impl Show :default (render (x) \"DEFAULT\"))\n\
+                 (impl Show shape (render (r) \"REC\"))\n\
                  (defn caller () (render (shape 7)))\n\
                  (io/puts (str \"record: \" (caller)))\n\
                  (check-allow :duplicate-def (defn shape (n) {:n n}))\n\
@@ -198,8 +198,8 @@ const CASES: &[Case] = &[
     // be what the caller calls next.
     Case {
         name: "an op rebound after the caller compiled",
-        source: "(defability Show (render [self]))\n\
-                 (impl Show :int (render [x] \"INT\"))\n\
+        source: "(defability Show (render (self)))\n\
+                 (impl Show :int (render (x) \"INT\"))\n\
                  (defn caller () (render 5))\n\
                  (io/puts (str \"op: \" (caller)))\n\
                  (check-allow :duplicate-def (defn render (x) \"REBOUND\"))\n\
@@ -212,8 +212,8 @@ const CASES: &[Case] = &[
     Case {
         name: "an impl retracted after the caller compiled",
         source: "(defrecord rec (n))\n\
-                 (defability Show (render [self]))\n\
-                 (impl Show rec (render [r] \"R\"))\n\
+                 (defability Show (render (self)))\n\
+                 (impl Show rec (render (r) \"R\"))\n\
                  (defn caller () (render (rec 1)))\n\
                  (io/puts (str \"first: \" (caller)))\n\
                  (%unimpl Show rec)\n\
@@ -226,8 +226,8 @@ const CASES: &[Case] = &[
     // would return the impl's wrong value unchecked, so an armed run declines every rewrite.
     Case {
         name: "an op's declared return under armed contracts",
-        source: "(defability Show (render [self] :-> string))\n\
-                 (impl Show :int (render [x] 42))\n\
+        source: "(defability Show (render (self) :-> string))\n\
+                 (impl Show :int (render (x) 42))\n\
                  (defn caller () (render 5))\n\
                  (io/puts (str \"contract: \" (try (caller) (catch e (get e :kind)))))\n",
         expected: "contract: :contract\n",
@@ -288,9 +288,9 @@ fn an_argument_that_registers_an_impl_keeps_the_call_dynamic() {
     let file = directory.join("order.blsp");
     std::fs::write(
         &file,
-        "(defability Show (render [self y]))\n\
-         (impl Show :default (render [x y] \"DEFAULT\"))\n\
-         (defn caller () (render 5 (do (impl Show :int (render [x y] \"INT\")) 1)))\n\
+        "(defability Show (render (self y)))\n\
+         (impl Show :default (render (x y) \"DEFAULT\"))\n\
+         (defn caller () (render 5 (do (impl Show :int (render (x y) \"INT\")) 1)))\n\
          (io/puts (str \"order: \" (caller)))\n",
     )
     .expect("write fixture");
@@ -318,9 +318,9 @@ fn a_devirtualized_call_stays_correct_after_it_tiers_to_native() {
     std::fs::write(
         &file,
         "(defrecord cir (r))\n\
-         (defability Sz (asize [self] :-> int))\n\
-         (impl Sz cir (asize [x] (* (get x :r) 2)))\n\
-         (impl Sz :default (asize [x] 0))\n\
+         (defability Sz (asize (self) :-> int))\n\
+         (impl Sz cir (asize (x) (* (get x :r) 2)))\n\
+         (impl Sz :default (asize (x) 0))\n\
          ;; a direct-constructor arg, so the devirt fires, in a loop long enough to tier\n\
          (defn hot (n acc) (if (= n 0) acc (hot (- n 1) (+ acc (asize (cir n))))))\n\
          (io/puts (str \"hot: \" (hot 300000 0)))\n",

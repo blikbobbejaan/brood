@@ -35,11 +35,28 @@
   whose header says `(:implements bname)` defines each one at the right arity.
 
     (defbehaviour LiveModule
-      (mount [params])
-      (render [model])
-      (handle-event [name params model]))"
+      (mount (params))
+      (render (model))
+      (handle-event (name params model)))
+
+  Each op's parameters are a list, as in the `defn` that will satisfy it (ADR-512)."
   ;; `%filter`, not `seq/filter`: this is a MACRO body, so it runs at expansion time —
   ;; and protocol.blsp is part of the PRELUDE (boot.rs concatenates it last), where no
   ;; module has loaded yet. See the note at `%filter` in prelude/predicates.blsp (ADR-330).
   (let (ops (%filter specs (fn (s) (pair? s))))
+    ;; A parameter list is a LIST (ADR-512): a vector was the spelling, and a vector in a
+    ;; parameter position destructures (ADR-149), so it is refused with the list it should be.
+    (doseq (s ops)
+      (when (vector? (second s))
+        (error "defbehaviour "
+          bname
+          ": op `"
+          (first s)
+          "` takes its parameters as a list, as defn does — write ("
+          (first s)
+          " "
+          (%params-as-list-text (second s))
+          "), not "
+          (pr-str (second s))
+          " (ADR-512)")))
     (list '%register-protocol (list 'quote bname) (list 'quote ops))))

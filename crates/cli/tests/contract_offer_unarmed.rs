@@ -44,9 +44,9 @@ const PROGRAM: &str = "\
 (def %op-calls (%table))\n\
 (def %op-orig %contract-check-op-result)\n\
 (%load-module-source \"(def %contract-check-op-result (fn (a op ret v) (%table-put %op-calls op true) (%op-orig a op ret v)))\" \"op-probe\")\n\
-(defability Sz (size [self] :-> int))\n\
-(impl Sz :int (size [n] n))\n\
-(impl Sz :string (size [s] \"not an int\"))\n\
+(defability Sz (size (self) :-> int))\n\
+(impl Sz :int (size (n) n))\n\
+(impl Sz :string (size (s) \"not an int\"))\n\
 (io/puts (str \"size-int=\" (size 7) \" op-checked=\" (%table-has? %op-calls 'size)))\n\
 (io/puts (str \"size-bad: \" (try (size \"x\") (catch e (str \"RAISED \" (get e :kind))))))\n";
 

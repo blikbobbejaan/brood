@@ -6,6 +6,13 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Changed — breaking.**
+- Every parameter list is a list (ADR-512). Ability op specs, `impl` methods and
+  `defbehaviour` ops take their parameters as a list, like `defn`, `fn` and `defmethod`:
+  `(defability Shape (area (self) :-> float))`, `(impl Shape circle (area (c) …))`. A vector
+  there is an error whose hint is the list spelling. A vector stays data: `defmethod`'s
+  dispatch tuple `[money money]`, `{:keys [a b]}`, `:sealed` and `:requires` lists.
+
 **Performance.**
 - `conj` and `into` onto a vector append in place when they can, so a `conj` loop is linear
   rather than quadratic (ADR-511): 200 000 `conj`s take a fraction of a second, where a copy

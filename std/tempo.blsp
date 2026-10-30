@@ -150,7 +150,7 @@ time unit — nil means \"nothing coarser\", never \"no such unit\".
 
     (tempo/width (tempo/->span (datetime/parse-date \"2026-06-15\")))   ;=> 86400000
     (tempo/width (tempo/->span (tempo/parse! \"2026-06-15T14\")))       ;=> 3600000"
-  (->span [self] :-> span))
+  (->span (self) :-> span))
 
 ;; ---- construction -----------------------------------------------------------
 
@@ -409,14 +409,14 @@ worse.
 ;; `datetime/time-of-day` is deliberately absent: a wall-clock time has no
 ;; position on the timeline until a date anchors it, so `->span` on one is a
 ;; loud missing-impl error rather than a silent guess at today's date.
-(impl Spanning tempo/tempo (->span [t] (span (from-ms t) (to-ms t))))
-(impl Spanning tempo/span (->span [s] s))
+(impl Spanning tempo/tempo (->span (t) (span (from-ms t) (to-ms t))))
+(impl Spanning tempo/span (->span (s) s))
 (impl Spanning
   datetime/date
-  (->span [d] (let (ms (datetime/->epoch-ms d)) (span ms (+ ms 86400000)))))
+  (->span (d) (let (ms (datetime/->epoch-ms d)) (span ms (+ ms 86400000)))))
 (impl Spanning
   datetime/datetime
-  (->span [dt] (let (ms (datetime/->epoch-ms dt)) (span ms (+ ms 1)))))
+  (->span (dt) (let (ms (datetime/->epoch-ms dt)) (span ms (+ ms 1)))))
 
 (defn from (x)
   "The opening instant of `x`, as a `datetime`.
@@ -908,14 +908,14 @@ empty set renders as the empty string.
 ;;
 ;; The body's `->iso` is tempo's own function, not the op — so this is a delegation, not a
 ;; recursion.
-(impl Temporal tempo/tempo (->iso [t] (->iso t)))
+(impl Temporal tempo/tempo (->iso (t) (->iso t)))
 
 ;; A temporal value's display form is its ISO string, so `(io/puts …)` shows
 ;; `2026-06` rather than the field map. `str`/`pr-str` stay native (ADR-171), so
 ;; the data form is still there for debugging.
-(impl Display tempo/tempo (->string [t] (->iso t)))
-(impl Display tempo/span (->string [s] (->iso-span s)))
-(impl Display tempo/iset (->string [s] (->iso-set s)))
+(impl Display tempo/tempo (->string (t) (->iso t)))
+(impl Display tempo/span (->string (s) (->iso-span s)))
+(impl Display tempo/iset (->string (s) (->iso-set s)))
 
 (defn- tp-unit-name (u)
   (cond

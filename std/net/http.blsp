@@ -346,14 +346,14 @@ exactly. There is no mode flip-back — outbound writes are mode-independent
   line to who closes the socket.
 
     (http/send-response (http/response 200 {} \"ok\") sock)   ;~> nil, written and the socket closed"
-  (send-response [self sock] :-> nil))
+  (send-response (self sock) :-> nil))
 
 (defrecord response (status headers body))
 
 ;; A plain response owns the whole exchange: render head + body, then close.
 (impl Response
   http/response
-  (send-response [resp sock]
+  (send-response (resp sock)
     (tcp/send sock (render-response resp))
     (tcp/close sock)
     nil))
@@ -455,7 +455,7 @@ whose body is written incrementally over the socket afterwards (see
 ;; which owns it from there — so this impl must NOT close it.
 (impl Response
   http/stream-response
-  (send-response [resp sock]
+  (send-response (resp sock)
     (tcp/send sock (render-head (/get resp :status 200) (or (/get resp :headers) {})))
     ((/get resp :stream) sock)
     nil))

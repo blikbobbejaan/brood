@@ -225,9 +225,9 @@ fn an_imaged_start_keeps_what_loading_registered() {
          (io/puts \"SOURCE-LOAD: shapes\")\n\
          (defmulti combine)\n\
          (defmethod combine [:int :int] (a b) (+ a b))\n\
-         (defability Sized (size [self] :-> int))\n\
+         (defability Sized (size (self) :-> int))\n\
          (defrecord box (w h))\n\
-         (impl Sized shapes/box (size [s] (* (get s :w) (get s :h))))\n",
+         (impl Sized shapes/box (size (s) (* (get s :w) (get s :h))))\n",
     );
     // Each line reads a different registry: dispatch through `*methods*`, ability dispatch
     // through `*impls*`/`*abilities*`, the record's nominal id through `*record-ids*`,

@@ -4824,3 +4824,24 @@ and drop large vectors from a range, sized so the object count cannot trigger a 
 (each case checked red with the byte trigger removed). Checked here: fmt, clippy
 `--all-features`, the new and touched test files, the JIT, latch and scheduler binaries test
 by test, and the sabotage runs; not run here: the suite.
+
+2026-10-30 (ADR-512, ROADMAP B6: every parameter list is a list). Of B6's four "exceptions" to
+lists for code, vectors for data, two were parameter lists — ability op specs and `impl`
+methods, plus `defbehaviour` ops, which the roadmap had missed — and two were data:
+`defmethod`'s dispatch tuple (its parameters were already a list, so the two dispatch forms
+disagreed) and `{:keys [a b]}`. The parameter lists take a list now and a vector is refused
+with the list spelling as its hint, as ADR-149 did for `defn`. `defability` finds op specs by
+position, since a vector no longer marks them. A Perl rewriter changed only the parameter
+brackets of direct children of `(impl …)`, `(defability …)` and `(defbehaviour …)`, in code,
+docstrings, comments, Markdown and Rust string literals: about 550 lists. Its first version
+missed every form with a docstring (a region ended at the docstring's quote, so the form
+never closed); a dry second pass after the fix found nothing. By hand: the `:derive-record`
+recipes that build `(columns [r] …)`, two generators building specs with `['self]`, the
+quoted specs tests feed `%register-ability`, the LSP's method skeleton, and three readers —
+`introspect`'s op arity and the checker's `spec_param_types`, which took only a vector and
+would have stopped checking typed op parameters silently (`ability_test` caught it). Checked
+here: fmt, clippy, `nest format`, `nest check` over std and tests (the one `--strict` warning
+is in uncommitted `editor/highlight` work), the changed test files, the checker, LSP and
+touched integration tests, and the doc examples. Not run here: the suite;
+`robustness_limits_test` aborts with a stack overflow on this machine at the last pushed
+commit too, so it is not this change — investigated next.

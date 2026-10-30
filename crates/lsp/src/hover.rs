@@ -264,7 +264,7 @@ mod tests {
         // Seed the interface registry directly (the protocol package isn't loaded in
         // a bare interp) — `*protocols*` maps a behaviour name to its op specs.
         interp
-            .eval_str("(def *protocols* {'Drawable '((draw [s]) (area [s]))})")
+            .eval_str("(def *protocols* {'Drawable '((draw (s)) (area (s)))})")
             .expect("seed protocols");
 
         let src = "(defmodule app (:implements Drawable))";

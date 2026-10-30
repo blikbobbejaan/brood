@@ -24,7 +24,7 @@
 
 (defrecord cn-box (a b))
 (defrecord cn-tally (n))
-(impl Counted count-nth-inline-test/cn-tally (->count [t] (get t :n)))
+(impl Counted count-nth-inline-test/cn-tally (->count (t) (get t :n)))
 
 ;; Hot callers, so the inline runs in native code once they tier.
 ;; `cn-count` is handed every shape on purpose, an uncountable `42` among them (the value

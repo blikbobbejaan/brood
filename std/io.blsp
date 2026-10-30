@@ -57,12 +57,12 @@ the contract, invoked once per ready string, and it is the one that should yield
 plainer name.
 
     (io/emit (io/stdout-port) \"ready\")   ;~> nil, with ready written to stdout"
-  (emit [self s] :-> nil))
+  (emit (self s) :-> nil))
 
 ;; A bare 1-arg sink fn is a port — the original representation, still first-class.
 ;; This impl is what keeps `%write-out`, `fn-port`, and every hand-written `(fn (s) …)`
 ;; working unchanged.
-(impl Port :fn (emit [f s] (f s)))
+(impl Port :fn (emit (f s) (f s)))
 ;; A NATIVE 1-arg sink is a port too. The prelude's default `*out*`/`*err*` are the
 ;; primitives `%write-out`/`%write-err`, whose `type-of` is `:native`, not `:fn` — so
 ;; without this `(io/port? *err*)` was false for the very ports the language ships with.
@@ -73,7 +73,7 @@ plainer name.
 ;; stdlib — `log`, the test runner, `supervisor`, `repl`, `telemetry`, `format` — wrote to
 ;; stdout with that suffix, which is how it surfaced (a checker test asserting on warnings
 ;; read from stderr saw none).
-(impl Port :native (emit [f s] (f s)))
+(impl Port :native (emit (f s) (f s)))
 
 (defn port? (x)
   "True if `x` can be written to — it has a `Port` impl (a 1-arg sink fn, a port record,
@@ -87,8 +87,8 @@ or your own type). The check a function taking a port can branch on instead of l
 
 (defrecord standard-port (label write))
 
-(impl Port io/standard-port (emit [p s] ((get p :write) s)))
-(impl Display io/standard-port (->string [p] (str "#<port " (get p :label) ">")))
+(impl Port io/standard-port (emit (p s) ((get p :write) s)))
+(impl Display io/standard-port (->string (p) (str "#<port " (get p :label) ">")))
 
 (defn stdout-port ()
   "The default stdout port: writes to real stdout, honouring `with-out-str`
@@ -114,13 +114,13 @@ count, or forward however it likes.
 
 (defrecord process-port (pid))
 
-(impl Port io/process-port (emit [p s] (send (get p :pid) [:write s]) nil))
-(impl Display io/process-port (->string [p] (str "#<port process " (get p :pid) ">")))
+(impl Port io/process-port (emit (p s) (send (get p :pid) [:write s]) nil))
+(impl Display io/process-port (->string (p) (str "#<port process " (get p :pid) ">")))
 
 (defrecord file-port (path))
 
-(impl Port io/file-port (emit [p s] (file/spit-append (get p :path) s) nil))
-(impl Display io/file-port (->string [p] (str "#<port file " (get p :path) ">")))
+(impl Port io/file-port (emit (p s) (file/spit-append (get p :path) s) nil))
+(impl Display io/file-port (->string (p) (str "#<port file " (get p :path) ">")))
 
 ;; ---- writing values ---------------------------------------------------------
 ;; `emit` above is the one-string seam every port implements. These three are the

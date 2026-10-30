@@ -534,7 +534,7 @@ like `reflect/eval`. Returns `{:error msg}` on failure.
 ;; ---- ability / record introspection ----------------------------------------
 
 (defn- op-provided? (spec)
-  "Does an op spec `(->string [params] :-> ret? body…)` carry a body (a provided
+  "Does an op spec `(->string (params) :-> ret? body…)` carry a body (a provided
 default) rather than being a bare required op? Skip the name + params, then the
 optional `:-> ret`, and check whether anything remains."
   (let (tail (drop spec 2)

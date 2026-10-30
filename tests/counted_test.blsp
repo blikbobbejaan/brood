@@ -6,8 +6,8 @@
 ;; A collection whose sequence view cannot be built at all: only `Counted` can answer for it,
 ;; so `count`/`empty?` succeeding proves they asked it rather than walking `->seq`.
 (defrecord tally (n))
-(impl Seqable counted-test/tally (->seq [t] (error "the view must not be walked")))
-(impl Counted counted-test/tally (->count [t] (get t :n)))
+(impl Seqable counted-test/tally (->seq (t) (error "the view must not be walked")))
+(impl Counted counted-test/tally (->count (t) (get t :n)))
 
 (defrecord point (x y))
 

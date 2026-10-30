@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn classifies_a_defability_name_as_an_interface() {
         // `Shape` (5 chars) at col 12 is an interface, with the definition modifier.
-        let toks = tokens("(defability Shape (area [s]))");
+        let toks = tokens("(defability Shape (area (s)))");
         assert!(
             toks.contains(&(0, 1, 10, T_KEYWORD, 0)),
             "defability keyword: {toks:?}"

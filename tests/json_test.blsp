@@ -163,8 +163,8 @@
 (defrecord usd (cents))
 (defrecord wrapped (inner))
 
-(impl JsonEncode json-test/usd (->json [m] (str "$" (get m :cents))))
-(impl JsonEncode :pid (->json [p] (str p)))
+(impl JsonEncode json-test/usd (->json (m) (str "$" (get m :cents))))
+(impl JsonEncode :pid (->json (p) (str p)))
 
 (describe "encoding records"
   (test "a record encodes as its fields, with the internal id omitted"

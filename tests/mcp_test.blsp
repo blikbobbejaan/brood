@@ -102,7 +102,7 @@
   (test "abilities lists the core abilities"
     (is (includes? (get (mcp/abilities-tool {}) :abilities) "Display")))
   :isolated (test "ability describes ops, sealed members, requires, and impls"
-    (mcp/eval-tool {:source "(defrecord mcpt-circle (r)) (defability McptShape :sealed [mcpt-circle] (mcpt-area [self] :-> float) (mcpt-big? [self o] :-> bool (> (mcpt-area self) 0))) (impl McptShape mcpt-circle (mcpt-area [c] 1.0))"})
+    (mcp/eval-tool {:source "(defrecord mcpt-circle (r)) (defability McptShape :sealed [mcpt-circle] (mcpt-area (self) :-> float) (mcpt-big? (self o) :-> bool (> (mcpt-area self) 0))) (impl McptShape mcpt-circle (mcpt-area (c) 1.0))"})
     (let (r (mcp/ability-tool {:name "McptShape"}))
       (assert= (get r :sealed) true)
       (is (includes? (get r :members) "mcpt-circle"))

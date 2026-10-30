@@ -138,7 +138,7 @@ fn fixture(dir: &Path) {
         &module(
             "sizes",
             "",
-            "(defability Size (size [self] :-> int))\n(impl Size :int (size [n] n))",
+            "(defability Size (size (self) :-> int))\n(impl Size :int (size (n) n))",
         ),
     );
     write(
@@ -147,7 +147,7 @@ fn fixture(dir: &Path) {
         &module(
             "strsize",
             " (:use sizes)",
-            "(impl Size :string (size [s] (count s)))",
+            "(impl Size :string (size (s) (count s)))",
         ),
     );
     write(

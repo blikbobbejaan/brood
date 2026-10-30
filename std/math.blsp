@@ -123,14 +123,14 @@ of 1 gives an integer). Same as `(/ n d)` for integers; errors when `d` is 0.
     (math/nan? 1)          ;=> false   ; an int is a number, and is not NaN
     (math/infinite? inf)   ;=> true
     (math/infinite? 1.0)   ;=> false"
-  (nan? [self] :-> bool)
-  (infinite? [self] :-> bool))
+  (nan? (self) :-> bool)
+  (infinite? (self) :-> bool))
 (impl Numeric
-  :float (nan? [x] (not (= x x)))
-  (infinite? [x] (or (= x inf) (= x -inf))))
-(impl Numeric :int (nan? [x] false) (infinite? [x] false))
-(impl Numeric :decimal (nan? [x] false) (infinite? [x] false))
-(impl Numeric :ratio (nan? [x] false) (infinite? [x] false))
+  :float (nan? (x) (not (= x x)))
+  (infinite? (x) (or (= x inf) (= x -inf))))
+(impl Numeric :int (nan? (x) false) (infinite? (x) false))
+(impl Numeric :decimal (nan? (x) false) (infinite? (x) false))
+(impl Numeric :ratio (nan? (x) false) (infinite? (x) false))
 
 (defability Zero
   "True when `self` is the additive identity of its own type — across the whole numeric
@@ -140,11 +140,11 @@ tower, not just the int `0`. A type with no impl RAISES rather than answering.
     (math/zero? 0.0)    ;=> true
     (math/zero? 0M)     ;=> true
     (math/zero? 1/2)    ;=> false"
-  (zero? [self] :-> bool))
-(impl Zero :int (zero? [n] (%eq n 0)))
-(impl Zero :float (zero? [n] (%eq n 0.0)))
-(impl Zero :decimal (zero? [n] (%eq n 0M)))
-(impl Zero :ratio (zero? [n] false))
+  (zero? (self) :-> bool))
+(impl Zero :int (zero? (n) (%eq n 0)))
+(impl Zero :float (zero? (n) (%eq n 0.0)))
+(impl Zero :decimal (zero? (n) (%eq n 0M)))
+(impl Zero :ratio (zero? (n) false))
 
 (defn positive? (n:number -> bool)
   "True if `n` is greater than zero.

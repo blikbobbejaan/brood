@@ -124,13 +124,13 @@ If no values remain under `k`, the key is dropped.
 ;; the module needs no `keys`/`vals` of its own.
 (impl Lookup
   multimap/multimap
-  (lookup-get [mm k] (get-all mm k))
+  (lookup-get (mm k) (get-all mm k))
   ;; `/get`, not bare `get`: inside this module bare `get` is `multimap/get`, so it would
   ;; look up a KEY named `:entries` in the contents and find nothing.
-  (lookup-keys [mm] (/keys (/get mm :entries))))
+  (lookup-keys (mm) (/keys (/get mm :entries))))
 (impl Conjable
   multimap/multimap
-  (conj-onto [mm x]
+  (conj-onto (mm x)
     (cond
       (and (vector? x) (= (count x) 2)) (assoc mm (nth x 0) (nth x 1))
       (map? x) (fold (seq x) mm (fn (m kv) (assoc m (nth kv 0) (nth kv 1))))
@@ -140,10 +140,10 @@ If no values remain under `k`, the key is dropped.
 ;; One per stored value, summed per key — without building the `[key value]` view.
 (impl Counted
   multimap/multimap
-  (->count [mm] (fold (%map-pairs (/get mm :entries)) 0 (fn (n pair) (+ n (count (second pair)))))))
+  (->count (mm) (fold (%map-pairs (/get mm :entries)) 0 (fn (n pair) (+ n (count (second pair)))))))
 (impl Seqable
   multimap/multimap
-  (->seq [mm]
+  (->seq (mm)
     (mapcat (%map-pairs (/get mm :entries))
       (fn (pair) (map (reverse (second pair)) (fn (v) [(first pair) v]))))))
 
@@ -166,7 +166,7 @@ Note the arity: `f` receives the KEY as well as the list, not the list alone.
 ;; whole thing — the plain-map view, so a log line reads as data rather than a wrapper.
 (impl Display
   multimap/multimap
-  (->string [mm]
+  (->string (mm)
     (str "#<multimap "
       (count (keys mm))
       " keys, "
@@ -175,4 +175,4 @@ Note the arity: `f` receives the KEY as well as the list, not the list alone.
 
 (impl Inspect
   multimap/multimap
-  (inspect [mm] (str "#<multimap " (pr-str (->map mm)) ">")))
+  (inspect (mm) (str "#<multimap " (pr-str (->map mm)) ">")))

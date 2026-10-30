@@ -95,7 +95,7 @@ const SHOULD_WARN: &[(&str, &str)] = &[
     // ---- op names must be unique within a module (ADR-172) ----
     // two abilities declaring the same op name `area` clobber each other's generic fn.
     (
-        "(defability Shape (area [self])) (defability Sizer (area [thing]))",
+        "(defability Shape (area (self))) (defability Sizer (area (thing)))",
         "unique per module",
     ),
     // ---- multimethod missing-method: a fully-known tuple with no method (ADR-179) ----
@@ -176,9 +176,9 @@ const SHOULD_NOT_WARN: &[&str] = &[
     r#"(sig const (?A ?B -> ?A)) (defn const (x y) x) (+ 1 (const 42 "x"))"#,
     // ---- ability op-name uniqueness: only a REAL same-name collision warns ----
     // distinct op names across two abilities are fine (each binds its own generic fn).
-    "(defability Shape (area [self])) (defability Boxer (volume [self]))",
+    "(defability Shape (area (self))) (defability Boxer (volume (self)))",
     // redeclaring the SAME ability (hot reload) re-binds the same op — not a collision.
-    "(defability Shape (area [self])) (defability Shape (area [self]))",
+    "(defability Shape (area (self))) (defability Shape (area (self)))",
     // ---- multimethod coverage: a covered tuple, a derived mirror, and :default stay silent ----
     // an exact method covers the call.
     "(defmulti mm) (defmethod mm [:int :int] (a b) a) (defn f () (mm 1 2))",

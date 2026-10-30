@@ -256,7 +256,7 @@
 ;; handed, so the dispatch is testable without a real connection.
 (impl Response
   http-test/probe-response
-  (send-response [resp sock]
+  (send-response (resp sock)
     (send (get resp :target) [:sent sock])
     nil))
 

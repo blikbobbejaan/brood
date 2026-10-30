@@ -93,11 +93,11 @@ unmodified: `text` is its baseline (`buffer-modified?`).
 ;; error message) is never what was wanted. `inspect` adds point/mark for debugging.
 (impl Display
   editor/buffer/buffer
-  (->string [b] (str "#<buffer " (get b :name) " " (text/length (get b :rope)) " chars>")))
+  (->string (b) (str "#<buffer " (get b :name) " " (text/length (get b :rope)) " chars>")))
 
 (impl Inspect
   editor/buffer/buffer
-  (inspect [b]
+  (inspect (b)
     (str "#<buffer "
       (get b :name)
       " "

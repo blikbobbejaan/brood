@@ -364,27 +364,27 @@ transitively-closed lock file and puts each dep's source on *load-path*."
 
     (package/dep-kind (project/parse-dep '[foo :path \"../foo\"]))  ;=> :path"
   :sealed [project/dep-path project/dep-git project/dep-tarball project/dep-registry]
-  (dep-kind [self] :-> keyword)
-  (dep-resolve [self root locked])
-  (dep-check-compatible [self other])
-  (dep-lock-vec [self] :-> vector)
-  (dep-entry-node [self] :-> vector))
+  (dep-kind (self) :-> keyword)
+  (dep-resolve (self root locked))
+  (dep-check-compatible (self other))
+  (dep-lock-vec (self) :-> vector)
+  (dep-entry-node (self) :-> vector))
 
 (impl Dependency
   project/dep-path
-  (dep-kind [d] :path)
-  (dep-resolve [d root locked] (package-resolve-path root d))
-  (dep-check-compatible [d other]
+  (dep-kind (d) :path)
+  (dep-resolve (d root locked) (package-resolve-path root d))
+  (dep-check-compatible (d other)
     (when (not (= (get d :path) (get other :path)))
       (package-conflict other
         (str "required at both \"" (get d :path) "\" and \"" (get other :path) "\""))))
-  (dep-lock-vec [e]
+  (dep-lock-vec (e)
     (apply vector
       (list (get e :name)
         :path (get e :path)
         :sha256 (get e :sha256)
         :deps (package-dep-names-vec (get e :deps)))))
-  (dep-entry-node [d]
+  (dep-entry-node (d)
     [:vector
       (vector [:symbol (->string (get d :name))]
         [:keyword ":path"]
@@ -392,14 +392,14 @@ transitively-closed lock file and puts each dep's source on *load-path*."
 
 (impl Dependency
   project/dep-git
-  (dep-kind [d] :git)
-  (dep-resolve [d root locked] (package-resolve-git root d locked))
+  (dep-kind (d) :git)
+  (dep-resolve (d root locked) (package-resolve-git root d locked))
   ;; `d` is the already-resolved entry (a concrete `:ref`, plus `:resolved-version`
   ;; if it came from a range); `other` is a fresh request (an exact `:ref`, or a
   ;; `:version` range). Same repo required both ways; then the entry's pin must
   ;; satisfy the new request — a range is checked against the pinned version, an
   ;; exact ref must match the pinned ref (the greedy first-wins reconciliation).
-  (dep-check-compatible [d other]
+  (dep-check-compatible (d other)
     (when (not (= (get d :url) (get other :url)))
       (package-conflict other
         (str "required from two different git URLs (" (get d :url) " and " (get other :url) ")")))
@@ -414,7 +414,7 @@ transitively-closed lock file and puts each dep's source on *load-path*."
             (str "required at both " (get d :ref) " and " (get other :ref) " (same repo)"))))))
   ;; A ranged dep also records its resolved concrete `:version` in the lock, so a
   ;; later run can range-check it without hitting the network (an exact-ref dep omits it).
-  (dep-lock-vec [e]
+  (dep-lock-vec (e)
     (apply vector
       (append (list (get e :name) :git (get e :url) :ref (get e :ref))
         (if (get e :resolved-version) (list :version (get e :resolved-version)) nil)
@@ -424,7 +424,7 @@ transitively-closed lock file and puts each dep's source on *load-path*."
           :deps (package-dep-names-vec (get e :deps))))))
   ;; Manifest writeback (`nest add`): a ranged dep writes `:version <range>`, an
   ;; exact one writes `:ref <ref>`.
-  (dep-entry-node [d]
+  (dep-entry-node (d)
     (let (ranged (get d :version))
       [:vector
         (vector [:symbol (->string (get d :name))]
@@ -444,19 +444,19 @@ transitively-closed lock file and puts each dep's source on *load-path*."
 
 (impl Dependency
   project/dep-tarball
-  (dep-kind [d] :tarball)
-  (dep-resolve [d root locked] (package-resolve-tarball root d))
-  (dep-check-compatible [d other]
+  (dep-kind (d) :tarball)
+  (dep-resolve (d root locked) (package-resolve-tarball root d))
+  (dep-check-compatible (d other)
     (when (not (and (= (get d :url) (get other :url)) (= (get d :sha256) (get other :sha256))))
       (package-conflict other
         (str "required as two different tarballs (" (get d :url) " and " (get other :url) ")"))))
-  (dep-lock-vec [e]
+  (dep-lock-vec (e)
     (apply vector
       (list (get e :name)
         :tarball (get e :url)
         :sha256 (get e :sha256)
         :deps (package-dep-names-vec (get e :deps)))))
-  (dep-entry-node [d]
+  (dep-entry-node (d)
     [:vector
       (vector [:symbol (->string (get d :name))]
         [:keyword ":tarball"]
@@ -466,9 +466,9 @@ transitively-closed lock file and puts each dep's source on *load-path*."
 
 (impl Dependency
   project/dep-registry
-  (dep-kind [d] :registry)
-  (dep-resolve [d root locked] (package-resolve-registry root d locked nil))
-  (dep-check-compatible [d other]
+  (dep-kind (d) :registry)
+  (dep-resolve (d root locked) (package-resolve-registry root d locked nil))
+  (dep-check-compatible (d other)
     (when (not (= (get d :version) (get other :version)))
       (package-conflict other
         (str "required at two registry versions ("
@@ -476,7 +476,7 @@ transitively-closed lock file and puts each dep's source on *load-path*."
           " and "
           (get other :version)
           ")"))))
-  (dep-lock-vec [e]
+  (dep-lock-vec (e)
     ;; `:pubkey` is recorded only for a SIGNED package (ADR-212) — the TOFU pin a later
     ;; install checks against; an unsigned package omits it, so the lock stays uncluttered.
     (apply vector
@@ -485,7 +485,7 @@ transitively-closed lock file and puts each dep's source on *load-path*."
           (list :deps (package-dep-names-vec (get e :deps)))))))
   ;; The manifest spells a registry dep `:version` (the kind keyword is `:registry`
   ;; only inside the lock, which also records the tarball's sha256 integrity pin).
-  (dep-entry-node [d]
+  (dep-entry-node (d)
     [:vector
       (vector [:symbol (->string (get d :name))]
         [:keyword ":version"]

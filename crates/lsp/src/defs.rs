@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn recognizes_defability_as_an_interface_by_name() {
-        let ds = defs("(defability Shape :sealed [circle] (area [self] :-> float))");
+        let ds = defs("(defability Shape :sealed [circle] (area (self) :-> float))");
         assert_eq!(ds.len(), 1);
         assert_eq!(ds[0].kind, DefKind::Ability);
         assert_eq!(ds[0].name, "Shape");
