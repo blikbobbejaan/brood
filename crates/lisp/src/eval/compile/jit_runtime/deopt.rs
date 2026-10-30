@@ -260,7 +260,10 @@ pub(crate) fn vm_resume_deopt(
 pub(crate) fn jit_latch_suspend_host(arm: &CompiledArm) {
     if crate::diagnostics::debug_flags::jit_bail_trace() {
         let name = arm.dbg_label();
-        eprintln!("[jit-bail] arm={name} uid={} reason=suspend-latched", arm.uid);
+        eprintln!(
+            "[jit-bail] arm={name} uid={} reason=suspend-latched",
+            arm.uid
+        );
     }
     arm.latch_bailed("suspend-latched");
 }
