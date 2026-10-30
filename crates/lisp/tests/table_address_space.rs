@@ -125,7 +125,12 @@ fn a_dropped_table_s_slot_is_reused() {
     );
 }
 
-/// A process's tables die with it, and their slots are reused.
+/// A process's tables die with it, and their slots are reused — counted in the table
+/// store's own chunks, which are its whole address-space footprint (a chunk is never
+/// unmapped, and a reused slot keeps its chunks). This case once read the process's
+/// `VmSize`, like the others here; across 2000 spawned and exited processes the allocator's
+/// arenas grew it by 192 MB on a 4-core CI runner with every table reclaimed, and that was
+/// indistinguishable from the leak the case guards.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_process_s_tables_are_reclaimed_when_it_exits() {
@@ -142,9 +147,13 @@ fn a_process_s_tables_are_reclaimed_when_it_exits() {
              (children 10)",
         )
         .expect("warm");
-    let grew = growth_mb_over(&mut interp, "(children 2000)");
+    let before = brood::core::table::chunks_mapped();
+    interp.eval_str("(children 2000)").expect("children");
+    let mapped = brood::core::table::chunks_mapped() - before;
+    // Each child's table writes one key, so each table needs one chunk; reused slots bring
+    // theirs along. A few may be new while an exit's reclaim is still in flight.
     assert!(
-        grew < 100,
-        "2000 exited table owners grew the address space by {grew} MB"
+        mapped < 16,
+        "2000 exited table owners mapped {mapped} new chunks — their slots were not reused"
     );
 }

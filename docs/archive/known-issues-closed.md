@@ -15607,3 +15607,23 @@ threads had enough stack to pass; this machine's did not.
 
 **Guard.** `typed::tests::a_deep_untyped_pattern_is_walked_on_a_small_stack` strips a
 100 000-level pattern on a 256 KB thread; the recursive walk aborts it.
+
+## KI-311 — `table_address_space`'s exit case read 192 MB of growth with every table reclaimed ✅ FIXED 2026-10-30
+
+**Seen:** `a_process_s_tables_are_reclaimed_when_it_exits` failed "2000 exited table owners grew
+the address space by 192 MB" in CI's tree-walker job on the v0.49.0 release commit (`543f0b86`),
+and once before with the same figure (the devlog's ADR-501 entry, then put down to match thunks).
+It passed here at every pool size from 1 to 28 workers, under both tiers.
+
+**Cause.** The case measured the whole process's `VmSize`. Spawning and reaping 2000 processes
+moves the allocator's arenas and the worker pool's stacks, and 192 MB is three of mimalloc's
+64 MB arenas; nothing about tables was leaking. The figure was indistinguishable from the leak
+the case guards.
+
+**Fix.** The table store counts the chunks it maps (`core::table::chunks_mapped`): a chunk is
+never unmapped and a reused slot keeps its chunks, so that count is the store's own
+address-space footprint. The case asserts fewer than 16 new chunks over 2000 exited owners.
+
+**Guard.** The case itself: with `release_owned` disabled it reads 2000 new chunks and fails.
+The other cases in the file still read `VmSize` for single-process churn, where no process
+spawning moves the allocator.

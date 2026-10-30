@@ -186,6 +186,18 @@ pub(crate) const CHUNK_SLOTS: usize = 1 << CHUNK_SHIFT;
 /// The chunk count — `DENSE_KEY_MAX` is a multiple of `CHUNK_SLOTS` by construction.
 pub(crate) const CHUNKS: usize = (DENSE_KEY_MAX as usize) >> CHUNK_SHIFT;
 
+/// How many dense-slot chunks the process has installed. A chunk is never unmapped and a
+/// dropped or exited table's slot is reused with its chunks, so this is the table store's
+/// address-space footprint in chunks, and a steady churn of tables leaves it flat. The
+/// `table_address_space` tests read it: the process's `VmSize` also moves with allocator
+/// arenas and worker stacks, which is how a run that reclaimed every table still read 192 MB.
+static CHUNKS_MAPPED: AtomicUsize = AtomicUsize::new(0);
+
+/// [`CHUNKS_MAPPED`]: dense-slot chunks installed so far, process-wide.
+pub fn chunks_mapped() -> usize {
+    CHUNKS_MAPPED.load(Ordering::Relaxed)
+}
+
 /// The dense slot region: `CHUNKS` chunk pointers, each null until a write reaches
 /// its key range, then a `CHUNK_SLOTS`-word mapping that is all-zero (= `EMPTY`) at
 /// birth. On unix a chunk is one anonymous `mmap` — a virtual reservation whose pages
@@ -259,6 +271,8 @@ impl DenseSlots {
             .is_err()
         {
             unmap_chunk_region(fresh);
+        } else {
+            CHUNKS_MAPPED.fetch_add(1, Ordering::Relaxed);
         }
         Ok(())
     }
