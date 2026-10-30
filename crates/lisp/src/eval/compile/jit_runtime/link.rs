@@ -153,7 +153,7 @@ pub(crate) fn jit_latch_dirty_blocked(
             .and_then(|(_, a)| a)
             .map(|(arm, _, _)| arm.arc().clone())
     }) {
-        jit_latch_suspend_host(&arm);
+        jit_latch_suspend_host(heap, &arm);
     }
 }
 

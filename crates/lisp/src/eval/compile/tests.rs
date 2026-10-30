@@ -2595,3 +2595,100 @@ fn wait_for_tier(
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
 }
+
+/// A JIT'd arm standing in for one that ran, for the suspend-host latch tests: its native
+/// installed and published to the shared cache under `key`, the way a peer finds it.
+#[cfg(feature = "jit")]
+fn published_native_arm(heap: &Heap, key: (u64, u16)) -> Arc<CompiledArm> {
+    extern "C" fn fake_native(_heap: *mut Heap, _base: i64) -> i64 {
+        0
+    }
+    let code = fake_native as *mut u8;
+    let arm = Arc::new(CompiledArm {
+        nrequired: 2,
+        nslots: 2,
+        body: Node::Const(ConstVal::new(Value::nil())),
+        chunk: Some(Chunk {
+            code: vec![Inst::Local(0)],
+        }),
+        jit_code: std::sync::atomic::AtomicPtr::new(code),
+        compile_epoch: std::sync::atomic::AtomicU64::new(heap.global_epoch()),
+        share_key: Some(key),
+        shared_published: std::sync::atomic::AtomicBool::new(true),
+        dbg_name: Some(value::intern("hosts-a-receive")),
+        ..CompiledArm::default()
+    });
+    heap.jit_shared_publish(key, code, heap.global_epoch());
+    arm
+}
+
+/// KI-309: a suspend-host latch is final. One exit can both block its worker — the latch —
+/// and leave on the sixteenth entry-param deopt, whose polymorphic re-lowering resets the
+/// arm to untried. The deopt feedback runs after the latch in the same `native_feedback`,
+/// and its reset put the arm back on the native code the latch had just taken it off: the
+/// next walk blocked its worker again (`interrupt_one_worker`, 1 run in 200).
+#[cfg(feature = "jit")]
+#[test]
+fn a_suspend_latch_survives_a_relowering_due_in_the_same_exit() {
+    use std::sync::atomic::Ordering::Acquire;
+    let mut interp = crate::Interp::new();
+    let heap = &mut interp.heap;
+    let arm = published_native_arm(heap, (0x0309_0001, 2));
+    arm.jit_entry_deopts.store(
+        ENTRY_DEOPT_RELOWER - 1,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    let gateway = 7;
+    heap.blocked_under_gateway = gateway;
+    heap.note_jit_deopt_reason(
+        crate::eval::compile::deopt_reason::DeoptReason::EntryParamTag.code_with(0) as u32,
+    );
+    let exit = NativeExit {
+        outcome: crate::jit::outcome::DEOPT,
+        gateway,
+        env: heap.global(),
+    };
+    let base = heap.roots_len();
+    native_feedback(heap, &arm, base, arm.nslots, &exit);
+    assert_eq!(
+        arm.jit_entry_deopts
+            .load(std::sync::atomic::Ordering::Relaxed),
+        ENTRY_DEOPT_RELOWER,
+        "the exit was not the sixteenth deopt, so it tested nothing"
+    );
+    assert_eq!(
+        arm.jit_code.load(Acquire),
+        crate::jit::BAILED,
+        "the re-lowering put a suspend-latched arm back to untried"
+    );
+}
+
+/// KI-309: the latch takes back the native code the arm published. Another copy of the same
+/// closure's arm, untried or queued, adopts whatever the shared cache holds, so a latch that
+/// left it there let that copy run the code and block its worker in turn.
+#[cfg(feature = "jit")]
+#[test]
+fn a_suspend_latch_takes_back_the_code_it_published() {
+    let mut interp = crate::Interp::new();
+    let heap = &mut interp.heap;
+    let key = (0x0309_0002, 2);
+    let arm = published_native_arm(heap, key);
+    assert!(heap.jit_shared_lookup(key).is_some());
+    let gateway = 9;
+    heap.blocked_under_gateway = gateway;
+    let exit = NativeExit {
+        outcome: 0,
+        gateway,
+        env: heap.global(),
+    };
+    let base = heap.roots_len();
+    native_feedback(heap, &arm, base, arm.nslots, &exit);
+    assert_eq!(
+        arm.jit_code.load(std::sync::atomic::Ordering::Acquire),
+        crate::jit::BAILED
+    );
+    assert!(
+        heap.jit_shared_lookup(key).is_none(),
+        "a copy of the arm could still adopt the latched code"
+    );
+}

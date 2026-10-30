@@ -257,7 +257,7 @@ pub(crate) fn vm_resume_deopt(
 /// scheduler's safety net: admitting such arms (partial lowering, a wider subset) without
 /// it causes liveness failures under load.
 #[cfg(feature = "jit")]
-pub(crate) fn jit_latch_suspend_host(arm: &CompiledArm) {
+pub(crate) fn jit_latch_suspend_host(heap: &Heap, arm: &CompiledArm) {
     if crate::diagnostics::debug_flags::jit_bail_trace() {
         let name = arm.dbg_label();
         eprintln!(
@@ -266,6 +266,12 @@ pub(crate) fn jit_latch_suspend_host(arm: &CompiledArm) {
         );
     }
     arm.latch_bailed("suspend-latched");
+    // And take back what it published: another copy of the same closure's arm, untried or
+    // still queued, would adopt that native code from the shared cache and block its worker
+    // the same way (KI-309). The code stays alive for a peer still running it.
+    if let Some(key) = arm.share_key {
+        heap.jit_shared_retract(key);
+    }
 }
 
 /// Post-invoke suspend check for a native gateway that has its arm in hand: latch if the
@@ -291,7 +297,7 @@ pub(super) fn jit_suspend_feedback(heap: &mut Heap, arm: &CompiledArm, outcome: 
                 .as_ref()
                 .is_some_and(|e| e.is_suspend_signal()))
     {
-        jit_latch_suspend_host(arm);
+        jit_latch_suspend_host(heap, arm);
     }
 }
 
@@ -299,7 +305,7 @@ pub(super) fn jit_suspend_feedback(heap: &mut Heap, arm: &CompiledArm, outcome: 
 /// Sixteen, like the thrash latch: an arm whose param is polymorphic once in a while keeps
 /// its unboxed carry; one deopting per activation flips after sixteen and stops paying a
 /// native entry + deopt + full VM re-run per call.
-const ENTRY_DEOPT_RELOWER: u32 = 16;
+pub(crate) const ENTRY_DEOPT_RELOWER: u32 = 16;
 
 /// Feedback for EVERY type-deopt, watched arm or not (`jit_deopt_feedback` below is the
 /// watched arms' consecutive-count latch): count it, and if the reason was the entry tag
@@ -416,12 +422,35 @@ fn reset_arm_untried(heap: &Heap, arm: &CompiledArm) {
 /// arm from ip 0 — repeating every effect before the deopt (`tests/jit_effect_once_test.blsp`
 /// case 8). `jit_code` goes first, so a reader that still sees the inlined flags sees a
 /// null pointer and interprets.
+///
+/// A latched arm is left as it is. `BAILED` is final — the suspend-host latch takes an arm
+/// off native code on its first dirty park, the thrash latch after sixteen deopts — and a
+/// reset is for native code being replaced, which a latched arm no longer has. Without
+/// this, a re-lowering that came due in the same exit as a suspend-host latch (the deopt
+/// feedback runs after it, in `native_feedback_slow`) put the arm back to untried, and it
+/// re-tiered onto the native code the latch had just taken it off (KI-309).
 pub(super) fn reset_native_state(arm: &CompiledArm) {
-    use std::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
+    use std::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
+    if arm.jit_code.load(Acquire) == crate::jit::BAILED {
+        return;
+    }
     // First, so a lowering in flight that re-checks it after its own store sees the reset
     // (the compiler thread's `install`).
     arm.native_resets.fetch_add(1, SeqCst);
-    arm.jit_code.store(std::ptr::null_mut(), Release);
+    // Null whatever is there — unless it is a latch that landed after the check above.
+    let mut current = arm.jit_code.load(Acquire);
+    loop {
+        if current == crate::jit::BAILED {
+            return;
+        }
+        match arm
+            .jit_code
+            .compare_exchange_weak(current, std::ptr::null_mut(), Release, Acquire)
+        {
+            Ok(_) => break,
+            Err(now) => current = now,
+        }
+    }
     // Unsettle: the re-tier may adopt this very pointer back from the shared cache, and the
     // upgrade state below is being reset for it.
     arm.settled_code.store(std::ptr::null_mut(), Relaxed);
